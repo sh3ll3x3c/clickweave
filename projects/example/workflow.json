@@ -1,0 +1,49 @@
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "Example Workflow",
+  "nodes": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440001",
+      "kind": "Start",
+      "position": { "x": 100.0, "y": 200.0 },
+      "name": "Start",
+      "params": {
+        "prompt": "",
+        "button_text": null,
+        "image_path": null,
+        "timeout_ms": null,
+        "max_tool_calls": null
+      }
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440002",
+      "kind": "Step",
+      "position": { "x": 300.0, "y": 200.0 },
+      "name": "Take Screenshot",
+      "params": {
+        "prompt": "Take a screenshot of the entire screen to see what's currently visible.",
+        "button_text": null,
+        "image_path": null,
+        "timeout_ms": null,
+        "max_tool_calls": 5
+      }
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440003",
+      "kind": "End",
+      "position": { "x": 500.0, "y": 200.0 },
+      "name": "End",
+      "params": {
+        "prompt": "",
+        "button_text": null,
+        "image_path": null,
+        "timeout_ms": null,
+        "max_tool_calls": null
+      }
+    }
+  ],
+  "edges": [
+    { "from": "550e8400-e29b-41d4-a716-446655440001", "to": "550e8400-e29b-41d4-a716-446655440002" },
+    { "from": "550e8400-e29b-41d4-a716-446655440002", "to": "550e8400-e29b-41d4-a716-446655440003" }
+  ]
+}

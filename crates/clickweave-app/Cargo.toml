@@ -1,0 +1,23 @@
+[package]
+name = "clickweave-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clickweave-core.workspace = true
+clickweave-llm.workspace = true
+clickweave-mcp.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+eframe = "0.33"
+egui = "0.33"
+egui-snarl = "0.9"
+rfd = "0.15"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
