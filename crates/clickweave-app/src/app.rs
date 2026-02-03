@@ -38,9 +38,13 @@ impl ClickweaveApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let (executor_tx, _executor_rx) = mpsc::channel();
 
+        let workflow = Workflow::default();
+        let mut editor = WorkflowEditor::new();
+        editor.sync_from_workflow(&workflow);
+
         Self {
-            workflow: Workflow::default(),
-            editor: WorkflowEditor::new(),
+            workflow,
+            editor,
             project_path: None,
             executor_tx,
             executor_state: ExecutorState::Idle,
