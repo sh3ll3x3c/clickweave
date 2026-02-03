@@ -344,7 +344,8 @@ impl ClickweaveApp {
 
         egui::SidePanel::right("inspector")
             .frame(theme::inspector_frame())
-            .default_width(300.0)
+            .exact_width(300.0)
+            .resizable(false)
             .show(ctx, |ui| {
                 if let Some(node_id) = self.selected_node {
                     if let Some(node) = self.workflow.find_node_mut(node_id) {
@@ -386,7 +387,7 @@ impl ClickweaveApp {
                             ui.add(
                                 egui::TextEdit::multiline(&mut node.params.prompt)
                                     .desired_rows(5)
-                                    .desired_width(f32::INFINITY),
+                                    .desired_width(ui.available_width()),
                             );
 
                             ui.add_space(16.0);
