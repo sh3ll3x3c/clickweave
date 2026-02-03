@@ -1,8 +1,11 @@
 use crate::editor::WorkflowEditor;
 use crate::executor::{ExecutorCommand, ExecutorState, WorkflowExecutor};
+use crate::theme::{
+    self, ACCENT_CORAL, ACCENT_GREEN, BG_DARK, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+};
 use clickweave_core::{Workflow, validate_workflow};
 use clickweave_llm::LlmConfig;
-use eframe::egui;
+use eframe::egui::{self, Align, Align2, Button, Color32, Layout, RichText, Vec2};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -14,7 +17,6 @@ pub struct ClickweaveApp {
     // Executor
     executor_tx: mpsc::Sender<ExecutorCommand>,
     executor_state: ExecutorState,
-    executor: Option<WorkflowExecutor>,
 
     // Settings
     llm_config: LlmConfig,
@@ -24,6 +26,12 @@ pub struct ClickweaveApp {
     show_settings: bool,
     logs: Vec<String>,
     selected_node: Option<uuid::Uuid>,
+
+    // n8n-style UI state
+    sidebar_collapsed: bool,
+    logs_drawer_open: bool,
+    node_search: String,
+    is_active: bool,
 }
 
 impl ClickweaveApp {
@@ -36,12 +44,15 @@ impl ClickweaveApp {
             project_path: None,
             executor_tx,
             executor_state: ExecutorState::Idle,
-            executor: None,
             llm_config: LlmConfig::default(),
             mcp_command: "npx".to_string(),
             show_settings: false,
             logs: vec!["Clickweave started".to_string()],
             selected_node: None,
+            sidebar_collapsed: false,
+            logs_drawer_open: false,
+            node_search: String::new(),
+            is_active: false,
         }
     }
 
@@ -77,10 +88,8 @@ impl ClickweaveApp {
             .set_title("Save Project Folder")
             .pick_folder()
         {
-            // Create assets directory
             let assets_dir = path.join("assets");
             let _ = std::fs::create_dir_all(&assets_dir);
-
             self.project_path = Some(path);
             self.save_workflow();
         }
@@ -108,10 +117,8 @@ impl ClickweaveApp {
     }
 
     fn run_workflow(&mut self) {
-        // Sync editor state to workflow
         self.editor.sync_to_workflow(&mut self.workflow);
 
-        // Validate
         if let Err(e) = validate_workflow(&self.workflow) {
             self.log(format!("Validation failed: {}", e));
             return;
@@ -120,7 +127,6 @@ impl ClickweaveApp {
         self.log("Starting workflow execution...");
         self.executor_state = ExecutorState::Running;
 
-        // Create executor
         let workflow = self.workflow.clone();
         let llm_config = self.llm_config.clone();
         let mcp_command = self.mcp_command.clone();
@@ -129,7 +135,6 @@ impl ClickweaveApp {
         let (tx, rx) = mpsc::channel();
         self.executor_tx = tx;
 
-        // Spawn executor in background thread
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
@@ -145,117 +150,74 @@ impl ClickweaveApp {
         self.executor_state = ExecutorState::Idle;
         self.log("Workflow stopped");
     }
-}
 
-impl eframe::App for ClickweaveApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Top toolbar
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("New").clicked() {
-                        self.workflow = Workflow::default();
-                        self.editor.sync_from_workflow(&self.workflow);
-                        self.project_path = None;
-                        ui.close();
-                    }
-                    if ui.button("Open...").clicked() {
-                        self.open_workflow();
-                        ui.close();
-                    }
-                    if ui.button("Save").clicked() {
-                        self.save_workflow();
-                        ui.close();
-                    }
-                    if ui.button("Save As...").clicked() {
-                        self.save_workflow_as();
-                        ui.close();
-                    }
-                });
+    fn show_sidebar(&mut self, ctx: &egui::Context) {
+        let sidebar_width = if self.sidebar_collapsed { 48.0 } else { 200.0 };
 
-                ui.separator();
-
-                let is_running = matches!(self.executor_state, ExecutorState::Running);
-
-                if ui
-                    .add_enabled(!is_running, egui::Button::new("▶ Run"))
-                    .clicked()
-                {
-                    self.run_workflow();
-                }
-
-                if ui
-                    .add_enabled(is_running, egui::Button::new("⏹ Stop"))
-                    .clicked()
-                {
-                    self.stop_workflow();
-                }
-
-                ui.separator();
-
-                if ui.button("⚙ Settings").clicked() {
-                    self.show_settings = !self.show_settings;
-                }
-
-                ui.separator();
-
-                // Status
-                let status = match self.executor_state {
-                    ExecutorState::Idle => "Idle",
-                    ExecutorState::Running => "Running...",
-                    ExecutorState::Paused => "Paused",
-                    ExecutorState::Error => "Error",
-                };
-                ui.label(format!("Status: {}", status));
-            });
-        });
-
-        // Settings window
-        if self.show_settings {
-            egui::Window::new("Settings")
-                .collapsible(false)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.heading("LLM Configuration");
-                    ui.horizontal(|ui| {
-                        ui.label("Base URL:");
-                        ui.text_edit_singleline(&mut self.llm_config.base_url);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Model:");
-                        ui.text_edit_singleline(&mut self.llm_config.model);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("API Key:");
-                        let mut key = self.llm_config.api_key.clone().unwrap_or_default();
-                        if ui.text_edit_singleline(&mut key).changed() {
-                            self.llm_config.api_key = if key.is_empty() { None } else { Some(key) };
-                        }
-                    });
-
-                    ui.separator();
-                    ui.heading("MCP Configuration");
-                    ui.horizontal(|ui| {
-                        ui.label("Command:");
-                        ui.text_edit_singleline(&mut self.mcp_command);
-                    });
-                    ui.label("(Use 'npx' for npx -y native-devtools-mcp)");
-
-                    ui.separator();
-                    if ui.button("Close").clicked() {
-                        self.show_settings = false;
-                    }
-                });
-        }
-
-        // Left panel: Node palette
-        egui::SidePanel::left("palette")
-            .default_width(150.0)
+        egui::SidePanel::left("sidebar")
+            .frame(theme::sidebar_frame())
+            .exact_width(sidebar_width)
+            .resizable(false)
             .show(ctx, |ui| {
-                ui.heading("Nodes");
-                ui.separator();
+                ui.add_space(8.0);
 
-                if ui.button("+ Step").clicked() {
+                // Navigation items
+                let nav_items = [
+                    ("🏠", "Home", true),
+                    ("📋", "Templates", false),
+                    ("📊", "Variables", false),
+                    ("📜", "Executions", false),
+                    ("❓", "Help", false),
+                ];
+
+                for (icon, label, _active) in nav_items {
+                    ui.add_space(2.0);
+                    let btn = if self.sidebar_collapsed {
+                        ui.add_sized(
+                            [40.0, 36.0],
+                            Button::new(RichText::new(icon).size(18.0)).frame(false),
+                        )
+                    } else {
+                        ui.add_sized(
+                            [sidebar_width - 16.0, 36.0],
+                            Button::new(RichText::new(format!("{}  {}", icon, label)).size(14.0))
+                                .frame(false),
+                        )
+                    };
+                    if btn.on_hover_text(label).clicked() {
+                        // Handle navigation
+                    }
+                }
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Node palette section
+                if !self.sidebar_collapsed {
+                    ui.label(RichText::new("NODES").size(11.0).color(TEXT_MUTED));
+                    ui.add_space(8.0);
+                }
+
+                if ui
+                    .add_sized(
+                        [
+                            if self.sidebar_collapsed {
+                                40.0
+                            } else {
+                                sidebar_width - 16.0
+                            },
+                            32.0,
+                        ],
+                        Button::new(if self.sidebar_collapsed {
+                            RichText::new("⚡").size(16.0)
+                        } else {
+                            RichText::new("⚡  Add Step").size(13.0)
+                        }),
+                    )
+                    .on_hover_text("Add a new step node")
+                    .clicked()
+                {
                     let id = self.workflow.add_node(
                         clickweave_core::NodeKind::Step,
                         clickweave_core::Position { x: 300.0, y: 200.0 },
@@ -265,39 +227,177 @@ impl eframe::App for ClickweaveApp {
                     self.selected_node = Some(id);
                 }
 
-                ui.separator();
-                ui.heading("Workflow");
-                ui.label(format!("Nodes: {}", self.workflow.nodes.len()));
-                ui.label(format!("Edges: {}", self.workflow.edges.len()));
+                // Collapse toggle at bottom
+                ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+                    ui.add_space(12.0);
+                    let collapse_icon = if self.sidebar_collapsed { "▶" } else { "◀" };
+                    if ui
+                        .add(Button::new(collapse_icon).frame(false))
+                        .on_hover_text(if self.sidebar_collapsed {
+                            "Expand sidebar"
+                        } else {
+                            "Collapse sidebar"
+                        })
+                        .clicked()
+                    {
+                        self.sidebar_collapsed = !self.sidebar_collapsed;
+                    }
+                    ui.add_space(8.0);
+
+                    // Workflow stats
+                    if !self.sidebar_collapsed {
+                        ui.separator();
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(format!("{} nodes", self.workflow.nodes.len()))
+                                .size(11.0)
+                                .color(TEXT_MUTED),
+                        );
+                    }
+                });
             });
+    }
 
-        // Right panel: Node inspector
-        egui::SidePanel::right("inspector")
-            .default_width(300.0)
+    fn show_header(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("header")
+            .frame(theme::header_frame())
             .show(ctx, |ui| {
-                ui.heading("Inspector");
-                ui.separator();
+                ui.horizontal(|ui| {
+                    // Workflow name (editable)
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.workflow.name)
+                            .font(egui::TextStyle::Heading)
+                            .text_color(TEXT_PRIMARY)
+                            .desired_width(200.0)
+                            .frame(false),
+                    );
 
-                if let Some(node_id) = self.selected_node {
-                    if let Some(node) = self.workflow.find_node_mut(node_id) {
-                        ui.horizontal(|ui| {
-                            ui.label("Name:");
-                            ui.text_edit_singleline(&mut node.name);
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("+ Add tag").size(12.0).color(TEXT_MUTED));
+
+                    ui.add_space(32.0);
+
+                    // Editor / Executions tabs
+                    ui.selectable_label(true, "Editor");
+                    ui.selectable_label(false, "Executions");
+
+                    // Right side controls
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add_space(8.0);
+
+                        // More menu
+                        ui.menu_button("⋯", |ui| {
+                            if ui.button("Settings").clicked() {
+                                self.show_settings = !self.show_settings;
+                                ui.close();
+                            }
+                            if ui.button("New").clicked() {
+                                self.workflow = Workflow::default();
+                                self.editor.sync_from_workflow(&self.workflow);
+                                self.project_path = None;
+                                ui.close();
+                            }
+                            if ui.button("Open...").clicked() {
+                                self.open_workflow();
+                                ui.close();
+                            }
                         });
 
-                        ui.label(format!("Type: {}", node.kind.display_name()));
+                        // Save button (coral accent)
+                        let save_btn = Button::new(RichText::new("Save").color(Color32::WHITE))
+                            .fill(ACCENT_CORAL)
+                            .corner_radius(6.0);
+                        if ui.add(save_btn).clicked() {
+                            self.save_workflow();
+                        }
 
-                        if node.kind == clickweave_core::NodeKind::Step {
-                            ui.separator();
-                            ui.label("Prompt:");
+                        // Share button
+                        if ui.button("Share").clicked() {
+                            // TODO: Share functionality
+                        }
+
+                        ui.add_space(16.0);
+
+                        // Active/Inactive toggle
+                        let toggle_text = if self.is_active { "Active" } else { "Inactive" };
+                        let toggle_color = if self.is_active {
+                            ACCENT_GREEN
+                        } else {
+                            TEXT_MUTED
+                        };
+                        if ui
+                            .add(
+                                Button::new(RichText::new(toggle_text).color(toggle_color))
+                                    .frame(false),
+                            )
+                            .clicked()
+                        {
+                            self.is_active = !self.is_active;
+                        }
+                    });
+                });
+            });
+    }
+
+    fn show_inspector(&mut self, ctx: &egui::Context) {
+        let mut should_delete_node: Option<uuid::Uuid> = None;
+
+        egui::SidePanel::right("inspector")
+            .frame(theme::inspector_frame())
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                if let Some(node_id) = self.selected_node {
+                    if let Some(node) = self.workflow.find_node_mut(node_id) {
+                        // Header with node type
+                        let node_kind = node.kind;
+                        ui.horizontal(|ui| {
+                            let (icon, color) = match node_kind {
+                                clickweave_core::NodeKind::Start => ("▶", theme::NODE_START),
+                                clickweave_core::NodeKind::Step => ("⚡", theme::NODE_STEP),
+                                clickweave_core::NodeKind::End => ("⏹", theme::NODE_END),
+                            };
+                            ui.colored_label(color, RichText::new(icon).size(20.0));
+                            ui.add_space(8.0);
+                            ui.heading(&node.name);
+                        });
+
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(node_kind.display_name())
+                                .size(12.0)
+                                .color(TEXT_MUTED),
+                        );
+
+                        ui.add_space(16.0);
+                        ui.separator();
+                        ui.add_space(12.0);
+
+                        // Node name
+                        ui.label(RichText::new("Name").size(12.0).color(TEXT_SECONDARY));
+                        ui.add_space(4.0);
+                        ui.text_edit_singleline(&mut node.name);
+
+                        if node_kind == clickweave_core::NodeKind::Step {
+                            ui.add_space(16.0);
+
+                            // Prompt
+                            ui.label(RichText::new("Prompt").size(12.0).color(TEXT_SECONDARY));
+                            ui.add_space(4.0);
                             ui.add(
                                 egui::TextEdit::multiline(&mut node.params.prompt)
                                     .desired_rows(5)
                                     .desired_width(f32::INFINITY),
                             );
 
-                            ui.separator();
-                            ui.label("Button text (optional):");
+                            ui.add_space(16.0);
+
+                            // Button text
+                            ui.label(
+                                RichText::new("Button text (optional)")
+                                    .size(12.0)
+                                    .color(TEXT_SECONDARY),
+                            );
+                            ui.add_space(4.0);
                             let mut btn_text = node.params.button_text.clone().unwrap_or_default();
                             if ui.text_edit_singleline(&mut btn_text).changed() {
                                 node.params.button_text = if btn_text.is_empty() {
@@ -307,17 +407,27 @@ impl eframe::App for ClickweaveApp {
                                 };
                             }
 
-                            ui.separator();
-                            ui.label("Image path (optional):");
+                            ui.add_space(16.0);
+
+                            // Image path
+                            ui.label(
+                                RichText::new("Image path (optional)")
+                                    .size(12.0)
+                                    .color(TEXT_SECONDARY),
+                            );
+                            ui.add_space(4.0);
                             let mut img_path = node.params.image_path.clone().unwrap_or_default();
+                            let orig_img_path = img_path.clone();
                             ui.horizontal(|ui| {
-                                ui.text_edit_singleline(&mut img_path);
-                                if ui.button("Browse...").clicked() {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut img_path)
+                                        .desired_width(ui.available_width() - 70.0),
+                                );
+                                if ui.button("Browse").clicked() {
                                     if let Some(file) = rfd::FileDialog::new()
                                         .add_filter("Images", &["png", "jpg", "jpeg"])
                                         .pick_file()
                                     {
-                                        // Copy to assets if we have a project path
                                         if let Some(proj) = &self.project_path {
                                             let assets = proj.join("assets");
                                             let _ = std::fs::create_dir_all(&assets);
@@ -335,7 +445,7 @@ impl eframe::App for ClickweaveApp {
                                     }
                                 }
                             });
-                            if img_path != node.params.image_path.clone().unwrap_or_default() {
+                            if img_path != orig_img_path {
                                 node.params.image_path = if img_path.is_empty() {
                                     None
                                 } else {
@@ -343,41 +453,187 @@ impl eframe::App for ClickweaveApp {
                                 };
                             }
 
-                            ui.separator();
-                            ui.horizontal(|ui| {
-                                ui.label("Max tool calls:");
-                                let mut max_calls = node.params.max_tool_calls.unwrap_or(10);
-                                if ui
-                                    .add(egui::DragValue::new(&mut max_calls).range(1..=100))
-                                    .changed()
-                                {
-                                    node.params.max_tool_calls = Some(max_calls);
-                                }
-                            });
-                        }
+                            ui.add_space(16.0);
 
-                        ui.separator();
-                        if node.kind == clickweave_core::NodeKind::Step {
-                            if ui.button("🗑 Delete Node").clicked() {
-                                self.workflow.remove_node(node_id);
-                                self.editor.sync_from_workflow(&self.workflow);
-                                self.selected_node = None;
+                            // Max tool calls
+                            ui.label(
+                                RichText::new("Max tool calls")
+                                    .size(12.0)
+                                    .color(TEXT_SECONDARY),
+                            );
+                            ui.add_space(4.0);
+                            let mut max_calls = node.params.max_tool_calls.unwrap_or(10);
+                            if ui
+                                .add(egui::DragValue::new(&mut max_calls).range(1..=100))
+                                .changed()
+                            {
+                                node.params.max_tool_calls = Some(max_calls);
+                            }
+
+                            // Delete button
+                            ui.add_space(24.0);
+                            let delete_btn =
+                                Button::new(RichText::new("🗑 Delete Node").color(theme::NODE_END))
+                                    .frame(false);
+                            if ui.add(delete_btn).clicked() {
+                                should_delete_node = Some(node_id);
                             }
                         }
                     } else {
                         self.selected_node = None;
                     }
                 } else {
-                    ui.label("Select a node to edit");
+                    // Node selector when nothing selected
+                    ui.heading("Add Node");
+                    ui.add_space(8.0);
+
+                    // Search box
+                    ui.horizontal(|ui| {
+                        ui.label("🔍");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.node_search)
+                                .hint_text("Search nodes..."),
+                        );
+                    });
+
+                    ui.add_space(16.0);
+
+                    // Node categories
+                    ui.collapsing(RichText::new("⚡ Actions").color(TEXT_PRIMARY), |ui| {
+                        ui.add_space(4.0);
+                        if ui
+                            .add(
+                                Button::new("Step - AI-powered action")
+                                    .frame(false)
+                                    .min_size(Vec2::new(ui.available_width(), 28.0)),
+                            )
+                            .clicked()
+                        {
+                            let id = self.workflow.add_node(
+                                clickweave_core::NodeKind::Step,
+                                clickweave_core::Position { x: 300.0, y: 200.0 },
+                                "New Step",
+                            );
+                            self.editor.sync_from_workflow(&self.workflow);
+                            self.selected_node = Some(id);
+                        }
+                    });
+
+                    ui.collapsing(RichText::new("🔀 Flow").color(TEXT_PRIMARY), |ui| {
+                        ui.label(
+                            RichText::new("Coming soon: conditionals, loops")
+                                .size(12.0)
+                                .color(TEXT_MUTED),
+                        );
+                    });
                 }
             });
 
-        // Bottom panel: Log console
-        egui::TopBottomPanel::bottom("logs")
-            .default_height(150.0)
-            .resizable(true)
+        // Handle deferred deletion
+        if let Some(node_id) = should_delete_node {
+            self.workflow.remove_node(node_id);
+            self.editor.sync_from_workflow(&self.workflow);
+            self.selected_node = None;
+        }
+    }
+
+    fn show_floating_toolbar(&mut self, ctx: &egui::Context) {
+        egui::Area::new(egui::Id::new("floating_toolbar"))
+            .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -20.0))
             .show(ctx, |ui| {
-                ui.heading("Logs");
+                theme::floating_toolbar_frame().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Zoom controls
+                        if ui
+                            .add(Button::new("⊞").frame(false))
+                            .on_hover_text("Fit to screen")
+                            .clicked()
+                        {
+                            // TODO: Fit view
+                        }
+                        if ui
+                            .add(Button::new("−").frame(false))
+                            .on_hover_text("Zoom out")
+                            .clicked()
+                        {
+                            // TODO: Zoom out
+                        }
+                        if ui
+                            .add(Button::new("+").frame(false))
+                            .on_hover_text("Zoom in")
+                            .clicked()
+                        {
+                            // TODO: Zoom in
+                        }
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        // Logs toggle
+                        let logs_icon = if self.logs_drawer_open {
+                            "📜"
+                        } else {
+                            "📜"
+                        };
+                        if ui
+                            .add(Button::new(logs_icon).frame(false))
+                            .on_hover_text("Toggle logs")
+                            .clicked()
+                        {
+                            self.logs_drawer_open = !self.logs_drawer_open;
+                        }
+
+                        ui.add_space(24.0);
+
+                        // Test workflow button
+                        let is_running = matches!(self.executor_state, ExecutorState::Running);
+                        if is_running {
+                            let stop_btn =
+                                Button::new(RichText::new("⏹ Stop").color(Color32::WHITE))
+                                    .fill(theme::NODE_END)
+                                    .corner_radius(6.0)
+                                    .min_size(Vec2::new(120.0, 32.0));
+                            if ui.add(stop_btn).clicked() {
+                                self.stop_workflow();
+                            }
+                        } else {
+                            let test_btn =
+                                Button::new(RichText::new("▶ Test workflow").color(Color32::WHITE))
+                                    .fill(ACCENT_CORAL)
+                                    .corner_radius(6.0)
+                                    .min_size(Vec2::new(120.0, 32.0));
+                            if ui.add(test_btn).clicked() {
+                                self.run_workflow();
+                            }
+                        }
+                    });
+                });
+            });
+    }
+
+    fn show_logs_drawer(&mut self, ctx: &egui::Context) {
+        if !self.logs_drawer_open {
+            return;
+        }
+
+        egui::TopBottomPanel::bottom("logs_drawer")
+            .frame(theme::logs_drawer_frame())
+            .resizable(true)
+            .default_height(180.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Logs");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("✕").clicked() {
+                            self.logs_drawer_open = false;
+                        }
+                        if ui.button("Clear").clicked() {
+                            self.logs.clear();
+                        }
+                    });
+                });
+
                 ui.separator();
 
                 egui::ScrollArea::vertical()
@@ -385,20 +641,105 @@ impl eframe::App for ClickweaveApp {
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for log in &self.logs {
-                            ui.label(log);
+                            ui.label(RichText::new(log).size(12.0).color(TEXT_SECONDARY));
                         }
                     });
             });
+    }
 
-        // Center: Graph editor
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let response = self.editor.show(ui, &mut self.workflow);
-            if let Some(selected) = response.selected_node {
-                self.selected_node = Some(selected);
-            }
-        });
+    fn show_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
+            return;
+        }
 
-        // Request continuous repaint while running
+        egui::Window::new("Settings")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(400.0)
+            .show(ctx, |ui| {
+                ui.heading("LLM Configuration");
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Base URL:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.llm_config.base_url)
+                            .desired_width(250.0),
+                    );
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Model:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.llm_config.model).desired_width(250.0),
+                    );
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("API Key:");
+                    let mut key = self.llm_config.api_key.clone().unwrap_or_default();
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut key).desired_width(250.0))
+                        .changed()
+                    {
+                        self.llm_config.api_key = if key.is_empty() { None } else { Some(key) };
+                    }
+                });
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.heading("MCP Configuration");
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Command:");
+                    ui.add(egui::TextEdit::singleline(&mut self.mcp_command).desired_width(250.0));
+                });
+                ui.label(
+                    RichText::new("Use 'npx' for npx -y native-devtools-mcp")
+                        .size(11.0)
+                        .color(TEXT_MUTED),
+                );
+
+                ui.add_space(16.0);
+
+                if ui.button("Close").clicked() {
+                    self.show_settings = false;
+                }
+            });
+    }
+}
+
+impl eframe::App for ClickweaveApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Show panels in order
+        self.show_header(ctx);
+        self.show_sidebar(ctx);
+        self.show_inspector(ctx);
+        self.show_logs_drawer(ctx);
+
+        // Center: Graph editor (must be last for CentralPanel)
+        egui::CentralPanel::default()
+            .frame(egui::Frame {
+                fill: BG_DARK,
+                ..Default::default()
+            })
+            .show(ctx, |ui| {
+                let response = self.editor.show(ui, &mut self.workflow);
+                if let Some(selected) = response.selected_node {
+                    self.selected_node = Some(selected);
+                }
+            });
+
+        // Floating toolbar (rendered on top)
+        self.show_floating_toolbar(ctx);
+
+        // Settings window
+        self.show_settings_window(ctx);
+
+        // Continuous repaint while running
         if matches!(self.executor_state, ExecutorState::Running) {
             ctx.request_repaint();
         }

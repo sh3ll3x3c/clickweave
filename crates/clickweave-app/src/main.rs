@@ -1,6 +1,7 @@
 mod app;
 mod editor;
 mod executor;
+mod theme;
 
 use app::ClickweaveApp;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -23,6 +24,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Clickweave",
         options,
-        Box::new(|cc| Ok(Box::new(ClickweaveApp::new(cc)))),
+        Box::new(|cc| {
+            // Apply n8n-style dark theme
+            theme::apply_theme(&cc.egui_ctx);
+            Ok(Box::new(ClickweaveApp::new(cc)))
+        }),
     )
 }

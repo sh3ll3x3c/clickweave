@@ -1,5 +1,6 @@
+use crate::theme;
 use clickweave_core::{NodeKind, Position, Workflow};
-use eframe::egui;
+use eframe::egui::{self, Color32, RichText, Stroke};
 use egui_snarl::ui::{PinInfo, SnarlStyle, SnarlViewer};
 use egui_snarl::{InPinId, NodeId, OutPinId, Snarl};
 use std::collections::HashMap;
@@ -15,11 +16,9 @@ pub struct GraphNode {
 
 pub struct WorkflowEditor {
     snarl: Snarl<GraphNode>,
-    // Map workflow node UUIDs to snarl NodeIds
     uuid_to_snarl: HashMap<Uuid, NodeId>,
     snarl_to_uuid: HashMap<NodeId, Uuid>,
     style: SnarlStyle,
-    // Track positions separately since snarl doesn't expose them directly
     positions: HashMap<NodeId, egui::Pos2>,
 }
 
@@ -33,20 +32,17 @@ impl WorkflowEditor {
             snarl: Snarl::new(),
             uuid_to_snarl: HashMap::new(),
             snarl_to_uuid: HashMap::new(),
-            style: SnarlStyle::default(),
+            style: create_n8n_snarl_style(),
             positions: HashMap::new(),
         }
     }
 
-    /// Sync the snarl graph from the workflow data
     pub fn sync_from_workflow(&mut self, workflow: &Workflow) {
-        // Clear existing
         self.snarl = Snarl::new();
         self.uuid_to_snarl.clear();
         self.snarl_to_uuid.clear();
         self.positions.clear();
 
-        // Add nodes
         for node in &workflow.nodes {
             let graph_node = GraphNode {
                 workflow_id: node.id,
@@ -62,7 +58,6 @@ impl WorkflowEditor {
             self.positions.insert(snarl_id, pos);
         }
 
-        // Add edges
         for edge in &workflow.edges {
             if let (Some(&from_snarl), Some(&to_snarl)) = (
                 self.uuid_to_snarl.get(&edge.from),
@@ -81,9 +76,7 @@ impl WorkflowEditor {
         }
     }
 
-    /// Sync workflow data from the snarl graph (edges only - positions tracked via viewer)
     pub fn sync_to_workflow(&self, workflow: &mut Workflow) {
-        // Update positions from our tracked positions
         for (&uuid, &snarl_id) in &self.uuid_to_snarl {
             if let Some(&pos) = self.positions.get(&snarl_id) {
                 if let Some(workflow_node) = workflow.find_node_mut(uuid) {
@@ -92,16 +85,13 @@ impl WorkflowEditor {
             }
         }
 
-        // Rebuild edges from snarl connections
         workflow.edges.clear();
         for (&snarl_id, _) in &self.snarl_to_uuid {
-            // Check output pin 0 for connections
             let out_pin = OutPinId {
                 node: snarl_id,
                 output: 0,
             };
 
-            // Get remotes (connected input pins)
             for in_pin in self.snarl.out_pin(out_pin).remotes.iter() {
                 if let Some(&from_uuid) = self.snarl_to_uuid.get(&snarl_id) {
                     if let Some(&to_uuid) = self.snarl_to_uuid.get(&in_pin.node) {
@@ -115,7 +105,6 @@ impl WorkflowEditor {
     pub fn show(&mut self, ui: &mut egui::Ui, workflow: &mut Workflow) -> EditorResponse {
         let mut selected = None;
 
-        // Update names from workflow
         for (&uuid, &snarl_id) in &self.uuid_to_snarl {
             if let Some(workflow_node) = workflow.find_node(uuid) {
                 if let Some(graph_node) = self.snarl.get_node_mut(snarl_id) {
@@ -133,13 +122,16 @@ impl WorkflowEditor {
         self.snarl
             .show(&mut viewer, &self.style, "workflow_graph", ui);
 
-        // Sync back to workflow
         self.sync_to_workflow(workflow);
 
         EditorResponse {
             selected_node: selected,
         }
     }
+}
+
+fn create_n8n_snarl_style() -> SnarlStyle {
+    SnarlStyle::new()
 }
 
 struct WorkflowViewer<'a> {
@@ -150,7 +142,13 @@ struct WorkflowViewer<'a> {
 
 impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
     fn title(&mut self, node: &GraphNode) -> String {
-        format!("{} ({})", node.name, node.kind.display_name())
+        // Icon + name for header
+        let icon = match node.kind {
+            NodeKind::Start => "▶",
+            NodeKind::Step => "⚡",
+            NodeKind::End => "⏹",
+        };
+        format!("{} {}", icon, node.name)
     }
 
     fn outputs(&mut self, node: &GraphNode) -> usize {
@@ -169,20 +167,36 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
 
     fn show_input(
         &mut self,
-        _pin: &egui_snarl::InPin,
+        pin: &egui_snarl::InPin,
         _ui: &mut egui::Ui,
         _snarl: &mut Snarl<GraphNode>,
     ) -> PinInfo {
-        PinInfo::circle().with_fill(egui::Color32::from_rgb(100, 200, 100))
+        let connected = !pin.remotes.is_empty();
+        let fill = if connected {
+            theme::ACCENT_GREEN
+        } else {
+            Color32::from_rgb(80, 80, 80)
+        };
+        PinInfo::circle()
+            .with_fill(fill)
+            .with_stroke(Stroke::new(2.0, Color32::from_rgb(60, 60, 60)))
     }
 
     fn show_output(
         &mut self,
-        _pin: &egui_snarl::OutPin,
+        pin: &egui_snarl::OutPin,
         _ui: &mut egui::Ui,
         _snarl: &mut Snarl<GraphNode>,
     ) -> PinInfo {
-        PinInfo::circle().with_fill(egui::Color32::from_rgb(200, 100, 100))
+        let connected = !pin.remotes.is_empty();
+        let fill = if connected {
+            theme::ACCENT_CORAL
+        } else {
+            Color32::from_rgb(80, 80, 80)
+        };
+        PinInfo::circle()
+            .with_fill(fill)
+            .with_stroke(Stroke::new(2.0, Color32::from_rgb(60, 60, 60)))
     }
 
     fn has_body(&mut self, _node: &GraphNode) -> bool {
@@ -199,21 +213,24 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
     ) {
         let node = &snarl[node_id];
 
-        // Color by node type
-        let color = match node.kind {
-            NodeKind::Start => egui::Color32::from_rgb(100, 200, 100),
-            NodeKind::Step => egui::Color32::from_rgb(100, 150, 200),
-            NodeKind::End => egui::Color32::from_rgb(200, 100, 100),
+        let (type_label, color) = match node.kind {
+            NodeKind::Start => ("Trigger", theme::NODE_START),
+            NodeKind::Step => ("Action", theme::NODE_STEP),
+            NodeKind::End => ("End", theme::NODE_END),
         };
 
-        ui.horizontal(|ui| {
-            ui.colored_label(color, "●");
-            if ui.link(&node.name).clicked() {
-                if let Some(&uuid) = self.snarl_to_uuid.get(&node_id) {
-                    *self.selected = Some(uuid);
-                }
+        // Type label
+        ui.label(RichText::new(type_label).size(11.0).color(color));
+
+        // Clickable area for selection
+        let response =
+            ui.allocate_response(egui::vec2(ui.available_width(), 4.0), egui::Sense::click());
+
+        if response.clicked() {
+            if let Some(&uuid) = self.snarl_to_uuid.get(&node_id) {
+                *self.selected = Some(uuid);
             }
-        });
+        }
     }
 
     fn connect(
@@ -222,8 +239,6 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         to: &egui_snarl::InPin,
         snarl: &mut Snarl<GraphNode>,
     ) {
-        // Only allow one incoming connection per input pin
-        // Disconnect existing connections to this input
         for remote in to.remotes.iter() {
             snarl.disconnect(*remote, to.id);
         }
