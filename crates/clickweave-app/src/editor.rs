@@ -131,7 +131,9 @@ impl WorkflowEditor {
 }
 
 fn create_n8n_snarl_style() -> SnarlStyle {
-    SnarlStyle::new()
+    let mut style = SnarlStyle::new();
+    style.pin_size = Some(12.0);
+    style
 }
 
 struct WorkflowViewer<'a> {
