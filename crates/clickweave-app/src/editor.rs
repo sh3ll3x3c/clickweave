@@ -223,8 +223,7 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         ui.label(RichText::new(type_label).size(11.0).color(color));
 
         // Clickable area for selection
-        let response =
-            ui.allocate_response(egui::vec2(ui.available_width(), 4.0), egui::Sense::click());
+        let response = ui.allocate_response(egui::vec2(120.0, 4.0), egui::Sense::click());
 
         if response.clicked() {
             if let Some(&uuid) = self.snarl_to_uuid.get(&node_id) {
