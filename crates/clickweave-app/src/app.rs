@@ -218,9 +218,14 @@ impl ClickweaveApp {
                     .on_hover_text("Add a new step node")
                     .clicked()
                 {
+                    // Calculate position offset from existing nodes to avoid stacking
+                    let offset = self.workflow.nodes.len() as f32 * 50.0;
                     let id = self.workflow.add_node(
                         clickweave_core::NodeKind::Step,
-                        clickweave_core::Position { x: 300.0, y: 200.0 },
+                        clickweave_core::Position {
+                            x: 300.0 + offset,
+                            y: 200.0 + offset,
+                        },
                         "New Step",
                     );
                     self.editor.sync_from_workflow(&self.workflow);
@@ -510,9 +515,14 @@ impl ClickweaveApp {
                             )
                             .clicked()
                         {
+                            // Calculate position offset from existing nodes to avoid stacking
+                            let offset = self.workflow.nodes.len() as f32 * 50.0;
                             let id = self.workflow.add_node(
                                 clickweave_core::NodeKind::Step,
-                                clickweave_core::Position { x: 300.0, y: 200.0 },
+                                clickweave_core::Position {
+                                    x: 300.0 + offset,
+                                    y: 200.0 + offset,
+                                },
                                 "New Step",
                             );
                             self.editor.sync_from_workflow(&self.workflow);
