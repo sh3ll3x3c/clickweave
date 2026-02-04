@@ -102,8 +102,16 @@ impl WorkflowEditor {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, workflow: &mut Workflow) -> EditorResponse {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        workflow: &mut Workflow,
+        active_node: Option<Uuid>,
+    ) -> EditorResponse {
         let mut selected = None;
+
+        // Resolve active_node UUID to snarl NodeId
+        let active_snarl_id = active_node.and_then(|uuid| self.uuid_to_snarl.get(&uuid).copied());
 
         for (&uuid, &snarl_id) in &self.uuid_to_snarl {
             if let Some(workflow_node) = workflow.find_node(uuid) {
@@ -117,6 +125,7 @@ impl WorkflowEditor {
             selected: &mut selected,
             snarl_to_uuid: &self.snarl_to_uuid,
             positions: &mut self.positions,
+            active_node: active_snarl_id,
         };
 
         self.snarl
@@ -140,6 +149,7 @@ struct WorkflowViewer<'a> {
     selected: &'a mut Option<Uuid>,
     snarl_to_uuid: &'a HashMap<NodeId, Uuid>,
     positions: &'a mut HashMap<NodeId, egui::Pos2>,
+    active_node: Option<NodeId>,
 }
 
 impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
@@ -214,12 +224,25 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         snarl: &mut Snarl<GraphNode>,
     ) {
         let node = &snarl[node_id];
+        let is_active = self.active_node == Some(node_id);
 
         let (type_label, color) = match node.kind {
             NodeKind::Start => ("Trigger", theme::NODE_START),
             NodeKind::Step => ("Action", theme::NODE_STEP),
             NodeKind::End => ("End", theme::NODE_END),
         };
+
+        // Active indicator
+        if is_active {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("●").size(11.0).color(theme::ACCENT_GREEN));
+                ui.label(
+                    RichText::new("Running")
+                        .size(11.0)
+                        .color(theme::ACCENT_GREEN),
+                );
+            });
+        }
 
         // Type label
         ui.label(RichText::new(type_label).size(11.0).color(color));

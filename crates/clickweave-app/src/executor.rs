@@ -3,23 +3,29 @@ use clickweave_llm::{LlmClient, LlmConfig, Message, build_step_prompt, workflow_
 use clickweave_mcp::McpClient;
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
-use tracing::{error, info, warn};
+use std::sync::mpsc::{Receiver, Sender};
+use tracing::{error, info};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutorState {
     Idle,
     Running,
-    Paused,
-    Error,
 }
 
 pub enum ExecutorCommand {
     Stop,
-    Pause,
-    Resume,
-    Step,
+}
+
+/// Events sent from the executor back to the UI
+#[derive(Debug, Clone)]
+pub enum ExecutorEvent {
+    Log(String),
+    StateChanged(ExecutorState),
+    NodeStarted(Uuid),
+    NodeCompleted(Uuid),
+    WorkflowCompleted,
+    Error(String),
 }
 
 pub struct WorkflowExecutor {
@@ -27,7 +33,7 @@ pub struct WorkflowExecutor {
     llm: LlmClient,
     mcp_command: String,
     project_path: Option<PathBuf>,
-    current_node: Option<Uuid>,
+    event_tx: Sender<ExecutorEvent>,
 }
 
 impl WorkflowExecutor {
@@ -36,18 +42,30 @@ impl WorkflowExecutor {
         llm_config: LlmConfig,
         mcp_command: String,
         project_path: Option<PathBuf>,
+        event_tx: Sender<ExecutorEvent>,
     ) -> Self {
         Self {
             workflow,
             llm: LlmClient::new(llm_config),
             mcp_command,
             project_path,
-            current_node: None,
+            event_tx,
         }
     }
 
+    fn emit(&self, event: ExecutorEvent) {
+        let _ = self.event_tx.send(event);
+    }
+
+    fn log(&self, msg: impl Into<String>) {
+        let msg = msg.into();
+        info!("{}", msg);
+        self.emit(ExecutorEvent::Log(msg));
+    }
+
     pub async fn run(&mut self, command_rx: Receiver<ExecutorCommand>) {
-        info!("Starting workflow execution");
+        self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
+        self.log("Starting workflow execution");
 
         // Spawn MCP server
         let mcp = if self.mcp_command == "npx" {
@@ -56,19 +74,22 @@ impl WorkflowExecutor {
             McpClient::spawn(&self.mcp_command, &[])
         };
 
-        let mut mcp = match mcp {
+        let mcp = match mcp {
             Ok(m) => m,
             Err(e) => {
-                error!("Failed to spawn MCP server: {}", e);
+                let msg = format!("Failed to spawn MCP server: {}", e);
+                error!("{}", msg);
+                self.emit(ExecutorEvent::Error(msg));
+                self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
                 return;
             }
         };
 
-        info!("MCP server ready with {} tools", mcp.tools().len());
+        self.log(format!("MCP server ready with {} tools", mcp.tools().len()));
 
         // Get execution order
         let execution_order = self.workflow.execution_order();
-        info!("Execution order: {} nodes", execution_order.len());
+        self.log(format!("Execution order: {} nodes", execution_order.len()));
 
         // Convert MCP tools to OpenAI format
         let tools: Vec<Value> = mcp
@@ -80,29 +101,23 @@ impl WorkflowExecutor {
         // Execute each node
         for node_id in execution_order {
             // Check for stop command
-            if let Ok(cmd) = command_rx.try_recv() {
-                match cmd {
-                    ExecutorCommand::Stop => {
-                        info!("Workflow stopped by user");
-                        return;
-                    }
-                    _ => {}
-                }
+            if let Ok(ExecutorCommand::Stop) = command_rx.try_recv() {
+                self.log("Workflow stopped by user");
+                self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
+                return;
             }
 
             let Some(node) = self.workflow.find_node(node_id) else {
                 continue;
             };
 
-            self.current_node = Some(node_id);
-
             // Skip Start and End nodes
             if node.kind != NodeKind::Step {
-                info!("Skipping {} node: {}", node.kind.display_name(), node.name);
                 continue;
             }
 
-            info!("Executing step: {}", node.name);
+            self.emit(ExecutorEvent::NodeStarted(node_id));
+            self.log(format!("Executing step: {}", node.name));
 
             // Build messages
             let mut messages = vec![
@@ -116,17 +131,19 @@ impl WorkflowExecutor {
 
             let max_tool_calls = node.params.max_tool_calls.unwrap_or(10) as usize;
             let mut tool_call_count = 0;
+            let mut step_error = false;
 
             // Tool loop
             loop {
                 if tool_call_count >= max_tool_calls {
-                    warn!("Max tool calls reached for step: {}", node.name);
+                    self.log(format!("Max tool calls reached for step: {}", node.name));
                     break;
                 }
 
                 // Check for stop
                 if let Ok(ExecutorCommand::Stop) = command_rx.try_recv() {
-                    info!("Workflow stopped by user");
+                    self.log("Workflow stopped by user");
+                    self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
                     return;
                 }
 
@@ -134,14 +151,20 @@ impl WorkflowExecutor {
                 let response = match self.llm.chat(messages.clone(), Some(tools.clone())).await {
                     Ok(r) => r,
                     Err(e) => {
-                        error!("LLM error: {}", e);
-                        return;
+                        let msg = format!("LLM error: {}", e);
+                        error!("{}", msg);
+                        self.emit(ExecutorEvent::Error(msg));
+                        step_error = true;
+                        break;
                     }
                 };
 
                 let Some(choice) = response.choices.first() else {
-                    error!("No response from LLM");
-                    return;
+                    let msg = "No response from LLM".to_string();
+                    error!("{}", msg);
+                    self.emit(ExecutorEvent::Error(msg));
+                    step_error = true;
+                    break;
                 };
 
                 let msg = &choice.message;
@@ -149,11 +172,9 @@ impl WorkflowExecutor {
                 // Check if there are tool calls
                 if let Some(tool_calls) = &msg.tool_calls {
                     if tool_calls.is_empty() {
-                        // No tool calls, check for completion
                         if let Some(content) = &msg.content {
                             if self.check_step_complete(content) {
-                                info!("Step completed: {}", node.name);
-                                break;
+                                self.log(format!("Step completed: {}", node.name));
                             }
                         }
                         break;
@@ -165,7 +186,7 @@ impl WorkflowExecutor {
                     // Execute each tool call
                     for tool_call in tool_calls {
                         tool_call_count += 1;
-                        info!("Tool call: {} ({})", tool_call.function.name, tool_call.id);
+                        self.log(format!("Tool call: {}", tool_call.function.name));
 
                         let args: Option<Value> =
                             serde_json::from_str(&tool_call.function.arguments).ok();
@@ -182,12 +203,12 @@ impl WorkflowExecutor {
                                     .collect::<Vec<_>>()
                                     .join("\n");
 
-                                info!("Tool result: {} chars", result_text.len());
+                                self.log(format!("Tool result: {} chars", result_text.len()));
 
                                 messages.push(Message::tool_result(&tool_call.id, result_text));
                             }
                             Err(e) => {
-                                error!("Tool call failed: {}", e);
+                                self.log(format!("Tool call failed: {}", e));
                                 messages.push(Message::tool_result(
                                     &tool_call.id,
                                     format!("Error: {}", e),
@@ -199,17 +220,26 @@ impl WorkflowExecutor {
                     // No tool calls - check content for completion
                     if let Some(content) = &msg.content {
                         if self.check_step_complete(content) {
-                            info!("Step completed: {}", node.name);
+                            self.log(format!("Step completed: {}", node.name));
                         } else {
-                            info!("Step finished (no tool calls): {}", node.name);
+                            self.log(format!("Step finished (no tool calls): {}", node.name));
                         }
                     }
                     break;
                 }
             }
+
+            if step_error {
+                self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
+                return;
+            }
+
+            self.emit(ExecutorEvent::NodeCompleted(node_id));
         }
 
-        info!("Workflow execution completed");
+        self.log("Workflow execution completed");
+        self.emit(ExecutorEvent::WorkflowCompleted);
+        self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
     }
 
     fn check_step_complete(&self, content: &str) -> bool {

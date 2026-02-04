@@ -1,5 +1,5 @@
 use crate::editor::WorkflowEditor;
-use crate::executor::{ExecutorCommand, ExecutorState, WorkflowExecutor};
+use crate::executor::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
 use crate::theme::{
     self, ACCENT_CORAL, ACCENT_GREEN, BG_DARK, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
@@ -15,7 +15,8 @@ pub struct ClickweaveApp {
     project_path: Option<PathBuf>,
 
     // Executor
-    executor_tx: mpsc::Sender<ExecutorCommand>,
+    command_tx: Option<mpsc::Sender<ExecutorCommand>>,
+    event_rx: Option<mpsc::Receiver<ExecutorEvent>>,
     executor_state: ExecutorState,
 
     // Settings
@@ -26,6 +27,7 @@ pub struct ClickweaveApp {
     show_settings: bool,
     logs: Vec<String>,
     selected_node: Option<uuid::Uuid>,
+    active_node: Option<uuid::Uuid>,
 
     // n8n-style UI state
     sidebar_collapsed: bool,
@@ -36,8 +38,6 @@ pub struct ClickweaveApp {
 
 impl ClickweaveApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let (executor_tx, _executor_rx) = mpsc::channel();
-
         let workflow = Workflow::default();
         let mut editor = WorkflowEditor::new();
         editor.sync_from_workflow(&workflow);
@@ -46,13 +46,15 @@ impl ClickweaveApp {
             workflow,
             editor,
             project_path: None,
-            executor_tx,
+            command_tx: None,
+            event_rx: None,
             executor_state: ExecutorState::Idle,
             llm_config: LlmConfig::default(),
             mcp_command: "npx".to_string(),
             show_settings: false,
             logs: vec!["Clickweave started".to_string()],
             selected_node: None,
+            active_node: None,
             sidebar_collapsed: false,
             logs_drawer_open: false,
             node_search: String::new(),
@@ -130,29 +132,76 @@ impl ClickweaveApp {
 
         self.log("Starting workflow execution...");
         self.executor_state = ExecutorState::Running;
+        self.active_node = None;
 
         let workflow = self.workflow.clone();
         let llm_config = self.llm_config.clone();
         let mcp_command = self.mcp_command.clone();
         let project_path = self.project_path.clone();
 
-        let (tx, rx) = mpsc::channel();
-        self.executor_tx = tx;
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        self.command_tx = Some(cmd_tx);
+        self.event_rx = Some(event_rx);
 
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                let mut executor =
-                    WorkflowExecutor::new(workflow, llm_config, mcp_command, project_path);
-                executor.run(rx).await;
+                let mut executor = WorkflowExecutor::new(
+                    workflow,
+                    llm_config,
+                    mcp_command,
+                    project_path,
+                    event_tx,
+                );
+                executor.run(cmd_rx).await;
             });
         });
     }
 
     fn stop_workflow(&mut self) {
-        let _ = self.executor_tx.send(ExecutorCommand::Stop);
+        if let Some(tx) = &self.command_tx {
+            let _ = tx.send(ExecutorCommand::Stop);
+        }
         self.executor_state = ExecutorState::Idle;
+        self.active_node = None;
         self.log("Workflow stopped");
+    }
+
+    fn poll_executor_events(&mut self) {
+        let Some(rx) = &self.event_rx else { return };
+
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                ExecutorEvent::Log(msg) => {
+                    self.logs.push(msg);
+                    if self.logs.len() > 1000 {
+                        self.logs.remove(0);
+                    }
+                }
+                ExecutorEvent::StateChanged(state) => {
+                    self.executor_state = state;
+                    if self.executor_state == ExecutorState::Idle {
+                        self.active_node = None;
+                        self.command_tx = None;
+                        self.event_rx = None;
+                        return;
+                    }
+                }
+                ExecutorEvent::NodeStarted(id) => {
+                    self.active_node = Some(id);
+                }
+                ExecutorEvent::NodeCompleted(_id) => {
+                    self.active_node = None;
+                }
+                ExecutorEvent::WorkflowCompleted => {
+                    self.active_node = None;
+                }
+                ExecutorEvent::Error(msg) => {
+                    self.logs.push(format!("ERROR: {}", msg));
+                }
+            }
+        }
     }
 
     fn show_sidebar(&mut self, ctx: &egui::Context) {
@@ -729,6 +778,9 @@ impl ClickweaveApp {
 
 impl eframe::App for ClickweaveApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Poll executor events
+        self.poll_executor_events();
+
         // Show panels in order
         self.show_header(ctx);
         self.show_sidebar(ctx);
@@ -736,13 +788,14 @@ impl eframe::App for ClickweaveApp {
         self.show_logs_drawer(ctx);
 
         // Center: Graph editor (must be last for CentralPanel)
+        let active_node = self.active_node;
         egui::CentralPanel::default()
             .frame(egui::Frame {
                 fill: BG_DARK,
                 ..Default::default()
             })
             .show(ctx, |ui| {
-                let response = self.editor.show(ui, &mut self.workflow);
+                let response = self.editor.show(ui, &mut self.workflow, active_node);
                 if let Some(selected) = response.selected_node {
                     self.selected_node = Some(selected);
                 }
