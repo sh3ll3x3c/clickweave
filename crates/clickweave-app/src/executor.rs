@@ -4,6 +4,7 @@ use clickweave_mcp::McpClient;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Instant;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -130,6 +131,8 @@ impl WorkflowExecutor {
             ];
 
             let max_tool_calls = node.params.max_tool_calls.unwrap_or(10) as usize;
+            let timeout_ms = node.params.timeout_ms;
+            let step_start = Instant::now();
             let mut tool_call_count = 0;
             let mut step_error = false;
 
@@ -138,6 +141,13 @@ impl WorkflowExecutor {
                 if tool_call_count >= max_tool_calls {
                     self.log(format!("Max tool calls reached for step: {}", node.name));
                     break;
+                }
+
+                if let Some(timeout) = timeout_ms {
+                    if step_start.elapsed().as_millis() as u64 > timeout {
+                        self.log(format!("Timeout reached for step: {}", node.name));
+                        break;
+                    }
                 }
 
                 // Check for stop
