@@ -661,66 +661,66 @@ impl ClickweaveApp {
     }
 
     fn show_floating_toolbar(&mut self, ctx: &egui::Context) {
+        let mut should_add_step = false;
+
         egui::Area::new(egui::Id::new("floating_toolbar"))
             .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -20.0))
             .show(ctx, |ui| {
                 theme::floating_toolbar_frame().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        // Zoom controls
-                        if ui
-                            .add(Button::new("⊞").frame(false))
-                            .on_hover_text("Fit to screen")
-                            .clicked()
-                        {
-                            // TODO: Fit view
-                        }
-                        if ui
-                            .add(Button::new("−").frame(false))
-                            .on_hover_text("Zoom out")
-                            .clicked()
-                        {
-                            // TODO: Zoom out
-                        }
-                        if ui
-                            .add(Button::new("+").frame(false))
-                            .on_hover_text("Zoom in")
-                            .clicked()
-                        {
-                            // TODO: Zoom in
-                        }
+                    let btn_size = Vec2::new(32.0, 32.0);
 
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+
+                        // Add step button
+                        if ui
+                            .add_sized(
+                                btn_size,
+                                Button::new(RichText::new("⚡").size(16.0)).frame(false),
+                            )
+                            .on_hover_text("Add step")
+                            .clicked()
+                        {
+                            should_add_step = true;
+                        }
 
                         // Logs toggle
                         if ui
-                            .add(Button::new("📜").frame(false))
+                            .add_sized(
+                                btn_size,
+                                Button::new(RichText::new("📜").size(16.0)).frame(false),
+                            )
                             .on_hover_text("Toggle logs")
                             .clicked()
                         {
                             self.logs_drawer_open = !self.logs_drawer_open;
                         }
 
-                        ui.add_space(24.0);
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
 
                         // Test workflow button
                         let is_running = matches!(self.executor_state, ExecutorState::Running);
                         if is_running {
-                            let stop_btn =
-                                Button::new(RichText::new("⏹ Stop").color(Color32::WHITE))
-                                    .fill(theme::NODE_END)
-                                    .corner_radius(6.0)
-                                    .min_size(Vec2::new(120.0, 32.0));
+                            let stop_btn = Button::new(
+                                RichText::new("⏹ Stop").size(14.0).color(Color32::WHITE),
+                            )
+                            .fill(theme::NODE_END)
+                            .corner_radius(6.0)
+                            .min_size(Vec2::new(140.0, 32.0));
                             if ui.add(stop_btn).clicked() {
                                 self.stop_workflow();
                             }
                         } else {
-                            let test_btn =
-                                Button::new(RichText::new("▶ Test workflow").color(Color32::WHITE))
-                                    .fill(ACCENT_CORAL)
-                                    .corner_radius(6.0)
-                                    .min_size(Vec2::new(120.0, 32.0));
+                            let test_btn = Button::new(
+                                RichText::new("▶ Test workflow")
+                                    .size(14.0)
+                                    .color(Color32::WHITE),
+                            )
+                            .fill(ACCENT_CORAL)
+                            .corner_radius(6.0)
+                            .min_size(Vec2::new(140.0, 32.0));
                             if ui.add(test_btn).clicked() {
                                 self.run_workflow();
                             }
@@ -728,6 +728,10 @@ impl ClickweaveApp {
                     });
                 });
             });
+
+        if should_add_step {
+            self.add_step_node();
+        }
     }
 
     fn show_logs_drawer(&mut self, ctx: &egui::Context) {
