@@ -1,7 +1,6 @@
 use clickweave_core::{NodeKind, Workflow};
 use clickweave_llm::{LlmClient, LlmConfig, Message, build_step_prompt, workflow_system_prompt};
-use clickweave_mcp::McpClient;
-use clickweave_mcp::ToolContent;
+use clickweave_mcp::{McpClient, ToolContent};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -21,6 +20,7 @@ pub enum ExecutorCommand {
 
 /// Events sent from the executor back to the UI
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ExecutorEvent {
     Log(String),
     StateChanged(ExecutorState),
@@ -65,6 +65,17 @@ impl WorkflowExecutor {
         self.emit(ExecutorEvent::Log(msg));
     }
 
+    fn emit_error(&self, msg: impl Into<String>) {
+        let msg = msg.into();
+        error!("{}", msg);
+        self.emit(ExecutorEvent::Error(msg));
+    }
+
+    /// Returns true if a stop command was received.
+    fn stop_requested(&self, command_rx: &Receiver<ExecutorCommand>) -> bool {
+        matches!(command_rx.try_recv(), Ok(ExecutorCommand::Stop))
+    }
+
     pub async fn run(&mut self, command_rx: Receiver<ExecutorCommand>) {
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
         self.log("Starting workflow execution");
@@ -79,9 +90,7 @@ impl WorkflowExecutor {
         let mcp = match mcp {
             Ok(m) => m,
             Err(e) => {
-                let msg = format!("Failed to spawn MCP server: {}", e);
-                error!("{}", msg);
-                self.emit(ExecutorEvent::Error(msg));
+                self.emit_error(format!("Failed to spawn MCP server: {}", e));
                 self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
                 return;
             }
@@ -100,10 +109,8 @@ impl WorkflowExecutor {
             .map(|t| serde_json::to_value(t).unwrap())
             .collect();
 
-        // Execute each node
         for node_id in execution_order {
-            // Check for stop command
-            if let Ok(ExecutorCommand::Stop) = command_rx.try_recv() {
+            if self.stop_requested(&command_rx) {
                 self.log("Workflow stopped by user");
                 self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
                 return;
@@ -144,15 +151,14 @@ impl WorkflowExecutor {
                     break;
                 }
 
-                if let Some(timeout) = timeout_ms {
-                    if step_start.elapsed().as_millis() as u64 > timeout {
-                        self.log(format!("Timeout reached for step: {}", node.name));
-                        break;
-                    }
+                if let Some(timeout) = timeout_ms
+                    && step_start.elapsed().as_millis() as u64 > timeout
+                {
+                    self.log(format!("Timeout reached for step: {}", node.name));
+                    break;
                 }
 
-                // Check for stop
-                if let Ok(ExecutorCommand::Stop) = command_rx.try_recv() {
+                if self.stop_requested(&command_rx) {
                     self.log("Workflow stopped by user");
                     self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
                     return;
@@ -162,18 +168,14 @@ impl WorkflowExecutor {
                 let response = match self.llm.chat(messages.clone(), Some(tools.clone())).await {
                     Ok(r) => r,
                     Err(e) => {
-                        let msg = format!("LLM error: {}", e);
-                        error!("{}", msg);
-                        self.emit(ExecutorEvent::Error(msg));
+                        self.emit_error(format!("LLM error: {}", e));
                         step_error = true;
                         break;
                     }
                 };
 
                 let Some(choice) = response.choices.first() else {
-                    let msg = "No response from LLM".to_string();
-                    error!("{}", msg);
-                    self.emit(ExecutorEvent::Error(msg));
+                    self.emit_error("No response from LLM");
                     step_error = true;
                     break;
                 };
@@ -183,10 +185,10 @@ impl WorkflowExecutor {
                 // Check if there are tool calls
                 if let Some(tool_calls) = &msg.tool_calls {
                     if tool_calls.is_empty() {
-                        if let Some(content) = msg.content_text() {
-                            if self.check_step_complete(content) {
-                                self.log(format!("Step completed: {}", node.name));
-                            }
+                        if let Some(content) = msg.content_text()
+                            && self.check_step_complete(content)
+                        {
+                            self.log(format!("Step completed: {}", node.name));
                         }
                         break;
                     }
@@ -209,20 +211,22 @@ impl WorkflowExecutor {
 
                         match mcp.call_tool(&tool_call.function.name, args) {
                             Ok(result) => {
-                                let mut text_parts = Vec::new();
                                 for content in &result.content {
-                                    match content {
-                                        ToolContent::Text { text } => {
-                                            text_parts.push(text.as_str());
-                                        }
-                                        ToolContent::Image { data, mime_type } => {
-                                            pending_images.push((data.clone(), mime_type.clone()));
-                                        }
-                                        ToolContent::Unknown => {}
+                                    if let ToolContent::Image { data, mime_type } = content {
+                                        pending_images.push((data.clone(), mime_type.clone()));
                                     }
                                 }
 
-                                let result_text = text_parts.join("\n");
+                                let result_text: String = result
+                                    .content
+                                    .iter()
+                                    .filter_map(|c| match c {
+                                        ToolContent::Text { text } => Some(text.as_str()),
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+
                                 self.log(format!(
                                     "Tool result: {} chars, {} images",
                                     result_text.len(),
@@ -275,31 +279,29 @@ impl WorkflowExecutor {
     }
 
     fn check_step_complete(&self, content: &str) -> bool {
-        // Try to parse as JSON and check for step_complete
-        if let Ok(v) = serde_json::from_str::<Value>(content) {
-            if let Some(complete) = v.get("step_complete").and_then(|v| v.as_bool()) {
-                return complete;
-            }
-        }
-        false
+        serde_json::from_str::<Value>(content)
+            .ok()
+            .and_then(|v| v.get("step_complete")?.as_bool())
+            .unwrap_or(false)
     }
 
     fn resolve_image_paths(&self, args: Option<Value>) -> Option<Value> {
         let mut args = args?;
+        let Some(proj) = &self.project_path else {
+            return Some(args);
+        };
 
+        let path_keys = ["image_path", "imagePath", "path", "file", "template_path"];
         if let Some(obj) = args.as_object_mut() {
-            // Check common image path field names
-            for key in ["image_path", "imagePath", "path", "file", "template_path"] {
-                if let Some(Value::String(path)) = obj.get(key) {
-                    if !path.starts_with('/') {
-                        if let Some(proj) = &self.project_path {
-                            let absolute = proj.join(path);
-                            obj.insert(
-                                key.to_string(),
-                                Value::String(absolute.to_string_lossy().to_string()),
-                            );
-                        }
-                    }
+            for key in path_keys {
+                if let Some(Value::String(path)) = obj.get(key)
+                    && !path.starts_with('/')
+                {
+                    let absolute = proj.join(path);
+                    obj.insert(
+                        key.to_string(),
+                        Value::String(absolute.to_string_lossy().to_string()),
+                    );
                 }
             }
         }

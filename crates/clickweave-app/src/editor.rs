@@ -76,25 +76,23 @@ impl WorkflowEditor {
 
     pub fn sync_to_workflow(&self, workflow: &mut Workflow) {
         for (&uuid, &snarl_id) in &self.uuid_to_snarl {
-            if let Some(&pos) = self.positions.get(&snarl_id) {
-                if let Some(workflow_node) = workflow.find_node_mut(uuid) {
-                    workflow_node.position = Position { x: pos.x, y: pos.y };
-                }
+            if let Some(&pos) = self.positions.get(&snarl_id)
+                && let Some(workflow_node) = workflow.find_node_mut(uuid)
+            {
+                workflow_node.position = Position { x: pos.x, y: pos.y };
             }
         }
 
         workflow.edges.clear();
-        for (&snarl_id, _) in &self.snarl_to_uuid {
+        for (&snarl_id, &from_uuid) in &self.snarl_to_uuid {
             let out_pin = OutPinId {
                 node: snarl_id,
                 output: 0,
             };
 
             for in_pin in self.snarl.out_pin(out_pin).remotes.iter() {
-                if let Some(&from_uuid) = self.snarl_to_uuid.get(&snarl_id) {
-                    if let Some(&to_uuid) = self.snarl_to_uuid.get(&in_pin.node) {
-                        workflow.add_edge(from_uuid, to_uuid);
-                    }
+                if let Some(&to_uuid) = self.snarl_to_uuid.get(&in_pin.node) {
+                    workflow.add_edge(from_uuid, to_uuid);
                 }
             }
         }
@@ -112,17 +110,16 @@ impl WorkflowEditor {
         let active_snarl_id = active_node.and_then(|uuid| self.uuid_to_snarl.get(&uuid).copied());
 
         for (&uuid, &snarl_id) in &self.uuid_to_snarl {
-            if let Some(workflow_node) = workflow.find_node(uuid) {
-                if let Some(graph_node) = self.snarl.get_node_mut(snarl_id) {
-                    graph_node.name = workflow_node.name.clone();
-                }
+            if let Some(workflow_node) = workflow.find_node(uuid)
+                && let Some(graph_node) = self.snarl.get_node_mut(snarl_id)
+            {
+                graph_node.name = workflow_node.name.clone();
             }
         }
 
         let mut viewer = WorkflowViewer {
             selected: &mut selected,
             snarl_to_uuid: &self.snarl_to_uuid,
-            positions: &mut self.positions,
             active_node: active_snarl_id,
         };
 
@@ -137,23 +134,35 @@ impl WorkflowEditor {
     }
 }
 
+const PIN_DISCONNECTED: Color32 = Color32::from_rgb(80, 80, 80);
+const PIN_STROKE: Stroke = Stroke {
+    width: 2.0,
+    color: Color32::from_rgb(60, 60, 60),
+};
+
 fn create_n8n_snarl_style() -> SnarlStyle {
     let mut style = SnarlStyle::new();
     style.pin_size = Some(12.0);
     style
 }
 
-#[allow(dead_code)]
+fn pin_info(connected: bool, connected_color: Color32) -> PinInfo {
+    let fill = if connected {
+        connected_color
+    } else {
+        PIN_DISCONNECTED
+    };
+    PinInfo::circle().with_fill(fill).with_stroke(PIN_STROKE)
+}
+
 struct WorkflowViewer<'a> {
     selected: &'a mut Option<Uuid>,
     snarl_to_uuid: &'a HashMap<NodeId, Uuid>,
-    positions: &'a mut HashMap<NodeId, egui::Pos2>,
     active_node: Option<NodeId>,
 }
 
 impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
     fn title(&mut self, node: &GraphNode) -> String {
-        // Icon + name for header
         let icon = match node.kind {
             NodeKind::Start => "▶",
             NodeKind::Step => "⚡",
@@ -182,15 +191,7 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         _ui: &mut egui::Ui,
         _snarl: &mut Snarl<GraphNode>,
     ) -> impl SnarlPin + 'static {
-        let connected = !pin.remotes.is_empty();
-        let fill = if connected {
-            theme::ACCENT_GREEN
-        } else {
-            Color32::from_rgb(80, 80, 80)
-        };
-        PinInfo::circle()
-            .with_fill(fill)
-            .with_stroke(Stroke::new(2.0, Color32::from_rgb(60, 60, 60)))
+        pin_info(!pin.remotes.is_empty(), theme::ACCENT_GREEN)
     }
 
     fn show_output(
@@ -199,15 +200,7 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         _ui: &mut egui::Ui,
         _snarl: &mut Snarl<GraphNode>,
     ) -> impl SnarlPin + 'static {
-        let connected = !pin.remotes.is_empty();
-        let fill = if connected {
-            theme::ACCENT_CORAL
-        } else {
-            Color32::from_rgb(80, 80, 80)
-        };
-        PinInfo::circle()
-            .with_fill(fill)
-            .with_stroke(Stroke::new(2.0, Color32::from_rgb(60, 60, 60)))
+        pin_info(!pin.remotes.is_empty(), theme::ACCENT_CORAL)
     }
 
     fn has_body(&mut self, _node: &GraphNode) -> bool {
@@ -249,10 +242,10 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         // Clickable area for selection
         let response = ui.allocate_response(egui::vec2(120.0, 4.0), egui::Sense::click());
 
-        if response.clicked() {
-            if let Some(&uuid) = self.snarl_to_uuid.get(&node_id) {
-                *self.selected = Some(uuid);
-            }
+        if response.clicked()
+            && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
+        {
+            *self.selected = Some(uuid);
         }
     }
 

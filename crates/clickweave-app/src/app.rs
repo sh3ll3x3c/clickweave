@@ -67,13 +67,17 @@ impl ClickweaveApp {
         }
     }
 
-    fn log(&mut self, msg: impl Into<String>) {
-        let msg = msg.into();
-        tracing::info!("{}", msg);
-        self.logs.push(msg);
+    fn push_log(&mut self, msg: impl Into<String>) {
+        self.logs.push(msg.into());
         if self.logs.len() > 1000 {
             self.logs.remove(0);
         }
+    }
+
+    fn log(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        tracing::info!("{}", msg);
+        self.push_log(msg);
     }
 
     fn save_workflow(&mut self) {
@@ -175,39 +179,48 @@ impl ClickweaveApp {
     }
 
     fn poll_executor_events(&mut self) {
-        let Some(rx) = &self.event_rx else { return };
+        let Some(rx) = self.event_rx.take() else {
+            return;
+        };
 
         while let Ok(event) = rx.try_recv() {
             match event {
-                ExecutorEvent::Log(msg) => {
-                    self.logs.push(msg);
-                    if self.logs.len() > 1000 {
-                        self.logs.remove(0);
-                    }
-                }
+                ExecutorEvent::Log(msg) => self.push_log(msg),
+                ExecutorEvent::Error(msg) => self.push_log(format!("ERROR: {}", msg)),
                 ExecutorEvent::StateChanged(state) => {
                     self.executor_state = state;
                     if self.executor_state == ExecutorState::Idle {
                         self.active_node = None;
                         self.command_tx = None;
-                        self.event_rx = None;
+                        // event_rx already taken out, don't put it back
                         return;
                     }
                 }
                 ExecutorEvent::NodeStarted(id) => {
                     self.active_node = Some(id);
                 }
-                ExecutorEvent::NodeCompleted(_id) => {
+                ExecutorEvent::NodeCompleted(_) | ExecutorEvent::WorkflowCompleted => {
                     self.active_node = None;
-                }
-                ExecutorEvent::WorkflowCompleted => {
-                    self.active_node = None;
-                }
-                ExecutorEvent::Error(msg) => {
-                    self.logs.push(format!("ERROR: {}", msg));
                 }
             }
         }
+
+        // Put the receiver back if we didn't go idle
+        self.event_rx = Some(rx);
+    }
+
+    fn add_step_node(&mut self) {
+        let offset = self.workflow.nodes.len() as f32 * 50.0;
+        let id = self.workflow.add_node(
+            clickweave_core::NodeKind::Step,
+            clickweave_core::Position {
+                x: 300.0 + offset,
+                y: 200.0 + offset,
+            },
+            "New Step",
+        );
+        self.editor.sync_from_workflow(&self.workflow);
+        self.selected_node = Some(id);
     }
 
     fn show_sidebar(&mut self, ctx: &egui::Context) {
@@ -244,7 +257,7 @@ impl ClickweaveApp {
                         )
                     };
                     if btn.on_hover_text(label).clicked() {
-                        // Handle navigation
+                        // TODO: Handle navigation
                     }
                 }
 
@@ -277,18 +290,7 @@ impl ClickweaveApp {
                     .on_hover_text("Add a new step node")
                     .clicked()
                 {
-                    // Calculate position offset from existing nodes to avoid stacking
-                    let offset = self.workflow.nodes.len() as f32 * 50.0;
-                    let id = self.workflow.add_node(
-                        clickweave_core::NodeKind::Step,
-                        clickweave_core::Position {
-                            x: 300.0 + offset,
-                            y: 200.0 + offset,
-                        },
-                        "New Step",
-                    );
-                    self.editor.sync_from_workflow(&self.workflow);
-                    self.selected_node = Some(id);
+                    self.add_step_node();
                 }
 
                 // Collapse toggle at bottom
@@ -488,25 +490,22 @@ impl ClickweaveApp {
                                     egui::TextEdit::singleline(&mut img_path)
                                         .desired_width(ui.available_width() - 70.0),
                                 );
-                                if ui.button("Browse").clicked() {
-                                    if let Some(file) = rfd::FileDialog::new()
+                                if ui.button("Browse").clicked()
+                                    && let Some(file) = rfd::FileDialog::new()
                                         .add_filter("Images", &["png", "jpg", "jpeg"])
                                         .pick_file()
-                                    {
-                                        if let Some(proj) = &self.project_path {
-                                            let assets = proj.join("assets");
-                                            let _ = std::fs::create_dir_all(&assets);
-                                            let filename = file.file_name().unwrap();
-                                            let dest = assets.join(filename);
-                                            if std::fs::copy(&file, &dest).is_ok() {
-                                                img_path = format!(
-                                                    "assets/{}",
-                                                    filename.to_string_lossy()
-                                                );
-                                            }
-                                        } else {
-                                            img_path = file.to_string_lossy().to_string();
+                                {
+                                    if let Some(proj) = &self.project_path {
+                                        let assets = proj.join("assets");
+                                        let _ = std::fs::create_dir_all(&assets);
+                                        let filename = file.file_name().unwrap();
+                                        let dest = assets.join(filename);
+                                        if std::fs::copy(&file, &dest).is_ok() {
+                                            img_path =
+                                                format!("assets/{}", filename.to_string_lossy());
                                         }
+                                    } else {
+                                        img_path = file.to_string_lossy().to_string();
                                     }
                                 }
                             });
@@ -532,20 +531,20 @@ impl ClickweaveApp {
                                     PathBuf::from(&img_path)
                                 };
 
-                                if !self.texture_cache.contains_key(&cache_key) {
-                                    if let Ok(img) = image::open(&abs_path) {
-                                        let rgba = img.to_rgba8();
-                                        let size = [rgba.width() as usize, rgba.height() as usize];
-                                        let pixels = rgba.into_raw();
-                                        let color_image =
-                                            egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                                        let texture = ui.ctx().load_texture(
-                                            &cache_key,
-                                            color_image,
-                                            egui::TextureOptions::LINEAR,
-                                        );
-                                        self.texture_cache.insert(cache_key.clone(), texture);
-                                    }
+                                if !self.texture_cache.contains_key(&cache_key)
+                                    && let Ok(img) = image::open(&abs_path)
+                                {
+                                    let rgba = img.to_rgba8();
+                                    let size = [rgba.width() as usize, rgba.height() as usize];
+                                    let pixels = rgba.into_raw();
+                                    let color_image =
+                                        egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                                    let texture = ui.ctx().load_texture(
+                                        &cache_key,
+                                        color_image,
+                                        egui::TextureOptions::LINEAR,
+                                    );
+                                    self.texture_cache.insert(cache_key.clone(), texture);
                                 }
 
                                 if let Some(texture) = self.texture_cache.get(&cache_key) {
@@ -639,18 +638,7 @@ impl ClickweaveApp {
                             )
                             .clicked()
                         {
-                            // Calculate position offset from existing nodes to avoid stacking
-                            let offset = self.workflow.nodes.len() as f32 * 50.0;
-                            let id = self.workflow.add_node(
-                                clickweave_core::NodeKind::Step,
-                                clickweave_core::Position {
-                                    x: 300.0 + offset,
-                                    y: 200.0 + offset,
-                                },
-                                "New Step",
-                            );
-                            self.editor.sync_from_workflow(&self.workflow);
-                            self.selected_node = Some(id);
+                            self.add_step_node();
                         }
                     });
 
@@ -706,13 +694,8 @@ impl ClickweaveApp {
                         ui.add_space(8.0);
 
                         // Logs toggle
-                        let logs_icon = if self.logs_drawer_open {
-                            "📜"
-                        } else {
-                            "📜"
-                        };
                         if ui
-                            .add(Button::new(logs_icon).frame(false))
+                            .add(Button::new("📜").frame(false))
                             .on_hover_text("Toggle logs")
                             .clicked()
                         {

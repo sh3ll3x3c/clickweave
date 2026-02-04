@@ -61,75 +61,70 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn system(content: impl Into<String>) -> Self {
+    fn with_role(role: &str) -> Self {
         Self {
-            role: "system".to_string(),
-            content: Some(Content::Text(content.into())),
+            role: role.to_string(),
+            content: None,
             tool_calls: None,
             tool_call_id: None,
             name: None,
+        }
+    }
+
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            content: Some(Content::Text(content.into())),
+            ..Self::with_role("system")
         }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
         Self {
-            role: "user".to_string(),
             content: Some(Content::Text(content.into())),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
+            ..Self::with_role("user")
         }
     }
 
     pub fn user_with_images(text: impl Into<String>, images: Vec<(String, String)>) -> Self {
         let mut parts = vec![ContentPart::Text { text: text.into() }];
-        for (data, mime_type) in images {
-            parts.push(ContentPart::ImageUrl {
-                image_url: ImageUrl {
-                    url: format!("data:{};base64,{}", mime_type, data),
-                },
-            });
-        }
+        parts.extend(
+            images
+                .into_iter()
+                .map(|(data, mime_type)| ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: format!("data:{};base64,{}", mime_type, data),
+                    },
+                }),
+        );
         Self {
-            role: "user".to_string(),
             content: Some(Content::Parts(parts)),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
+            ..Self::with_role("user")
         }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
-            role: "assistant".to_string(),
             content: Some(Content::Text(content.into())),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
+            ..Self::with_role("assistant")
         }
     }
 
     pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
         Self {
-            role: "assistant".to_string(),
-            content: None,
             tool_calls: Some(tool_calls),
-            tool_call_id: None,
-            name: None,
+            ..Self::with_role("assistant")
         }
     }
 
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
-            role: "tool".to_string(),
             content: Some(Content::Text(content.into())),
-            tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
-            name: None,
+            ..Self::with_role("tool")
         }
     }
 
-    /// Get content as text, regardless of whether it's a plain string or parts
+    /// Get content as text, regardless of whether it's a plain string or parts.
     pub fn content_text(&self) -> Option<&str> {
         self.content.as_ref().and_then(|c| c.as_text())
     }

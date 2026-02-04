@@ -1,5 +1,4 @@
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Shadow, Stroke, Vec2, Visuals};
-use egui_snarl::ui::SnarlStyle;
 
 // =============================================================================
 // Color Palette (n8n-inspired dark theme)
@@ -174,13 +173,4 @@ pub fn logs_drawer_frame() -> Frame {
             color: Color32::from_black_alpha(60),
         },
     }
-}
-
-// =============================================================================
-// Snarl Graph Style
-// =============================================================================
-
-#[allow(dead_code)]
-pub fn create_snarl_style() -> SnarlStyle {
-    SnarlStyle::new()
 }
