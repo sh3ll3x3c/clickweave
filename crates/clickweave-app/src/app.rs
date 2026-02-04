@@ -861,6 +861,13 @@ impl eframe::App for ClickweaveApp {
                 if let Some(selected) = response.selected_node {
                     self.selected_node = Some(selected);
                 }
+                if let Some(deleted) = response.deleted_node {
+                    self.workflow.remove_node(deleted);
+                    self.editor.sync_from_workflow(&self.workflow);
+                    if self.selected_node == Some(deleted) {
+                        self.selected_node = None;
+                    }
+                }
             });
 
         // Floating toolbar (rendered on top)

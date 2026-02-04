@@ -23,6 +23,7 @@ pub struct WorkflowEditor {
 
 pub struct EditorResponse {
     pub selected_node: Option<Uuid>,
+    pub deleted_node: Option<Uuid>,
 }
 
 impl WorkflowEditor {
@@ -105,6 +106,7 @@ impl WorkflowEditor {
         active_node: Option<Uuid>,
     ) -> EditorResponse {
         let mut selected = None;
+        let mut deleted = None;
 
         // Resolve active_node UUID to snarl NodeId
         let active_snarl_id = active_node.and_then(|uuid| self.uuid_to_snarl.get(&uuid).copied());
@@ -119,6 +121,7 @@ impl WorkflowEditor {
 
         let mut viewer = WorkflowViewer {
             selected: &mut selected,
+            deleted: &mut deleted,
             snarl_to_uuid: &self.snarl_to_uuid,
             active_node: active_snarl_id,
         };
@@ -130,6 +133,7 @@ impl WorkflowEditor {
 
         EditorResponse {
             selected_node: selected,
+            deleted_node: deleted,
         }
     }
 }
@@ -157,6 +161,7 @@ fn pin_info(connected: bool, connected_color: Color32) -> PinInfo {
 
 struct WorkflowViewer<'a> {
     selected: &'a mut Option<Uuid>,
+    deleted: &'a mut Option<Uuid>,
     snarl_to_uuid: &'a HashMap<NodeId, Uuid>,
     active_node: Option<NodeId>,
 }
@@ -217,6 +222,7 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
     ) {
         let node = &snarl[node_id];
         let is_active = self.active_node == Some(node_id);
+        let is_step = node.kind == NodeKind::Step;
 
         let (type_label, color) = match node.kind {
             NodeKind::Start => ("Trigger", theme::NODE_START),
@@ -236,8 +242,23 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
             });
         }
 
-        // Type label
-        ui.label(RichText::new(type_label).size(11.0).color(color));
+        // Type label with delete button for Step nodes
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(type_label).size(11.0).color(color));
+
+            if is_step {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let delete_btn =
+                        egui::Button::new(RichText::new("✕").size(12.0).color(theme::TEXT_MUTED))
+                            .frame(false);
+                    if ui.add(delete_btn).on_hover_text("Delete node").clicked() {
+                        if let Some(&uuid) = self.snarl_to_uuid.get(&node_id) {
+                            *self.deleted = Some(uuid);
+                        }
+                    }
+                });
+            }
+        });
 
         // Clickable area for selection
         let response = ui.allocate_response(egui::vec2(120.0, 4.0), egui::Sense::click());
