@@ -15,11 +15,43 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
 }
 
+/// Message content can be a plain string or an array of content parts (for vision).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Content {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+impl Content {
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Content::Text(s) => Some(s),
+            Content::Parts(parts) => parts.iter().find_map(|p| match p {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrl {
+    pub url: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<Content>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -32,7 +64,7 @@ impl Message {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: "system".to_string(),
-            content: Some(content.into()),
+            content: Some(Content::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -42,7 +74,25 @@ impl Message {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".to_string(),
-            content: Some(content.into()),
+            content: Some(Content::Text(content.into())),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    pub fn user_with_images(text: impl Into<String>, images: Vec<(String, String)>) -> Self {
+        let mut parts = vec![ContentPart::Text { text: text.into() }];
+        for (data, mime_type) in images {
+            parts.push(ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: format!("data:{};base64,{}", mime_type, data),
+                },
+            });
+        }
+        Self {
+            role: "user".to_string(),
+            content: Some(Content::Parts(parts)),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -52,7 +102,7 @@ impl Message {
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".to_string(),
-            content: Some(content.into()),
+            content: Some(Content::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -72,11 +122,16 @@ impl Message {
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: "tool".to_string(),
-            content: Some(content.into()),
+            content: Some(Content::Text(content.into())),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             name: None,
         }
+    }
+
+    /// Get content as text, regardless of whether it's a plain string or parts
+    pub fn content_text(&self) -> Option<&str> {
+        self.content.as_ref().and_then(|c| c.as_text())
     }
 }
 

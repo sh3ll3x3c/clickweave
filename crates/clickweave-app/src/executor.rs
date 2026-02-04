@@ -1,6 +1,7 @@
 use clickweave_core::{NodeKind, Workflow};
 use clickweave_llm::{LlmClient, LlmConfig, Message, build_step_prompt, workflow_system_prompt};
 use clickweave_mcp::McpClient;
+use clickweave_mcp::ToolContent;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -182,7 +183,7 @@ impl WorkflowExecutor {
                 // Check if there are tool calls
                 if let Some(tool_calls) = &msg.tool_calls {
                     if tool_calls.is_empty() {
-                        if let Some(content) = &msg.content {
+                        if let Some(content) = msg.content_text() {
                             if self.check_step_complete(content) {
                                 self.log(format!("Step completed: {}", node.name));
                             }
@@ -193,7 +194,9 @@ impl WorkflowExecutor {
                     // Add assistant message with tool calls
                     messages.push(Message::assistant_tool_calls(tool_calls.clone()));
 
-                    // Execute each tool call
+                    // Execute each tool call, collecting any images
+                    let mut pending_images: Vec<(String, String)> = Vec::new();
+
                     for tool_call in tool_calls {
                         tool_call_count += 1;
                         self.log(format!("Tool call: {}", tool_call.function.name));
@@ -206,14 +209,25 @@ impl WorkflowExecutor {
 
                         match mcp.call_tool(&tool_call.function.name, args) {
                             Ok(result) => {
-                                let result_text: String = result
-                                    .content
-                                    .iter()
-                                    .filter_map(|c| c.as_text())
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
+                                let mut text_parts = Vec::new();
+                                for content in &result.content {
+                                    match content {
+                                        ToolContent::Text { text } => {
+                                            text_parts.push(text.as_str());
+                                        }
+                                        ToolContent::Image { data, mime_type } => {
+                                            pending_images.push((data.clone(), mime_type.clone()));
+                                        }
+                                        ToolContent::Unknown => {}
+                                    }
+                                }
 
-                                self.log(format!("Tool result: {} chars", result_text.len()));
+                                let result_text = text_parts.join("\n");
+                                self.log(format!(
+                                    "Tool result: {} chars, {} images",
+                                    result_text.len(),
+                                    pending_images.len()
+                                ));
 
                                 messages.push(Message::tool_result(&tool_call.id, result_text));
                             }
@@ -226,9 +240,17 @@ impl WorkflowExecutor {
                             }
                         }
                     }
+
+                    // If images were returned, add them as a user message for vision
+                    if !pending_images.is_empty() {
+                        messages.push(Message::user_with_images(
+                            "Here are the images from the tool results above.",
+                            pending_images,
+                        ));
+                    }
                 } else {
                     // No tool calls - check content for completion
-                    if let Some(content) = &msg.content {
+                    if let Some(content) = msg.content_text() {
                         if self.check_step_complete(content) {
                             self.log(format!("Step completed: {}", node.name));
                         } else {
