@@ -235,14 +235,16 @@ impl ClickweaveApp {
 
                 // Navigation items
                 let nav_items = [
-                    ("🏠", "Home", true),
-                    ("📋", "Templates", false),
-                    ("📊", "Variables", false),
-                    ("📜", "Executions", false),
-                    ("❓", "Help", false),
+                    ("🏠", "Home"),
+                    ("📋", "Templates"),
+                    ("📊", "Variables"),
+                    ("📜", "Executions"),
+                    ("❓", "Help"),
                 ];
 
-                for (icon, label, _active) in nav_items {
+                let mut clicked_nav: Option<&str> = None;
+
+                for (icon, label) in nav_items {
                     ui.add_space(2.0);
                     let btn = if self.sidebar_collapsed {
                         ui.add_sized(
@@ -257,8 +259,28 @@ impl ClickweaveApp {
                         )
                     };
                     if btn.on_hover_text(label).clicked() {
-                        // TODO: Handle navigation
+                        clicked_nav = Some(label);
                     }
+                }
+
+                match clicked_nav {
+                    Some("Home") => {
+                        self.selected_node = None;
+                    }
+                    Some("Executions") => {
+                        self.logs_drawer_open = !self.logs_drawer_open;
+                    }
+                    Some("Help") => {
+                        self.show_settings = true;
+                    }
+                    Some("Variables") => {
+                        self.logs_drawer_open = true;
+                        self.push_log("Variables panel not yet implemented".to_string());
+                    }
+                    Some("Templates") => {
+                        self.push_log("Templates panel not yet implemented".to_string());
+                    }
+                    _ => {}
                 }
 
                 ui.add_space(16.0);
