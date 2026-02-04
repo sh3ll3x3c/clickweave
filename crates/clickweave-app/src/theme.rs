@@ -27,6 +27,7 @@ pub const BORDER_DARK: Color32 = Color32::from_rgb(50, 50, 50); // #323232
 pub const BORDER_LIGHT: Color32 = Color32::from_rgb(70, 70, 70); // #464646
 
 // Grid
+#[allow(dead_code)]
 pub const GRID_COLOR: Color32 = Color32::from_rgb(40, 40, 40); // subtle grid
 
 // Node type colors
@@ -179,6 +180,7 @@ pub fn logs_drawer_frame() -> Frame {
 // Snarl Graph Style
 // =============================================================================
 
+#[allow(dead_code)]
 pub fn create_snarl_style() -> SnarlStyle {
     SnarlStyle::new()
 }

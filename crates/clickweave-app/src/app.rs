@@ -342,8 +342,8 @@ impl ClickweaveApp {
                     ui.add_space(32.0);
 
                     // Editor / Executions tabs
-                    ui.selectable_label(true, "Editor");
-                    ui.selectable_label(false, "Executions");
+                    let _ = ui.selectable_label(true, "Editor");
+                    let _ = ui.selectable_label(false, "Executions");
 
                     // Right side controls
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

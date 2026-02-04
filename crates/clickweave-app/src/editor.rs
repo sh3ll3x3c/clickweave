@@ -1,7 +1,7 @@
 use crate::theme;
 use clickweave_core::{NodeKind, Position, Workflow};
 use eframe::egui::{self, Color32, RichText, Stroke};
-use egui_snarl::ui::{PinInfo, SnarlStyle, SnarlViewer};
+use egui_snarl::ui::{PinInfo, SnarlPin, SnarlStyle, SnarlViewer};
 use egui_snarl::{InPinId, NodeId, OutPinId, Snarl};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -9,7 +9,6 @@ use uuid::Uuid;
 /// Node data for the snarl graph
 #[derive(Clone)]
 pub struct GraphNode {
-    pub workflow_id: Uuid,
     pub kind: NodeKind,
     pub name: String,
 }
@@ -45,7 +44,6 @@ impl WorkflowEditor {
 
         for node in &workflow.nodes {
             let graph_node = GraphNode {
-                workflow_id: node.id,
                 kind: node.kind,
                 name: node.name.clone(),
             };
@@ -145,6 +143,7 @@ fn create_n8n_snarl_style() -> SnarlStyle {
     style
 }
 
+#[allow(dead_code)]
 struct WorkflowViewer<'a> {
     selected: &'a mut Option<Uuid>,
     snarl_to_uuid: &'a HashMap<NodeId, Uuid>,
@@ -182,7 +181,7 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         pin: &egui_snarl::InPin,
         _ui: &mut egui::Ui,
         _snarl: &mut Snarl<GraphNode>,
-    ) -> PinInfo {
+    ) -> impl SnarlPin + 'static {
         let connected = !pin.remotes.is_empty();
         let fill = if connected {
             theme::ACCENT_GREEN
@@ -199,7 +198,7 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         pin: &egui_snarl::OutPin,
         _ui: &mut egui::Ui,
         _snarl: &mut Snarl<GraphNode>,
-    ) -> PinInfo {
+    ) -> impl SnarlPin + 'static {
         let connected = !pin.remotes.is_empty();
         let fill = if connected {
             theme::ACCENT_CORAL
