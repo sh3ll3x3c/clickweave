@@ -381,8 +381,8 @@ impl ClickweaveApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(8.0);
 
-                        // More menu
-                        ui.menu_button("⋯", |ui| {
+                        // More menu (rightmost)
+                        ui.menu_button(RichText::new("☰").size(16.0), |ui| {
                             if ui.button("Settings").clicked() {
                                 self.show_settings = !self.show_settings;
                                 ui.close();
@@ -399,17 +399,12 @@ impl ClickweaveApp {
                             }
                         });
 
-                        // Save button (coral accent)
+                        // Save button
                         let save_btn = Button::new(RichText::new("Save").color(Color32::WHITE))
                             .fill(ACCENT_CORAL)
                             .corner_radius(6.0);
                         if ui.add(save_btn).clicked() {
                             self.save_workflow();
-                        }
-
-                        // Share button
-                        if ui.button("Share").clicked() {
-                            // TODO: Share functionality
                         }
 
                         ui.add_space(16.0);
