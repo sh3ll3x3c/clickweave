@@ -280,8 +280,13 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
             }
         });
 
-        // Clickable area for selection
-        let response = ui.allocate_response(egui::vec2(120.0, 4.0), egui::Sense::click());
+        // Clickable area for selection - full width, visible hint
+        let hint_text = if is_step { "Click to edit" } else { "" };
+        let response = ui.add_sized(
+            egui::vec2(120.0, 20.0),
+            egui::Label::new(RichText::new(hint_text).size(10.0).color(theme::TEXT_MUTED))
+                .sense(egui::Sense::click()),
+        );
 
         if response.clicked()
             && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
