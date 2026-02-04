@@ -267,8 +267,11 @@ impl ClickweaveApp {
 
                 // Node palette section
                 if !self.sidebar_collapsed {
-                    ui.label(RichText::new("NODES").size(11.0).color(TEXT_MUTED));
-                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Nodes").size(12.0).color(TEXT_SECONDARY));
+                    });
+                    ui.add_space(4.0);
                 }
 
                 if ui
