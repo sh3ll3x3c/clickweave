@@ -196,6 +196,33 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         format!("{} {}", icon, node.name)
     }
 
+    fn show_header(
+        &mut self,
+        node_id: NodeId,
+        _inputs: &[egui_snarl::InPin],
+        _outputs: &[egui_snarl::OutPin],
+        ui: &mut egui::Ui,
+        snarl: &mut Snarl<GraphNode>,
+    ) {
+        let node = &snarl[node_id];
+        let is_step = node.kind == NodeKind::Step;
+        let title = self.title(node);
+
+        ui.horizontal(|ui| {
+            ui.label(&title);
+            if is_step {
+                let delete_btn =
+                    egui::Button::new(RichText::new("✕").size(10.0).color(theme::NODE_END))
+                        .frame(false);
+                if ui.add(delete_btn).on_hover_text("Delete node").clicked()
+                    && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
+                {
+                    *self.deleted = Some(uuid);
+                }
+            }
+        });
+    }
+
     fn outputs(&mut self, node: &GraphNode) -> usize {
         match node.kind {
             NodeKind::End => 0,
@@ -242,8 +269,6 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
     ) {
         let node = &snarl[node_id];
         let is_active = self.active_node == Some(node_id);
-        let is_step = node.kind == NodeKind::Step;
-
         let (type_label, color) = match node.kind {
             NodeKind::Start => ("Trigger", theme::NODE_START),
             NodeKind::Step => ("Action", theme::NODE_STEP),
@@ -262,31 +287,11 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
             });
         }
 
-        // Type label with delete button for Step nodes
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(type_label).size(11.0).color(color));
+        // Type label
+        ui.label(RichText::new(type_label).size(11.0).color(color));
 
-            if is_step {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let delete_btn =
-                        egui::Button::new(RichText::new("✕").size(12.0).color(theme::TEXT_MUTED))
-                            .frame(false);
-                    if ui.add(delete_btn).on_hover_text("Delete node").clicked()
-                        && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
-                    {
-                        *self.deleted = Some(uuid);
-                    }
-                });
-            }
-        });
-
-        // Clickable area for selection - full width, visible hint
-        let hint_text = if is_step { "Click to edit" } else { "" };
-        let response = ui.add_sized(
-            egui::vec2(120.0, 20.0),
-            egui::Label::new(RichText::new(hint_text).size(10.0).color(theme::TEXT_MUTED))
-                .sense(egui::Sense::click()),
-        );
+        // Clickable area for selection
+        let response = ui.allocate_response(egui::vec2(60.0, 4.0), egui::Sense::click());
 
         if response.clicked()
             && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
