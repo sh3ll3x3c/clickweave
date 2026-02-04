@@ -271,10 +271,10 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
                     let delete_btn =
                         egui::Button::new(RichText::new("✕").size(12.0).color(theme::TEXT_MUTED))
                             .frame(false);
-                    if ui.add(delete_btn).on_hover_text("Delete node").clicked() {
-                        if let Some(&uuid) = self.snarl_to_uuid.get(&node_id) {
-                            *self.deleted = Some(uuid);
-                        }
+                    if ui.add(delete_btn).on_hover_text("Delete node").clicked()
+                        && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
+                    {
+                        *self.deleted = Some(uuid);
                     }
                 });
             }
