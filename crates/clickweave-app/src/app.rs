@@ -5,7 +5,8 @@ use crate::theme::{
 };
 use clickweave_core::{Workflow, validate_workflow};
 use clickweave_llm::LlmConfig;
-use eframe::egui::{self, Align, Align2, Button, Color32, Layout, RichText, Vec2};
+use eframe::egui::{self, Align, Align2, Button, Color32, Layout, RichText, TextureHandle, Vec2};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -34,6 +35,9 @@ pub struct ClickweaveApp {
     logs_drawer_open: bool,
     node_search: String,
     is_active: bool,
+
+    // Image preview cache
+    texture_cache: HashMap<String, TextureHandle>,
 }
 
 impl ClickweaveApp {
@@ -59,6 +63,7 @@ impl ClickweaveApp {
             logs_drawer_open: false,
             node_search: String::new(),
             is_active: false,
+            texture_cache: HashMap::new(),
         }
     }
 
@@ -508,8 +513,51 @@ impl ClickweaveApp {
                                 node.params.image_path = if img_path.is_empty() {
                                     None
                                 } else {
-                                    Some(img_path)
+                                    Some(img_path.clone())
                                 };
+                                // Clear cached texture when path changes
+                                self.texture_cache.remove(&node_id.to_string());
+                            }
+
+                            // Image preview
+                            if !img_path.is_empty() {
+                                ui.add_space(8.0);
+                                let cache_key = node_id.to_string();
+                                let abs_path = if img_path.starts_with('/') {
+                                    PathBuf::from(&img_path)
+                                } else if let Some(proj) = &self.project_path {
+                                    proj.join(&img_path)
+                                } else {
+                                    PathBuf::from(&img_path)
+                                };
+
+                                if !self.texture_cache.contains_key(&cache_key) {
+                                    if let Ok(img) = image::open(&abs_path) {
+                                        let rgba = img.to_rgba8();
+                                        let size = [rgba.width() as usize, rgba.height() as usize];
+                                        let pixels = rgba.into_raw();
+                                        let color_image =
+                                            egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                                        let texture = ui.ctx().load_texture(
+                                            &cache_key,
+                                            color_image,
+                                            egui::TextureOptions::LINEAR,
+                                        );
+                                        self.texture_cache.insert(cache_key.clone(), texture);
+                                    }
+                                }
+
+                                if let Some(texture) = self.texture_cache.get(&cache_key) {
+                                    let max_width = ui.available_width();
+                                    let aspect =
+                                        texture.size()[1] as f32 / texture.size()[0] as f32;
+                                    let width = max_width.min(260.0);
+                                    let height = width * aspect;
+                                    ui.image(egui::load::SizedTexture::new(
+                                        texture.id(),
+                                        [width, height],
+                                    ));
+                                }
                             }
 
                             ui.add_space(16.0);
