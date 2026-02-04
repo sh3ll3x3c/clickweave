@@ -115,7 +115,12 @@ pub fn header_frame() -> Frame {
     Frame {
         fill: BG_HEADER,
         stroke: Stroke::new(1.0, BORDER_DARK),
-        inner_margin: Margin::symmetric(16, 10),
+        inner_margin: Margin {
+            left: 16,
+            right: 16,
+            top: 32,
+            bottom: 10,
+        },
         outer_margin: Margin::ZERO,
         corner_radius: CornerRadius::ZERO,
         shadow: Shadow::NONE,
