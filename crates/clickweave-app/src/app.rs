@@ -391,10 +391,21 @@ impl ClickweaveApp {
                                 self.workflow = Workflow::default();
                                 self.editor.sync_from_workflow(&self.workflow);
                                 self.project_path = None;
+                                self.selected_node = None;
                                 ui.close();
                             }
                             if ui.button("Open...").clicked() {
                                 self.open_workflow();
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Reset Workflow").clicked() {
+                                let name = self.workflow.name.clone();
+                                self.workflow = Workflow::default();
+                                self.workflow.name = name;
+                                self.editor.sync_from_workflow(&self.workflow);
+                                self.selected_node = None;
+                                self.log("Workflow reset to initial state");
                                 ui.close();
                             }
                         });
