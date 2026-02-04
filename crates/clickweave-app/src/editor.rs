@@ -104,12 +104,15 @@ impl WorkflowEditor {
         ui: &mut egui::Ui,
         workflow: &mut Workflow,
         active_node: Option<Uuid>,
+        selected_node: Option<Uuid>,
     ) -> EditorResponse {
         let mut selected = None;
         let mut deleted = None;
 
-        // Resolve active_node UUID to snarl NodeId
+        // Resolve UUIDs to snarl NodeIds
         let active_snarl_id = active_node.and_then(|uuid| self.uuid_to_snarl.get(&uuid).copied());
+        let selected_snarl_id =
+            selected_node.and_then(|uuid| self.uuid_to_snarl.get(&uuid).copied());
 
         for (&uuid, &snarl_id) in &self.uuid_to_snarl {
             if let Some(workflow_node) = workflow.find_node(uuid)
@@ -124,6 +127,7 @@ impl WorkflowEditor {
             deleted: &mut deleted,
             snarl_to_uuid: &self.snarl_to_uuid,
             active_node: active_snarl_id,
+            selected_node: selected_snarl_id,
         };
 
         self.snarl
@@ -164,9 +168,25 @@ struct WorkflowViewer<'a> {
     deleted: &'a mut Option<Uuid>,
     snarl_to_uuid: &'a HashMap<NodeId, Uuid>,
     active_node: Option<NodeId>,
+    selected_node: Option<NodeId>,
 }
 
 impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
+    fn node_frame(
+        &mut self,
+        default: egui::Frame,
+        node: NodeId,
+        _inputs: &[egui_snarl::InPin],
+        _outputs: &[egui_snarl::OutPin],
+        _snarl: &Snarl<GraphNode>,
+    ) -> egui::Frame {
+        if self.selected_node == Some(node) {
+            default.stroke(Stroke::new(2.0, theme::ACCENT_CORAL))
+        } else {
+            default
+        }
+    }
+
     fn title(&mut self, node: &GraphNode) -> String {
         let icon = match node.kind {
             NodeKind::Start => "▶",

@@ -880,13 +880,16 @@ impl eframe::App for ClickweaveApp {
 
         // Center: Graph editor (must be last for CentralPanel)
         let active_node = self.active_node;
+        let selected_node = self.selected_node;
         egui::CentralPanel::default()
             .frame(egui::Frame {
                 fill: BG_DARK,
                 ..Default::default()
             })
             .show(ctx, |ui| {
-                let response = self.editor.show(ui, &mut self.workflow, active_node);
+                let response = self
+                    .editor
+                    .show(ui, &mut self.workflow, active_node, selected_node);
                 if let Some(selected) = response.selected_node {
                     self.selected_node = Some(selected);
                 }
