@@ -852,6 +852,14 @@ impl eframe::App for ClickweaveApp {
         // Poll executor events
         self.poll_executor_events();
 
+        // Keyboard shortcuts
+        ctx.input(|i| {
+            if i.modifiers.command && i.key_pressed(egui::Key::S) {
+                self.editor.sync_to_workflow(&mut self.workflow);
+                self.save_workflow();
+            }
+        });
+
         // Show panels in order
         self.show_header(ctx);
         self.show_sidebar(ctx);
