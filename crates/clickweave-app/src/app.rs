@@ -138,6 +138,7 @@ impl ClickweaveApp {
         self.log("Starting workflow execution...");
         self.executor_state = ExecutorState::Running;
         self.active_node = None;
+        self.logs_drawer_open = true;
 
         let workflow = self.workflow.clone();
         let llm_config = self.llm_config.clone();
@@ -575,6 +576,28 @@ impl ClickweaveApp {
                                 .changed()
                             {
                                 node.params.max_tool_calls = Some(max_calls);
+                            }
+
+                            ui.add_space(16.0);
+
+                            // Timeout
+                            ui.label(
+                                RichText::new("Timeout (ms, 0 = none)")
+                                    .size(12.0)
+                                    .color(TEXT_SECONDARY),
+                            );
+                            ui.add_space(4.0);
+                            let mut timeout = node.params.timeout_ms.unwrap_or(0);
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut timeout)
+                                        .range(0..=300000)
+                                        .speed(100),
+                                )
+                                .changed()
+                            {
+                                node.params.timeout_ms =
+                                    if timeout == 0 { None } else { Some(timeout) };
                             }
 
                             // Delete button
