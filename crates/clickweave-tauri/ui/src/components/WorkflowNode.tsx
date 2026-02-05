@@ -29,7 +29,6 @@ export const WorkflowNode = memo(function WorkflowNode({
         boxShadow: selected ? `0 0 12px ${color}33` : "none",
       }}
     >
-      {/* Input handle */}
       <Handle
         type="target"
         position={Position.Left}
@@ -37,12 +36,10 @@ export const WorkflowNode = memo(function WorkflowNode({
         style={{ borderColor: "var(--accent-green)" }}
       />
 
-      {/* Active indicator */}
       {isActive && (
         <span className="absolute -right-1 -top-1 h-3 w-3 animate-pulse rounded-full bg-[var(--accent-green)]" />
       )}
 
-      {/* Delete button */}
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -53,7 +50,6 @@ export const WorkflowNode = memo(function WorkflowNode({
         x
       </button>
 
-      {/* Node content */}
       <div className="flex items-center gap-2 px-3 py-2">
         <div
           className="flex h-7 w-7 items-center justify-center rounded text-[10px] font-bold text-white"
@@ -66,7 +62,6 @@ export const WorkflowNode = memo(function WorkflowNode({
         </span>
       </div>
 
-      {/* Output handle */}
       <Handle
         type="source"
         position={Position.Right}

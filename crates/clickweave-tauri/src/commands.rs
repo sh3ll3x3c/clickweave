@@ -1,7 +1,5 @@
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{
-    NodeRun, NodeType, TraceEvent, ValidationError, Workflow, validate_workflow,
-};
+use clickweave_core::{NodeRun, NodeType, TraceEvent, Workflow, validate_workflow};
 use clickweave_engine::{ExecutorCommand, ExecutorEvent, WorkflowExecutor};
 use clickweave_llm::LlmConfig;
 use serde::{Deserialize, Serialize};
@@ -11,6 +9,10 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
+
+fn parse_uuid(s: &str, label: &str) -> Result<Uuid, String> {
+    s.parse().map_err(|_| format!("Invalid {} ID", label))
+}
 
 // ============================================================
 // Shared state for executor management
@@ -163,22 +165,10 @@ pub fn validate(workflow: Workflow) -> ValidationResult {
             valid: true,
             errors: vec![],
         },
-        Err(e) => {
-            let error_msg = match e {
-                ValidationError::NoNodes => "Workflow has no nodes".to_string(),
-                ValidationError::NoEntryPoint => {
-                    "No entry point found (all nodes have incoming edges)".to_string()
-                }
-                ValidationError::MultipleOutgoingEdges(name) => {
-                    format!("Node '{}' has multiple outgoing edges", name)
-                }
-                ValidationError::CycleDetected => "Cycle detected in workflow".to_string(),
-            };
-            ValidationResult {
-                valid: false,
-                errors: vec![error_msg],
-            }
-        }
+        Err(e) => ValidationResult {
+            valid: false,
+            errors: vec![e.to_string()],
+        },
     }
 }
 
@@ -219,11 +209,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 
     let llm_config = LlmConfig {
         base_url: request.llm_base_url,
-        api_key: if request.llm_api_key.as_deref() == Some("") {
-            None
-        } else {
-            request.llm_api_key
-        },
+        api_key: request.llm_api_key.filter(|k| !k.is_empty()),
         model: request.llm_model,
         temperature: None,
         max_tokens: None,
@@ -260,7 +246,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     tauri::async_runtime::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match &event {
-                ExecutorEvent::Log(msg) => {
+                ExecutorEvent::Log(msg) | ExecutorEvent::Error(msg) => {
                     let _ = app_handle.emit(
                         "executor://log",
                         LogPayload {
@@ -280,17 +266,14 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                         },
                     );
                 }
-                ExecutorEvent::NodeStarted(id) => {
+                ExecutorEvent::NodeStarted(id) | ExecutorEvent::NodeCompleted(id) => {
+                    let event_name = if matches!(&event, ExecutorEvent::NodeStarted(_)) {
+                        "executor://node_started"
+                    } else {
+                        "executor://node_completed"
+                    };
                     let _ = app_handle.emit(
-                        "executor://node_started",
-                        NodePayload {
-                            node_id: id.to_string(),
-                        },
-                    );
-                }
-                ExecutorEvent::NodeCompleted(id) => {
-                    let _ = app_handle.emit(
-                        "executor://node_completed",
+                        event_name,
                         NodePayload {
                             node_id: id.to_string(),
                         },
@@ -308,17 +291,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                 ExecutorEvent::WorkflowCompleted => {
                     let _ = app_handle.emit("executor://workflow_completed", ());
                 }
-                ExecutorEvent::Error(msg) => {
-                    let _ = app_handle.emit(
-                        "executor://log",
-                        LogPayload {
-                            message: msg.clone(),
-                        },
-                    );
-                }
-                ExecutorEvent::RunCreated(_, _) => {
-                    // Handled by runs UI later
-                }
+                ExecutorEvent::RunCreated(_, _) => {}
             }
         }
 
@@ -347,14 +320,8 @@ pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 pub fn list_runs(query: RunsQuery) -> Result<Vec<NodeRun>, String> {
-    let workflow_id: Uuid = query
-        .workflow_id
-        .parse()
-        .map_err(|_| "Invalid workflow ID".to_string())?;
-    let node_id: Uuid = query
-        .node_id
-        .parse()
-        .map_err(|_| "Invalid node ID".to_string())?;
+    let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
+    let node_id = parse_uuid(&query.node_id, "node")?;
 
     let storage = RunStorage::new(&PathBuf::from(&query.project_path), workflow_id);
     storage
@@ -365,18 +332,9 @@ pub fn list_runs(query: RunsQuery) -> Result<Vec<NodeRun>, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn load_run_events(query: RunEventsQuery) -> Result<Vec<TraceEvent>, String> {
-    let workflow_id: Uuid = query
-        .workflow_id
-        .parse()
-        .map_err(|_| "Invalid workflow ID".to_string())?;
-    let node_id: Uuid = query
-        .node_id
-        .parse()
-        .map_err(|_| "Invalid node ID".to_string())?;
-    let run_id: Uuid = query
-        .run_id
-        .parse()
-        .map_err(|_| "Invalid run ID".to_string())?;
+    let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
+    let node_id = parse_uuid(&query.node_id, "node")?;
+    let run_id = parse_uuid(&query.run_id, "run")?;
 
     let storage = RunStorage::new(&PathBuf::from(&query.project_path), workflow_id);
     let events_path = storage.run_dir(node_id, run_id).join("events.jsonl");

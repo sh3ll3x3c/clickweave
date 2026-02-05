@@ -178,24 +178,19 @@ export function useAppStore(): [AppState, AppActions] {
   }, [pushLog]);
 
   const saveProject = useCallback(async () => {
-    if (!projectPath) {
+    let savePath = projectPath;
+    if (!savePath) {
       const result = await commands.pickProjectFolder();
       if (result.status !== "ok" || !result.data) return;
-      setProjectPath(result.data);
-      const saveResult = await commands.saveProject(result.data, workflow);
-      if (saveResult.status !== "ok") {
-        pushLog(`Failed to save: ${saveResult.error}`);
-        return;
-      }
-      pushLog(`Saved to: ${result.data}`);
-      return;
+      savePath = result.data;
+      setProjectPath(savePath);
     }
-    const saveResult = await commands.saveProject(projectPath, workflow);
+    const saveResult = await commands.saveProject(savePath, workflow);
     if (saveResult.status !== "ok") {
       pushLog(`Failed to save: ${saveResult.error}`);
       return;
     }
-    pushLog("Saved");
+    pushLog(projectPath ? "Saved" : `Saved to: ${savePath}`);
   }, [projectPath, workflow, pushLog]);
 
   const newProject = useCallback(() => {
@@ -205,23 +200,18 @@ export function useAppStore(): [AppState, AppActions] {
     pushLog("New project created");
   }, [pushLog]);
 
-  const workflowRef = useRef(workflow);
-  workflowRef.current = workflow;
-  const projectPathRef = useRef(projectPath);
-  projectPathRef.current = projectPath;
-  const llmConfigRef = useRef(llmConfig);
-  llmConfigRef.current = llmConfig;
-  const mcpCommandRef = useRef(mcpCommand);
-  mcpCommandRef.current = mcpCommand;
+  const latestRef = useRef({ workflow, projectPath, llmConfig, mcpCommand });
+  latestRef.current = { workflow, projectPath, llmConfig, mcpCommand };
 
   const runWorkflow = useCallback(async () => {
+    const { workflow, projectPath, llmConfig, mcpCommand } = latestRef.current;
     const request: RunRequest = {
-      workflow: workflowRef.current,
-      project_path: projectPathRef.current,
-      llm_base_url: llmConfigRef.current.baseUrl,
-      llm_model: llmConfigRef.current.model,
-      llm_api_key: llmConfigRef.current.apiKey || null,
-      mcp_command: mcpCommandRef.current,
+      workflow,
+      project_path: projectPath,
+      llm_base_url: llmConfig.baseUrl,
+      llm_model: llmConfig.model,
+      llm_api_key: llmConfig.apiKey || null,
+      mcp_command: mcpCommand,
     };
     const result = await commands.runWorkflow(request);
     if (result.status === "error") {

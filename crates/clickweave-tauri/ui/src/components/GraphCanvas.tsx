@@ -59,7 +59,6 @@ export function GraphCanvas({
     [],
   );
 
-  // Convert workflow nodes to React Flow nodes
   const rfNodes: RFNode[] = useMemo(
     () =>
       workflow.nodes.map((node) => ({
@@ -80,7 +79,6 @@ export function GraphCanvas({
     [workflow.nodes, selectedNode, activeNode, onDeleteNode],
   );
 
-  // Convert workflow edges to React Flow edges
   const rfEdges: RFEdge[] = useMemo(
     () =>
       workflow.edges.map((edge) => ({
@@ -96,12 +94,11 @@ export function GraphCanvas({
 
   const handleNodesChange: OnNodesChange = useCallback(
     (changes) => {
-      // Apply changes to get updated RF nodes
       const updated = applyNodeChanges(changes, rfNodes);
-      // Convert back to workflow nodes, preserving data
+      const nodeMap = new Map(workflow.nodes.map((n) => [n.id, n]));
       const newNodes = updated
         .map((rfn) => {
-          const original = workflow.nodes.find((n) => n.id === rfn.id);
+          const original = nodeMap.get(rfn.id);
           if (!original) return null;
           return {
             ...original,
@@ -114,12 +111,9 @@ export function GraphCanvas({
         .filter(Boolean) as Node[];
       onNodesChange(newNodes);
 
-      // Handle selection
       for (const change of changes) {
-        if (change.type === "select") {
-          if (change.selected) {
-            onSelectNode(change.id);
-          }
+        if (change.type === "select" && change.selected) {
+          onSelectNode(change.id);
         }
       }
     },

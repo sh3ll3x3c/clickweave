@@ -80,15 +80,12 @@ function App() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-dark)]">
-      {/* Sidebar */}
       <Sidebar
         collapsed={state.sidebarCollapsed}
         onToggle={actions.toggleSidebar}
       />
 
-      {/* Main content area */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Header */}
         <Header
           workflowName={state.workflow.name}
           projectPath={state.projectPath}
@@ -102,9 +99,7 @@ function App() {
           }
         />
 
-        {/* Content row: graph + palette */}
         <div className="flex flex-1 overflow-hidden">
-          {/* Graph canvas area */}
           <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
             <GraphCanvas
               workflow={state.workflow}
@@ -121,7 +116,6 @@ function App() {
               onDeleteNode={actions.removeNode}
             />
 
-            {/* Floating toolbar */}
             <FloatingToolbar
               executorState={state.executorState}
               logsOpen={state.logsDrawerOpen}
@@ -136,7 +130,6 @@ function App() {
             />
           </div>
 
-          {/* Node palette */}
           <NodePalette
             nodeTypes={state.nodeTypes}
             search={state.nodeSearch}
@@ -145,7 +138,6 @@ function App() {
           />
         </div>
 
-        {/* Logs drawer */}
         <LogsDrawer
           open={state.logsDrawerOpen}
           logs={state.logs}
@@ -154,7 +146,6 @@ function App() {
         />
       </div>
 
-      {/* Node detail modal */}
       <NodeDetailModal
         node={selectedNodeData}
         projectPath={state.projectPath}
@@ -165,7 +156,6 @@ function App() {
         onClose={() => actions.selectNode(null)}
       />
 
-      {/* Settings modal */}
       <SettingsModal
         open={state.showSettings}
         llmConfig={state.llmConfig}

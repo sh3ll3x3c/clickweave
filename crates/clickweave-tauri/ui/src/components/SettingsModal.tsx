@@ -9,6 +9,9 @@ interface SettingsModalProps {
   onMcpCommandChange: (cmd: string) => void;
 }
 
+const inputClass =
+  "w-full rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)]";
+
 export function SettingsModal({
   open,
   llmConfig,
@@ -22,7 +25,6 @@ export function SettingsModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="w-[480px] rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] shadow-xl">
-        {/* Header */}
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
           <h2 className="text-sm font-semibold text-[var(--text-primary)]">
             Settings
@@ -35,9 +37,7 @@ export function SettingsModal({
           </button>
         </div>
 
-        {/* Content */}
         <div className="space-y-4 p-4">
-          {/* LLM Config */}
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
               LLM Configuration
@@ -53,7 +53,7 @@ export function SettingsModal({
                   onChange={(e) =>
                     onLlmConfigChange({ ...llmConfig, baseUrl: e.target.value })
                   }
-                  className="w-full rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)]"
+                  className={inputClass}
                 />
               </div>
               <div>
@@ -66,7 +66,7 @@ export function SettingsModal({
                   onChange={(e) =>
                     onLlmConfigChange({ ...llmConfig, model: e.target.value })
                   }
-                  className="w-full rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)]"
+                  className={inputClass}
                 />
               </div>
               <div>
@@ -80,13 +80,12 @@ export function SettingsModal({
                     onLlmConfigChange({ ...llmConfig, apiKey: e.target.value })
                   }
                   placeholder="Optional"
-                  className="w-full rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)]"
+                  className={`${inputClass} placeholder-[var(--text-muted)]`}
                 />
               </div>
             </div>
           </div>
 
-          {/* MCP Config */}
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
               MCP Server
@@ -100,7 +99,7 @@ export function SettingsModal({
                 value={mcpCommand}
                 onChange={(e) => onMcpCommandChange(e.target.value)}
                 placeholder="npx"
-                className="w-full rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)]"
+                className={`${inputClass} placeholder-[var(--text-muted)]`}
               />
               <p className="mt-1 text-[10px] text-[var(--text-muted)]">
                 Use "npx" for native-devtools-mcp, or a custom command path
@@ -109,7 +108,6 @@ export function SettingsModal({
           </div>
         </div>
 
-        {/* Footer */}
         <div className="flex justify-end border-t border-[var(--border)] px-4 py-3">
           <button
             onClick={onClose}

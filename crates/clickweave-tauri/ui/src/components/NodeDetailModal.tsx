@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { commands } from "../bindings";
 import type {
   Artifact,
@@ -7,7 +7,6 @@ import type {
   NodeType,
   Check,
   CheckType,
-  OnCheckFail,
   TraceEvent,
 } from "../bindings";
 import type { DetailTab } from "../store/useAppStore";
@@ -43,7 +42,6 @@ export function NodeDetailModal({
   return (
     <div className="fixed inset-0 z-40 flex items-start justify-center pt-16 bg-black/40">
       <div className="w-[560px] max-h-[80vh] flex flex-col rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] shadow-xl">
-        {/* Header */}
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-[var(--text-primary)]">
@@ -61,7 +59,6 @@ export function NodeDetailModal({
           </button>
         </div>
 
-        {/* Tabs */}
         <div className="flex border-b border-[var(--border)]">
           {tabs.map((t) => (
             <button
@@ -78,7 +75,6 @@ export function NodeDetailModal({
           ))}
         </div>
 
-        {/* Tab content */}
         <div className="flex-1 overflow-y-auto p-4">
           {tab === "setup" && (
             <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} projectPath={projectPath} />
@@ -122,7 +118,6 @@ function SetupTab({
 }) {
   return (
     <div className="space-y-4">
-      {/* Common fields */}
       <FieldGroup title="General">
         <TextField
           label="Name"
@@ -164,7 +159,6 @@ function SetupTab({
         />
       </FieldGroup>
 
-      {/* Type-specific fields */}
       <NodeTypeFields
         node={node}
         onUpdate={onUpdate}
@@ -453,11 +447,7 @@ function NodeTypeFields({
           />
           <TextField
             label={
-              nt.method === "WindowId"
-                ? "Window ID"
-                : nt.method === "AppName"
-                  ? "App Name"
-                  : "Title Pattern"
+              { WindowId: "Window ID", AppName: "App Name", TitlePattern: "Title Pattern" }[nt.method] ?? nt.method
             }
             value={nt.value ?? ""}
             onChange={(v) =>
@@ -534,7 +524,6 @@ function ChecksTab({
 
   return (
     <div className="space-y-4">
-      {/* Existing checks */}
       {checks.map((check, i) => (
         <div
           key={i}
@@ -557,7 +546,6 @@ function ChecksTab({
         </div>
       ))}
 
-      {/* Add check buttons */}
       <div>
         <h4 className="mb-2 text-xs font-semibold text-[var(--text-muted)]">
           Add Check
@@ -586,6 +574,52 @@ function ChecksTab({
 }
 
 // ============================================================
+// Shared helpers
+// ============================================================
+
+function runDuration(run: NodeRun): string | null {
+  if (!run.ended_at) return null;
+  return ((run.ended_at - run.started_at) / 1000).toFixed(1);
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
+      {message}
+    </div>
+  );
+}
+
+// ============================================================
+// Shared hook for loading runs
+// ============================================================
+
+function useNodeRuns(
+  projectPath: string | null,
+  workflowId: string,
+  nodeId: string,
+): NodeRun[] {
+  const [runs, setRuns] = useState<NodeRun[]>([]);
+
+  useEffect(() => {
+    if (!projectPath) return;
+    commands
+      .listRuns({
+        project_path: projectPath,
+        workflow_id: workflowId,
+        node_id: nodeId,
+      })
+      .then((result) => {
+        if (result.status === "ok") {
+          setRuns([...result.data].reverse());
+        }
+      });
+  }, [projectPath, workflowId, nodeId]);
+
+  return runs;
+}
+
+// ============================================================
 // Trace Tab
 // ============================================================
 
@@ -598,32 +632,19 @@ function TraceTab({
   projectPath: string | null;
   workflowId: string;
 }) {
-  const [runs, setRuns] = useState<NodeRun[]>([]);
+  const runs = useNodeRuns(projectPath, workflowId, nodeId);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [artifactPreviews, setArtifactPreviews] = useState<
     Record<string, string>
   >({});
 
-  // Load runs list
+  // Auto-select first run when runs load
   useEffect(() => {
-    if (!projectPath) return;
-    commands
-      .listRuns({
-        project_path: projectPath,
-        workflow_id: workflowId,
-        node_id: nodeId,
-      })
-      .then((result) => {
-        if (result.status === "ok") {
-          const sorted = [...result.data].reverse();
-          setRuns(sorted);
-          if (sorted.length > 0 && !selectedRunId) {
-            setSelectedRunId(sorted[0].run_id);
-          }
-        }
-      });
-  }, [projectPath, workflowId, nodeId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (runs.length > 0 && !selectedRunId) {
+      setSelectedRunId(runs[0].run_id);
+    }
+  }, [runs, selectedRunId]);
 
   // Load events for selected run
   useEffect(() => {
@@ -667,25 +688,14 @@ function TraceTab({
   }, [selectedRun]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!projectPath) {
-    return (
-      <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
-        Save the project first to see trace data.
-      </div>
-    );
+    return <EmptyState message="Save the project first to see trace data." />;
   }
 
   if (runs.length === 0) {
-    return (
-      <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
-        No runs yet. Execute the workflow to see trace data.
-      </div>
-    );
+    return <EmptyState message="No runs yet. Execute the workflow to see trace data." />;
   }
 
-  const duration =
-    selectedRun?.ended_at && selectedRun.started_at
-      ? ((selectedRun.ended_at - selectedRun.started_at) / 1000).toFixed(1)
-      : null;
+  const duration = selectedRun ? runDuration(selectedRun) : null;
 
   return (
     <div className="space-y-4">
@@ -773,13 +783,13 @@ function TraceTab({
   );
 }
 
+const statusColors: Record<string, string> = {
+  Ok: "bg-[var(--accent-green)]/20 text-[var(--accent-green)]",
+  Failed: "bg-red-500/20 text-red-400",
+};
+
 function StatusBadge({ status }: { status: string }) {
-  const colors =
-    status === "Ok"
-      ? "bg-[var(--accent-green)]/20 text-[var(--accent-green)]"
-      : status === "Failed"
-        ? "bg-red-500/20 text-red-400"
-        : "bg-yellow-500/20 text-yellow-400";
+  const colors = statusColors[status] ?? "bg-yellow-500/20 text-yellow-400";
   return (
     <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${colors}`}>
       {status}
@@ -787,29 +797,36 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+const eventTypeColors: Record<string, string> = {
+  node_started: "bg-blue-500/20 text-blue-400",
+  tool_call: "bg-purple-500/20 text-purple-400",
+  tool_result: "bg-green-500/20 text-green-400",
+  retry: "bg-yellow-500/20 text-yellow-400",
+};
+
 function eventTypeColor(eventType: string): string {
-  if (eventType === "node_started") return "bg-blue-500/20 text-blue-400";
-  if (eventType === "tool_call") return "bg-purple-500/20 text-purple-400";
-  if (eventType === "tool_result") return "bg-green-500/20 text-green-400";
-  if (eventType === "retry") return "bg-yellow-500/20 text-yellow-400";
-  return "bg-[var(--bg-hover)] text-[var(--text-secondary)]";
+  return eventTypeColors[eventType] ?? "bg-[var(--bg-hover)] text-[var(--text-secondary)]";
 }
 
+const payloadFormatters: [string, (v: unknown) => string][] = [
+  ["name", (v) => String(v)],
+  ["type", (v) => String(v)],
+  ["error", (v) => `error: ${v}`],
+  ["attempt", (v) => `attempt ${v}`],
+  ["text_len", (v) => `${v} chars`],
+  ["image_count", (v) => `${v} images`],
+];
+
 function formatEventPayload(payload: unknown): string {
-  if (payload === null || payload === undefined) return "";
+  if (payload == null) return "";
   if (typeof payload === "string") return payload;
-  if (typeof payload === "object") {
-    const obj = payload as Record<string, unknown>;
-    const parts: string[] = [];
-    if (obj.name) parts.push(String(obj.name));
-    if (obj.type) parts.push(String(obj.type));
-    if (obj.error) parts.push(`error: ${String(obj.error)}`);
-    if (obj.attempt) parts.push(`attempt ${String(obj.attempt)}`);
-    if (obj.text_len) parts.push(`${String(obj.text_len)} chars`);
-    if (obj.image_count) parts.push(`${String(obj.image_count)} images`);
-    return parts.join(" | ") || JSON.stringify(payload);
-  }
-  return String(payload);
+  if (typeof payload !== "object") return String(payload);
+
+  const obj = payload as Record<string, unknown>;
+  const parts = payloadFormatters
+    .filter(([key]) => obj[key])
+    .map(([key, fmt]) => fmt(obj[key]));
+  return parts.join(" | ") || JSON.stringify(payload);
 }
 
 function ArtifactCard({
@@ -858,46 +875,20 @@ function RunsTab({
   workflowId: string;
   onSelectRun: () => void;
 }) {
-  const [runs, setRuns] = useState<NodeRun[]>([]);
-
-  useEffect(() => {
-    if (!projectPath) return;
-    commands
-      .listRuns({
-        project_path: projectPath,
-        workflow_id: workflowId,
-        node_id: nodeId,
-      })
-      .then((result) => {
-        if (result.status === "ok") {
-          setRuns([...result.data].reverse());
-        }
-      });
-  }, [projectPath, workflowId, nodeId]);
+  const runs = useNodeRuns(projectPath, workflowId, nodeId);
 
   if (!projectPath) {
-    return (
-      <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
-        Save the project first to see run history.
-      </div>
-    );
+    return <EmptyState message="Save the project first to see run history." />;
   }
 
   if (runs.length === 0) {
-    return (
-      <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
-        No runs yet. Execute the workflow to create runs.
-      </div>
-    );
+    return <EmptyState message="No runs yet. Execute the workflow to create runs." />;
   }
 
   return (
     <div className="space-y-1">
       {runs.map((run) => {
-        const duration =
-          run.ended_at && run.started_at
-            ? ((run.ended_at - run.started_at) / 1000).toFixed(1)
-            : null;
+        const duration = runDuration(run);
 
         return (
           <button

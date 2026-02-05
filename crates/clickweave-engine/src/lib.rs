@@ -4,7 +4,7 @@ use clickweave_core::{
     AiStepParams, ArtifactKind, NodeRun, NodeType, RunStatus, TraceEvent, TraceLevel, Workflow,
 };
 use clickweave_llm::{LlmClient, LlmConfig, Message, build_step_prompt, workflow_system_prompt};
-use clickweave_mcp::{McpClient, ToolContent};
+use clickweave_mcp::{McpClient, ToolCallResult, ToolContent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -12,12 +12,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{error, info};
 use uuid::Uuid;
-
-fn base64_decode_image(data: &str) -> Result<Vec<u8>, String> {
-    base64::engine::general_purpose::STANDARD
-        .decode(data)
-        .map_err(|e| format!("base64 decode error: {}", e))
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutorState {
@@ -116,6 +110,47 @@ impl WorkflowExecutor {
                 Err(e) => tracing::warn!("Failed to save artifact: {}", e),
             }
         }
+    }
+
+    fn extract_result_text(result: &ToolCallResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                ToolContent::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn save_result_images(
+        &self,
+        result: &ToolCallResult,
+        prefix: &str,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> Vec<(String, String)> {
+        let mut images = Vec::new();
+        for (idx, content) in result.content.iter().enumerate() {
+            if let ToolContent::Image { data, mime_type } = content {
+                images.push((data.clone(), mime_type.clone()));
+
+                if let Some(run) = &mut *node_run
+                    && run.trace_level != TraceLevel::Off
+                {
+                    let ext = if mime_type.contains("png") {
+                        "png"
+                    } else {
+                        "jpg"
+                    };
+                    let filename = format!("{}_{}.{}", prefix, idx, ext);
+                    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data) {
+                        self.save_image_artifact(run, &filename, &decoded);
+                    }
+                }
+            }
+        }
+        images
     }
 
     fn finalize_run(&self, run: &mut NodeRun, status: RunStatus) {
@@ -365,41 +400,11 @@ impl WorkflowExecutor {
 
                     match mcp.call_tool(&tool_call.function.name, args) {
                         Ok(result) => {
-                            for (img_idx, content) in result.content.iter().enumerate() {
-                                if let ToolContent::Image { data, mime_type } = content {
-                                    pending_images.push((data.clone(), mime_type.clone()));
+                            let prefix = format!("toolcall_{}", tool_call_count - 1);
+                            let images = self.save_result_images(&result, &prefix, &mut node_run);
+                            pending_images.extend(images);
 
-                                    // Save screenshot artifact if trace level allows
-                                    if let Some(ref mut run) = node_run
-                                        && run.trace_level != TraceLevel::Off
-                                    {
-                                        let ext = if mime_type.contains("png") {
-                                            "png"
-                                        } else {
-                                            "jpg"
-                                        };
-                                        let filename = format!(
-                                            "toolcall_{}_{}.{}",
-                                            tool_call_count - 1,
-                                            img_idx,
-                                            ext
-                                        );
-                                        if let Ok(decoded) = base64_decode_image(data) {
-                                            self.save_image_artifact(run, &filename, &decoded);
-                                        }
-                                    }
-                                }
-                            }
-
-                            let result_text: String = result
-                                .content
-                                .iter()
-                                .filter_map(|c| match c {
-                                    ToolContent::Text { text } => Some(text.as_str()),
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
+                            let result_text = Self::extract_result_text(&result);
 
                             self.log(format!(
                                 "Tool result: {} chars, {} images",
@@ -407,7 +412,6 @@ impl WorkflowExecutor {
                                 pending_images.len()
                             ));
 
-                            // Record tool result event
                             if let Some(ref run) = node_run {
                                 self.record_event(
                                     run,
@@ -437,13 +441,14 @@ impl WorkflowExecutor {
                     ));
                 }
             } else {
-                if let Some(content) = msg.content_text() {
-                    if self.check_step_complete(content) {
-                        self.log("Step completed");
-                    } else {
-                        self.log("Step finished (no tool calls)");
-                    }
-                }
+                let completed = msg
+                    .content_text()
+                    .is_some_and(|c| self.check_step_complete(c));
+                self.log(if completed {
+                    "Step completed"
+                } else {
+                    "Step finished (no tool calls)"
+                });
                 break;
             }
         }
@@ -590,62 +595,31 @@ impl WorkflowExecutor {
 
         self.log(format!("Calling MCP tool: {}", tool_name));
         let args = self.resolve_image_paths(Some(args));
-        match mcp.call_tool(tool_name, args) {
-            Ok(result) => {
-                let result_text: String = result
-                    .content
-                    .iter()
-                    .filter_map(|c| match c {
-                        ToolContent::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+        let result = mcp
+            .call_tool(tool_name, args)
+            .map_err(|e| format!("MCP tool {} failed: {}", tool_name, e))?;
 
-                let mut image_count = 0;
+        let images = self.save_result_images(&result, "result", &mut node_run);
+        let result_text = Self::extract_result_text(&result);
 
-                // Save image artifacts if trace level allows
-                for (img_idx, content) in result.content.iter().enumerate() {
-                    if let ToolContent::Image { data, mime_type } = content {
-                        image_count += 1;
-                        if let Some(ref mut run) = node_run
-                            && run.trace_level != TraceLevel::Off
-                        {
-                            let ext = if mime_type.contains("png") {
-                                "png"
-                            } else {
-                                "jpg"
-                            };
-                            let filename = format!("result_{}.{}", img_idx, ext);
-                            if let Ok(decoded) = base64_decode_image(data) {
-                                self.save_image_artifact(run, &filename, &decoded);
-                            }
-                        }
-                    }
-                }
-
-                // Record tool result event
-                if let Some(ref run) = node_run {
-                    self.record_event(
-                        run,
-                        "tool_result",
-                        serde_json::json!({
-                            "name": tool_name,
-                            "text_len": result_text.len(),
-                            "image_count": image_count,
-                        }),
-                    );
-                }
-
-                self.log(format!(
-                    "Tool result: {} chars, {} images",
-                    result_text.len(),
-                    image_count
-                ));
-                Ok(())
-            }
-            Err(e) => Err(format!("MCP tool {} failed: {}", tool_name, e)),
+        if let Some(ref run) = node_run {
+            self.record_event(
+                run,
+                "tool_result",
+                serde_json::json!({
+                    "name": tool_name,
+                    "text_len": result_text.len(),
+                    "image_count": images.len(),
+                }),
+            );
         }
+
+        self.log(format!(
+            "Tool result: {} chars, {} images",
+            result_text.len(),
+            images.len()
+        ));
+        Ok(())
     }
 
     fn check_step_complete(&self, content: &str) -> bool {

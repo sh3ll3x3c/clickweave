@@ -7,6 +7,12 @@ interface LogsDrawerProps {
   onClear: () => void;
 }
 
+function logColor(log: string): string {
+  if (log.includes("Error") || log.includes("failed")) return "text-red-400";
+  if (log.includes("completed") || log.includes("Saved")) return "text-[var(--accent-green)]";
+  return "text-[var(--text-secondary)]";
+}
+
 export function LogsDrawer({ open, logs, onToggle, onClear }: LogsDrawerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -22,7 +28,6 @@ export function LogsDrawer({ open, logs, onToggle, onClear }: LogsDrawerProps) {
         open ? "h-48" : "h-8"
       }`}
     >
-      {/* Toggle bar */}
       <div className="flex h-8 items-center justify-between border-b border-[var(--border)] px-3">
         <button
           onClick={onToggle}
@@ -43,7 +48,6 @@ export function LogsDrawer({ open, logs, onToggle, onClear }: LogsDrawerProps) {
         )}
       </div>
 
-      {/* Log content */}
       {open && (
         <div
           ref={scrollRef}
@@ -52,13 +56,7 @@ export function LogsDrawer({ open, logs, onToggle, onClear }: LogsDrawerProps) {
           {logs.map((log, i) => (
             <div
               key={i}
-              className={`py-0.5 ${
-                log.includes("Error") || log.includes("failed")
-                  ? "text-red-400"
-                  : log.includes("completed") || log.includes("Saved")
-                    ? "text-[var(--accent-green)]"
-                    : "text-[var(--text-secondary)]"
-              }`}
+              className={`py-0.5 ${logColor(log)}`}
             >
               {log}
             </div>

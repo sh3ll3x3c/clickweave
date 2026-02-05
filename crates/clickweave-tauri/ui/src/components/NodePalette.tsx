@@ -21,13 +21,13 @@ export function NodePalette({
   onSearchChange,
   onAdd,
 }: NodePaletteProps) {
+  const searchLower = search.toLowerCase();
   const filtered = nodeTypes.filter(
     (nt) =>
-      nt.name.toLowerCase().includes(search.toLowerCase()) ||
-      nt.category.toLowerCase().includes(search.toLowerCase()),
+      nt.name.toLowerCase().includes(searchLower) ||
+      nt.category.toLowerCase().includes(searchLower),
   );
 
-  // Group by category
   const grouped = filtered.reduce(
     (acc, nt) => {
       (acc[nt.category] ||= []).push(nt);
@@ -38,7 +38,6 @@ export function NodePalette({
 
   return (
     <div className="flex w-56 flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]">
-      {/* Header */}
       <div className="border-b border-[var(--border)] px-3 py-2.5">
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
           Add Node
@@ -52,7 +51,6 @@ export function NodePalette({
         />
       </div>
 
-      {/* Categories */}
       <div className="flex-1 overflow-y-auto p-2">
         {Object.entries(grouped).map(([category, types]) => (
           <div key={category} className="mb-3">

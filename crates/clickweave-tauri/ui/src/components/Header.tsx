@@ -21,7 +21,6 @@ export function Header({
 }: HeaderProps) {
   return (
     <div className="flex h-12 items-center justify-between border-b border-[var(--border)] bg-[var(--bg-panel)] px-4">
-      {/* Left side - workflow name */}
       <div className="flex items-center gap-3">
         <input
           type="text"
@@ -36,7 +35,6 @@ export function Header({
         )}
       </div>
 
-      {/* Center - status */}
       <div className="flex items-center gap-2">
         {executorState === "running" && (
           <span className="flex items-center gap-1.5 text-xs text-[var(--accent-green)]">
@@ -46,7 +44,6 @@ export function Header({
         )}
       </div>
 
-      {/* Right side - actions */}
       <div className="flex items-center gap-1">
         <button
           onClick={onNew}
