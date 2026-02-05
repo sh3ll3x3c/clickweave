@@ -1,8 +1,30 @@
 use clickweave_core::{NodeType, ValidationError, Workflow, validate_workflow};
+use clickweave_engine::{ExecutorCommand, ExecutorEvent, WorkflowExecutor};
+use clickweave_llm::LlmConfig;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
+
+// ============================================================
+// Shared state for executor management
+// ============================================================
+
+pub struct ExecutorHandle {
+    stop_tx: Option<tokio::sync::mpsc::Sender<ExecutorCommand>>,
+}
+
+impl Default for ExecutorHandle {
+    fn default() -> Self {
+        Self { stop_tx: None }
+    }
+}
+
+// ============================================================
+// Request / response types
+// ============================================================
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct ProjectData {
@@ -24,6 +46,45 @@ pub struct NodeTypeInfo {
     pub node_type: NodeType,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct RunRequest {
+    pub workflow: Workflow,
+    pub project_path: Option<String>,
+    pub llm_base_url: String,
+    pub llm_model: String,
+    pub llm_api_key: Option<String>,
+    pub mcp_command: String,
+}
+
+// ============================================================
+// Event payloads (emitted to frontend)
+// ============================================================
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LogPayload {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatePayload {
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NodePayload {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeErrorPayload {
+    pub node_id: String,
+    pub error: String,
+}
+
+// ============================================================
+// Commands
+// ============================================================
+
 #[tauri::command]
 #[specta::specta]
 pub fn ping() -> String {
@@ -44,7 +105,6 @@ pub fn open_project(path: String) -> Result<ProjectData, String> {
     let workflow_path = project_path.join("workflow.json");
 
     if !workflow_path.exists() {
-        // Return a new default workflow if none exists
         return Ok(ProjectData {
             path,
             workflow: Workflow::default(),
@@ -65,11 +125,9 @@ pub fn open_project(path: String) -> Result<ProjectData, String> {
 pub fn save_project(path: String, workflow: Workflow) -> Result<(), String> {
     let project_path = PathBuf::from(&path);
 
-    // Ensure project directory exists
     std::fs::create_dir_all(&project_path)
         .map_err(|e| format!("Failed to create project directory: {}", e))?;
 
-    // Ensure assets directory exists
     std::fs::create_dir_all(project_path.join("assets"))
         .map_err(|e| format!("Failed to create assets directory: {}", e))?;
 
@@ -122,4 +180,152 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
             node_type: nt,
         })
         .collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<(), String> {
+    // Check if already running
+    {
+        let handle = app.state::<Mutex<ExecutorHandle>>();
+        let h = handle.lock().unwrap();
+        if h.stop_tx.is_some() {
+            return Err("Workflow is already running".to_string());
+        }
+    }
+
+    // Validate first
+    let validation = validate(request.workflow.clone());
+    if !validation.valid {
+        return Err(format!(
+            "Validation failed: {}",
+            validation.errors.join(", ")
+        ));
+    }
+
+    let llm_config = LlmConfig {
+        base_url: request.llm_base_url,
+        api_key: if request.llm_api_key.as_deref() == Some("") {
+            None
+        } else {
+            request.llm_api_key
+        },
+        model: request.llm_model,
+        temperature: None,
+        max_tokens: None,
+    };
+
+    let project_path = request.project_path.map(PathBuf::from);
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(256);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<ExecutorCommand>(8);
+
+    // Store the stop channel
+    {
+        let handle = app.state::<Mutex<ExecutorHandle>>();
+        let mut h = handle.lock().unwrap();
+        h.stop_tx = Some(cmd_tx);
+    }
+
+    let app_handle = app.clone();
+
+    // Spawn executor task
+    tauri::async_runtime::spawn(async move {
+        let mut executor = WorkflowExecutor::new(
+            request.workflow,
+            llm_config,
+            request.mcp_command,
+            project_path,
+            event_tx,
+        );
+        executor.run(cmd_rx).await;
+    });
+
+    // Spawn event forwarding task
+    let app_for_cleanup = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            match &event {
+                ExecutorEvent::Log(msg) => {
+                    let _ = app_handle.emit(
+                        "executor://log",
+                        LogPayload {
+                            message: msg.clone(),
+                        },
+                    );
+                }
+                ExecutorEvent::StateChanged(state) => {
+                    let state_str = match state {
+                        clickweave_engine::ExecutorState::Idle => "idle",
+                        clickweave_engine::ExecutorState::Running => "running",
+                    };
+                    let _ = app_handle.emit(
+                        "executor://state",
+                        StatePayload {
+                            state: state_str.to_string(),
+                        },
+                    );
+                }
+                ExecutorEvent::NodeStarted(id) => {
+                    let _ = app_handle.emit(
+                        "executor://node_started",
+                        NodePayload {
+                            node_id: id.to_string(),
+                        },
+                    );
+                }
+                ExecutorEvent::NodeCompleted(id) => {
+                    let _ = app_handle.emit(
+                        "executor://node_completed",
+                        NodePayload {
+                            node_id: id.to_string(),
+                        },
+                    );
+                }
+                ExecutorEvent::NodeFailed(id, err) => {
+                    let _ = app_handle.emit(
+                        "executor://node_failed",
+                        NodeErrorPayload {
+                            node_id: id.to_string(),
+                            error: err.clone(),
+                        },
+                    );
+                }
+                ExecutorEvent::WorkflowCompleted => {
+                    let _ = app_handle.emit("executor://workflow_completed", ());
+                }
+                ExecutorEvent::Error(msg) => {
+                    let _ = app_handle.emit(
+                        "executor://log",
+                        LogPayload {
+                            message: msg.clone(),
+                        },
+                    );
+                }
+                ExecutorEvent::RunCreated(_, _) => {
+                    // Handled by runs UI later
+                }
+            }
+        }
+
+        // Cleanup when executor finishes
+        let handle = app_for_cleanup.state::<Mutex<ExecutorHandle>>();
+        let mut h = handle.lock().unwrap();
+        h.stop_tx = None;
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), String> {
+    let handle = app.state::<Mutex<ExecutorHandle>>();
+    let h = handle.lock().unwrap();
+    if let Some(tx) = &h.stop_tx {
+        let _ = tx.try_send(ExecutorCommand::Stop);
+        Ok(())
+    } else {
+        Err("No workflow is running".to_string())
+    }
 }

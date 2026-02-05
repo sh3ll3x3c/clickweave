@@ -4,6 +4,7 @@
 mod commands;
 
 use commands::*;
+use std::sync::Mutex;
 use tauri_specta::{Builder, collect_commands};
 
 fn main() {
@@ -16,6 +17,8 @@ fn main() {
         save_project,
         validate,
         node_type_defaults,
+        run_workflow,
+        stop_workflow,
     ]);
 
     #[cfg(debug_assertions)]
@@ -36,6 +39,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .manage(Mutex::new(ExecutorHandle::default()))
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);

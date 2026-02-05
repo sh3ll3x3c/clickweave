@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { commands } from "../bindings";
-import type { Workflow, NodeTypeInfo, Node, NodeType, Edge } from "../bindings";
+import type { Workflow, NodeTypeInfo, Node, NodeType, Edge, RunRequest } from "../bindings";
 
 export type DetailTab = "setup" | "trace" | "checks" | "runs";
 
@@ -47,6 +47,10 @@ export interface AppActions {
   newProject: () => void;
   setLlmConfig: (config: LlmConfig) => void;
   setMcpCommand: (cmd: string) => void;
+  setActiveNode: (id: string | null) => void;
+  setExecutorState: (state: "idle" | "running") => void;
+  runWorkflow: () => Promise<void>;
+  stopWorkflow: () => Promise<void>;
 }
 
 function makeDefaultWorkflow(): Workflow {
@@ -63,8 +67,8 @@ export function useAppStore(): [AppState, AppActions] {
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [nodeTypes, setNodeTypes] = useState<NodeTypeInfo[]>([]);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [activeNode] = useState<string | null>(null);
-  const [executorState] = useState<"idle" | "running">("idle");
+  const [activeNode, setActiveNode] = useState<string | null>(null);
+  const [executorState, setExecutorState] = useState<"idle" | "running">("idle");
   const [detailTab, setDetailTab] = useState<DetailTab>("setup");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [logsDrawerOpen, setLogsDrawerOpen] = useState(false);
@@ -201,6 +205,37 @@ export function useAppStore(): [AppState, AppActions] {
     pushLog("New project created");
   }, [pushLog]);
 
+  const workflowRef = useRef(workflow);
+  workflowRef.current = workflow;
+  const projectPathRef = useRef(projectPath);
+  projectPathRef.current = projectPath;
+  const llmConfigRef = useRef(llmConfig);
+  llmConfigRef.current = llmConfig;
+  const mcpCommandRef = useRef(mcpCommand);
+  mcpCommandRef.current = mcpCommand;
+
+  const runWorkflow = useCallback(async () => {
+    const request: RunRequest = {
+      workflow: workflowRef.current,
+      project_path: projectPathRef.current,
+      llm_base_url: llmConfigRef.current.baseUrl,
+      llm_model: llmConfigRef.current.model,
+      llm_api_key: llmConfigRef.current.apiKey || null,
+      mcp_command: mcpCommandRef.current,
+    };
+    const result = await commands.runWorkflow(request);
+    if (result.status === "error") {
+      pushLog(`Run failed: ${result.error}`);
+    }
+  }, [pushLog]);
+
+  const stopWorkflow = useCallback(async () => {
+    const result = await commands.stopWorkflow();
+    if (result.status === "error") {
+      pushLog(`Stop failed: ${result.error}`);
+    }
+  }, [pushLog]);
+
   const state: AppState = {
     workflow,
     projectPath,
@@ -238,6 +273,10 @@ export function useAppStore(): [AppState, AppActions] {
     newProject,
     setLlmConfig,
     setMcpCommand,
+    setActiveNode,
+    setExecutorState,
+    runWorkflow,
+    stopWorkflow,
   };
 
   return [state, actions];

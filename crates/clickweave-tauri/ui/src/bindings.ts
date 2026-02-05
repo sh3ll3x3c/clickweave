@@ -37,6 +37,22 @@ async validate(workflow: Workflow) : Promise<ValidationResult> {
 },
 async nodeTypeDefaults() : Promise<NodeTypeInfo[]> {
     return await TAURI_INVOKE("node_type_defaults");
+},
+async runWorkflow(request: RunRequest) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("run_workflow", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async stopWorkflow() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_workflow") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -70,6 +86,7 @@ export type NodeTypeInfo = { name: string; category: string; icon: string; node_
 export type OnCheckFail = "FailNode" | "WarnOnly"
 export type Position = { x: number; y: number }
 export type ProjectData = { path: string; workflow: Workflow }
+export type RunRequest = { workflow: Workflow; project_path: string | null; llm_base_url: string; llm_model: string; llm_api_key: string | null; mcp_command: string }
 export type ScreenshotMode = "Screen" | "Window" | "Region"
 export type ScrollParams = { delta_y: number; x: number | null; y: number | null }
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
