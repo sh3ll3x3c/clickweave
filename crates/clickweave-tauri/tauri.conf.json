@@ -34,6 +34,12 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Visual workflow automation for desktop apps",
+    "longDescription": "Clickweave is a visual workflow editor for building and running automated UI testing and interaction workflows using AI-driven steps and native desktop tools.",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }
