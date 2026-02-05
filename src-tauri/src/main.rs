@@ -28,6 +28,8 @@ fn main() {
     #[cfg(debug_assertions)]
     {
         let bindings_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("CARGO_MANIFEST_DIR should have a parent")
             .join("ui")
             .join("src")
             .join("bindings.ts");

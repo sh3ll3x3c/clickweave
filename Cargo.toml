@@ -1,12 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/clickweave-app",
     "crates/clickweave-core",
     "crates/clickweave-engine",
     "crates/clickweave-llm",
     "crates/clickweave-mcp",
-    "crates/clickweave-tauri",
+    "src-tauri",
 ]
 
 [workspace.package]
