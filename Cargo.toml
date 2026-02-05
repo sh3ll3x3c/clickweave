@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/clickweave-app",
     "crates/clickweave-core",
+    "crates/clickweave-engine",
     "crates/clickweave-llm",
     "crates/clickweave-mcp",
     "crates/clickweave-tauri",
@@ -28,5 +29,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Internal crates
 clickweave-core = { path = "crates/clickweave-core" }
+clickweave-engine = { path = "crates/clickweave-engine" }
 clickweave-llm = { path = "crates/clickweave-llm" }
 clickweave-mcp = { path = "crates/clickweave-mcp" }

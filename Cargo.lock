@@ -880,6 +880,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "clickweave-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "clickweave-core",
+ "clickweave-llm",
+ "clickweave-mcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "clickweave-llm"
 version = "0.1.0"
 dependencies = [
@@ -911,6 +927,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clickweave-core",
+ "clickweave-engine",
  "clickweave-llm",
  "clickweave-mcp",
  "serde",

@@ -19,5 +19,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 clickweave-core.workspace = true
+clickweave-engine.workspace = true
 clickweave-llm.workspace = true
 clickweave-mcp.workspace = true
