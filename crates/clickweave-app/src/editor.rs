@@ -220,17 +220,25 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         let node = &snarl[node_id];
         let title = self.title(node);
 
-        ui.horizontal(|ui| {
-            ui.label(&title);
-            let delete_btn =
-                egui::Button::new(RichText::new("✕").size(10.0).color(theme::NODE_END))
-                    .frame(false);
-            if ui.add(delete_btn).on_hover_text("Delete node").clicked()
-                && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
-            {
-                *self.deleted = Some(uuid);
-            }
-        });
+        let response = ui
+            .horizontal(|ui| {
+                ui.label(&title);
+                let delete_btn =
+                    egui::Button::new(RichText::new("✕").size(10.0).color(theme::NODE_END))
+                        .frame(false);
+                if ui.add(delete_btn).on_hover_text("Delete node").clicked()
+                    && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
+                {
+                    *self.deleted = Some(uuid);
+                }
+            })
+            .response;
+
+        if response.clicked()
+            && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
+        {
+            *self.selected = Some(uuid);
+        }
     }
 
     fn outputs(&mut self, _node: &GraphNode) -> usize {
@@ -275,27 +283,28 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         let is_active = self.active_node == Some(node_id);
         let color = theme::category_color(node.category);
 
-        // Active indicator
-        if is_active {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("●").size(11.0).color(theme::ACCENT_GREEN));
+        let response = ui
+            .vertical(|ui| {
+                // Active indicator
+                if is_active {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("●").size(11.0).color(theme::ACCENT_GREEN));
+                        ui.label(
+                            RichText::new("Running")
+                                .size(11.0)
+                                .color(theme::ACCENT_GREEN),
+                        );
+                    });
+                }
+
+                // Category label
                 ui.label(
-                    RichText::new("Running")
+                    RichText::new(node.category.display_name())
                         .size(11.0)
-                        .color(theme::ACCENT_GREEN),
+                        .color(color),
                 );
-            });
-        }
-
-        // Category label
-        ui.label(
-            RichText::new(node.category.display_name())
-                .size(11.0)
-                .color(color),
-        );
-
-        // Clickable area for selection
-        let response = ui.allocate_response(egui::vec2(60.0, 4.0), egui::Sense::click());
+            })
+            .response;
 
         if response.clicked()
             && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
