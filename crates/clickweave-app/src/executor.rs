@@ -1,12 +1,22 @@
-use clickweave_core::{AiStepParams, NodeType, Workflow};
+use base64::Engine;
+use clickweave_core::storage::RunStorage;
+use clickweave_core::{
+    AiStepParams, ArtifactKind, NodeRun, NodeType, RunStatus, TraceEvent, TraceLevel, Workflow,
+};
 use clickweave_llm::{LlmClient, LlmConfig, Message, build_step_prompt, workflow_system_prompt};
 use clickweave_mcp::{McpClient, ToolContent};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::{error, info};
 use uuid::Uuid;
+
+fn base64_decode_image(data: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("base64 decode error: {}", e))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutorState {
@@ -27,6 +37,7 @@ pub enum ExecutorEvent {
     NodeStarted(Uuid),
     NodeCompleted(Uuid),
     NodeFailed(Uuid, String),
+    RunCreated(Uuid, NodeRun),
     WorkflowCompleted,
     Error(String),
 }
@@ -37,6 +48,7 @@ pub struct WorkflowExecutor {
     mcp_command: String,
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
+    storage: Option<RunStorage>,
 }
 
 impl WorkflowExecutor {
@@ -47,12 +59,16 @@ impl WorkflowExecutor {
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
     ) -> Self {
+        let storage = project_path
+            .as_ref()
+            .map(|p| RunStorage::new(p, workflow.id));
         Self {
             workflow,
             llm: LlmClient::new(llm_config),
             mcp_command,
             project_path,
             event_tx,
+            storage,
         }
     }
 
@@ -70,6 +86,46 @@ impl WorkflowExecutor {
         let msg = msg.into();
         error!("{}", msg);
         self.emit(ExecutorEvent::Error(msg));
+    }
+
+    fn now_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    fn record_event(&self, run: &NodeRun, event_type: &str, payload: Value) {
+        if let Some(storage) = &self.storage {
+            let event = TraceEvent {
+                timestamp: Self::now_millis(),
+                event_type: event_type.to_string(),
+                payload,
+            };
+            if let Err(e) = storage.append_event(run, &event) {
+                tracing::warn!("Failed to append trace event: {}", e);
+            }
+        }
+    }
+
+    fn save_image_artifact(&self, run: &mut NodeRun, filename: &str, data: &[u8]) {
+        if let Some(storage) = &self.storage {
+            match storage.save_artifact(run, ArtifactKind::Screenshot, filename, data, Value::Null)
+            {
+                Ok(artifact) => run.artifacts.push(artifact),
+                Err(e) => tracing::warn!("Failed to save artifact: {}", e),
+            }
+        }
+    }
+
+    fn finalize_run(&self, run: &mut NodeRun, status: RunStatus) {
+        run.ended_at = Some(Self::now_millis());
+        run.status = status;
+        if let Some(storage) = &self.storage
+            && let Err(e) = storage.save_run(run)
+        {
+            tracing::warn!("Failed to save run: {}", e);
+        }
     }
 
     /// Returns true if a stop command was received.
@@ -136,18 +192,44 @@ impl WorkflowExecutor {
 
             let timeout_ms = node.timeout_ms;
             let retries = node.retries;
+            let trace_level = node.trace_level;
             let node_name = node.name.clone();
             let node_type = node.node_type.clone();
+
+            // Create a run record
+            let mut node_run = self
+                .storage
+                .as_ref()
+                .and_then(|s| s.create_run(node_id, trace_level).ok());
+
+            if let Some(ref run) = node_run {
+                self.emit(ExecutorEvent::RunCreated(node_id, run.clone()));
+                self.record_event(
+                    run,
+                    "node_started",
+                    serde_json::json!({"name": node_name, "type": node_type.display_name()}),
+                );
+            }
 
             let mut attempt = 0;
 
             let succeeded = loop {
                 let result = match &node_type {
                     NodeType::AiStep(params) => {
-                        self.execute_ai_step(params, &tools, &mcp, timeout_ms, &command_rx)
+                        self.execute_ai_step(
+                            params,
+                            &tools,
+                            &mcp,
+                            timeout_ms,
+                            &command_rx,
+                            node_run.as_mut(),
+                        )
+                        .await
+                    }
+                    other => {
+                        self.execute_deterministic(other, &mcp, node_run.as_mut())
                             .await
                     }
-                    other => self.execute_deterministic(other, &mcp).await,
                 };
 
                 match result {
@@ -162,8 +244,18 @@ impl WorkflowExecutor {
                                 retries + 1,
                                 e
                             ));
+                            if let Some(ref run) = node_run {
+                                self.record_event(
+                                    run,
+                                    "retry",
+                                    serde_json::json!({"attempt": attempt, "error": e}),
+                                );
+                            }
                         } else {
                             self.emit_error(format!("Node {} failed: {}", node_name, e));
+                            if let Some(ref mut run) = node_run {
+                                self.finalize_run(run, RunStatus::Failed);
+                            }
                             self.emit(ExecutorEvent::NodeFailed(node_id, e));
                             self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
                             return;
@@ -173,6 +265,9 @@ impl WorkflowExecutor {
             };
 
             if succeeded {
+                if let Some(ref mut run) = node_run {
+                    self.finalize_run(run, RunStatus::Ok);
+                }
                 self.emit(ExecutorEvent::NodeCompleted(node_id));
             }
         }
@@ -189,6 +284,7 @@ impl WorkflowExecutor {
         mcp: &McpClient,
         timeout_ms: Option<u64>,
         command_rx: &Receiver<ExecutorCommand>,
+        mut node_run: Option<&mut NodeRun>,
     ) -> Result<(), String> {
         let mut messages = vec![
             Message::system(workflow_system_prompt()),
@@ -255,11 +351,43 @@ impl WorkflowExecutor {
                         serde_json::from_str(&tool_call.function.arguments).ok();
                     let args = self.resolve_image_paths(args);
 
+                    // Record tool call event
+                    if let Some(ref run) = node_run {
+                        self.record_event(
+                            run,
+                            "tool_call",
+                            serde_json::json!({
+                                "name": tool_call.function.name,
+                                "index": tool_call_count - 1,
+                            }),
+                        );
+                    }
+
                     match mcp.call_tool(&tool_call.function.name, args) {
                         Ok(result) => {
-                            for content in &result.content {
+                            for (img_idx, content) in result.content.iter().enumerate() {
                                 if let ToolContent::Image { data, mime_type } = content {
                                     pending_images.push((data.clone(), mime_type.clone()));
+
+                                    // Save screenshot artifact if trace level allows
+                                    if let Some(ref mut run) = node_run
+                                        && run.trace_level != TraceLevel::Off
+                                    {
+                                        let ext = if mime_type.contains("png") {
+                                            "png"
+                                        } else {
+                                            "jpg"
+                                        };
+                                        let filename = format!(
+                                            "toolcall_{}_{}.{}",
+                                            tool_call_count - 1,
+                                            img_idx,
+                                            ext
+                                        );
+                                        if let Ok(decoded) = base64_decode_image(data) {
+                                            self.save_image_artifact(run, &filename, &decoded);
+                                        }
+                                    }
                                 }
                             }
 
@@ -278,6 +406,19 @@ impl WorkflowExecutor {
                                 result_text.len(),
                                 pending_images.len()
                             ));
+
+                            // Record tool result event
+                            if let Some(ref run) = node_run {
+                                self.record_event(
+                                    run,
+                                    "tool_result",
+                                    serde_json::json!({
+                                        "name": tool_call.function.name,
+                                        "text_len": result_text.len(),
+                                        "image_count": pending_images.len(),
+                                    }),
+                                );
+                            }
 
                             messages.push(Message::tool_result(&tool_call.id, result_text));
                         }
@@ -314,6 +455,7 @@ impl WorkflowExecutor {
         &self,
         node_type: &NodeType,
         mcp: &McpClient,
+        mut node_run: Option<&mut NodeRun>,
     ) -> Result<(), String> {
         let (tool_name, args) = match node_type {
             NodeType::TakeScreenshot(p) => {
@@ -361,7 +503,6 @@ impl WorkflowExecutor {
             NodeType::Click(p) => {
                 let mut args = serde_json::Map::new();
                 if let Some(target) = &p.target {
-                    // target is treated as coordinates or element reference
                     args.insert("target".to_string(), Value::String(target.clone()));
                 }
                 args.insert(
@@ -442,6 +583,11 @@ impl WorkflowExecutor {
             }
         };
 
+        // Record tool call event
+        if let Some(ref run) = node_run {
+            self.record_event(run, "tool_call", serde_json::json!({"name": tool_name}));
+        }
+
         self.log(format!("Calling MCP tool: {}", tool_name));
         let args = self.resolve_image_paths(Some(args));
         match mcp.call_tool(tool_name, args) {
@@ -456,11 +602,40 @@ impl WorkflowExecutor {
                     .collect::<Vec<_>>()
                     .join("\n");
 
-                let image_count = result
-                    .content
-                    .iter()
-                    .filter(|c| matches!(c, ToolContent::Image { .. }))
-                    .count();
+                let mut image_count = 0;
+
+                // Save image artifacts if trace level allows
+                for (img_idx, content) in result.content.iter().enumerate() {
+                    if let ToolContent::Image { data, mime_type } = content {
+                        image_count += 1;
+                        if let Some(ref mut run) = node_run
+                            && run.trace_level != TraceLevel::Off
+                        {
+                            let ext = if mime_type.contains("png") {
+                                "png"
+                            } else {
+                                "jpg"
+                            };
+                            let filename = format!("result_{}.{}", img_idx, ext);
+                            if let Ok(decoded) = base64_decode_image(data) {
+                                self.save_image_artifact(run, &filename, &decoded);
+                            }
+                        }
+                    }
+                }
+
+                // Record tool result event
+                if let Some(ref run) = node_run {
+                    self.record_event(
+                        run,
+                        "tool_result",
+                        serde_json::json!({
+                            "name": tool_name,
+                            "text_len": result_text.len(),
+                            "image_count": image_count,
+                        }),
+                    );
+                }
 
                 self.log(format!(
                     "Tool result: {} chars, {} images",

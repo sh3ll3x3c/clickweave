@@ -216,6 +216,9 @@ impl ClickweaveApp {
                     self.active_node = None;
                     self.push_log(format!("Node {} failed: {}", id, msg));
                 }
+                ExecutorEvent::RunCreated(node_id, run) => {
+                    self.push_log(format!("Run {} created for node {}", run.run_id, node_id));
+                }
                 ExecutorEvent::NodeCompleted(_) | ExecutorEvent::WorkflowCompleted => {
                     self.active_node = None;
                 }
