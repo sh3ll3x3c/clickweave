@@ -113,6 +113,7 @@ impl WorkflowEditor {
     ) -> EditorResponse {
         let mut selected = None;
         let mut deleted = None;
+        let mut hovered_node = None;
 
         // Resolve UUIDs to snarl NodeIds
         let active_snarl_id = active_node.and_then(|uuid| self.uuid_to_snarl.get(&uuid).copied());
@@ -128,8 +129,8 @@ impl WorkflowEditor {
         }
 
         let mut viewer = WorkflowViewer {
-            selected: &mut selected,
             deleted: &mut deleted,
+            hovered_node: &mut hovered_node,
             snarl_to_uuid: &self.snarl_to_uuid,
             active_node: active_snarl_id,
             selected_node: selected_snarl_id,
@@ -139,6 +140,21 @@ impl WorkflowEditor {
             .show(&mut viewer, &self.style, "workflow_graph", ui);
 
         self.sync_to_workflow(workflow);
+
+        // Detect node click: the snarl frame consumes click events for dragging,
+        // so we track which node the pointer hovers over in the viewer callbacks,
+        // then check for a click independently here.
+        let primary_clicked = ui.input(|i| i.pointer.primary_clicked());
+        println!(
+            "DEBUG: hovered={:?} clicked={} deleted={:?}",
+            hovered_node, primary_clicked, deleted
+        );
+        if let Some(hovered) = hovered_node {
+            if primary_clicked && selected.is_none() && deleted.is_none() {
+                selected = Some(hovered);
+                println!("DEBUG: SELECTED {:?}", selected);
+            }
+        }
 
         // Detect canvas click (click on background, not on a node)
         // NOTE: is_using_pointer() must be called outside ui.input() to avoid
@@ -178,8 +194,8 @@ fn pin_info(connected: bool, connected_color: Color32) -> PinInfo {
 }
 
 struct WorkflowViewer<'a> {
-    selected: &'a mut Option<Uuid>,
     deleted: &'a mut Option<Uuid>,
+    hovered_node: &'a mut Option<Uuid>,
     snarl_to_uuid: &'a HashMap<NodeId, Uuid>,
     active_node: Option<NodeId>,
     selected_node: Option<NodeId>,
@@ -220,24 +236,23 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         let node = &snarl[node_id];
         let title = self.title(node);
 
-        let response = ui
-            .horizontal(|ui| {
-                ui.label(&title);
-                let delete_btn =
-                    egui::Button::new(RichText::new("✕").size(10.0).color(theme::NODE_END))
-                        .frame(false);
-                if ui.add(delete_btn).on_hover_text("Delete node").clicked()
-                    && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
-                {
-                    *self.deleted = Some(uuid);
-                }
-            })
-            .response;
+        ui.horizontal(|ui| {
+            ui.label(&title);
+            let delete_btn =
+                egui::Button::new(RichText::new("✕").size(10.0).color(theme::NODE_END))
+                    .frame(false);
+            if ui.add(delete_btn).on_hover_text("Delete node").clicked()
+                && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
+            {
+                *self.deleted = Some(uuid);
+            }
+        });
 
-        if response.clicked()
-            && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
-        {
-            *self.selected = Some(uuid);
+        // Track hover for click detection (done in WorkflowEditor::show)
+        if ui.ui_contains_pointer() {
+            if let Some(&uuid) = self.snarl_to_uuid.get(&node_id) {
+                *self.hovered_node = Some(uuid);
+            }
         }
     }
 
@@ -283,33 +298,32 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         let is_active = self.active_node == Some(node_id);
         let color = theme::category_color(node.category);
 
-        let response = ui
-            .vertical(|ui| {
-                // Active indicator
-                if is_active {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("●").size(11.0).color(theme::ACCENT_GREEN));
-                        ui.label(
-                            RichText::new("Running")
-                                .size(11.0)
-                                .color(theme::ACCENT_GREEN),
-                        );
-                    });
-                }
+        ui.vertical(|ui| {
+            // Active indicator
+            if is_active {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("●").size(11.0).color(theme::ACCENT_GREEN));
+                    ui.label(
+                        RichText::new("Running")
+                            .size(11.0)
+                            .color(theme::ACCENT_GREEN),
+                    );
+                });
+            }
 
-                // Category label
-                ui.label(
-                    RichText::new(node.category.display_name())
-                        .size(11.0)
-                        .color(color),
-                );
-            })
-            .response;
+            // Category label
+            ui.label(
+                RichText::new(node.category.display_name())
+                    .size(11.0)
+                    .color(color),
+            );
+        });
 
-        if response.clicked()
-            && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
-        {
-            *self.selected = Some(uuid);
+        // Track hover for click detection (done in WorkflowEditor::show)
+        if ui.ui_contains_pointer() {
+            if let Some(&uuid) = self.snarl_to_uuid.get(&node_id) {
+                *self.hovered_node = Some(uuid);
+            }
         }
     }
 
