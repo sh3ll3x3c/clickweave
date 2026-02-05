@@ -138,7 +138,7 @@ impl Workflow {
 // New Node Type System
 // =============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NodeCategory {
     Ai,
     Vision,
@@ -487,4 +487,198 @@ pub struct Artifact {
     pub path: String,
     pub metadata: Value,
     pub overlays: Vec<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_type_serialization_roundtrip() {
+        for nt in NodeType::all_defaults() {
+            let json = serde_json::to_string(&nt).expect("serialize");
+            let deserialized: NodeType = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(nt.display_name(), deserialized.display_name());
+            assert_eq!(nt.category(), deserialized.category());
+        }
+    }
+
+    #[test]
+    fn test_node_type_category_correctness() {
+        assert_eq!(
+            NodeType::AiStep(AiStepParams::default()).category(),
+            NodeCategory::Ai
+        );
+        assert_eq!(
+            NodeType::TakeScreenshot(TakeScreenshotParams::default()).category(),
+            NodeCategory::Vision
+        );
+        assert_eq!(
+            NodeType::FindText(FindTextParams::default()).category(),
+            NodeCategory::Vision
+        );
+        assert_eq!(
+            NodeType::FindImage(FindImageParams::default()).category(),
+            NodeCategory::Vision
+        );
+        assert_eq!(
+            NodeType::Click(ClickParams::default()).category(),
+            NodeCategory::Input
+        );
+        assert_eq!(
+            NodeType::TypeText(TypeTextParams::default()).category(),
+            NodeCategory::Input
+        );
+        assert_eq!(
+            NodeType::Scroll(ScrollParams::default()).category(),
+            NodeCategory::Input
+        );
+        assert_eq!(
+            NodeType::ListWindows(ListWindowsParams::default()).category(),
+            NodeCategory::Window
+        );
+        assert_eq!(
+            NodeType::FocusWindow(FocusWindowParams::default()).category(),
+            NodeCategory::Window
+        );
+        assert_eq!(
+            NodeType::AppDebugKitOp(AppDebugKitParams::default()).category(),
+            NodeCategory::AppDebugKit
+        );
+    }
+
+    #[test]
+    fn test_node_type_is_deterministic() {
+        assert!(!NodeType::AiStep(AiStepParams::default()).is_deterministic());
+        assert!(NodeType::TakeScreenshot(TakeScreenshotParams::default()).is_deterministic());
+        assert!(NodeType::Click(ClickParams::default()).is_deterministic());
+        assert!(NodeType::TypeText(TypeTextParams::default()).is_deterministic());
+        assert!(NodeType::Scroll(ScrollParams::default()).is_deterministic());
+        assert!(NodeType::FindText(FindTextParams::default()).is_deterministic());
+        assert!(NodeType::FindImage(FindImageParams::default()).is_deterministic());
+        assert!(NodeType::ListWindows(ListWindowsParams::default()).is_deterministic());
+        assert!(NodeType::FocusWindow(FocusWindowParams::default()).is_deterministic());
+        assert!(NodeType::AppDebugKitOp(AppDebugKitParams::default()).is_deterministic());
+    }
+
+    #[test]
+    fn test_all_defaults_covers_all_categories() {
+        let defaults = NodeType::all_defaults();
+        assert_eq!(defaults.len(), 10);
+
+        let categories: std::collections::HashSet<NodeCategory> =
+            defaults.iter().map(|nt| nt.category()).collect();
+        assert!(categories.contains(&NodeCategory::Ai));
+        assert!(categories.contains(&NodeCategory::Vision));
+        assert!(categories.contains(&NodeCategory::Input));
+        assert!(categories.contains(&NodeCategory::Window));
+        assert!(categories.contains(&NodeCategory::AppDebugKit));
+    }
+
+    #[test]
+    fn test_execution_order_single_entry() {
+        let mut wf = Workflow::default();
+        let a = wf.add_node(
+            NodeType::Click(ClickParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        let c = wf.add_node(
+            NodeType::Scroll(ScrollParams::default()),
+            Position { x: 200.0, y: 0.0 },
+        );
+        wf.add_edge(a, b);
+        wf.add_edge(b, c);
+
+        let order = wf.execution_order();
+        assert_eq!(order, vec![a, b, c]);
+    }
+
+    #[test]
+    fn test_execution_order_no_nodes() {
+        let wf = Workflow::default();
+        assert!(wf.execution_order().is_empty());
+    }
+
+    #[test]
+    fn test_execution_order_disconnected() {
+        let mut wf = Workflow::default();
+        let a = wf.add_node(
+            NodeType::Click(ClickParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        // No edges - both are entry points
+        let order = wf.execution_order();
+        assert_eq!(order.len(), 2);
+        assert!(order.contains(&a));
+        assert!(order.contains(&b));
+    }
+
+    #[test]
+    fn test_execution_order_cycle_safety() {
+        let mut wf = Workflow::default();
+        let a = wf.add_node(
+            NodeType::Click(ClickParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        wf.add_edge(a, b);
+        wf.add_edge(b, a); // cycle
+
+        let order = wf.execution_order();
+        // Should not hang, should visit each node at most once
+        assert!(order.len() <= 2);
+    }
+
+    #[test]
+    fn test_workflow_serialization_roundtrip() {
+        let mut wf = Workflow::new("Test Workflow");
+        let a = wf.add_node(
+            NodeType::AiStep(AiStepParams {
+                prompt: "Do something".to_string(),
+                ..Default::default()
+            }),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::TakeScreenshot(TakeScreenshotParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        wf.add_edge(a, b);
+
+        let json = serde_json::to_string_pretty(&wf).expect("serialize workflow");
+        let deserialized: Workflow = serde_json::from_str(&json).expect("deserialize workflow");
+
+        assert_eq!(deserialized.name, "Test Workflow");
+        assert_eq!(deserialized.nodes.len(), 2);
+        assert_eq!(deserialized.edges.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_node_cleans_edges() {
+        let mut wf = Workflow::default();
+        let a = wf.add_node(
+            NodeType::Click(ClickParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        wf.add_edge(a, b);
+
+        wf.remove_node(a);
+        assert_eq!(wf.nodes.len(), 1);
+        assert_eq!(wf.edges.len(), 0);
+    }
 }

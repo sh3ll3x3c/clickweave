@@ -63,3 +63,88 @@ pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ClickParams, NodeType, Position, TypeTextParams};
+
+    #[test]
+    fn test_validate_empty_workflow() {
+        let wf = Workflow::default();
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::NoNodes));
+    }
+
+    #[test]
+    fn test_validate_no_entry_point() {
+        let mut wf = Workflow::default();
+        let a = wf.add_node(
+            NodeType::Click(ClickParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        // Create edges so every node has an incoming edge
+        wf.add_edge(a, b);
+        wf.add_edge(b, a);
+
+        let err = validate_workflow(&wf).unwrap_err();
+        // This could be NoEntryPoint or CycleDetected depending on check order
+        assert!(
+            matches!(err, ValidationError::NoEntryPoint)
+                || matches!(err, ValidationError::CycleDetected)
+        );
+    }
+
+    #[test]
+    fn test_validate_multiple_outgoing_edges() {
+        let mut wf = Workflow::default();
+        let a = wf.add_node(
+            NodeType::Click(ClickParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        let c = wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            Position { x: 200.0, y: 0.0 },
+        );
+        wf.add_edge(a, b);
+        wf.add_edge(a, c); // a has 2 outgoing
+
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::MultipleOutgoingEdges(_)));
+    }
+
+    #[test]
+    fn test_validate_valid_linear_workflow() {
+        let mut wf = Workflow::default();
+        let a = wf.add_node(
+            NodeType::Click(ClickParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        wf.add_edge(a, b);
+
+        assert!(validate_workflow(&wf).is_ok());
+    }
+
+    #[test]
+    fn test_validate_single_node() {
+        let mut wf = Workflow::default();
+        wf.add_node(
+            NodeType::Click(ClickParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+
+        assert!(validate_workflow(&wf).is_ok());
+    }
+}

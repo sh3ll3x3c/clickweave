@@ -38,7 +38,7 @@ impl RunStorage {
             .join(run_id.to_string())
     }
 
-    fn now_millis() -> u64 {
+    pub(crate) fn now_millis() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -147,5 +147,142 @@ impl RunStorage {
         let data = std::fs::read_to_string(&run_json).context("Failed to read run.json")?;
         let run: NodeRun = serde_json::from_str(&data).context("Failed to parse run.json")?;
         Ok(run)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_storage() -> (RunStorage, PathBuf, Uuid, Uuid) {
+        let workflow_id = Uuid::new_v4();
+        let node_id = Uuid::new_v4();
+        let dir = std::env::temp_dir()
+            .join("clickweave_test")
+            .join(Uuid::new_v4().to_string());
+        let storage = RunStorage::new(&dir, workflow_id);
+        (storage, dir, workflow_id, node_id)
+    }
+
+    fn cleanup(dir: &Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_create_and_load_run() {
+        let (storage, dir, _, node_id) = temp_storage();
+
+        let run = storage
+            .create_run(node_id, crate::TraceLevel::Minimal)
+            .expect("create run");
+        assert_eq!(run.node_id, node_id);
+        assert_eq!(run.status, crate::RunStatus::Ok);
+
+        let loaded = storage.load_run(node_id, run.run_id).expect("load run");
+        assert_eq!(loaded.run_id, run.run_id);
+        assert_eq!(loaded.node_id, node_id);
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_save_and_load_run() {
+        let (storage, dir, _, node_id) = temp_storage();
+
+        let mut run = storage
+            .create_run(node_id, crate::TraceLevel::Full)
+            .expect("create run");
+        run.status = crate::RunStatus::Failed;
+        run.ended_at = Some(RunStorage::now_millis());
+        storage.save_run(&run).expect("save run");
+
+        let loaded = storage.load_run(node_id, run.run_id).expect("load run");
+        assert_eq!(loaded.status, crate::RunStatus::Failed);
+        assert!(loaded.ended_at.is_some());
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_append_event() {
+        let (storage, dir, _, node_id) = temp_storage();
+
+        let run = storage
+            .create_run(node_id, crate::TraceLevel::Minimal)
+            .expect("create run");
+
+        let event = TraceEvent {
+            timestamp: RunStorage::now_millis(),
+            event_type: "test_event".to_string(),
+            payload: serde_json::json!({"key": "value"}),
+        };
+        storage.append_event(&run, &event).expect("append event");
+
+        // Verify the events.jsonl file exists and has content
+        let events_path = storage.run_dir(node_id, run.run_id).join("events.jsonl");
+        let content = std::fs::read_to_string(&events_path).expect("read events");
+        assert!(content.contains("test_event"));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_save_artifact() {
+        let (storage, dir, _, node_id) = temp_storage();
+
+        let run = storage
+            .create_run(node_id, crate::TraceLevel::Full)
+            .expect("create run");
+
+        let data = b"fake image data";
+        let artifact = storage
+            .save_artifact(
+                &run,
+                ArtifactKind::Screenshot,
+                "test.png",
+                data,
+                Value::Null,
+            )
+            .expect("save artifact");
+
+        assert_eq!(artifact.kind, ArtifactKind::Screenshot);
+        assert!(artifact.path.contains("test.png"));
+
+        // Verify file exists
+        assert!(std::path::Path::new(&artifact.path).exists());
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_load_runs_for_node() {
+        let (storage, dir, _, node_id) = temp_storage();
+
+        // Create multiple runs
+        storage
+            .create_run(node_id, crate::TraceLevel::Minimal)
+            .expect("create run 1");
+        storage
+            .create_run(node_id, crate::TraceLevel::Minimal)
+            .expect("create run 2");
+
+        let runs = storage.load_runs_for_node(node_id).expect("load runs");
+        assert_eq!(runs.len(), 2);
+
+        // Should be sorted by started_at
+        assert!(runs[0].started_at <= runs[1].started_at);
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_load_runs_for_nonexistent_node() {
+        let (storage, dir, _, _) = temp_storage();
+        let random_id = Uuid::new_v4();
+
+        let runs = storage.load_runs_for_node(random_id).expect("load runs");
+        assert!(runs.is_empty());
+
+        cleanup(&dir);
     }
 }
