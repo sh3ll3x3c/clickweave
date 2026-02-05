@@ -16,14 +16,9 @@ use uuid::Uuid;
 // Shared state for executor management
 // ============================================================
 
+#[derive(Default)]
 pub struct ExecutorHandle {
     stop_tx: Option<tokio::sync::mpsc::Sender<ExecutorCommand>>,
-}
-
-impl Default for ExecutorHandle {
-    fn default() -> Self {
-        Self { stop_tx: None }
-    }
 }
 
 // ============================================================
