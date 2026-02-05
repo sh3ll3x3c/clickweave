@@ -53,6 +53,30 @@ async stopWorkflow() : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async listRuns(query: RunsQuery) : Promise<Result<NodeRun[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_runs", { query }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadRunEvents(query: RunEventsQuery) : Promise<Result<TraceEvent[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_run_events", { query }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async readArtifactBase64(path: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("read_artifact_base64", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -68,6 +92,8 @@ async stopWorkflow() : Promise<Result<null, string>> {
 
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
+export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
+export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
 export type Check = { name: string; check_type: CheckType; params: JsonValue; on_fail: OnCheckFail }
 export type CheckType = "TextPresent" | "TextAbsent" | "TemplateFound" | "WindowTitleMatches"
 export type ClickParams = { target: string | null; button: MouseButton; click_count: number }
@@ -81,15 +107,20 @@ export type ListWindowsParams = { app_name: string | null; title_pattern: string
 export type MatchMode = "Contains" | "Exact"
 export type MouseButton = "Left" | "Right" | "Center"
 export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; retries: number; trace_level: TraceLevel; expected_outcome: string | null; checks: Check[] }
+export type NodeRun = { run_id: string; node_id: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
 export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams)
 export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
 export type OnCheckFail = "FailNode" | "WarnOnly"
 export type Position = { x: number; y: number }
 export type ProjectData = { path: string; workflow: Workflow }
+export type RunEventsQuery = { project_path: string; workflow_id: string; node_id: string; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; llm_base_url: string; llm_model: string; llm_api_key: string | null; mcp_command: string }
+export type RunStatus = "Ok" | "Failed" | "Stopped"
+export type RunsQuery = { project_path: string; workflow_id: string; node_id: string }
 export type ScreenshotMode = "Screen" | "Window" | "Region"
 export type ScrollParams = { delta_y: number; x: number | null; y: number | null }
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
+export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
 export type TypeTextParams = { text: string; press_enter: boolean }
 export type ValidationResult = { valid: boolean; errors: string[] }

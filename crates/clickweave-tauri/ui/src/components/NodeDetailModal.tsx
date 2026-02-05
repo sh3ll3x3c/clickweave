@@ -1,9 +1,21 @@
-import { useMemo } from "react";
-import type { Node, NodeType, Check, CheckType, OnCheckFail } from "../bindings";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { commands } from "../bindings";
+import type {
+  Artifact,
+  Node,
+  NodeRun,
+  NodeType,
+  Check,
+  CheckType,
+  OnCheckFail,
+  TraceEvent,
+} from "../bindings";
 import type { DetailTab } from "../store/useAppStore";
 
 interface NodeDetailModalProps {
   node: Node | null;
+  projectPath: string | null;
+  workflowId: string;
   tab: DetailTab;
   onTabChange: (tab: DetailTab) => void;
   onUpdate: (id: string, updates: Partial<Node>) => void;
@@ -19,6 +31,8 @@ const tabs: { key: DetailTab; label: string }[] = [
 
 export function NodeDetailModal({
   node,
+  projectPath,
+  workflowId,
   tab,
   onTabChange,
   onUpdate,
@@ -69,11 +83,24 @@ export function NodeDetailModal({
           {tab === "setup" && (
             <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} />
           )}
-          {tab === "trace" && <TracePlaceholder />}
+          {tab === "trace" && (
+            <TraceTab
+              nodeId={node.id}
+              projectPath={projectPath}
+              workflowId={workflowId}
+            />
+          )}
           {tab === "checks" && (
             <ChecksTab node={node} onUpdate={(u) => onUpdate(node.id, u)} />
           )}
-          {tab === "runs" && <RunsPlaceholder />}
+          {tab === "runs" && (
+            <RunsTab
+              nodeId={node.id}
+              projectPath={projectPath}
+              workflowId={workflowId}
+              onSelectRun={() => onTabChange("trace")}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -551,21 +578,340 @@ function ChecksTab({
 }
 
 // ============================================================
-// Placeholders for Trace and Runs (M8)
+// Trace Tab
 // ============================================================
 
-function TracePlaceholder() {
+function TraceTab({
+  nodeId,
+  projectPath,
+  workflowId,
+}: {
+  nodeId: string;
+  projectPath: string | null;
+  workflowId: string;
+}) {
+  const [runs, setRuns] = useState<NodeRun[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [events, setEvents] = useState<TraceEvent[]>([]);
+  const [artifactPreviews, setArtifactPreviews] = useState<
+    Record<string, string>
+  >({});
+
+  // Load runs list
+  useEffect(() => {
+    if (!projectPath) return;
+    commands
+      .listRuns({
+        project_path: projectPath,
+        workflow_id: workflowId,
+        node_id: nodeId,
+      })
+      .then((result) => {
+        if (result.status === "ok") {
+          const sorted = [...result.data].reverse();
+          setRuns(sorted);
+          if (sorted.length > 0 && !selectedRunId) {
+            setSelectedRunId(sorted[0].run_id);
+          }
+        }
+      });
+  }, [projectPath, workflowId, nodeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load events for selected run
+  useEffect(() => {
+    if (!projectPath || !selectedRunId) {
+      setEvents([]);
+      return;
+    }
+    commands
+      .loadRunEvents({
+        project_path: projectPath,
+        workflow_id: workflowId,
+        node_id: nodeId,
+        run_id: selectedRunId,
+      })
+      .then((result) => {
+        if (result.status === "ok") {
+          setEvents(result.data);
+        }
+      });
+  }, [projectPath, workflowId, nodeId, selectedRunId]);
+
+  const selectedRun = runs.find((r) => r.run_id === selectedRunId) ?? null;
+
+  // Load artifact previews for selected run
+  useEffect(() => {
+    if (!selectedRun) return;
+    const screenshots = selectedRun.artifacts.filter(
+      (a) => a.kind === "Screenshot",
+    );
+    for (const art of screenshots) {
+      if (artifactPreviews[art.artifact_id]) continue;
+      commands.readArtifactBase64(art.path).then((result) => {
+        if (result.status === "ok") {
+          setArtifactPreviews((prev) => ({
+            ...prev,
+            [art.artifact_id]: result.data,
+          }));
+        }
+      });
+    }
+  }, [selectedRun]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!projectPath) {
+    return (
+      <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
+        Save the project first to see trace data.
+      </div>
+    );
+  }
+
+  if (runs.length === 0) {
+    return (
+      <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
+        No runs yet. Execute the workflow to see trace data.
+      </div>
+    );
+  }
+
+  const duration =
+    selectedRun?.ended_at && selectedRun.started_at
+      ? ((selectedRun.ended_at - selectedRun.started_at) / 1000).toFixed(1)
+      : null;
+
   return (
-    <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
-      Trace events will appear here after running the workflow.
+    <div className="space-y-4">
+      {/* Run selector */}
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-[var(--text-secondary)]">Run:</label>
+        <select
+          value={selectedRunId ?? ""}
+          onChange={(e) => setSelectedRunId(e.target.value)}
+          className="flex-1 rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)]"
+        >
+          {runs.map((run) => (
+            <option key={run.run_id} value={run.run_id}>
+              {new Date(run.started_at).toLocaleString()} — {run.status}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Run summary */}
+      {selectedRun && (
+        <div className="flex items-center gap-3 rounded bg-[var(--bg-input)] px-3 py-2">
+          <StatusBadge status={selectedRun.status} />
+          {duration && (
+            <span className="text-xs text-[var(--text-secondary)]">
+              {duration}s
+            </span>
+          )}
+          <span className="text-xs text-[var(--text-muted)]">
+            {events.length} events
+          </span>
+          <span className="text-xs text-[var(--text-muted)]">
+            {selectedRun.artifacts.length} artifacts
+          </span>
+        </div>
+      )}
+
+      {/* Events timeline */}
+      {events.length > 0 && (
+        <div>
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Events
+          </h4>
+          <div className="max-h-48 space-y-1 overflow-y-auto">
+            {events.map((event, i) => (
+              <div
+                key={i}
+                className="flex items-start gap-2 rounded bg-[var(--bg-input)] px-2.5 py-1.5"
+              >
+                <span className="mt-px shrink-0 text-[10px] font-mono text-[var(--text-muted)]">
+                  {new Date(event.timestamp).toLocaleTimeString()}
+                </span>
+                <span
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${eventTypeColor(event.event_type)}`}
+                >
+                  {event.event_type}
+                </span>
+                <span className="text-[11px] text-[var(--text-secondary)] truncate">
+                  {formatEventPayload(event.payload)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Artifacts */}
+      {selectedRun && selectedRun.artifacts.length > 0 && (
+        <div>
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Artifacts
+          </h4>
+          <div className="grid grid-cols-2 gap-2">
+            {selectedRun.artifacts.map((art) => (
+              <ArtifactCard
+                key={art.artifact_id}
+                artifact={art}
+                preview={artifactPreviews[art.artifact_id]}
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function RunsPlaceholder() {
+function StatusBadge({ status }: { status: string }) {
+  const colors =
+    status === "Ok"
+      ? "bg-[var(--accent-green)]/20 text-[var(--accent-green)]"
+      : status === "Failed"
+        ? "bg-red-500/20 text-red-400"
+        : "bg-yellow-500/20 text-yellow-400";
   return (
-    <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
-      Run history will appear here after executing nodes.
+    <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${colors}`}>
+      {status}
+    </span>
+  );
+}
+
+function eventTypeColor(eventType: string): string {
+  if (eventType === "node_started") return "bg-blue-500/20 text-blue-400";
+  if (eventType === "tool_call") return "bg-purple-500/20 text-purple-400";
+  if (eventType === "tool_result") return "bg-green-500/20 text-green-400";
+  if (eventType === "retry") return "bg-yellow-500/20 text-yellow-400";
+  return "bg-[var(--bg-hover)] text-[var(--text-secondary)]";
+}
+
+function formatEventPayload(payload: unknown): string {
+  if (payload === null || payload === undefined) return "";
+  if (typeof payload === "string") return payload;
+  if (typeof payload === "object") {
+    const obj = payload as Record<string, unknown>;
+    const parts: string[] = [];
+    if (obj.name) parts.push(String(obj.name));
+    if (obj.type) parts.push(String(obj.type));
+    if (obj.error) parts.push(`error: ${String(obj.error)}`);
+    if (obj.attempt) parts.push(`attempt ${String(obj.attempt)}`);
+    if (obj.text_len) parts.push(`${String(obj.text_len)} chars`);
+    if (obj.image_count) parts.push(`${String(obj.image_count)} images`);
+    return parts.join(" | ") || JSON.stringify(payload);
+  }
+  return String(payload);
+}
+
+function ArtifactCard({
+  artifact,
+  preview,
+}: {
+  artifact: Artifact;
+  preview?: string;
+}) {
+  const filename = artifact.path.split("/").pop() ?? artifact.path;
+  const isImage = artifact.kind === "Screenshot" || artifact.kind === "TemplateMatch";
+
+  return (
+    <div className="rounded border border-[var(--border)] bg-[var(--bg-input)] p-2">
+      {isImage && preview ? (
+        <img
+          src={`data:image/png;base64,${preview}`}
+          alt={filename}
+          className="mb-1.5 w-full rounded object-contain"
+          style={{ maxHeight: 120 }}
+        />
+      ) : (
+        <div className="mb-1.5 flex h-16 items-center justify-center rounded bg-[var(--bg-dark)] text-xs text-[var(--text-muted)]">
+          {artifact.kind}
+        </div>
+      )}
+      <div className="truncate text-[10px] text-[var(--text-secondary)]">
+        {filename}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Runs Tab
+// ============================================================
+
+function RunsTab({
+  nodeId,
+  projectPath,
+  workflowId,
+  onSelectRun,
+}: {
+  nodeId: string;
+  projectPath: string | null;
+  workflowId: string;
+  onSelectRun: () => void;
+}) {
+  const [runs, setRuns] = useState<NodeRun[]>([]);
+
+  useEffect(() => {
+    if (!projectPath) return;
+    commands
+      .listRuns({
+        project_path: projectPath,
+        workflow_id: workflowId,
+        node_id: nodeId,
+      })
+      .then((result) => {
+        if (result.status === "ok") {
+          setRuns([...result.data].reverse());
+        }
+      });
+  }, [projectPath, workflowId, nodeId]);
+
+  if (!projectPath) {
+    return (
+      <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
+        Save the project first to see run history.
+      </div>
+    );
+  }
+
+  if (runs.length === 0) {
+    return (
+      <div className="flex h-32 items-center justify-center text-xs text-[var(--text-muted)]">
+        No runs yet. Execute the workflow to create runs.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      {runs.map((run) => {
+        const duration =
+          run.ended_at && run.started_at
+            ? ((run.ended_at - run.started_at) / 1000).toFixed(1)
+            : null;
+
+        return (
+          <button
+            key={run.run_id}
+            onClick={onSelectRun}
+            className="flex w-full items-center gap-3 rounded bg-[var(--bg-input)] px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]"
+          >
+            <StatusBadge status={run.status} />
+            <span className="flex-1 text-xs text-[var(--text-primary)]">
+              {new Date(run.started_at).toLocaleString()}
+            </span>
+            {duration && (
+              <span className="text-xs text-[var(--text-muted)]">
+                {duration}s
+              </span>
+            )}
+            <span className="text-xs text-[var(--text-muted)]">
+              {run.artifacts.length} artifacts
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

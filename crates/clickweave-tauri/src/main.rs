@@ -19,6 +19,9 @@ fn main() {
         node_type_defaults,
         run_workflow,
         stop_workflow,
+        list_runs,
+        load_run_events,
+        read_artifact_base64,
     ]);
 
     #[cfg(debug_assertions)]

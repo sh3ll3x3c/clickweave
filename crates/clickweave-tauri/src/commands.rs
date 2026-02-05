@@ -1,4 +1,7 @@
-use clickweave_core::{NodeType, ValidationError, Workflow, validate_workflow};
+use clickweave_core::storage::RunStorage;
+use clickweave_core::{
+    NodeRun, NodeType, TraceEvent, ValidationError, Workflow, validate_workflow,
+};
 use clickweave_engine::{ExecutorCommand, ExecutorEvent, WorkflowExecutor};
 use clickweave_llm::LlmConfig;
 use serde::{Deserialize, Serialize};
@@ -7,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
+use uuid::Uuid;
 
 // ============================================================
 // Shared state for executor management
@@ -54,6 +58,21 @@ pub struct RunRequest {
     pub llm_model: String,
     pub llm_api_key: Option<String>,
     pub mcp_command: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct RunsQuery {
+    pub project_path: String,
+    pub workflow_id: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct RunEventsQuery {
+    pub project_path: String,
+    pub workflow_id: String,
+    pub node_id: String,
+    pub run_id: String,
 }
 
 // ============================================================
@@ -328,4 +347,65 @@ pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), String> {
     } else {
         Err("No workflow is running".to_string())
     }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_runs(query: RunsQuery) -> Result<Vec<NodeRun>, String> {
+    let workflow_id: Uuid = query
+        .workflow_id
+        .parse()
+        .map_err(|_| "Invalid workflow ID".to_string())?;
+    let node_id: Uuid = query
+        .node_id
+        .parse()
+        .map_err(|_| "Invalid node ID".to_string())?;
+
+    let storage = RunStorage::new(&PathBuf::from(&query.project_path), workflow_id);
+    storage
+        .load_runs_for_node(node_id)
+        .map_err(|e| format!("Failed to load runs: {}", e))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn load_run_events(query: RunEventsQuery) -> Result<Vec<TraceEvent>, String> {
+    let workflow_id: Uuid = query
+        .workflow_id
+        .parse()
+        .map_err(|_| "Invalid workflow ID".to_string())?;
+    let node_id: Uuid = query
+        .node_id
+        .parse()
+        .map_err(|_| "Invalid node ID".to_string())?;
+    let run_id: Uuid = query
+        .run_id
+        .parse()
+        .map_err(|_| "Invalid run ID".to_string())?;
+
+    let storage = RunStorage::new(&PathBuf::from(&query.project_path), workflow_id);
+    let events_path = storage.run_dir(node_id, run_id).join("events.jsonl");
+
+    if !events_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = std::fs::read_to_string(&events_path)
+        .map_err(|e| format!("Failed to read events.jsonl: {}", e))?;
+
+    let events: Vec<TraceEvent> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    Ok(events)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn read_artifact_base64(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let data = std::fs::read(&path).map_err(|e| format!("Failed to read artifact: {}", e))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&data))
 }

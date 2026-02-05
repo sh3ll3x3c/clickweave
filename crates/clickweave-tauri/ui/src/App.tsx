@@ -157,6 +157,8 @@ function App() {
       {/* Node detail modal */}
       <NodeDetailModal
         node={selectedNodeData}
+        projectPath={state.projectPath}
+        workflowId={state.workflow.id}
         tab={state.detailTab}
         onTabChange={actions.setDetailTab}
         onUpdate={actions.updateNode}
