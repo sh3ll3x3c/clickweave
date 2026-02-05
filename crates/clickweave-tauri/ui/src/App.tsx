@@ -6,9 +6,19 @@ import { LogsDrawer } from "./components/LogsDrawer";
 import { FloatingToolbar } from "./components/FloatingToolbar";
 import { SettingsModal } from "./components/SettingsModal";
 import { GraphCanvas } from "./components/GraphCanvas";
+import { NodeDetailModal } from "./components/NodeDetailModal";
+import { useMemo } from "react";
 
 function App() {
   const [state, actions] = useAppStore();
+
+  const selectedNodeData = useMemo(
+    () =>
+      state.selectedNode
+        ? state.workflow.nodes.find((n) => n.id === state.selectedNode) ?? null
+        : null,
+    [state.selectedNode, state.workflow.nodes],
+  );
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-dark)]">
@@ -81,6 +91,15 @@ function App() {
           onClear={actions.clearLogs}
         />
       </div>
+
+      {/* Node detail modal */}
+      <NodeDetailModal
+        node={selectedNodeData}
+        tab={state.detailTab}
+        onTabChange={actions.setDetailTab}
+        onUpdate={actions.updateNode}
+        onClose={() => actions.selectNode(null)}
+      />
 
       {/* Settings modal */}
       <SettingsModal
