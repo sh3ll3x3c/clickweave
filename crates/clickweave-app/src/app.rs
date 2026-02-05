@@ -3,7 +3,10 @@ use crate::executor::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExe
 use crate::theme::{
     self, ACCENT_CORAL, ACCENT_GREEN, BG_DARK, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
-use clickweave_core::{NodeCategory, NodeType, Workflow, validate_workflow};
+use clickweave_core::{
+    FocusMethod, MatchMode, MouseButton, NodeCategory, NodeType, ScreenshotMode, TraceLevel,
+    Workflow, validate_workflow,
+};
 use clickweave_llm::LlmConfig;
 use eframe::egui::{self, Align, Align2, Button, Color32, Layout, RichText, TextureHandle, Vec2};
 use std::collections::HashMap;
@@ -521,7 +524,7 @@ impl ClickweaveApp {
                     .auto_shrink([false; 2])
                     .show(ui, |ui| match self.detail_tab {
                         DetailTab::Setup => {
-                            self.show_setup_tab_stub(ui, node_id);
+                            self.show_setup_tab(ui, node_id);
                         }
                         DetailTab::Trace => {
                             ui.label(RichText::new("Trace tab - coming soon").color(TEXT_MUTED));
@@ -545,25 +548,23 @@ impl ClickweaveApp {
         }
     }
 
-    fn show_setup_tab_stub(&mut self, ui: &mut egui::Ui, node_id: uuid::Uuid) {
+    fn show_setup_tab(&mut self, ui: &mut egui::Ui, node_id: uuid::Uuid) {
         let Some(node) = self.workflow.find_node_mut(node_id) else {
             return;
         };
 
-        // Node name
+        // === Common fields ===
         ui.label(RichText::new("Name").size(12.0).color(TEXT_SECONDARY));
         ui.add_space(4.0);
         ui.text_edit_singleline(&mut node.name);
         ui.add_space(12.0);
 
-        // Enabled toggle
         ui.horizontal(|ui| {
             ui.label(RichText::new("Enabled").size(12.0).color(TEXT_SECONDARY));
             ui.checkbox(&mut node.enabled, "");
         });
         ui.add_space(12.0);
 
-        // Timeout
         ui.label(
             RichText::new("Timeout (ms, 0 = none)")
                 .size(12.0)
@@ -583,21 +584,535 @@ impl ClickweaveApp {
         }
         ui.add_space(12.0);
 
-        // Retries
         ui.label(RichText::new("Retries").size(12.0).color(TEXT_SECONDARY));
         ui.add_space(4.0);
         ui.add(egui::DragValue::new(&mut node.retries).range(0..=10));
-        ui.add_space(16.0);
+        ui.add_space(12.0);
 
-        let type_name = node.node_type.display_name().to_string();
+        // Trace level
         ui.label(
-            RichText::new(format!(
-                "Per-type setup for {} coming in next commit",
-                type_name
-            ))
-            .size(12.0)
-            .color(TEXT_MUTED),
+            RichText::new("Trace level")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
         );
+        ui.add_space(4.0);
+        egui::ComboBox::from_id_salt("trace_level")
+            .selected_text(match node.trace_level {
+                TraceLevel::Off => "Off",
+                TraceLevel::Minimal => "Minimal",
+                TraceLevel::Full => "Full",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut node.trace_level, TraceLevel::Off, "Off");
+                ui.selectable_value(&mut node.trace_level, TraceLevel::Minimal, "Minimal");
+                ui.selectable_value(&mut node.trace_level, TraceLevel::Full, "Full");
+            });
+        ui.add_space(12.0);
+
+        // Expected outcome
+        ui.label(
+            RichText::new("Expected outcome (optional)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut outcome = node.expected_outcome.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut outcome).changed() {
+            node.expected_outcome = if outcome.is_empty() {
+                None
+            } else {
+                Some(outcome)
+            };
+        }
+
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(12.0);
+
+        // === Per-type fields ===
+        match &mut node.node_type {
+            NodeType::AiStep(params) => {
+                Self::show_ai_step_fields(ui, params);
+            }
+            NodeType::TakeScreenshot(params) => {
+                Self::show_take_screenshot_fields(ui, params);
+            }
+            NodeType::FindText(params) => {
+                Self::show_find_text_fields(ui, params);
+            }
+            NodeType::FindImage(params) => {
+                Self::show_find_image_fields(ui, params);
+            }
+            NodeType::Click(params) => {
+                Self::show_click_fields(ui, params);
+            }
+            NodeType::TypeText(params) => {
+                Self::show_type_text_fields(ui, params);
+            }
+            NodeType::Scroll(params) => {
+                Self::show_scroll_fields(ui, params);
+            }
+            NodeType::ListWindows(params) => {
+                Self::show_list_windows_fields(ui, params);
+            }
+            NodeType::FocusWindow(params) => {
+                Self::show_focus_window_fields(ui, params);
+            }
+            NodeType::AppDebugKitOp(params) => {
+                Self::show_debugkit_fields(ui, params);
+            }
+        }
+    }
+
+    fn show_ai_step_fields(ui: &mut egui::Ui, params: &mut clickweave_core::AiStepParams) {
+        ui.label(RichText::new("Prompt").size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        ui.add(
+            egui::TextEdit::multiline(&mut params.prompt)
+                .desired_rows(5)
+                .desired_width(ui.available_width()),
+        );
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Button text (optional)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut btn_text = params.button_text.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut btn_text).changed() {
+            params.button_text = if btn_text.is_empty() {
+                None
+            } else {
+                Some(btn_text)
+            };
+        }
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Template image (optional)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut img_path = params.template_image.clone().unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut img_path)
+                    .desired_width(ui.available_width() - 70.0),
+            );
+            if ui.button("Browse").clicked()
+                && let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Images", &["png", "jpg", "jpeg"])
+                    .pick_file()
+            {
+                img_path = file.to_string_lossy().to_string();
+            }
+        });
+        if img_path != params.template_image.clone().unwrap_or_default() {
+            params.template_image = if img_path.is_empty() {
+                None
+            } else {
+                Some(img_path)
+            };
+        }
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Max tool calls")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut max_calls = params.max_tool_calls.unwrap_or(10);
+        if ui
+            .add(egui::DragValue::new(&mut max_calls).range(1..=100))
+            .changed()
+        {
+            params.max_tool_calls = Some(max_calls);
+        }
+        ui.add_space(12.0);
+
+        // Allowed tools
+        ui.label(
+            RichText::new("Allowed tools (comma-separated, empty = all)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut tools_str = params
+            .allowed_tools
+            .as_ref()
+            .map(|t| t.join(", "))
+            .unwrap_or_default();
+        if ui.text_edit_singleline(&mut tools_str).changed() {
+            params.allowed_tools = if tools_str.trim().is_empty() {
+                None
+            } else {
+                Some(
+                    tools_str
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                )
+            };
+        }
+    }
+
+    fn show_take_screenshot_fields(
+        ui: &mut egui::Ui,
+        params: &mut clickweave_core::TakeScreenshotParams,
+    ) {
+        ui.label(RichText::new("Mode").size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        egui::ComboBox::from_id_salt("screenshot_mode")
+            .selected_text(match params.mode {
+                ScreenshotMode::Screen => "Screen",
+                ScreenshotMode::Window => "Window",
+                ScreenshotMode::Region => "Region",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut params.mode, ScreenshotMode::Screen, "Screen");
+                ui.selectable_value(&mut params.mode, ScreenshotMode::Window, "Window");
+                ui.selectable_value(&mut params.mode, ScreenshotMode::Region, "Region");
+            });
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Target (app name / window id)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut target = params.target.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut target).changed() {
+            params.target = if target.is_empty() {
+                None
+            } else {
+                Some(target)
+            };
+        }
+        ui.add_space(12.0);
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Include OCR")
+                    .size(12.0)
+                    .color(TEXT_SECONDARY),
+            );
+            ui.checkbox(&mut params.include_ocr, "");
+        });
+    }
+
+    fn show_find_text_fields(ui: &mut egui::Ui, params: &mut clickweave_core::FindTextParams) {
+        ui.label(
+            RichText::new("Search text")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        ui.text_edit_singleline(&mut params.search_text);
+        ui.add_space(12.0);
+
+        ui.label(RichText::new("Match mode").size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        egui::ComboBox::from_id_salt("match_mode")
+            .selected_text(match params.match_mode {
+                MatchMode::Contains => "Contains",
+                MatchMode::Exact => "Exact",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut params.match_mode, MatchMode::Contains, "Contains");
+                ui.selectable_value(&mut params.match_mode, MatchMode::Exact, "Exact");
+            });
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Scope (optional)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut scope = params.scope.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut scope).changed() {
+            params.scope = if scope.is_empty() { None } else { Some(scope) };
+        }
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Select result (optional)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut select = params.select_result.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut select).changed() {
+            params.select_result = if select.is_empty() {
+                None
+            } else {
+                Some(select)
+            };
+        }
+    }
+
+    fn show_find_image_fields(ui: &mut egui::Ui, params: &mut clickweave_core::FindImageParams) {
+        ui.label(
+            RichText::new("Template image")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut img_path = params.template_image.clone().unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut img_path)
+                    .desired_width(ui.available_width() - 70.0),
+            );
+            if ui.button("Browse").clicked()
+                && let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Images", &["png", "jpg", "jpeg"])
+                    .pick_file()
+            {
+                img_path = file.to_string_lossy().to_string();
+            }
+        });
+        if img_path != params.template_image.clone().unwrap_or_default() {
+            params.template_image = if img_path.is_empty() {
+                None
+            } else {
+                Some(img_path)
+            };
+        }
+        ui.add_space(12.0);
+
+        ui.label(RichText::new("Threshold").size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        let mut threshold = params.threshold as f32;
+        if ui
+            .add(egui::Slider::new(&mut threshold, 0.0..=1.0))
+            .changed()
+        {
+            params.threshold = threshold as f64;
+        }
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Max results")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        ui.add(egui::DragValue::new(&mut params.max_results).range(1..=20));
+    }
+
+    fn show_click_fields(ui: &mut egui::Ui, params: &mut clickweave_core::ClickParams) {
+        ui.label(
+            RichText::new("Target (coordinates or element)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut target = params.target.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut target).changed() {
+            params.target = if target.is_empty() {
+                None
+            } else {
+                Some(target)
+            };
+        }
+        ui.add_space(12.0);
+
+        ui.label(RichText::new("Button").size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        egui::ComboBox::from_id_salt("mouse_button")
+            .selected_text(match params.button {
+                MouseButton::Left => "Left",
+                MouseButton::Right => "Right",
+                MouseButton::Center => "Center",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut params.button, MouseButton::Left, "Left");
+                ui.selectable_value(&mut params.button, MouseButton::Right, "Right");
+                ui.selectable_value(&mut params.button, MouseButton::Center, "Center");
+            });
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Click count")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        ui.add(egui::DragValue::new(&mut params.click_count).range(1..=3));
+    }
+
+    fn show_type_text_fields(ui: &mut egui::Ui, params: &mut clickweave_core::TypeTextParams) {
+        ui.label(RichText::new("Text").size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        ui.add(
+            egui::TextEdit::multiline(&mut params.text)
+                .desired_rows(3)
+                .desired_width(ui.available_width()),
+        );
+        ui.add_space(12.0);
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Press Enter after")
+                    .size(12.0)
+                    .color(TEXT_SECONDARY),
+            );
+            ui.checkbox(&mut params.press_enter, "");
+        });
+    }
+
+    fn show_scroll_fields(ui: &mut egui::Ui, params: &mut clickweave_core::ScrollParams) {
+        ui.label(
+            RichText::new("Delta Y (negative=up, positive=down)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        ui.add(egui::DragValue::new(&mut params.delta_y).range(-1000..=1000));
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("X position (optional)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut x = params.x.unwrap_or(0.0);
+        if ui.add(egui::DragValue::new(&mut x).speed(1.0)).changed() {
+            params.x = if x == 0.0 { None } else { Some(x) };
+        }
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Y position (optional)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut y = params.y.unwrap_or(0.0);
+        if ui.add(egui::DragValue::new(&mut y).speed(1.0)).changed() {
+            params.y = if y == 0.0 { None } else { Some(y) };
+        }
+    }
+
+    fn show_list_windows_fields(
+        ui: &mut egui::Ui,
+        params: &mut clickweave_core::ListWindowsParams,
+    ) {
+        ui.label(
+            RichText::new("App name filter (optional)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut app_name = params.app_name.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut app_name).changed() {
+            params.app_name = if app_name.is_empty() {
+                None
+            } else {
+                Some(app_name)
+            };
+        }
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Title pattern (optional)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut pattern = params.title_pattern.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut pattern).changed() {
+            params.title_pattern = if pattern.is_empty() {
+                None
+            } else {
+                Some(pattern)
+            };
+        }
+    }
+
+    fn show_focus_window_fields(
+        ui: &mut egui::Ui,
+        params: &mut clickweave_core::FocusWindowParams,
+    ) {
+        ui.label(RichText::new("Method").size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        egui::ComboBox::from_id_salt("focus_method")
+            .selected_text(match params.method {
+                FocusMethod::WindowId => "Window ID",
+                FocusMethod::AppName => "App Name",
+                FocusMethod::TitlePattern => "Title Pattern",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut params.method, FocusMethod::WindowId, "Window ID");
+                ui.selectable_value(&mut params.method, FocusMethod::AppName, "App Name");
+                ui.selectable_value(
+                    &mut params.method,
+                    FocusMethod::TitlePattern,
+                    "Title Pattern",
+                );
+            });
+        ui.add_space(12.0);
+
+        let value_label = match params.method {
+            FocusMethod::WindowId => "Window ID",
+            FocusMethod::AppName => "App name",
+            FocusMethod::TitlePattern => "Title pattern",
+        };
+        ui.label(RichText::new(value_label).size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        let mut value = params.value.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut value).changed() {
+            params.value = if value.is_empty() { None } else { Some(value) };
+        }
+        ui.add_space(12.0);
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Bring to front")
+                    .size(12.0)
+                    .color(TEXT_SECONDARY),
+            );
+            ui.checkbox(&mut params.bring_to_front, "");
+        });
+    }
+
+    fn show_debugkit_fields(ui: &mut egui::Ui, params: &mut clickweave_core::AppDebugKitParams) {
+        ui.label(
+            RichText::new("Operation name")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        ui.text_edit_singleline(&mut params.operation_name);
+        ui.add_space(12.0);
+
+        ui.label(
+            RichText::new("Parameters (JSON)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut json_str = serde_json::to_string_pretty(&params.parameters).unwrap_or_default();
+        if ui
+            .add(
+                egui::TextEdit::multiline(&mut json_str)
+                    .desired_rows(5)
+                    .desired_width(ui.available_width())
+                    .code_editor(),
+            )
+            .changed()
+            && let Ok(val) = serde_json::from_str(&json_str)
+        {
+            params.parameters = val;
+        }
     }
 
     fn show_node_palette_inline(&mut self, ui: &mut egui::Ui) {
