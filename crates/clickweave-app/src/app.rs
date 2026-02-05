@@ -3,9 +3,10 @@ use crate::executor::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExe
 use crate::theme::{
     self, ACCENT_CORAL, ACCENT_GREEN, BG_DARK, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
+use clickweave_core::storage::RunStorage;
 use clickweave_core::{
-    FocusMethod, MatchMode, MouseButton, NodeCategory, NodeType, ScreenshotMode, TraceLevel,
-    Workflow, validate_workflow,
+    Check, CheckType, FocusMethod, MatchMode, MouseButton, NodeCategory, NodeRun, NodeType,
+    OnCheckFail, RunStatus, ScreenshotMode, TraceLevel, Workflow, validate_workflow,
 };
 use clickweave_llm::LlmConfig;
 use eframe::egui::{self, Align, Align2, Button, Color32, Layout, RichText, TextureHandle, Vec2};
@@ -51,6 +52,11 @@ pub struct ClickweaveApp {
     // Image preview cache (used in setup tab)
     #[allow(dead_code)]
     texture_cache: HashMap<String, TextureHandle>,
+
+    // Run data (cached per selected node)
+    cached_runs_node: Option<uuid::Uuid>,
+    cached_runs: Vec<NodeRun>,
+    selected_run_index: Option<usize>,
 }
 
 impl ClickweaveApp {
@@ -78,6 +84,9 @@ impl ClickweaveApp {
             node_search: String::new(),
             is_active: false,
             texture_cache: HashMap::new(),
+            cached_runs_node: None,
+            cached_runs: Vec::new(),
+            selected_run_index: None,
         }
     }
 
@@ -530,13 +539,13 @@ impl ClickweaveApp {
                             self.show_setup_tab(ui, node_id);
                         }
                         DetailTab::Trace => {
-                            ui.label(RichText::new("Trace tab - coming soon").color(TEXT_MUTED));
+                            self.show_trace_tab(ui, node_id);
                         }
                         DetailTab::Checks => {
-                            ui.label(RichText::new("Checks tab - coming soon").color(TEXT_MUTED));
+                            self.show_checks_tab(ui, node_id);
                         }
                         DetailTab::Runs => {
-                            ui.label(RichText::new("Runs tab - coming soon").color(TEXT_MUTED));
+                            self.show_runs_tab(ui, node_id);
                         }
                     });
             });
@@ -1118,6 +1127,440 @@ impl ClickweaveApp {
         }
     }
 
+    fn ensure_runs_loaded(&mut self, node_id: uuid::Uuid) {
+        if self.cached_runs_node == Some(node_id) {
+            return;
+        }
+        self.cached_runs_node = Some(node_id);
+        self.cached_runs = Vec::new();
+        self.selected_run_index = None;
+
+        if let Some(project_path) = &self.project_path {
+            let storage = RunStorage::new(project_path, self.workflow.id);
+            match storage.load_runs_for_node(node_id) {
+                Ok(runs) => {
+                    if !runs.is_empty() {
+                        self.selected_run_index = Some(runs.len() - 1);
+                    }
+                    self.cached_runs = runs;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load runs for node {}: {}", node_id, e);
+                }
+            }
+        }
+    }
+
+    fn refresh_runs(&mut self, node_id: uuid::Uuid) {
+        self.cached_runs_node = None;
+        self.ensure_runs_loaded(node_id);
+    }
+
+    fn show_trace_tab(&mut self, ui: &mut egui::Ui, node_id: uuid::Uuid) {
+        self.ensure_runs_loaded(node_id);
+
+        if self.cached_runs.is_empty() {
+            ui.label(
+                RichText::new("No runs recorded yet. Execute this node to see trace data.")
+                    .color(TEXT_MUTED),
+            );
+            return;
+        }
+
+        // Run selector
+        let run_count = self.cached_runs.len();
+        let selected_idx = self
+            .selected_run_index
+            .unwrap_or(run_count.saturating_sub(1));
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Run:").size(12.0).color(TEXT_SECONDARY));
+            egui::ComboBox::from_id_salt("trace_run_selector")
+                .selected_text(format!("Run {} of {}", selected_idx + 1, run_count))
+                .show_ui(ui, |ui| {
+                    for i in (0..run_count).rev() {
+                        let run = &self.cached_runs[i];
+                        let status_icon = match run.status {
+                            RunStatus::Ok => "✓",
+                            RunStatus::Failed => "✗",
+                            RunStatus::Stopped => "⏹",
+                        };
+                        let label = format!(
+                            "{} Run {} - {}",
+                            status_icon,
+                            i + 1,
+                            format_timestamp(run.started_at)
+                        );
+                        if ui.selectable_label(selected_idx == i, label).clicked() {
+                            self.selected_run_index = Some(i);
+                        }
+                    }
+                });
+
+            if ui.button("↻ Refresh").clicked() {
+                self.refresh_runs(node_id);
+            }
+        });
+
+        ui.add_space(12.0);
+
+        let Some(run) = self.cached_runs.get(selected_idx) else {
+            return;
+        };
+
+        // Run summary
+        let status_color = match run.status {
+            RunStatus::Ok => ACCENT_GREEN,
+            RunStatus::Failed => theme::NODE_END,
+            RunStatus::Stopped => TEXT_MUTED,
+        };
+        let status_text = match run.status {
+            RunStatus::Ok => "OK",
+            RunStatus::Failed => "Failed",
+            RunStatus::Stopped => "Stopped",
+        };
+        let duration = run.ended_at.map(|e| e.saturating_sub(run.started_at));
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Status: {}", status_text)).color(status_color));
+            if let Some(ms) = duration {
+                ui.label(
+                    RichText::new(format!("  Duration: {}ms", ms))
+                        .size(12.0)
+                        .color(TEXT_SECONDARY),
+                );
+            }
+            ui.label(
+                RichText::new(format!("  Artifacts: {}", run.artifacts.len()))
+                    .size(12.0)
+                    .color(TEXT_SECONDARY),
+            );
+        });
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // Events timeline
+        if run.events.is_empty() {
+            ui.label(RichText::new("No trace events recorded.").color(TEXT_MUTED));
+        } else {
+            ui.label(RichText::new("Events").size(14.0).color(TEXT_PRIMARY));
+            ui.add_space(4.0);
+
+            for (i, event) in run.events.iter().enumerate() {
+                let icon = match event.event_type.as_str() {
+                    "node_started" => "▶",
+                    "tool_call" => "🔧",
+                    "tool_result" => "📋",
+                    "retry" => "🔄",
+                    _ => "•",
+                };
+
+                let relative_ms = event.timestamp.saturating_sub(run.started_at);
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("+{}ms", relative_ms))
+                            .size(11.0)
+                            .color(TEXT_MUTED)
+                            .monospace(),
+                    );
+                    ui.label(RichText::new(icon).size(12.0));
+                    ui.label(
+                        RichText::new(&event.event_type)
+                            .size(12.0)
+                            .color(TEXT_PRIMARY),
+                    );
+                });
+
+                // Show payload summary (collapsed)
+                let payload_str = serde_json::to_string(&event.payload).unwrap_or_default();
+                if payload_str != "null" && payload_str != "{}" {
+                    let collapse_id = format!("event_payload_{}_{}", node_id, i);
+                    egui::CollapsingHeader::new(
+                        RichText::new("payload").size(11.0).color(TEXT_MUTED),
+                    )
+                    .id_salt(collapse_id)
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        let pretty =
+                            serde_json::to_string_pretty(&event.payload).unwrap_or(payload_str);
+                        ui.label(
+                            RichText::new(pretty)
+                                .size(11.0)
+                                .color(TEXT_SECONDARY)
+                                .monospace(),
+                        );
+                    });
+                }
+
+                if i < run.events.len() - 1 {
+                    ui.add_space(4.0);
+                }
+            }
+        }
+
+        // Artifacts section
+        if !run.artifacts.is_empty() {
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(RichText::new("Artifacts").size(14.0).color(TEXT_PRIMARY));
+            ui.add_space(4.0);
+
+            for artifact in &run.artifacts {
+                let kind_icon = match artifact.kind {
+                    clickweave_core::ArtifactKind::Screenshot => "📸",
+                    clickweave_core::ArtifactKind::Ocr => "📝",
+                    clickweave_core::ArtifactKind::TemplateMatch => "🎯",
+                    clickweave_core::ArtifactKind::Log => "📜",
+                    clickweave_core::ArtifactKind::Other => "📎",
+                };
+
+                let filename = std::path::Path::new(&artifact.path)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| artifact.path.clone());
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(kind_icon).size(12.0));
+                    ui.label(
+                        RichText::new(&filename)
+                            .size(12.0)
+                            .color(theme::ACCENT_BLUE),
+                    );
+                });
+            }
+        }
+    }
+
+    fn show_checks_tab(&mut self, ui: &mut egui::Ui, node_id: uuid::Uuid) {
+        // Load last run status for checks display
+        self.ensure_runs_loaded(node_id);
+        let last_run = self.cached_runs.last().cloned();
+
+        let Some(node) = self.workflow.find_node(node_id) else {
+            return;
+        };
+
+        let checks_empty = node.checks.is_empty();
+
+        if checks_empty {
+            ui.label(
+                RichText::new("No checks configured. Add a check to verify node output.")
+                    .color(TEXT_MUTED),
+            );
+            ui.add_space(12.0);
+        } else {
+            // Display existing checks
+            let checks: Vec<_> = node.checks.to_vec();
+            let mut delete_index = None;
+
+            for (i, check) in checks.iter().enumerate() {
+                let check_id = format!("check_{}_{}", node_id, i);
+
+                let pass_icon = if last_run.is_some() {
+                    "⏳" // we don't evaluate checks yet, just show pending
+                } else {
+                    "—"
+                };
+
+                let on_fail_label = match check.on_fail {
+                    OnCheckFail::FailNode => "Fail",
+                    OnCheckFail::WarnOnly => "Warn",
+                };
+
+                egui::CollapsingHeader::new(
+                    RichText::new(format!("{} {} [{}]", pass_icon, check.name, on_fail_label))
+                        .size(13.0)
+                        .color(TEXT_PRIMARY),
+                )
+                .id_salt(&check_id)
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!("Type: {:?}", check.check_type))
+                            .size(12.0)
+                            .color(TEXT_SECONDARY),
+                    );
+
+                    let params_str =
+                        serde_json::to_string_pretty(&check.params).unwrap_or_default();
+                    if params_str != "null" && params_str != "{}" {
+                        ui.label(
+                            RichText::new(format!("Params: {}", params_str))
+                                .size(11.0)
+                                .color(TEXT_MUTED)
+                                .monospace(),
+                        );
+                    }
+
+                    ui.add_space(4.0);
+                    if ui
+                        .add(
+                            Button::new(RichText::new("Delete").size(11.0).color(theme::NODE_END))
+                                .frame(false),
+                        )
+                        .clicked()
+                    {
+                        delete_index = Some(i);
+                    }
+                });
+
+                ui.add_space(4.0);
+            }
+
+            if let Some(idx) = delete_index
+                && let Some(node) = self.workflow.find_node_mut(node_id)
+            {
+                node.checks.remove(idx);
+            }
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // Add check section
+        ui.label(RichText::new("Add Check").size(13.0).color(TEXT_PRIMARY));
+        ui.add_space(8.0);
+
+        let check_types = [
+            (CheckType::TextPresent, "Text Present"),
+            (CheckType::TextAbsent, "Text Absent"),
+            (CheckType::TemplateFound, "Template Found"),
+            (CheckType::WindowTitleMatches, "Window Title Matches"),
+        ];
+
+        for (ct, label) in check_types {
+            if ui
+                .add(
+                    Button::new(RichText::new(format!("+ {}", label)).size(12.0))
+                        .frame(false)
+                        .min_size(Vec2::new(ui.available_width(), 28.0)),
+                )
+                .clicked()
+            {
+                let check = Check {
+                    name: label.to_string(),
+                    check_type: ct,
+                    params: serde_json::json!({}),
+                    on_fail: OnCheckFail::FailNode,
+                };
+                if let Some(node) = self.workflow.find_node_mut(node_id) {
+                    node.checks.push(check);
+                }
+            }
+        }
+    }
+
+    fn show_runs_tab(&mut self, ui: &mut egui::Ui, node_id: uuid::Uuid) {
+        self.ensure_runs_loaded(node_id);
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("{} runs", self.cached_runs.len()))
+                    .size(13.0)
+                    .color(TEXT_PRIMARY),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("↻ Refresh").clicked() {
+                    self.refresh_runs(node_id);
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+
+        if self.cached_runs.is_empty() {
+            ui.label(
+                RichText::new("No runs yet. Execute this node to see run history.")
+                    .color(TEXT_MUTED),
+            );
+            return;
+        }
+
+        let selected_idx = self.selected_run_index;
+
+        // Display runs in reverse chronological order
+        for i in (0..self.cached_runs.len()).rev() {
+            let run = &self.cached_runs[i];
+
+            let status_color = match run.status {
+                RunStatus::Ok => ACCENT_GREEN,
+                RunStatus::Failed => theme::NODE_END,
+                RunStatus::Stopped => TEXT_MUTED,
+            };
+            let status_text = match run.status {
+                RunStatus::Ok => "✓ OK",
+                RunStatus::Failed => "✗ Failed",
+                RunStatus::Stopped => "⏹ Stopped",
+            };
+
+            let duration = run.ended_at.map(|e| e.saturating_sub(run.started_at));
+            let duration_str = duration
+                .map(|ms| format!("{}ms", ms))
+                .unwrap_or_else(|| "—".to_string());
+
+            let event_count = run.events.len();
+            let artifact_count = run.artifacts.len();
+
+            let is_selected = selected_idx == Some(i);
+            let bg = if is_selected {
+                theme::BG_ACTIVE
+            } else {
+                theme::BG_PANEL
+            };
+
+            egui::Frame::NONE
+                .fill(bg)
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    let resp = ui
+                        .horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!("#{}", i + 1))
+                                    .size(12.0)
+                                    .color(TEXT_MUTED)
+                                    .monospace(),
+                            );
+                            ui.label(RichText::new(status_text).size(12.0).color(status_color));
+                            ui.label(
+                                RichText::new(format_timestamp(run.started_at))
+                                    .size(11.0)
+                                    .color(TEXT_SECONDARY),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.label(
+                                    RichText::new(duration_str.clone())
+                                        .size(11.0)
+                                        .color(TEXT_MUTED)
+                                        .monospace(),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} events, {} artifacts",
+                                        event_count, artifact_count
+                                    ))
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                                );
+                            });
+                        })
+                        .response;
+
+                    if resp.interact(egui::Sense::click()).clicked() {
+                        self.selected_run_index = Some(i);
+                        self.detail_tab = DetailTab::Trace;
+                    }
+                });
+
+            ui.add_space(4.0);
+        }
+    }
+
     fn show_node_palette_inline(&mut self, ui: &mut egui::Ui) {
         ui.heading("Add Node");
         ui.add_space(8.0);
@@ -1429,4 +1872,12 @@ impl eframe::App for ClickweaveApp {
             ctx.request_repaint();
         }
     }
+}
+
+fn format_timestamp(millis: u64) -> String {
+    let secs = millis / 1000;
+    let hours = (secs / 3600) % 24;
+    let mins = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{:02}:{:02}:{:02}", hours, mins, s)
 }
