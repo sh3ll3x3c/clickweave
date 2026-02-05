@@ -81,7 +81,7 @@ export function NodeDetailModal({
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto p-4">
           {tab === "setup" && (
-            <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} />
+            <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} projectPath={projectPath} />
           )}
           {tab === "trace" && (
             <TraceTab
@@ -114,9 +114,11 @@ export function NodeDetailModal({
 function SetupTab({
   node,
   onUpdate,
+  projectPath,
 }: {
   node: Node;
   onUpdate: (u: Partial<Node>) => void;
+  projectPath: string | null;
 }) {
   return (
     <div className="space-y-4">
@@ -163,7 +165,11 @@ function SetupTab({
       </FieldGroup>
 
       {/* Type-specific fields */}
-      <NodeTypeFields node={node} onUpdate={onUpdate} />
+      <NodeTypeFields
+        node={node}
+        onUpdate={onUpdate}
+        projectPath={projectPath}
+      />
     </div>
   );
 }
@@ -171,9 +177,11 @@ function SetupTab({
 function NodeTypeFields({
   node,
   onUpdate,
+  projectPath,
 }: {
   node: Node;
   onUpdate: (u: Partial<Node>) => void;
+  projectPath: string | null;
 }) {
   const nt = node.node_type;
 
@@ -198,15 +206,15 @@ function NodeTypeFields({
             }
             placeholder="Optional"
           />
-          <TextField
-            label="Template Image Path"
+          <ImagePathField
+            label="Template Image"
             value={nt.template_image ?? ""}
+            projectPath={projectPath}
             onChange={(v) =>
               updateType({
                 template_image: v === "" ? null : v,
               } as Partial<NodeType>)
             }
-            placeholder="Optional"
           />
           <NumberField
             label="Max Tool Calls"
@@ -302,15 +310,15 @@ function NodeTypeFields({
     case "FindImage":
       return (
         <FieldGroup title="Find Image">
-          <TextField
+          <ImagePathField
             label="Template Image"
             value={nt.template_image ?? ""}
+            projectPath={projectPath}
             onChange={(v) =>
               updateType({
                 template_image: v === "" ? null : v,
               } as Partial<NodeType>)
             }
-            placeholder="Path to template image"
           />
           <NumberField
             label="Threshold"
@@ -1070,6 +1078,58 @@ function SelectField({
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+function ImagePathField({
+  label,
+  value,
+  projectPath,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  projectPath: string | null;
+  onChange: (v: string) => void;
+}) {
+  const handleBrowse = useCallback(async () => {
+    if (!projectPath) return;
+    const result = await commands.importAsset(projectPath);
+    if (result.status === "ok" && result.data) {
+      onChange(result.data.relative_path);
+    }
+  }, [projectPath, onChange]);
+
+  return (
+    <div>
+      <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+        {label}
+      </label>
+      <div className="flex gap-1.5">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={projectPath ? "Select an image..." : "Save project first"}
+          className="flex-1 rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)]"
+        />
+        <button
+          onClick={handleBrowse}
+          disabled={!projectPath}
+          className="rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Browse
+        </button>
+        {value && (
+          <button
+            onClick={() => onChange("")}
+            className="rounded bg-[var(--bg-input)] px-2 py-1.5 text-xs text-red-400 hover:bg-red-500/20"
+          >
+            Clear
+          </button>
+        )}
+      </div>
     </div>
   );
 }

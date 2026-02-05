@@ -77,6 +77,14 @@ async readArtifactBase64(path: string) : Promise<Result<string, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("import_asset", { projectPath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -102,6 +110,7 @@ export type FindImageParams = { template_image: string | null; threshold: number
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
 export type FocusMethod = "WindowId" | "AppName" | "TitlePattern"
 export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean }
+export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type ListWindowsParams = { app_name: string | null; title_pattern: string | null }
 export type MatchMode = "Contains" | "Exact"

@@ -22,6 +22,7 @@ fn main() {
         list_runs,
         load_run_events,
         read_artifact_base64,
+        import_asset,
     ]);
 
     #[cfg(debug_assertions)]

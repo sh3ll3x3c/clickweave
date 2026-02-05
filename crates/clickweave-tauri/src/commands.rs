@@ -409,3 +409,45 @@ pub fn read_artifact_base64(path: String) -> Result<String, String> {
     let data = std::fs::read(&path).map_err(|e| format!("Failed to read artifact: {}", e))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&data))
 }
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct ImportedAsset {
+    pub relative_path: String,
+    pub absolute_path: String,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn import_asset(
+    app: tauri::AppHandle,
+    project_path: String,
+) -> Result<Option<ImportedAsset>, String> {
+    let file = app
+        .dialog()
+        .file()
+        .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+        .blocking_pick_file();
+
+    let source = match file {
+        Some(f) => PathBuf::from(f.to_string()),
+        None => return Ok(None),
+    };
+
+    let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("png");
+    let filename = format!("{}.{}", Uuid::new_v4(), ext);
+
+    let assets_dir = PathBuf::from(&project_path).join("assets");
+    std::fs::create_dir_all(&assets_dir)
+        .map_err(|e| format!("Failed to create assets directory: {}", e))?;
+
+    let dest = assets_dir.join(&filename);
+    std::fs::copy(&source, &dest).map_err(|e| format!("Failed to copy asset: {}", e))?;
+
+    let relative_path = format!("assets/{}", filename);
+    let absolute_path = dest.to_str().ok_or("Invalid path")?.to_string();
+
+    Ok(Some(ImportedAsset {
+        relative_path,
+        absolute_path,
+    }))
+}
