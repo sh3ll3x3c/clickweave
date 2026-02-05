@@ -5,6 +5,7 @@ members = [
     "crates/clickweave-core",
     "crates/clickweave-llm",
     "crates/clickweave-mcp",
+    "crates/clickweave-tauri",
 ]
 
 [workspace.package]
