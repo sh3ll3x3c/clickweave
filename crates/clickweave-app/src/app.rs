@@ -215,6 +215,7 @@ impl ClickweaveApp {
                     if self.executor_state == ExecutorState::Idle {
                         self.active_node = None;
                         self.command_tx = None;
+                        self.event_rx = Some(rx);
                         return;
                     }
                 }

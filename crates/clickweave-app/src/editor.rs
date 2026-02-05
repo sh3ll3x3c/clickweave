@@ -142,11 +142,11 @@ impl WorkflowEditor {
         self.sync_to_workflow(workflow);
 
         // Detect canvas click (click on background, not on a node)
+        // NOTE: is_using_pointer() must be called outside ui.input() to avoid
+        // a deadlock (input() holds a write lock, is_using_pointer() needs a read lock).
+        let is_using_pointer = ui.ctx().is_using_pointer();
         let canvas_clicked = ui.input(|i| {
-            i.pointer.any_click()
-                && !ui.ctx().is_using_pointer()
-                && selected.is_none()
-                && deleted.is_none()
+            i.pointer.any_click() && !is_using_pointer && selected.is_none() && deleted.is_none()
         });
 
         EditorResponse {
