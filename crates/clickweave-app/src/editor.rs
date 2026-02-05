@@ -21,7 +21,6 @@ pub struct WorkflowEditor {
     uuid_to_snarl: HashMap<Uuid, NodeId>,
     snarl_to_uuid: HashMap<NodeId, Uuid>,
     style: SnarlStyle,
-    positions: HashMap<NodeId, egui::Pos2>,
 }
 
 pub struct EditorResponse {
@@ -37,7 +36,6 @@ impl WorkflowEditor {
             uuid_to_snarl: HashMap::new(),
             snarl_to_uuid: HashMap::new(),
             style: create_n8n_snarl_style(),
-            positions: HashMap::new(),
         }
     }
 
@@ -45,7 +43,6 @@ impl WorkflowEditor {
         self.snarl = Snarl::new();
         self.uuid_to_snarl.clear();
         self.snarl_to_uuid.clear();
-        self.positions.clear();
 
         for node in &workflow.nodes {
             let graph_node = GraphNode {
@@ -60,7 +57,6 @@ impl WorkflowEditor {
 
             self.uuid_to_snarl.insert(node.id, snarl_id);
             self.snarl_to_uuid.insert(snarl_id, node.id);
-            self.positions.insert(snarl_id, pos);
         }
 
         for edge in &workflow.edges {
@@ -83,10 +79,13 @@ impl WorkflowEditor {
 
     pub fn sync_to_workflow(&self, workflow: &mut Workflow) {
         for (&uuid, &snarl_id) in &self.uuid_to_snarl {
-            if let Some(&pos) = self.positions.get(&snarl_id)
+            if let Some(node_info) = self.snarl.get_node_info(snarl_id)
                 && let Some(workflow_node) = workflow.find_node_mut(uuid)
             {
-                workflow_node.position = Position { x: pos.x, y: pos.y };
+                workflow_node.position = Position {
+                    x: node_info.pos.x,
+                    y: node_info.pos.y,
+                };
             }
         }
 
