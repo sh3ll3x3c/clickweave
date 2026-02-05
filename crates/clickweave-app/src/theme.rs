@@ -170,6 +170,22 @@ pub fn inspector_frame() -> Frame {
     }
 }
 
+pub fn node_detail_overlay_frame() -> Frame {
+    Frame {
+        fill: BG_PANEL,
+        stroke: Stroke::new(1.0, BORDER_LIGHT),
+        inner_margin: Margin::same(16),
+        outer_margin: Margin::ZERO,
+        corner_radius: CornerRadius::same(12),
+        shadow: Shadow {
+            offset: [0, 8],
+            blur: 24,
+            spread: 4,
+            color: Color32::from_black_alpha(120),
+        },
+    }
+}
+
 pub fn logs_drawer_frame() -> Frame {
     Frame {
         fill: BG_DARK,

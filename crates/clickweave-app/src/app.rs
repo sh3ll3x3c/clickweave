@@ -10,6 +10,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailTab {
+    Setup,
+    Trace,
+    Checks,
+    Runs,
+}
+
 pub struct ClickweaveApp {
     workflow: Workflow,
     editor: WorkflowEditor,
@@ -29,6 +37,7 @@ pub struct ClickweaveApp {
     logs: Vec<String>,
     selected_node: Option<uuid::Uuid>,
     active_node: Option<uuid::Uuid>,
+    detail_tab: DetailTab,
 
     // n8n-style UI state
     sidebar_collapsed: bool,
@@ -60,6 +69,7 @@ impl ClickweaveApp {
             logs: vec!["Clickweave started".to_string()],
             selected_node: None,
             active_node: None,
+            detail_tab: DetailTab::Setup,
             sidebar_collapsed: false,
             logs_drawer_open: false,
             node_search: String::new(),
@@ -409,152 +419,185 @@ impl ClickweaveApp {
             });
     }
 
-    fn show_inspector(&mut self, ctx: &egui::Context) {
-        let mut should_delete_node: Option<uuid::Uuid> = None;
-
-        egui::SidePanel::right("inspector")
+    fn show_node_palette(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::right("node_palette")
             .frame(theme::inspector_frame())
-            .exact_width(300.0)
+            .exact_width(220.0)
             .resizable(false)
             .show(ctx, |ui| {
-                if let Some(node_id) = self.selected_node {
-                    if let Some(node) = self.workflow.find_node_mut(node_id) {
-                        let category = node.node_type.category();
-                        let color = theme::category_color(category);
-                        let icon = node.node_type.icon().to_string();
-                        let type_name = node.node_type.display_name().to_string();
+                self.show_node_palette_inline(ui);
+            });
+    }
 
-                        // Header with node type
-                        ui.horizontal(|ui| {
-                            ui.colored_label(color, RichText::new(&icon).size(20.0));
-                            ui.add_space(8.0);
-                            ui.heading(&node.name);
-                        });
+    fn show_node_detail_overlay(&mut self, ctx: &egui::Context) {
+        let Some(node_id) = self.selected_node else {
+            return;
+        };
 
-                        ui.add_space(4.0);
-                        ui.label(RichText::new(&type_name).size(12.0).color(TEXT_MUTED));
+        // Check the node exists
+        if self.workflow.find_node(node_id).is_none() {
+            self.selected_node = None;
+            return;
+        }
 
-                        ui.add_space(16.0);
-                        ui.separator();
-                        ui.add_space(12.0);
+        let mut should_delete = false;
+        let mut should_close = false;
 
-                        // Node name
-                        ui.label(RichText::new("Name").size(12.0).color(TEXT_SECONDARY));
-                        ui.add_space(4.0);
-                        ui.text_edit_singleline(&mut node.name);
+        egui::Window::new("node_detail")
+            .title_bar(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(600.0, 500.0))
+            .frame(theme::node_detail_overlay_frame())
+            .show(ctx, |ui| {
+                // We need to extract info before borrowing mutably
+                let node = self.workflow.find_node(node_id).unwrap();
+                let category = node.node_type.category();
+                let color = theme::category_color(category);
+                let icon = node.node_type.icon().to_string();
+                let type_name = node.node_type.display_name().to_string();
+                let node_name = node.name.clone();
+                let enabled = node.enabled;
 
-                        ui.add_space(16.0);
+                // Header
+                ui.horizontal(|ui| {
+                    ui.colored_label(color, RichText::new(&icon).size(24.0));
+                    ui.add_space(8.0);
+                    ui.heading(&node_name);
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(&type_name)
+                            .size(11.0)
+                            .color(color)
+                            .background_color(color.linear_multiply(0.15)),
+                    );
 
-                        // Enabled toggle
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("Enabled").size(12.0).color(TEXT_SECONDARY));
-                            ui.checkbox(&mut node.enabled, "");
-                        });
-
-                        ui.add_space(12.0);
-
-                        // Per-type basic fields
-                        match &mut node.node_type {
-                            NodeType::AiStep(params) => {
-                                ui.label(RichText::new("Prompt").size(12.0).color(TEXT_SECONDARY));
-                                ui.add_space(4.0);
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut params.prompt)
-                                        .desired_rows(5)
-                                        .desired_width(ui.available_width()),
-                                );
-
-                                ui.add_space(16.0);
-
-                                // Button text
-                                ui.label(
-                                    RichText::new("Button text (optional)")
-                                        .size(12.0)
-                                        .color(TEXT_SECONDARY),
-                                );
-                                ui.add_space(4.0);
-                                let mut btn_text = params.button_text.clone().unwrap_or_default();
-                                if ui.text_edit_singleline(&mut btn_text).changed() {
-                                    params.button_text = if btn_text.is_empty() {
-                                        None
-                                    } else {
-                                        Some(btn_text)
-                                    };
-                                }
-
-                                ui.add_space(16.0);
-
-                                // Max tool calls
-                                ui.label(
-                                    RichText::new("Max tool calls")
-                                        .size(12.0)
-                                        .color(TEXT_SECONDARY),
-                                );
-                                ui.add_space(4.0);
-                                let mut max_calls = params.max_tool_calls.unwrap_or(10);
-                                if ui
-                                    .add(egui::DragValue::new(&mut max_calls).range(1..=100))
-                                    .changed()
-                                {
-                                    params.max_tool_calls = Some(max_calls);
-                                }
-                            }
-                            _ => {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "Setup for {} coming in detail view",
-                                        type_name
-                                    ))
-                                    .size(12.0)
-                                    .color(TEXT_MUTED),
-                                );
-                            }
-                        }
-
-                        ui.add_space(16.0);
-
-                        // Timeout
-                        ui.label(
-                            RichText::new("Timeout (ms, 0 = none)")
-                                .size(12.0)
-                                .color(TEXT_SECONDARY),
-                        );
-                        ui.add_space(4.0);
-                        let mut timeout = node.timeout_ms.unwrap_or(0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(
-                                egui::DragValue::new(&mut timeout)
-                                    .range(0..=300000)
-                                    .speed(100),
-                            )
-                            .changed()
+                            .add(Button::new(RichText::new("✕").size(16.0)).frame(false))
+                            .on_hover_text("Close")
+                            .clicked()
                         {
-                            node.timeout_ms = if timeout == 0 { None } else { Some(timeout) };
+                            should_close = true;
                         }
 
-                        // Delete button
-                        ui.add_space(24.0);
                         let delete_btn =
-                            Button::new(RichText::new("🗑 Delete Node").color(theme::NODE_END))
+                            Button::new(RichText::new("🗑").size(14.0).color(theme::NODE_END))
                                 .frame(false);
-                        if ui.add(delete_btn).clicked() {
-                            should_delete_node = Some(node_id);
+                        if ui.add(delete_btn).on_hover_text("Delete node").clicked() {
+                            should_delete = true;
                         }
-                    } else {
-                        self.selected_node = None;
+
+                        let enabled_label = if enabled { "Enabled" } else { "Disabled" };
+                        let enabled_color = if enabled { ACCENT_GREEN } else { TEXT_MUTED };
+                        ui.label(RichText::new(enabled_label).size(11.0).color(enabled_color));
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Tab bar
+                ui.horizontal(|ui| {
+                    let tabs = [
+                        (DetailTab::Setup, "Setup"),
+                        (DetailTab::Trace, "Trace"),
+                        (DetailTab::Checks, "Checks"),
+                        (DetailTab::Runs, "Runs"),
+                    ];
+                    for (tab, label) in tabs {
+                        if ui.selectable_label(self.detail_tab == tab, label).clicked() {
+                            self.detail_tab = tab;
+                        }
                     }
-                } else {
-                    // Node palette when nothing selected
-                    self.show_node_palette_inline(ui);
-                }
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Tab content
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| match self.detail_tab {
+                        DetailTab::Setup => {
+                            self.show_setup_tab_stub(ui, node_id);
+                        }
+                        DetailTab::Trace => {
+                            ui.label(RichText::new("Trace tab - coming soon").color(TEXT_MUTED));
+                        }
+                        DetailTab::Checks => {
+                            ui.label(RichText::new("Checks tab - coming soon").color(TEXT_MUTED));
+                        }
+                        DetailTab::Runs => {
+                            ui.label(RichText::new("Runs tab - coming soon").color(TEXT_MUTED));
+                        }
+                    });
             });
 
-        // Handle deferred deletion
-        if let Some(node_id) = should_delete_node {
+        if should_close {
+            self.selected_node = None;
+        }
+        if should_delete {
             self.workflow.remove_node(node_id);
             self.editor.sync_from_workflow(&self.workflow);
             self.selected_node = None;
         }
+    }
+
+    fn show_setup_tab_stub(&mut self, ui: &mut egui::Ui, node_id: uuid::Uuid) {
+        let Some(node) = self.workflow.find_node_mut(node_id) else {
+            return;
+        };
+
+        // Node name
+        ui.label(RichText::new("Name").size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        ui.text_edit_singleline(&mut node.name);
+        ui.add_space(12.0);
+
+        // Enabled toggle
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Enabled").size(12.0).color(TEXT_SECONDARY));
+            ui.checkbox(&mut node.enabled, "");
+        });
+        ui.add_space(12.0);
+
+        // Timeout
+        ui.label(
+            RichText::new("Timeout (ms, 0 = none)")
+                .size(12.0)
+                .color(TEXT_SECONDARY),
+        );
+        ui.add_space(4.0);
+        let mut timeout = node.timeout_ms.unwrap_or(0);
+        if ui
+            .add(
+                egui::DragValue::new(&mut timeout)
+                    .range(0..=300000)
+                    .speed(100),
+            )
+            .changed()
+        {
+            node.timeout_ms = if timeout == 0 { None } else { Some(timeout) };
+        }
+        ui.add_space(12.0);
+
+        // Retries
+        ui.label(RichText::new("Retries").size(12.0).color(TEXT_SECONDARY));
+        ui.add_space(4.0);
+        ui.add(egui::DragValue::new(&mut node.retries).range(0..=10));
+        ui.add_space(16.0);
+
+        let type_name = node.node_type.display_name().to_string();
+        ui.label(
+            RichText::new(format!(
+                "Per-type setup for {} coming in next commit",
+                type_name
+            ))
+            .size(12.0)
+            .color(TEXT_MUTED),
+        );
     }
 
     fn show_node_palette_inline(&mut self, ui: &mut egui::Ui) {
@@ -824,7 +867,7 @@ impl eframe::App for ClickweaveApp {
         // Show panels in order
         self.show_header(ctx);
         self.show_sidebar(ctx);
-        self.show_inspector(ctx);
+        self.show_node_palette(ctx);
         self.show_logs_drawer(ctx);
 
         // Center: Graph editor (must be last for CentralPanel)
@@ -859,6 +902,9 @@ impl eframe::App for ClickweaveApp {
 
         // Settings window
         self.show_settings_window(ctx);
+
+        // Node detail overlay (on top of everything)
+        self.show_node_detail_overlay(ctx);
 
         // Continuous repaint while running
         if matches!(self.executor_state, ExecutorState::Running) {
