@@ -7,9 +7,12 @@ edition.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["specta"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-specta = { version = "2.0.0-rc", features = ["derive", "typescript"] }
+specta = { version = "2.0.0-rc", features = ["derive"] }
+specta-typescript = "0.0.9"
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -18,7 +21,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-clickweave-core.workspace = true
+clickweave-core = { workspace = true, features = ["specta"] }
 clickweave-engine.workspace = true
 clickweave-llm.workspace = true
 clickweave-mcp.workspace = true

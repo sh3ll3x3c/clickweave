@@ -3,6 +3,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Workflow {
     pub id: Uuid,
     pub name: String,
@@ -22,6 +23,7 @@ impl Default for Workflow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Node {
     pub id: Uuid,
     pub node_type: NodeType,
@@ -36,12 +38,14 @@ pub struct Node {
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Position {
     pub x: f32,
     pub y: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Edge {
     pub from: Uuid,
     pub to: Uuid,
@@ -139,6 +143,7 @@ impl Workflow {
 // =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum NodeCategory {
     Ai,
     Vision,
@@ -170,6 +175,7 @@ impl NodeCategory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]
 pub enum NodeType {
     AiStep(AiStepParams),
@@ -257,6 +263,7 @@ impl NodeType {
 // =============================================================================
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct AiStepParams {
     pub prompt: String,
     pub button_text: Option<String>,
@@ -266,6 +273,7 @@ pub struct AiStepParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TakeScreenshotParams {
     pub mode: ScreenshotMode,
     pub target: Option<String>,
@@ -283,6 +291,7 @@ impl Default for TakeScreenshotParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum ScreenshotMode {
     Screen,
     Window,
@@ -290,6 +299,7 @@ pub enum ScreenshotMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct FindTextParams {
     pub search_text: String,
     pub match_mode: MatchMode,
@@ -309,12 +319,14 @@ impl Default for FindTextParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum MatchMode {
     Contains,
     Exact,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct FindImageParams {
     pub template_image: Option<String>,
     pub threshold: f64,
@@ -332,6 +344,7 @@ impl Default for FindImageParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ClickParams {
     pub target: Option<String>,
     pub button: MouseButton,
@@ -349,6 +362,7 @@ impl Default for ClickParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum MouseButton {
     Left,
     Right,
@@ -356,12 +370,14 @@ pub enum MouseButton {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TypeTextParams {
     pub text: String,
     pub press_enter: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ScrollParams {
     pub delta_y: i32,
     pub x: Option<f64>,
@@ -369,12 +385,14 @@ pub struct ScrollParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ListWindowsParams {
     pub app_name: Option<String>,
     pub title_pattern: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct FocusWindowParams {
     pub method: FocusMethod,
     pub value: Option<String>,
@@ -392,6 +410,7 @@ impl Default for FocusWindowParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum FocusMethod {
     WindowId,
     AppName,
@@ -399,6 +418,7 @@ pub enum FocusMethod {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct AppDebugKitParams {
     pub operation_name: String,
     pub parameters: Value,
@@ -409,6 +429,7 @@ pub struct AppDebugKitParams {
 // =============================================================================
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum TraceLevel {
     Off,
     #[default]
@@ -417,6 +438,7 @@ pub enum TraceLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum CheckType {
     TextPresent,
     TextAbsent,
@@ -425,6 +447,7 @@ pub enum CheckType {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum OnCheckFail {
     #[default]
     FailNode,
@@ -432,6 +455,7 @@ pub enum OnCheckFail {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Check {
     pub name: String,
     pub check_type: CheckType,
@@ -444,6 +468,7 @@ pub struct Check {
 // =============================================================================
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum RunStatus {
     #[default]
     Ok,
@@ -452,6 +477,7 @@ pub enum RunStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct NodeRun {
     pub run_id: Uuid,
     pub node_id: Uuid,
@@ -465,6 +491,7 @@ pub struct NodeRun {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TraceEvent {
     pub timestamp: u64,
     pub event_type: String,
@@ -472,6 +499,7 @@ pub struct TraceEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum ArtifactKind {
     Screenshot,
     Ocr,
@@ -481,6 +509,7 @@ pub enum ArtifactKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Artifact {
     pub artifact_id: Uuid,
     pub kind: ArtifactKind,

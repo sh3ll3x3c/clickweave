@@ -9,3 +9,8 @@ serde_json.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+specta = { version = "2.0.0-rc", features = ["derive", "uuid", "serde_json"], optional = true }
+
+[features]
+default = []
+specta = ["dep:specta"]
