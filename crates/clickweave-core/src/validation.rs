@@ -1,66 +1,64 @@
-use crate::{NodeKind, Workflow};
+use crate::Workflow;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ValidationError {
-    #[error("Workflow must have exactly one Start node")]
-    MissingOrMultipleStart,
+    #[error("Workflow has no nodes")]
+    NoNodes,
 
-    #[error("Workflow must have exactly one End node")]
-    MissingOrMultipleEnd,
+    #[error("No entry point found (all nodes have incoming edges)")]
+    NoEntryPoint,
 
     #[error("Node {0} has multiple outgoing edges (only single path allowed)")]
     MultipleOutgoingEdges(String),
-
-    #[error("Workflow is not connected: cannot reach End from Start")]
-    NotConnected,
 
     #[error("Cycle detected in workflow")]
     CycleDetected,
 }
 
 pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
-    // Check exactly one Start node
-    let start_count = workflow
-        .nodes
-        .iter()
-        .filter(|n| n.kind == NodeKind::Start)
-        .count();
-    if start_count != 1 {
-        return Err(ValidationError::MissingOrMultipleStart);
+    if workflow.nodes.is_empty() {
+        return Err(ValidationError::NoNodes);
     }
 
-    // Check exactly one End node
-    let end_count = workflow
+    // Check for entry points (nodes with no incoming edges)
+    let targets: std::collections::HashSet<_> = workflow.edges.iter().map(|e| e.to).collect();
+    let entry_count = workflow
         .nodes
         .iter()
-        .filter(|n| n.kind == NodeKind::End)
+        .filter(|n| !targets.contains(&n.id))
         .count();
-    if end_count != 1 {
-        return Err(ValidationError::MissingOrMultipleEnd);
+    if entry_count == 0 {
+        return Err(ValidationError::NoEntryPoint);
     }
 
-    // Check single outgoing edge per node (except End)
+    // Check single outgoing edge per node
     for node in &workflow.nodes {
-        if node.kind == NodeKind::End {
-            continue;
-        }
         let outgoing = workflow.edges.iter().filter(|e| e.from == node.id).count();
         if outgoing > 1 {
             return Err(ValidationError::MultipleOutgoingEdges(node.name.clone()));
         }
     }
 
-    // Check connectivity: execution order should end at End node
-    let order = workflow.execution_order();
-    if order.is_empty() {
-        return Err(ValidationError::NotConnected);
-    }
-
-    let last_id = order.last().unwrap();
-    let last_node = workflow.find_node(*last_id);
-    if !last_node.is_some_and(|n| n.kind == NodeKind::End) {
-        return Err(ValidationError::NotConnected);
+    // Check for cycles using visited set
+    let mut visited = std::collections::HashSet::new();
+    for node in &workflow.nodes {
+        if visited.contains(&node.id) {
+            continue;
+        }
+        let mut current = node.id;
+        let mut path = std::collections::HashSet::new();
+        loop {
+            if !path.insert(current) {
+                return Err(ValidationError::CycleDetected);
+            }
+            visited.insert(current);
+            let next = workflow.edges.iter().find(|e| e.from == current);
+            match next {
+                Some(edge) => current = edge.to,
+                None => break,
+            }
+        }
     }
 
     Ok(())

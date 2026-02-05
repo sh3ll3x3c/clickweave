@@ -3,7 +3,7 @@ use crate::executor::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExe
 use crate::theme::{
     self, ACCENT_CORAL, ACCENT_GREEN, BG_DARK, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
-use clickweave_core::{Workflow, validate_workflow};
+use clickweave_core::{NodeCategory, NodeType, Workflow, validate_workflow};
 use clickweave_llm::LlmConfig;
 use eframe::egui::{self, Align, Align2, Button, Color32, Layout, RichText, TextureHandle, Vec2};
 use std::collections::HashMap;
@@ -36,7 +36,8 @@ pub struct ClickweaveApp {
     node_search: String,
     is_active: bool,
 
-    // Image preview cache
+    // Image preview cache (used in setup tab)
+    #[allow(dead_code)]
     texture_cache: HashMap<String, TextureHandle>,
 }
 
@@ -192,12 +193,15 @@ impl ClickweaveApp {
                     if self.executor_state == ExecutorState::Idle {
                         self.active_node = None;
                         self.command_tx = None;
-                        // event_rx already taken out, don't put it back
                         return;
                     }
                 }
                 ExecutorEvent::NodeStarted(id) => {
                     self.active_node = Some(id);
+                }
+                ExecutorEvent::NodeFailed(id, msg) => {
+                    self.active_node = None;
+                    self.push_log(format!("Node {} failed: {}", id, msg));
                 }
                 ExecutorEvent::NodeCompleted(_) | ExecutorEvent::WorkflowCompleted => {
                     self.active_node = None;
@@ -209,15 +213,14 @@ impl ClickweaveApp {
         self.event_rx = Some(rx);
     }
 
-    fn add_step_node(&mut self) {
+    fn add_node(&mut self, node_type: NodeType) {
         let offset = self.workflow.nodes.len() as f32 * 50.0;
         let id = self.workflow.add_node(
-            clickweave_core::NodeKind::Step,
+            node_type,
             clickweave_core::Position {
                 x: 300.0 + offset,
                 y: 200.0 + offset,
             },
-            "New Step",
         );
         self.editor.sync_from_workflow(&self.workflow);
         self.selected_node = Some(id);
@@ -281,41 +284,6 @@ impl ClickweaveApp {
                         self.push_log("Templates panel not yet implemented".to_string());
                     }
                     _ => {}
-                }
-
-                ui.add_space(16.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                // Node palette section
-                if !self.sidebar_collapsed {
-                    ui.horizontal(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new("Nodes").size(12.0).color(TEXT_SECONDARY));
-                    });
-                    ui.add_space(4.0);
-                }
-
-                if ui
-                    .add_sized(
-                        [
-                            if self.sidebar_collapsed {
-                                40.0
-                            } else {
-                                sidebar_width - 16.0
-                            },
-                            32.0,
-                        ],
-                        Button::new(if self.sidebar_collapsed {
-                            RichText::new("⚡").size(16.0)
-                        } else {
-                            RichText::new("⚡  Add Step").size(13.0)
-                        }),
-                    )
-                    .on_hover_text("Add a new step node")
-                    .clicked()
-                {
-                    self.add_step_node();
                 }
 
                 // Collapse toggle at bottom
@@ -451,25 +419,20 @@ impl ClickweaveApp {
             .show(ctx, |ui| {
                 if let Some(node_id) = self.selected_node {
                     if let Some(node) = self.workflow.find_node_mut(node_id) {
+                        let category = node.node_type.category();
+                        let color = theme::category_color(category);
+                        let icon = node.node_type.icon().to_string();
+                        let type_name = node.node_type.display_name().to_string();
+
                         // Header with node type
-                        let node_kind = node.kind;
                         ui.horizontal(|ui| {
-                            let (icon, color) = match node_kind {
-                                clickweave_core::NodeKind::Start => ("▶", theme::NODE_START),
-                                clickweave_core::NodeKind::Step => ("⚡", theme::NODE_STEP),
-                                clickweave_core::NodeKind::End => ("⏹", theme::NODE_END),
-                            };
-                            ui.colored_label(color, RichText::new(icon).size(20.0));
+                            ui.colored_label(color, RichText::new(&icon).size(20.0));
                             ui.add_space(8.0);
                             ui.heading(&node.name);
                         });
 
                         ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(node_kind.display_name())
-                                .size(12.0)
-                                .color(TEXT_MUTED),
-                        );
+                        ui.label(RichText::new(&type_name).size(12.0).color(TEXT_MUTED));
 
                         ui.add_space(16.0);
                         ui.separator();
@@ -480,211 +443,109 @@ impl ClickweaveApp {
                         ui.add_space(4.0);
                         ui.text_edit_singleline(&mut node.name);
 
-                        if node_kind == clickweave_core::NodeKind::Step {
-                            ui.add_space(16.0);
+                        ui.add_space(16.0);
 
-                            // Prompt
-                            ui.label(RichText::new("Prompt").size(12.0).color(TEXT_SECONDARY));
-                            ui.add_space(4.0);
-                            ui.add(
-                                egui::TextEdit::multiline(&mut node.params.prompt)
-                                    .desired_rows(5)
-                                    .desired_width(ui.available_width()),
-                            );
+                        // Enabled toggle
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Enabled").size(12.0).color(TEXT_SECONDARY));
+                            ui.checkbox(&mut node.enabled, "");
+                        });
 
-                            ui.add_space(16.0);
+                        ui.add_space(12.0);
 
-                            // Button text
-                            ui.label(
-                                RichText::new("Button text (optional)")
-                                    .size(12.0)
-                                    .color(TEXT_SECONDARY),
-                            );
-                            ui.add_space(4.0);
-                            let mut btn_text = node.params.button_text.clone().unwrap_or_default();
-                            if ui.text_edit_singleline(&mut btn_text).changed() {
-                                node.params.button_text = if btn_text.is_empty() {
-                                    None
-                                } else {
-                                    Some(btn_text)
-                                };
-                            }
-
-                            ui.add_space(16.0);
-
-                            // Image path
-                            ui.label(
-                                RichText::new("Image path (optional)")
-                                    .size(12.0)
-                                    .color(TEXT_SECONDARY),
-                            );
-                            ui.add_space(4.0);
-                            let mut img_path = node.params.image_path.clone().unwrap_or_default();
-                            let orig_img_path = img_path.clone();
-                            ui.horizontal(|ui| {
+                        // Per-type basic fields
+                        match &mut node.node_type {
+                            NodeType::AiStep(params) => {
+                                ui.label(RichText::new("Prompt").size(12.0).color(TEXT_SECONDARY));
+                                ui.add_space(4.0);
                                 ui.add(
-                                    egui::TextEdit::singleline(&mut img_path)
-                                        .desired_width(ui.available_width() - 70.0),
+                                    egui::TextEdit::multiline(&mut params.prompt)
+                                        .desired_rows(5)
+                                        .desired_width(ui.available_width()),
                                 );
-                                if ui.button("Browse").clicked()
-                                    && let Some(file) = rfd::FileDialog::new()
-                                        .add_filter("Images", &["png", "jpg", "jpeg"])
-                                        .pick_file()
-                                {
-                                    if let Some(proj) = &self.project_path {
-                                        let assets = proj.join("assets");
-                                        let _ = std::fs::create_dir_all(&assets);
-                                        let filename = file.file_name().unwrap();
-                                        let dest = assets.join(filename);
-                                        if std::fs::copy(&file, &dest).is_ok() {
-                                            img_path =
-                                                format!("assets/{}", filename.to_string_lossy());
-                                        }
+
+                                ui.add_space(16.0);
+
+                                // Button text
+                                ui.label(
+                                    RichText::new("Button text (optional)")
+                                        .size(12.0)
+                                        .color(TEXT_SECONDARY),
+                                );
+                                ui.add_space(4.0);
+                                let mut btn_text = params.button_text.clone().unwrap_or_default();
+                                if ui.text_edit_singleline(&mut btn_text).changed() {
+                                    params.button_text = if btn_text.is_empty() {
+                                        None
                                     } else {
-                                        img_path = file.to_string_lossy().to_string();
-                                    }
+                                        Some(btn_text)
+                                    };
                                 }
-                            });
-                            if img_path != orig_img_path {
-                                node.params.image_path = if img_path.is_empty() {
-                                    None
-                                } else {
-                                    Some(img_path.clone())
-                                };
-                                // Clear cached texture when path changes
-                                self.texture_cache.remove(&node_id.to_string());
-                            }
 
-                            // Image preview
-                            if !img_path.is_empty() {
-                                ui.add_space(8.0);
-                                let cache_key = node_id.to_string();
-                                let abs_path = if img_path.starts_with('/') {
-                                    PathBuf::from(&img_path)
-                                } else if let Some(proj) = &self.project_path {
-                                    proj.join(&img_path)
-                                } else {
-                                    PathBuf::from(&img_path)
-                                };
+                                ui.add_space(16.0);
 
-                                if !self.texture_cache.contains_key(&cache_key)
-                                    && let Ok(img) = image::open(&abs_path)
+                                // Max tool calls
+                                ui.label(
+                                    RichText::new("Max tool calls")
+                                        .size(12.0)
+                                        .color(TEXT_SECONDARY),
+                                );
+                                ui.add_space(4.0);
+                                let mut max_calls = params.max_tool_calls.unwrap_or(10);
+                                if ui
+                                    .add(egui::DragValue::new(&mut max_calls).range(1..=100))
+                                    .changed()
                                 {
-                                    let rgba = img.to_rgba8();
-                                    let size = [rgba.width() as usize, rgba.height() as usize];
-                                    let pixels = rgba.into_raw();
-                                    let color_image =
-                                        egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                                    let texture = ui.ctx().load_texture(
-                                        &cache_key,
-                                        color_image,
-                                        egui::TextureOptions::LINEAR,
-                                    );
-                                    self.texture_cache.insert(cache_key.clone(), texture);
-                                }
-
-                                if let Some(texture) = self.texture_cache.get(&cache_key) {
-                                    let max_width = ui.available_width();
-                                    let aspect =
-                                        texture.size()[1] as f32 / texture.size()[0] as f32;
-                                    let width = max_width.min(260.0);
-                                    let height = width * aspect;
-                                    ui.image(egui::load::SizedTexture::new(
-                                        texture.id(),
-                                        [width, height],
-                                    ));
+                                    params.max_tool_calls = Some(max_calls);
                                 }
                             }
-
-                            ui.add_space(16.0);
-
-                            // Max tool calls
-                            ui.label(
-                                RichText::new("Max tool calls")
+                            _ => {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Setup for {} coming in detail view",
+                                        type_name
+                                    ))
                                     .size(12.0)
-                                    .color(TEXT_SECONDARY),
-                            );
-                            ui.add_space(4.0);
-                            let mut max_calls = node.params.max_tool_calls.unwrap_or(10);
-                            if ui
-                                .add(egui::DragValue::new(&mut max_calls).range(1..=100))
-                                .changed()
-                            {
-                                node.params.max_tool_calls = Some(max_calls);
+                                    .color(TEXT_MUTED),
+                                );
                             }
+                        }
 
-                            ui.add_space(16.0);
+                        ui.add_space(16.0);
 
-                            // Timeout
-                            ui.label(
-                                RichText::new("Timeout (ms, 0 = none)")
-                                    .size(12.0)
-                                    .color(TEXT_SECONDARY),
-                            );
-                            ui.add_space(4.0);
-                            let mut timeout = node.params.timeout_ms.unwrap_or(0);
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut timeout)
-                                        .range(0..=300000)
-                                        .speed(100),
-                                )
-                                .changed()
-                            {
-                                node.params.timeout_ms =
-                                    if timeout == 0 { None } else { Some(timeout) };
-                            }
+                        // Timeout
+                        ui.label(
+                            RichText::new("Timeout (ms, 0 = none)")
+                                .size(12.0)
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.add_space(4.0);
+                        let mut timeout = node.timeout_ms.unwrap_or(0);
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut timeout)
+                                    .range(0..=300000)
+                                    .speed(100),
+                            )
+                            .changed()
+                        {
+                            node.timeout_ms = if timeout == 0 { None } else { Some(timeout) };
+                        }
 
-                            // Delete button
-                            ui.add_space(24.0);
-                            let delete_btn =
-                                Button::new(RichText::new("🗑 Delete Node").color(theme::NODE_END))
-                                    .frame(false);
-                            if ui.add(delete_btn).clicked() {
-                                should_delete_node = Some(node_id);
-                            }
+                        // Delete button
+                        ui.add_space(24.0);
+                        let delete_btn =
+                            Button::new(RichText::new("🗑 Delete Node").color(theme::NODE_END))
+                                .frame(false);
+                        if ui.add(delete_btn).clicked() {
+                            should_delete_node = Some(node_id);
                         }
                     } else {
                         self.selected_node = None;
                     }
                 } else {
-                    // Node selector when nothing selected
-                    ui.heading("Add Node");
-                    ui.add_space(8.0);
-
-                    // Search box
-                    ui.horizontal(|ui| {
-                        ui.label("🔍");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.node_search)
-                                .hint_text("Search nodes..."),
-                        );
-                    });
-
-                    ui.add_space(16.0);
-
-                    // Node categories
-                    ui.collapsing(RichText::new("⚡ Actions").color(TEXT_PRIMARY), |ui| {
-                        ui.add_space(4.0);
-                        if ui
-                            .add(
-                                Button::new("Step - AI-powered action")
-                                    .frame(false)
-                                    .min_size(Vec2::new(ui.available_width(), 28.0)),
-                            )
-                            .clicked()
-                        {
-                            self.add_step_node();
-                        }
-                    });
-
-                    ui.collapsing(RichText::new("🔀 Flow").color(TEXT_PRIMARY), |ui| {
-                        ui.label(
-                            RichText::new("Coming soon: conditionals, loops")
-                                .size(12.0)
-                                .color(TEXT_MUTED),
-                        );
-                    });
+                    // Node palette when nothing selected
+                    self.show_node_palette_inline(ui);
                 }
             });
 
@@ -696,8 +557,69 @@ impl ClickweaveApp {
         }
     }
 
+    fn show_node_palette_inline(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Add Node");
+        ui.add_space(8.0);
+
+        // Search box
+        ui.horizontal(|ui| {
+            ui.label("🔍");
+            ui.add(egui::TextEdit::singleline(&mut self.node_search).hint_text("Search nodes..."));
+        });
+
+        ui.add_space(16.0);
+
+        let search = self.node_search.to_lowercase();
+        let mut node_to_add: Option<NodeType> = None;
+
+        let categories = [
+            NodeCategory::Ai,
+            NodeCategory::Vision,
+            NodeCategory::Input,
+            NodeCategory::Window,
+            NodeCategory::AppDebugKit,
+        ];
+
+        for cat in categories {
+            let defaults: Vec<NodeType> = NodeType::all_defaults()
+                .into_iter()
+                .filter(|nt| nt.category() == cat)
+                .filter(|nt| {
+                    search.is_empty() || nt.display_name().to_lowercase().contains(&search)
+                })
+                .collect();
+
+            if defaults.is_empty() {
+                continue;
+            }
+
+            let color = theme::category_color(cat);
+            let header = format!("{} {}", cat.icon(), cat.display_name());
+            ui.collapsing(RichText::new(header).color(color), |ui| {
+                ui.add_space(4.0);
+                for nt in defaults {
+                    let label = format!("{} {}", nt.icon(), nt.display_name());
+                    if ui
+                        .add(
+                            Button::new(label)
+                                .frame(false)
+                                .min_size(Vec2::new(ui.available_width(), 28.0)),
+                        )
+                        .clicked()
+                    {
+                        node_to_add = Some(nt);
+                    }
+                }
+            });
+        }
+
+        if let Some(nt) = node_to_add {
+            self.add_node(nt);
+        }
+    }
+
     fn show_floating_toolbar(&mut self, ctx: &egui::Context) {
-        let mut should_add_step = false;
+        let mut node_to_add: Option<NodeType> = None;
 
         egui::Area::new(egui::Id::new("floating_toolbar"))
             .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -20.0))
@@ -708,17 +630,33 @@ impl ClickweaveApp {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
 
-                        // Add step button
-                        if ui
-                            .add_sized(
-                                btn_size,
-                                Button::new(RichText::new("⚡").size(16.0)).frame(false),
-                            )
-                            .on_hover_text("Add step")
-                            .clicked()
-                        {
-                            should_add_step = true;
-                        }
+                        // Add node menu
+                        ui.menu_button(RichText::new("➕").size(16.0), |ui| {
+                            let categories = [
+                                NodeCategory::Ai,
+                                NodeCategory::Vision,
+                                NodeCategory::Input,
+                                NodeCategory::Window,
+                                NodeCategory::AppDebugKit,
+                            ];
+
+                            for cat in categories {
+                                let color = theme::category_color(cat);
+                                let header = format!("{} {}", cat.icon(), cat.display_name());
+                                ui.menu_button(RichText::new(header).color(color), |ui| {
+                                    for nt in NodeType::all_defaults()
+                                        .into_iter()
+                                        .filter(|nt| nt.category() == cat)
+                                    {
+                                        let label = format!("{} {}", nt.icon(), nt.display_name());
+                                        if ui.button(label).clicked() {
+                                            node_to_add = Some(nt);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            }
+                        });
 
                         // Logs toggle
                         if ui
@@ -765,8 +703,8 @@ impl ClickweaveApp {
                 });
             });
 
-        if should_add_step {
-            self.add_step_node();
+        if let Some(nt) = node_to_add {
+            self.add_node(nt);
         }
     }
 
@@ -910,6 +848,9 @@ impl eframe::App for ClickweaveApp {
                     if self.selected_node == Some(deleted) {
                         self.selected_node = None;
                     }
+                }
+                if response.canvas_clicked {
+                    self.selected_node = None;
                 }
             });
 

@@ -1,3 +1,4 @@
+use clickweave_core::NodeCategory;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Shadow, Stroke, Vec2, Visuals};
 
 // =============================================================================
@@ -29,10 +30,25 @@ pub const BORDER_LIGHT: Color32 = Color32::from_rgb(70, 70, 70); // #464646
 #[allow(dead_code)]
 pub const GRID_COLOR: Color32 = Color32::from_rgb(40, 40, 40); // subtle grid
 
-// Node type colors
-pub const NODE_START: Color32 = Color32::from_rgb(80, 200, 120); // green
-pub const NODE_STEP: Color32 = Color32::from_rgb(76, 158, 232); // blue
-pub const NODE_END: Color32 = Color32::from_rgb(220, 90, 90); // red
+// Node category colors
+pub const NODE_AI: Color32 = Color32::from_rgb(76, 158, 232); // blue
+pub const NODE_VISION: Color32 = Color32::from_rgb(160, 100, 220); // purple
+pub const NODE_INPUT: Color32 = Color32::from_rgb(230, 150, 60); // orange
+pub const NODE_WINDOW: Color32 = Color32::from_rgb(80, 200, 120); // green
+pub const NODE_DEBUGKIT: Color32 = Color32::from_rgb(220, 90, 90); // red
+
+// Legacy alias for delete buttons etc.
+pub const NODE_END: Color32 = Color32::from_rgb(220, 90, 90);
+
+pub fn category_color(category: NodeCategory) -> Color32 {
+    match category {
+        NodeCategory::Ai => NODE_AI,
+        NodeCategory::Vision => NODE_VISION,
+        NodeCategory::Input => NODE_INPUT,
+        NodeCategory::Window => NODE_WINDOW,
+        NodeCategory::AppDebugKit => NODE_DEBUGKIT,
+    }
+}
 
 // =============================================================================
 // Theme Application

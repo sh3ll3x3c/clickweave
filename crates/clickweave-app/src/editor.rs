@@ -1,5 +1,5 @@
 use crate::theme;
-use clickweave_core::{NodeKind, Position, Workflow};
+use clickweave_core::{NodeCategory, Position, Workflow};
 use eframe::egui::{self, Color32, RichText, Stroke};
 use egui_snarl::ui::{PinInfo, SnarlPin, SnarlStyle, SnarlViewer};
 use egui_snarl::{InPinId, NodeId, OutPinId, Snarl};
@@ -8,9 +8,12 @@ use uuid::Uuid;
 
 /// Node data for the snarl graph
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct GraphNode {
-    pub kind: NodeKind,
+    pub category: NodeCategory,
+    pub type_name: String,
     pub name: String,
+    pub icon: String,
 }
 
 pub struct WorkflowEditor {
@@ -24,6 +27,7 @@ pub struct WorkflowEditor {
 pub struct EditorResponse {
     pub selected_node: Option<Uuid>,
     pub deleted_node: Option<Uuid>,
+    pub canvas_clicked: bool,
 }
 
 impl WorkflowEditor {
@@ -45,8 +49,10 @@ impl WorkflowEditor {
 
         for node in &workflow.nodes {
             let graph_node = GraphNode {
-                kind: node.kind,
+                category: node.node_type.category(),
+                type_name: node.node_type.display_name().to_string(),
                 name: node.name.clone(),
+                icon: node.node_type.icon().to_string(),
             };
 
             let pos = egui::pos2(node.position.x, node.position.y);
@@ -135,9 +141,18 @@ impl WorkflowEditor {
 
         self.sync_to_workflow(workflow);
 
+        // Detect canvas click (click on background, not on a node)
+        let canvas_clicked = ui.input(|i| {
+            i.pointer.any_click()
+                && !ui.ctx().is_using_pointer()
+                && selected.is_none()
+                && deleted.is_none()
+        });
+
         EditorResponse {
             selected_node: selected,
             deleted_node: deleted,
+            canvas_clicked,
         }
     }
 }
@@ -181,19 +196,18 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         _snarl: &Snarl<GraphNode>,
     ) -> egui::Frame {
         if self.selected_node == Some(node) {
-            default.stroke(Stroke::new(2.0, theme::ACCENT_CORAL))
+            let color = _snarl
+                .get_node(node)
+                .map(|n| theme::category_color(n.category))
+                .unwrap_or(theme::ACCENT_CORAL);
+            default.stroke(Stroke::new(2.0, color))
         } else {
             default
         }
     }
 
     fn title(&mut self, node: &GraphNode) -> String {
-        let icon = match node.kind {
-            NodeKind::Start => "▶",
-            NodeKind::Step => "⚡",
-            NodeKind::End => "⏹",
-        };
-        format!("{} {}", icon, node.name)
+        format!("{} {}", node.icon, node.name)
     }
 
     fn show_header(
@@ -205,36 +219,27 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
         snarl: &mut Snarl<GraphNode>,
     ) {
         let node = &snarl[node_id];
-        let is_step = node.kind == NodeKind::Step;
         let title = self.title(node);
 
         ui.horizontal(|ui| {
             ui.label(&title);
-            if is_step {
-                let delete_btn =
-                    egui::Button::new(RichText::new("✕").size(10.0).color(theme::NODE_END))
-                        .frame(false);
-                if ui.add(delete_btn).on_hover_text("Delete node").clicked()
-                    && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
-                {
-                    *self.deleted = Some(uuid);
-                }
+            let delete_btn =
+                egui::Button::new(RichText::new("✕").size(10.0).color(theme::NODE_END))
+                    .frame(false);
+            if ui.add(delete_btn).on_hover_text("Delete node").clicked()
+                && let Some(&uuid) = self.snarl_to_uuid.get(&node_id)
+            {
+                *self.deleted = Some(uuid);
             }
         });
     }
 
-    fn outputs(&mut self, node: &GraphNode) -> usize {
-        match node.kind {
-            NodeKind::End => 0,
-            _ => 1,
-        }
+    fn outputs(&mut self, _node: &GraphNode) -> usize {
+        1
     }
 
-    fn inputs(&mut self, node: &GraphNode) -> usize {
-        match node.kind {
-            NodeKind::Start => 0,
-            _ => 1,
-        }
+    fn inputs(&mut self, _node: &GraphNode) -> usize {
+        1
     }
 
     fn show_input(
@@ -269,11 +274,7 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
     ) {
         let node = &snarl[node_id];
         let is_active = self.active_node == Some(node_id);
-        let (type_label, color) = match node.kind {
-            NodeKind::Start => ("Trigger", theme::NODE_START),
-            NodeKind::Step => ("Action", theme::NODE_STEP),
-            NodeKind::End => ("End", theme::NODE_END),
-        };
+        let color = theme::category_color(node.category);
 
         // Active indicator
         if is_active {
@@ -287,8 +288,12 @@ impl SnarlViewer<GraphNode> for WorkflowViewer<'_> {
             });
         }
 
-        // Type label
-        ui.label(RichText::new(type_label).size(11.0).color(color));
+        // Category label
+        ui.label(
+            RichText::new(node.category.display_name())
+                .size(11.0)
+                .color(color),
+        );
 
         // Clickable area for selection
         let response = ui.allocate_response(egui::vec2(60.0, 4.0), egui::Sense::click());

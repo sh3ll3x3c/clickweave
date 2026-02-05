@@ -12,32 +12,11 @@ pub struct Workflow {
 
 impl Default for Workflow {
     fn default() -> Self {
-        let start_id = Uuid::new_v4();
-        let end_id = Uuid::new_v4();
-
         Self {
             id: Uuid::new_v4(),
             name: "New Workflow".to_string(),
-            nodes: vec![
-                Node {
-                    id: start_id,
-                    kind: NodeKind::Start,
-                    position: Position { x: 100.0, y: 200.0 },
-                    name: "Start".to_string(),
-                    params: NodeParams::default(),
-                },
-                Node {
-                    id: end_id,
-                    kind: NodeKind::End,
-                    position: Position { x: 500.0, y: 200.0 },
-                    name: "End".to_string(),
-                    params: NodeParams::default(),
-                },
-            ],
-            edges: vec![Edge {
-                from: start_id,
-                to: end_id,
-            }],
+            nodes: vec![],
+            edges: vec![],
         }
     }
 }
@@ -45,47 +24,21 @@ impl Default for Workflow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: Uuid,
-    pub kind: NodeKind,
+    pub node_type: NodeType,
     pub position: Position,
     pub name: String,
-    pub params: NodeParams,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NodeKind {
-    Start,
-    Step,
-    End,
-}
-
-impl NodeKind {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            NodeKind::Start => "Start",
-            NodeKind::Step => "Step",
-            NodeKind::End => "End",
-        }
-    }
+    pub enabled: bool,
+    pub timeout_ms: Option<u64>,
+    pub retries: u32,
+    pub trace_level: TraceLevel,
+    pub expected_outcome: Option<String>,
+    pub checks: Vec<Check>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Position {
     pub x: f32,
     pub y: f32,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NodeParams {
-    /// LLM instruction for this step
-    pub prompt: String,
-    /// Button text to find and click
-    pub button_text: Option<String>,
-    /// Path to image asset (relative to project assets/)
-    pub image_path: Option<String>,
-    /// Timeout in milliseconds
-    pub timeout_ms: Option<u64>,
-    /// Maximum tool calls before stopping
-    pub max_tool_calls: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,19 +55,20 @@ impl Workflow {
         }
     }
 
-    pub fn add_node(
-        &mut self,
-        kind: NodeKind,
-        position: Position,
-        name: impl Into<String>,
-    ) -> Uuid {
+    pub fn add_node(&mut self, node_type: NodeType, position: Position) -> Uuid {
         let id = Uuid::new_v4();
+        let name = node_type.default_name().to_string();
         self.nodes.push(Node {
             id,
-            kind,
+            node_type,
             position,
-            name: name.into(),
-            params: NodeParams::default(),
+            name,
+            enabled: true,
+            timeout_ms: None,
+            retries: 0,
+            trace_level: TraceLevel::Minimal,
+            expected_outcome: None,
+            checks: vec![],
         });
         id
     }
@@ -140,32 +94,39 @@ impl Workflow {
         self.edges.retain(|e| !(e.from == from && e.to == to));
     }
 
-    /// Get execution order as a linear path from Start to End
+    /// Find entry points: nodes with no incoming edges.
+    fn entry_points(&self) -> Vec<Uuid> {
+        let targets: std::collections::HashSet<Uuid> = self.edges.iter().map(|e| e.to).collect();
+        self.nodes
+            .iter()
+            .filter(|n| !targets.contains(&n.id))
+            .map(|n| n.id)
+            .collect()
+    }
+
+    /// Get execution order by walking edges from entry points linearly.
     pub fn execution_order(&self) -> Vec<Uuid> {
-        let start = self.nodes.iter().find(|n| n.kind == NodeKind::Start);
-        let Some(start) = start else {
-            return vec![];
-        };
+        let entries = self.entry_points();
+        if entries.is_empty() {
+            return self.nodes.iter().map(|n| n.id).collect();
+        }
 
-        let mut order = vec![start.id];
-        let mut current = start.id;
+        let mut order = Vec::new();
+        let mut visited = std::collections::HashSet::new();
 
-        loop {
-            let next = self.edges.iter().find(|e| e.from == current);
-            match next {
-                Some(edge) => {
-                    order.push(edge.to);
-                    current = edge.to;
-
-                    // Stop if we hit End node
-                    if self
-                        .find_node(current)
-                        .is_some_and(|n| n.kind == NodeKind::End)
-                    {
-                        break;
-                    }
+        for entry in entries {
+            let mut current = entry;
+            loop {
+                if !visited.insert(current) {
+                    break;
                 }
-                None => break,
+                order.push(current);
+
+                let next = self.edges.iter().find(|e| e.from == current);
+                match next {
+                    Some(edge) => current = edge.to,
+                    None => break,
+                }
             }
         }
 
