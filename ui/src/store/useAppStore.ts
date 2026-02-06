@@ -177,24 +177,24 @@ export function useAppStore(): [AppState, AppActions] {
   );
 
   const openProject = useCallback(async () => {
-    const result = await commands.pickProjectFolder();
+    const result = await commands.pickWorkflowFile();
     if (result.status !== "ok" || !result.data) return;
-    const path = result.data;
-    const projectResult = await commands.openProject(path);
+    const filePath = result.data;
+    const projectResult = await commands.openProject(filePath);
     if (projectResult.status !== "ok") {
-      pushLog(`Failed to open project: ${projectResult.error}`);
+      pushLog(`Failed to open: ${projectResult.error}`);
       return;
     }
     setProjectPath(projectResult.data.path);
     setWorkflow(projectResult.data.workflow);
     setSelectedNode(null);
-    pushLog(`Opened project: ${path}`);
+    pushLog(`Opened: ${filePath}`);
   }, [pushLog]);
 
   const saveProject = useCallback(async () => {
     let savePath = projectPath;
     if (!savePath) {
-      const result = await commands.pickProjectFolder();
+      const result = await commands.pickSaveFile();
       if (result.status !== "ok" || !result.data) return;
       savePath = result.data;
       setProjectPath(savePath);

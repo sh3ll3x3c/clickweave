@@ -14,6 +14,16 @@ fn parse_uuid(s: &str, label: &str) -> Result<Uuid, String> {
     s.parse().map_err(|_| format!("Invalid {} ID", label))
 }
 
+/// Derive the project directory from a path that may be a file or directory.
+fn project_dir(path: &str) -> PathBuf {
+    let p = PathBuf::from(path);
+    if p.extension().is_some() {
+        p.parent().unwrap_or(&p).to_path_buf()
+    } else {
+        p
+    }
+}
+
 // ============================================================
 // Shared state for executor management
 // ============================================================
@@ -109,29 +119,41 @@ pub fn ping() -> String {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn pick_project_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let folder = app.dialog().file().blocking_pick_folder();
-    Ok(folder.map(|p| p.to_string()))
+pub async fn pick_workflow_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let file = app
+        .dialog()
+        .file()
+        .add_filter("Clickweave Workflow", &["json"])
+        .blocking_pick_file();
+    Ok(file.map(|p| p.to_string()))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn pick_save_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let file = app
+        .dialog()
+        .file()
+        .add_filter("Clickweave Workflow", &["json"])
+        .set_file_name("workflow.json")
+        .blocking_save_file();
+    Ok(file.map(|p| p.to_string()))
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn open_project(path: String) -> Result<ProjectData, String> {
-    let project_path = PathBuf::from(&path);
-    let workflow_path = project_path.join("workflow.json");
+    let file_path = PathBuf::from(&path);
 
-    if !workflow_path.exists() {
-        return Ok(ProjectData {
-            path,
-            workflow: Workflow::default(),
-        });
+    if !file_path.exists() {
+        return Err(format!("File not found: {}", path));
     }
 
-    let content = std::fs::read_to_string(&workflow_path)
-        .map_err(|e| format!("Failed to read workflow.json: {}", e))?;
+    let content =
+        std::fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    let workflow: Workflow = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse workflow.json: {}", e))?;
+    let workflow: Workflow =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse workflow: {}", e))?;
 
     Ok(ProjectData { path, workflow })
 }
@@ -139,20 +161,17 @@ pub fn open_project(path: String) -> Result<ProjectData, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn save_project(path: String, workflow: Workflow) -> Result<(), String> {
-    let project_path = PathBuf::from(&path);
+    let file_path = PathBuf::from(&path);
 
-    std::fs::create_dir_all(&project_path)
-        .map_err(|e| format!("Failed to create project directory: {}", e))?;
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
 
-    std::fs::create_dir_all(project_path.join("assets"))
-        .map_err(|e| format!("Failed to create assets directory: {}", e))?;
-
-    let workflow_path = project_path.join("workflow.json");
     let content = serde_json::to_string_pretty(&workflow)
         .map_err(|e| format!("Failed to serialize workflow: {}", e))?;
 
-    std::fs::write(&workflow_path, content)
-        .map_err(|e| format!("Failed to write workflow.json: {}", e))?;
+    std::fs::write(&file_path, content).map_err(|e| format!("Failed to write file: {}", e))?;
 
     Ok(())
 }
@@ -215,7 +234,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         max_tokens: None,
     };
 
-    let project_path = request.project_path.map(PathBuf::from);
+    let project_path = request.project_path.map(|p| project_dir(&p));
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(256);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<ExecutorCommand>(8);
@@ -323,7 +342,7 @@ pub fn list_runs(query: RunsQuery) -> Result<Vec<NodeRun>, String> {
     let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
     let node_id = parse_uuid(&query.node_id, "node")?;
 
-    let storage = RunStorage::new(&PathBuf::from(&query.project_path), workflow_id);
+    let storage = RunStorage::new(&project_dir(&query.project_path), workflow_id);
     storage
         .load_runs_for_node(node_id)
         .map_err(|e| format!("Failed to load runs: {}", e))
@@ -336,7 +355,7 @@ pub fn load_run_events(query: RunEventsQuery) -> Result<Vec<TraceEvent>, String>
     let node_id = parse_uuid(&query.node_id, "node")?;
     let run_id = parse_uuid(&query.run_id, "run")?;
 
-    let storage = RunStorage::new(&PathBuf::from(&query.project_path), workflow_id);
+    let storage = RunStorage::new(&project_dir(&query.project_path), workflow_id);
     let events_path = storage.run_dir(node_id, run_id).join("events.jsonl");
 
     if !events_path.exists() {
@@ -389,7 +408,7 @@ pub async fn import_asset(
     let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("png");
     let filename = format!("{}.{}", Uuid::new_v4(), ext);
 
-    let assets_dir = PathBuf::from(&project_path).join("assets");
+    let assets_dir = project_dir(&project_path).join("assets");
     std::fs::create_dir_all(&assets_dir)
         .map_err(|e| format!("Failed to create assets directory: {}", e))?;
 

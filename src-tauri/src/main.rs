@@ -12,7 +12,8 @@ fn main() {
 
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
         ping,
-        pick_project_folder,
+        pick_workflow_file,
+        pick_save_file,
         open_project,
         save_project,
         validate,

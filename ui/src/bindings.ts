@@ -8,9 +8,17 @@ export const commands = {
 async ping() : Promise<string> {
     return await TAURI_INVOKE("ping");
 },
-async pickProjectFolder() : Promise<Result<string | null, string>> {
+async pickWorkflowFile() : Promise<Result<string | null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("pick_project_folder") };
+    return { status: "ok", data: await TAURI_INVOKE("pick_workflow_file") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async pickSaveFile() : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pick_save_file") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
