@@ -3,7 +3,9 @@ use clickweave_core::storage::RunStorage;
 use clickweave_core::{
     AiStepParams, ArtifactKind, NodeRun, NodeType, RunStatus, TraceEvent, TraceLevel, Workflow,
 };
-use clickweave_llm::{LlmClient, LlmConfig, Message, build_step_prompt, workflow_system_prompt};
+use clickweave_llm::{
+    LlmClient, LlmConfig, Message, analyze_images, build_step_prompt, workflow_system_prompt,
+};
 use clickweave_mcp::{McpClient, ToolCallResult, ToolContent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -380,6 +382,7 @@ impl WorkflowExecutor {
                 messages.push(Message::assistant_tool_calls(tool_calls.clone()));
 
                 let mut pending_images: Vec<(String, String)> = Vec::new();
+                let mut last_image_tool = String::new();
 
                 for tool_call in tool_calls {
                     tool_call_count += 1;
@@ -405,6 +408,9 @@ impl WorkflowExecutor {
                         Ok(result) => {
                             let prefix = format!("toolcall_{}", tool_call_count - 1);
                             let images = self.save_result_images(&result, &prefix, &mut node_run);
+                            if !images.is_empty() {
+                                last_image_tool = tool_call.function.name.clone();
+                            }
                             pending_images.extend(images);
 
                             let result_text = Self::extract_result_text(&result);
@@ -438,10 +444,49 @@ impl WorkflowExecutor {
                 }
 
                 if !pending_images.is_empty() {
-                    messages.push(Message::user_with_images(
-                        "Here are the images from the tool results above.",
-                        pending_images,
-                    ));
+                    let image_count = pending_images.len();
+                    if let Some(vlm) = &self.vlm {
+                        // Route images through the VLM
+                        self.log(format!(
+                            "Analyzing {} image(s) with VLM ({})",
+                            image_count,
+                            vlm.config().model
+                        ));
+                        match analyze_images(vlm, &params.prompt, &last_image_tool, pending_images)
+                            .await
+                        {
+                            Ok(summary) => {
+                                if let Some(ref run) = node_run {
+                                    self.record_event(
+                                        run,
+                                        "vision_summary",
+                                        serde_json::json!({
+                                            "image_count": image_count,
+                                            "vlm_model": vlm.config().model,
+                                            "summary_json": summary,
+                                        }),
+                                    );
+                                }
+                                messages.push(Message::user(format!(
+                                    "VLM_IMAGE_SUMMARY:\n{}",
+                                    summary
+                                )));
+                            }
+                            Err(e) => {
+                                self.log(format!("VLM analysis failed: {}", e));
+                                messages.push(Message::user(
+                                    "(Vision analysis failed; consider using find_text or find_image for precise targeting)"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    } else {
+                        // No VLM configured — send images directly to orchestrator
+                        messages.push(Message::user_with_images(
+                            "Here are the images from the tool results above.",
+                            pending_images,
+                        ));
+                    }
                 }
             } else {
                 let completed = msg

@@ -103,7 +103,7 @@ impl LlmClient {
     }
 }
 
-/// System prompt for workflow execution
+/// System prompt for the orchestrator (text-only, no images).
 pub fn workflow_system_prompt() -> String {
     r#"You are a UI automation assistant executing an AI Step node within a workflow.
 
@@ -121,6 +121,15 @@ For each step, you will receive:
 - Optional button_text: specific text to find and click
 - Optional template_image: path to an image to locate on screen
 
+Image outputs from tools are analyzed by a separate vision model. You will receive
+their analysis as a VLM_IMAGE_SUMMARY message containing a JSON object with:
+- summary: what is visible on screen
+- visible_text: key labels, buttons, headings
+- alerts: errors, popups, permission prompts
+- notes_for_orchestrator: non-prescriptive hints
+
+Use find_text / find_image for precise coordinate targeting. Do not guess coordinates.
+
 Strategy:
 1. Start by taking a screenshot to observe the current state
 2. Use find_text or find_image to locate targets precisely
@@ -135,6 +144,60 @@ If you cannot complete the step:
 
 Be precise with coordinates. Always verify actions when the outcome matters."#
         .to_string()
+}
+
+/// System prompt for the VLM (vision model).
+pub fn vlm_system_prompt() -> String {
+    r#"You are a visual analyst for UI automation. You receive screenshots and images from tool results and produce structured descriptions for an orchestrator model that cannot see images.
+
+Output ONLY a JSON object with these fields:
+{
+  "summary": "1-3 sentences describing what is visible on screen",
+  "visible_text": ["key labels", "button text", "dialog headings"],
+  "alerts": ["any errors", "popups", "permission prompts"],
+  "notes_for_orchestrator": "Non-prescriptive hints, e.g. 'There is a modal blocking the UI' or 'The search field is focused'"
+}
+
+Rules:
+- Be factual and concise. Describe what you see, not what to do.
+- Include coordinates only if they are clearly visible (e.g. OCR overlay).
+- Do NOT suggest actions or next steps — the orchestrator decides.
+- If nothing notable is on screen, keep fields empty but still return valid JSON."#
+        .to_string()
+}
+
+/// Build the user prompt for a VLM image analysis call.
+pub fn build_vlm_prompt(step_goal: &str, tool_name: &str) -> String {
+    format!(
+        "The orchestrator is working on: \"{}\"\n\
+         The following image(s) were returned by the \"{}\" tool.\n\
+         Analyze the image(s) and produce the JSON summary.",
+        step_goal, tool_name
+    )
+}
+
+/// Call the VLM to analyze images and return a text summary.
+pub async fn analyze_images(
+    vlm: &LlmClient,
+    step_goal: &str,
+    tool_name: &str,
+    images: Vec<(String, String)>,
+) -> Result<String> {
+    let messages = vec![
+        Message::system(vlm_system_prompt()),
+        Message::user_with_images(build_vlm_prompt(step_goal, tool_name), images),
+    ];
+
+    let response = vlm.chat(messages, None).await?;
+
+    let text = response
+        .choices
+        .first()
+        .and_then(|c| c.message.content_text())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(text)
 }
 
 /// Build user message for a workflow step
