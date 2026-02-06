@@ -74,28 +74,6 @@ impl WorkflowExecutor {
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
-    pub fn with_backends(
-        workflow: Workflow,
-        orchestrator: C,
-        vlm: Option<C>,
-        mcp_command: String,
-        project_path: Option<PathBuf>,
-        event_tx: Sender<ExecutorEvent>,
-    ) -> Self {
-        let storage = project_path
-            .as_ref()
-            .map(|p| RunStorage::new(p, workflow.id));
-        Self {
-            workflow,
-            orchestrator,
-            vlm,
-            mcp_command,
-            project_path,
-            event_tx,
-            storage,
-        }
-    }
-
     fn emit(&self, event: ExecutorEvent) {
         let _ = self.event_tx.try_send(event);
     }
@@ -732,27 +710,50 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 }
 
-/// Check that a list of messages contains no image content parts.
-/// Used to verify the orchestrator never receives raw images.
-pub fn assert_no_images(messages: &[clickweave_llm::Message]) {
-    for (i, msg) in messages.iter().enumerate() {
-        if let Some(clickweave_llm::Content::Parts(parts)) = &msg.content {
-            for part in parts {
-                if matches!(part, clickweave_llm::ContentPart::ImageUrl { .. }) {
-                    panic!(
-                        "Message[{}] (role={}) contains image content — orchestrator should never receive images when VLM is configured",
-                        i, msg.role
-                    );
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clickweave_llm::{Content, ContentPart, Message};
+
+    /// Check that a list of messages contains no image content parts.
+    fn assert_no_images(messages: &[Message]) {
+        for (i, msg) in messages.iter().enumerate() {
+            if let Some(Content::Parts(parts)) = &msg.content {
+                for part in parts {
+                    if matches!(part, ContentPart::ImageUrl { .. }) {
+                        panic!(
+                            "Message[{}] (role={}) contains image content — orchestrator should never receive images when VLM is configured",
+                            i, msg.role
+                        );
+                    }
                 }
             }
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clickweave_llm::{Content, Message};
+    impl<C: ChatBackend> WorkflowExecutor<C> {
+        pub fn with_backends(
+            workflow: Workflow,
+            orchestrator: C,
+            vlm: Option<C>,
+            mcp_command: String,
+            project_path: Option<PathBuf>,
+            event_tx: Sender<ExecutorEvent>,
+        ) -> Self {
+            let storage = project_path
+                .as_ref()
+                .map(|p| RunStorage::new(p, workflow.id));
+            Self {
+                workflow,
+                orchestrator,
+                vlm,
+                mcp_command,
+                project_path,
+                event_tx,
+                storage,
+            }
+        }
+    }
 
     #[test]
     fn assert_no_images_passes_for_text_only() {
