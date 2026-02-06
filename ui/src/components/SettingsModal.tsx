@@ -140,21 +140,26 @@ export function SettingsModal({
 
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              MCP Server
+              native-devtools-mcp
             </h3>
+            <p className="mb-2 text-[10px] text-[var(--text-muted)]">
+              Provides browser automation and screenshot tools for workflow execution.
+            </p>
             <div>
               <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-                Command
+                Binary path
               </label>
               <input
                 type="text"
-                value={mcpCommand}
-                onChange={(e) => onMcpCommandChange(e.target.value)}
-                placeholder="npx"
+                value={mcpCommand === "npx" ? "" : mcpCommand}
+                onChange={(e) =>
+                  onMcpCommandChange(e.target.value.trim() || "npx")
+                }
+                placeholder="Default (npx)"
                 className={`${inputClass} placeholder-[var(--text-muted)]`}
               />
               <p className="mt-1 text-[10px] text-[var(--text-muted)]">
-                Use "npx" for native-devtools-mcp, or a custom command path
+                Leave empty to use npx, or set a path to a local binary
               </p>
             </div>
           </div>
