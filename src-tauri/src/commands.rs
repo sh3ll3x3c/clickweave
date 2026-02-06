@@ -240,13 +240,16 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         max_tokens: None,
     };
 
-    let vlm_config = request.vlm.map(|v| LlmConfig {
-        base_url: v.base_url,
-        api_key: v.api_key.filter(|k| !k.is_empty()),
-        model: v.model,
-        temperature: Some(0.1),
-        max_tokens: None,
-    });
+    let vlm_config = request
+        .vlm
+        .filter(|v| !v.base_url.is_empty() && !v.model.is_empty())
+        .map(|v| LlmConfig {
+            base_url: v.base_url,
+            api_key: v.api_key.filter(|k| !k.is_empty()),
+            model: v.model,
+            temperature: Some(0.1),
+            max_tokens: None,
+        });
 
     let project_path = request.project_path.map(|p| project_dir(&p));
 

@@ -176,6 +176,15 @@ impl WorkflowExecutor {
     pub async fn run(&mut self, mut command_rx: Receiver<ExecutorCommand>) {
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
         self.log("Starting workflow execution");
+        if let Some(vlm) = &self.vlm {
+            self.log(format!(
+                "VLM enabled: {} ({})",
+                vlm.config().model,
+                vlm.config().base_url
+            ));
+        } else {
+            self.log("VLM not configured — images sent directly to orchestrator");
+        }
 
         // Spawn MCP server
         let mcp = if self.mcp_command == "npx" {
