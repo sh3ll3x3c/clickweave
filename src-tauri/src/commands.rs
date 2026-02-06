@@ -58,12 +58,18 @@ pub struct NodeTypeInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct EndpointConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct RunRequest {
     pub workflow: Workflow,
     pub project_path: Option<String>,
-    pub llm_base_url: String,
-    pub llm_model: String,
-    pub llm_api_key: Option<String>,
+    pub orchestrator: EndpointConfig,
+    pub vlm: Option<EndpointConfig>,
     pub mcp_command: String,
 }
 
@@ -226,13 +232,21 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         ));
     }
 
-    let llm_config = LlmConfig {
-        base_url: request.llm_base_url,
-        api_key: request.llm_api_key.filter(|k| !k.is_empty()),
-        model: request.llm_model,
+    let orchestrator_config = LlmConfig {
+        base_url: request.orchestrator.base_url,
+        api_key: request.orchestrator.api_key.filter(|k| !k.is_empty()),
+        model: request.orchestrator.model,
         temperature: None,
         max_tokens: None,
     };
+
+    let vlm_config = request.vlm.map(|v| LlmConfig {
+        base_url: v.base_url,
+        api_key: v.api_key.filter(|k| !k.is_empty()),
+        model: v.model,
+        temperature: Some(0.1),
+        max_tokens: None,
+    });
 
     let project_path = request.project_path.map(|p| project_dir(&p));
 
@@ -252,7 +266,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     tauri::async_runtime::spawn(async move {
         let mut executor = WorkflowExecutor::new(
             request.workflow,
-            llm_config,
+            orchestrator_config,
+            vlm_config,
             request.mcp_command,
             project_path,
             event_tx,

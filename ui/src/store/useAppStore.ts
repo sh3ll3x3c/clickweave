@@ -4,7 +4,7 @@ import type { Workflow, NodeTypeInfo, Node, NodeType, Edge, RunRequest } from ".
 
 export type DetailTab = "setup" | "trace" | "checks" | "runs";
 
-export interface LlmConfig {
+export interface EndpointConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -23,7 +23,9 @@ export interface AppState {
   nodeSearch: string;
   showSettings: boolean;
   logs: string[];
-  llmConfig: LlmConfig;
+  orchestratorConfig: EndpointConfig;
+  vlmConfig: EndpointConfig;
+  vlmEnabled: boolean;
   mcpCommand: string;
 }
 
@@ -46,7 +48,9 @@ export interface AppActions {
   openProject: () => Promise<void>;
   saveProject: () => Promise<void>;
   newProject: () => void;
-  setLlmConfig: (config: LlmConfig) => void;
+  setOrchestratorConfig: (config: EndpointConfig) => void;
+  setVlmConfig: (config: EndpointConfig) => void;
+  setVlmEnabled: (enabled: boolean) => void;
   setMcpCommand: (cmd: string) => void;
   setActiveNode: (id: string | null) => void;
   setExecutorState: (state: "idle" | "running") => void;
@@ -76,11 +80,17 @@ export function useAppStore(): [AppState, AppActions] {
   const [nodeSearch, setNodeSearch] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [logs, setLogs] = useState<string[]>(["Clickweave started"]);
-  const [llmConfig, setLlmConfig] = useState<LlmConfig>({
+  const [orchestratorConfig, setOrchestratorConfig] = useState<EndpointConfig>({
     baseUrl: "http://localhost:1234/v1",
     apiKey: "",
     model: "local",
   });
+  const [vlmConfig, setVlmConfig] = useState<EndpointConfig>({
+    baseUrl: "http://localhost:1234/v1",
+    apiKey: "",
+    model: "local",
+  });
+  const [vlmEnabled, setVlmEnabled] = useState(false);
   const [mcpCommand, setMcpCommand] = useState("npx");
 
   const nodeTypesLoaded = useRef(false);
@@ -214,17 +224,24 @@ export function useAppStore(): [AppState, AppActions] {
     pushLog("New project created");
   }, [pushLog]);
 
-  const latestRef = useRef({ workflow, projectPath, llmConfig, mcpCommand });
-  latestRef.current = { workflow, projectPath, llmConfig, mcpCommand };
+  const latestRef = useRef({ workflow, projectPath, orchestratorConfig, vlmConfig, vlmEnabled, mcpCommand });
+  latestRef.current = { workflow, projectPath, orchestratorConfig, vlmConfig, vlmEnabled, mcpCommand };
 
   const runWorkflow = useCallback(async () => {
-    const { workflow, projectPath, llmConfig, mcpCommand } = latestRef.current;
+    const { workflow, projectPath, orchestratorConfig, vlmConfig, vlmEnabled, mcpCommand } = latestRef.current;
     const request: RunRequest = {
       workflow,
       project_path: projectPath,
-      llm_base_url: llmConfig.baseUrl,
-      llm_model: llmConfig.model,
-      llm_api_key: llmConfig.apiKey || null,
+      orchestrator: {
+        base_url: orchestratorConfig.baseUrl,
+        model: orchestratorConfig.model,
+        api_key: orchestratorConfig.apiKey || null,
+      },
+      vlm: vlmEnabled ? {
+        base_url: vlmConfig.baseUrl,
+        model: vlmConfig.model,
+        api_key: vlmConfig.apiKey || null,
+      } : null,
       mcp_command: mcpCommand,
     };
     const result = await commands.runWorkflow(request);
@@ -253,7 +270,9 @@ export function useAppStore(): [AppState, AppActions] {
     nodeSearch,
     showSettings,
     logs,
-    llmConfig,
+    orchestratorConfig,
+    vlmConfig,
+    vlmEnabled,
     mcpCommand,
   };
 
@@ -276,7 +295,9 @@ export function useAppStore(): [AppState, AppActions] {
     openProject,
     saveProject,
     newProject,
-    setLlmConfig,
+    setOrchestratorConfig,
+    setVlmConfig,
+    setVlmEnabled,
     setMcpCommand,
     setActiveNode,
     setExecutorState,

@@ -38,7 +38,8 @@ pub enum ExecutorEvent {
 
 pub struct WorkflowExecutor {
     workflow: Workflow,
-    llm: LlmClient,
+    orchestrator: LlmClient,
+    vlm: Option<LlmClient>,
     mcp_command: String,
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
@@ -48,7 +49,8 @@ pub struct WorkflowExecutor {
 impl WorkflowExecutor {
     pub fn new(
         workflow: Workflow,
-        llm_config: LlmConfig,
+        orchestrator_config: LlmConfig,
+        vlm_config: Option<LlmConfig>,
         mcp_command: String,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
@@ -58,7 +60,8 @@ impl WorkflowExecutor {
             .map(|p| RunStorage::new(p, workflow.id));
         Self {
             workflow,
-            llm: LlmClient::new(llm_config),
+            orchestrator: LlmClient::new(orchestrator_config),
+            vlm: vlm_config.map(LlmClient::new),
             mcp_command,
             project_path,
             event_tx,
@@ -352,7 +355,7 @@ impl WorkflowExecutor {
             }
 
             let response = self
-                .llm
+                .orchestrator
                 .chat(messages.clone(), Some(tools.to_vec()))
                 .await
                 .map_err(|e| format!("LLM error: {}", e))?;

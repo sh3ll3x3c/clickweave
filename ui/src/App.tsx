@@ -156,10 +156,14 @@ function App() {
 
       <SettingsModal
         open={state.showSettings}
-        llmConfig={state.llmConfig}
+        orchestratorConfig={state.orchestratorConfig}
+        vlmConfig={state.vlmConfig}
+        vlmEnabled={state.vlmEnabled}
         mcpCommand={state.mcpCommand}
         onClose={() => actions.setShowSettings(false)}
-        onLlmConfigChange={actions.setLlmConfig}
+        onOrchestratorConfigChange={actions.setOrchestratorConfig}
+        onVlmConfigChange={actions.setVlmConfig}
+        onVlmEnabledChange={actions.setVlmEnabled}
         onMcpCommandChange={actions.setMcpCommand}
       />
     </div>
