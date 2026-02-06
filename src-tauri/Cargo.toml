@@ -10,6 +10,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["specta"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-store = "2"
 tauri-specta = { version = "2.0.0-rc", features = ["derive", "typescript"] }
 specta = { version = "2.0.0-rc", features = ["derive"] }
 specta-typescript = "0.0.9"

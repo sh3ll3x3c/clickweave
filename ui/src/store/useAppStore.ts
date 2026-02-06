@@ -1,4 +1,5 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { load } from "@tauri-apps/plugin-store";
 import { commands } from "../bindings";
 import type { Workflow, NodeTypeInfo, Node, NodeType, Edge, RunRequest } from "../bindings";
 
@@ -58,6 +59,55 @@ export interface AppActions {
   stopWorkflow: () => Promise<void>;
 }
 
+const DEFAULT_ORCHESTRATOR_CONFIG: EndpointConfig = {
+  baseUrl: "http://localhost:1234/v1",
+  apiKey: "",
+  model: "local",
+};
+
+const DEFAULT_VLM_CONFIG: EndpointConfig = {
+  baseUrl: "http://localhost:1234/v1",
+  apiKey: "",
+  model: "local",
+};
+
+const DEFAULT_VLM_ENABLED = false;
+const DEFAULT_MCP_COMMAND = "npx";
+
+interface PersistedSettings {
+  orchestratorConfig: EndpointConfig;
+  vlmConfig: EndpointConfig;
+  vlmEnabled: boolean;
+  mcpCommand: string;
+}
+
+const SETTINGS_DEFAULTS: PersistedSettings = {
+  orchestratorConfig: DEFAULT_ORCHESTRATOR_CONFIG,
+  vlmConfig: DEFAULT_VLM_CONFIG,
+  vlmEnabled: DEFAULT_VLM_ENABLED,
+  mcpCommand: DEFAULT_MCP_COMMAND,
+};
+
+async function loadSettings(): Promise<PersistedSettings> {
+  const store = await load("settings.json", { autoSave: false, defaults: {} });
+  const orchestratorConfig = await store.get<EndpointConfig>("orchestratorConfig");
+  const vlmConfig = await store.get<EndpointConfig>("vlmConfig");
+  const vlmEnabled = await store.get<boolean>("vlmEnabled");
+  const mcpCommand = await store.get<string>("mcpCommand");
+  return {
+    orchestratorConfig: orchestratorConfig ?? SETTINGS_DEFAULTS.orchestratorConfig,
+    vlmConfig: vlmConfig ?? SETTINGS_DEFAULTS.vlmConfig,
+    vlmEnabled: vlmEnabled ?? SETTINGS_DEFAULTS.vlmEnabled,
+    mcpCommand: mcpCommand ?? SETTINGS_DEFAULTS.mcpCommand,
+  };
+}
+
+async function saveSetting<K extends keyof PersistedSettings>(key: K, value: PersistedSettings[K]): Promise<void> {
+  const store = await load("settings.json", { autoSave: false, defaults: {} });
+  await store.set(key, value);
+  await store.save();
+}
+
 function makeDefaultWorkflow(): Workflow {
   return {
     id: crypto.randomUUID(),
@@ -80,18 +130,22 @@ export function useAppStore(): [AppState, AppActions] {
   const [nodeSearch, setNodeSearch] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [logs, setLogs] = useState<string[]>(["Clickweave started"]);
-  const [orchestratorConfig, setOrchestratorConfig] = useState<EndpointConfig>({
-    baseUrl: "http://localhost:1234/v1",
-    apiKey: "",
-    model: "local",
-  });
-  const [vlmConfig, setVlmConfig] = useState<EndpointConfig>({
-    baseUrl: "http://localhost:1234/v1",
-    apiKey: "",
-    model: "local",
-  });
-  const [vlmEnabled, setVlmEnabled] = useState(false);
-  const [mcpCommand, setMcpCommand] = useState("npx");
+  const [orchestratorConfig, setOrchestratorConfig] = useState<EndpointConfig>(DEFAULT_ORCHESTRATOR_CONFIG);
+  const [vlmConfig, setVlmConfig] = useState<EndpointConfig>(DEFAULT_VLM_CONFIG);
+  const [vlmEnabled, setVlmEnabled] = useState(DEFAULT_VLM_ENABLED);
+  const [mcpCommand, setMcpCommand] = useState(DEFAULT_MCP_COMMAND);
+
+  const settingsLoaded = useRef(false);
+  useEffect(() => {
+    if (settingsLoaded.current) return;
+    settingsLoaded.current = true;
+    loadSettings().then((s) => {
+      setOrchestratorConfig(s.orchestratorConfig);
+      setVlmConfig(s.vlmConfig);
+      setVlmEnabled(s.vlmEnabled);
+      setMcpCommand(s.mcpCommand);
+    });
+  }, []);
 
   const nodeTypesLoaded = useRef(false);
   if (!nodeTypesLoaded.current) {
@@ -295,10 +349,22 @@ export function useAppStore(): [AppState, AppActions] {
     openProject,
     saveProject,
     newProject,
-    setOrchestratorConfig,
-    setVlmConfig,
-    setVlmEnabled,
-    setMcpCommand,
+    setOrchestratorConfig: (config: EndpointConfig) => {
+      setOrchestratorConfig(config);
+      saveSetting("orchestratorConfig", config);
+    },
+    setVlmConfig: (config: EndpointConfig) => {
+      setVlmConfig(config);
+      saveSetting("vlmConfig", config);
+    },
+    setVlmEnabled: (enabled: boolean) => {
+      setVlmEnabled(enabled);
+      saveSetting("vlmEnabled", enabled);
+    },
+    setMcpCommand: (cmd: string) => {
+      setMcpCommand(cmd);
+      saveSetting("mcpCommand", cmd);
+    },
     setActiveNode,
     setExecutorState,
     runWorkflow,
