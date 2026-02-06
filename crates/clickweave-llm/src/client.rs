@@ -1,7 +1,19 @@
 use crate::types::*;
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::future::Future;
 use tracing::{debug, info};
+
+/// Seam for LLM interaction, allowing mock backends in tests.
+pub trait ChatBackend: Send + Sync {
+    fn chat(
+        &self,
+        messages: Vec<Message>,
+        tools: Option<Vec<Value>>,
+    ) -> impl Future<Output = Result<ChatResponse>> + Send;
+
+    fn model_name(&self) -> &str;
+}
 
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
@@ -45,8 +57,14 @@ impl LlmClient {
     pub fn config_mut(&mut self) -> &mut LlmConfig {
         &mut self.config
     }
+}
 
-    pub async fn chat(
+impl ChatBackend for LlmClient {
+    fn model_name(&self) -> &str {
+        &self.config.model
+    }
+
+    async fn chat(
         &self,
         messages: Vec<Message>,
         tools: Option<Vec<Value>>,
@@ -178,7 +196,7 @@ pub fn build_vlm_prompt(step_goal: &str, tool_name: &str) -> String {
 
 /// Call the VLM to analyze images and return a text summary.
 pub async fn analyze_images(
-    vlm: &LlmClient,
+    vlm: &(impl ChatBackend + ?Sized),
     step_goal: &str,
     tool_name: &str,
     images: Vec<(String, String)>,
@@ -217,4 +235,138 @@ pub fn build_step_prompt(
     }
 
     parts.join("")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Mock backend that records calls and returns a canned response.
+    struct MockBackend {
+        response_text: String,
+        calls: Mutex<Vec<Vec<Message>>>,
+    }
+
+    impl MockBackend {
+        fn new(response_text: &str) -> Self {
+            Self {
+                response_text: response_text.to_string(),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+
+        fn last_messages(&self) -> Vec<Message> {
+            self.calls
+                .lock()
+                .unwrap()
+                .last()
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+
+    impl ChatBackend for MockBackend {
+        fn model_name(&self) -> &str {
+            "mock-model"
+        }
+
+        async fn chat(
+            &self,
+            messages: Vec<Message>,
+            _tools: Option<Vec<Value>>,
+        ) -> Result<ChatResponse> {
+            self.calls.lock().unwrap().push(messages);
+            Ok(ChatResponse {
+                id: "mock".to_string(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Message::assistant(&self.response_text),
+                    finish_reason: Some("stop".to_string()),
+                }],
+                usage: None,
+            })
+        }
+    }
+
+    #[test]
+    fn vlm_system_prompt_requests_json() {
+        let prompt = vlm_system_prompt();
+        assert!(
+            prompt.contains("JSON"),
+            "VLM prompt should request JSON output"
+        );
+        assert!(
+            prompt.contains("summary"),
+            "VLM prompt should mention summary field"
+        );
+        assert!(
+            prompt.contains("visible_text"),
+            "VLM prompt should mention visible_text field"
+        );
+        assert!(
+            prompt.contains("alerts"),
+            "VLM prompt should mention alerts field"
+        );
+        assert!(
+            prompt.contains("notes_for_orchestrator"),
+            "VLM prompt should mention notes_for_orchestrator field"
+        );
+    }
+
+    #[test]
+    fn vlm_prompt_is_non_prescriptive() {
+        let prompt = vlm_system_prompt();
+        assert!(
+            prompt.contains("Do NOT suggest actions"),
+            "VLM prompt should forbid suggesting actions"
+        );
+    }
+
+    #[test]
+    fn orchestrator_prompt_mentions_vlm_summary() {
+        let prompt = workflow_system_prompt();
+        assert!(
+            prompt.contains("VLM_IMAGE_SUMMARY"),
+            "Orchestrator prompt should describe VLM summary format"
+        );
+    }
+
+    #[test]
+    fn build_vlm_prompt_includes_context() {
+        let prompt = build_vlm_prompt("click the login button", "take_screenshot");
+        assert!(prompt.contains("click the login button"));
+        assert!(prompt.contains("take_screenshot"));
+    }
+
+    #[tokio::test]
+    async fn analyze_images_returns_vlm_text() {
+        let mock = MockBackend::new(r#"{"summary": "a login screen"}"#);
+        let result = analyze_images(
+            &mock,
+            "click the login button",
+            "take_screenshot",
+            vec![("base64data".to_string(), "image/png".to_string())],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, r#"{"summary": "a login screen"}"#);
+        assert_eq!(mock.call_count(), 1);
+
+        // Verify the VLM received the system prompt + user message with images
+        let messages = mock.last_messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[1].role, "user");
+        // User message should contain image parts
+        assert!(
+            matches!(&messages[1].content, Some(Content::Parts(parts)) if parts.len() >= 2),
+            "VLM user message should contain text + image parts"
+        );
+    }
 }

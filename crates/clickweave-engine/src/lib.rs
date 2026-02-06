@@ -4,7 +4,8 @@ use clickweave_core::{
     AiStepParams, ArtifactKind, NodeRun, NodeType, RunStatus, TraceEvent, TraceLevel, Workflow,
 };
 use clickweave_llm::{
-    LlmClient, LlmConfig, Message, analyze_images, build_step_prompt, workflow_system_prompt,
+    ChatBackend, LlmClient, LlmConfig, Message, analyze_images, build_step_prompt,
+    workflow_system_prompt,
 };
 use clickweave_mcp::{McpClient, ToolCallResult, ToolContent};
 use serde::{Deserialize, Serialize};
@@ -38,10 +39,10 @@ pub enum ExecutorEvent {
     Error(String),
 }
 
-pub struct WorkflowExecutor {
+pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     workflow: Workflow,
-    orchestrator: LlmClient,
-    vlm: Option<LlmClient>,
+    orchestrator: C,
+    vlm: Option<C>,
     mcp_command: String,
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
@@ -64,6 +65,30 @@ impl WorkflowExecutor {
             workflow,
             orchestrator: LlmClient::new(orchestrator_config),
             vlm: vlm_config.map(LlmClient::new),
+            mcp_command,
+            project_path,
+            event_tx,
+            storage,
+        }
+    }
+}
+
+impl<C: ChatBackend> WorkflowExecutor<C> {
+    pub fn with_backends(
+        workflow: Workflow,
+        orchestrator: C,
+        vlm: Option<C>,
+        mcp_command: String,
+        project_path: Option<PathBuf>,
+        event_tx: Sender<ExecutorEvent>,
+    ) -> Self {
+        let storage = project_path
+            .as_ref()
+            .map(|p| RunStorage::new(p, workflow.id));
+        Self {
+            workflow,
+            orchestrator,
+            vlm,
             mcp_command,
             project_path,
             event_tx,
@@ -177,11 +202,7 @@ impl WorkflowExecutor {
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
         self.log("Starting workflow execution");
         if let Some(vlm) = &self.vlm {
-            self.log(format!(
-                "VLM enabled: {} ({})",
-                vlm.config().model,
-                vlm.config().base_url
-            ));
+            self.log(format!("VLM enabled: {}", vlm.model_name()));
         } else {
             self.log("VLM not configured — images sent directly to orchestrator");
         }
@@ -459,7 +480,7 @@ impl WorkflowExecutor {
                         self.log(format!(
                             "Analyzing {} image(s) with VLM ({})",
                             image_count,
-                            vlm.config().model
+                            vlm.model_name()
                         ));
                         match analyze_images(vlm, &params.prompt, &last_image_tool, pending_images)
                             .await
@@ -471,7 +492,7 @@ impl WorkflowExecutor {
                                         "vision_summary",
                                         serde_json::json!({
                                             "image_count": image_count,
-                                            "vlm_model": vlm.config().model,
+                                            "vlm_model": vlm.model_name(),
                                             "summary_json": summary,
                                         }),
                                     );
@@ -708,5 +729,77 @@ impl WorkflowExecutor {
         }
 
         Some(args)
+    }
+}
+
+/// Check that a list of messages contains no image content parts.
+/// Used to verify the orchestrator never receives raw images.
+pub fn assert_no_images(messages: &[clickweave_llm::Message]) {
+    for (i, msg) in messages.iter().enumerate() {
+        if let Some(clickweave_llm::Content::Parts(parts)) = &msg.content {
+            for part in parts {
+                if matches!(part, clickweave_llm::ContentPart::ImageUrl { .. }) {
+                    panic!(
+                        "Message[{}] (role={}) contains image content — orchestrator should never receive images when VLM is configured",
+                        i, msg.role
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clickweave_llm::{Content, Message};
+
+    #[test]
+    fn assert_no_images_passes_for_text_only() {
+        let messages = vec![
+            Message::system("system prompt"),
+            Message::user("hello"),
+            Message::assistant("world"),
+            Message::user("VLM_IMAGE_SUMMARY:\n{\"summary\": \"a screen\"}"),
+        ];
+        assert_no_images(&messages);
+    }
+
+    #[test]
+    #[should_panic(expected = "contains image content")]
+    fn assert_no_images_catches_image_parts() {
+        let messages = vec![Message::user_with_images(
+            "Here are images",
+            vec![("base64".to_string(), "image/png".to_string())],
+        )];
+        assert_no_images(&messages);
+    }
+
+    #[test]
+    fn vlm_summary_replaces_images_in_message_flow() {
+        // Simulate the message flow when VLM is configured:
+        // After tool results, we should append a text VLM_IMAGE_SUMMARY
+        // instead of images.
+        let mut messages = vec![
+            Message::system(workflow_system_prompt()),
+            Message::user("Click the login button"),
+        ];
+
+        // Simulate: orchestrator made a tool call, got a result with images
+        messages.push(Message::tool_result("call_1", "screenshot taken"));
+
+        // VLM analyzed the images and produced a summary
+        let vlm_summary = r#"{"summary": "Login page with username/password fields"}"#;
+        messages.push(Message::user(format!(
+            "VLM_IMAGE_SUMMARY:\n{}",
+            vlm_summary
+        )));
+
+        // Verify: no images in the orchestrator messages
+        assert_no_images(&messages);
+
+        // Verify: the VLM summary is present as plain text
+        let last = messages.last().unwrap();
+        assert!(matches!(&last.content, Some(Content::Text(t)) if t.contains("VLM_IMAGE_SUMMARY")));
     }
 }
