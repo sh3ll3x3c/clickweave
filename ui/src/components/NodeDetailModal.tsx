@@ -40,8 +40,8 @@ export function NodeDetailModal({
   if (!node) return null;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center pt-16 bg-black/40">
-      <div className="w-[560px] max-h-[80vh] flex flex-col rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] shadow-xl">
+    <div className="fixed right-0 top-0 z-40 flex h-full pt-[theme(spacing.12)]">
+      <div className="w-[420px] flex flex-col border-l border-[var(--border)] bg-[var(--bg-panel)] shadow-xl">
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-[var(--text-primary)]">

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -15,7 +15,7 @@ import {
   MarkerType,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { Workflow, Node, Edge } from "../bindings";
+import type { Workflow, Edge } from "../bindings";
 import { WorkflowNode } from "./WorkflowNode";
 
 interface GraphCanvasProps {
@@ -23,7 +23,7 @@ interface GraphCanvasProps {
   selectedNode: string | null;
   activeNode: string | null;
   onSelectNode: (id: string | null) => void;
-  onNodesChange: (nodes: Node[]) => void;
+  onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onEdgesChange: (edges: Edge[]) => void;
   onConnect: (from: string, to: string) => void;
   onDeleteNode: (id: string) => void;
@@ -42,12 +42,37 @@ const categoryColors: Record<string, string> = {
   AppDebugKitOp: "#ef4444",
 };
 
+function toRFNode(
+  node: Workflow["nodes"][number],
+  selectedNode: string | null,
+  activeNode: string | null,
+  onDeleteNode: (id: string) => void,
+  existing?: RFNode,
+): RFNode {
+  return {
+    ...(existing ?? {}),
+    id: node.id,
+    type: "workflow",
+    position: existing?.position ?? { x: node.position.x, y: node.position.y },
+    selected: node.id === selectedNode,
+    data: {
+      label: node.name,
+      nodeType: node.node_type.type,
+      icon: getNodeIcon(node.node_type.type),
+      color: categoryColors[node.node_type.type] || "#666",
+      isActive: node.id === activeNode,
+      enabled: node.enabled,
+      onDelete: () => onDeleteNode(node.id),
+    },
+  };
+}
+
 export function GraphCanvas({
   workflow,
   selectedNode,
   activeNode,
   onSelectNode,
-  onNodesChange,
+  onNodePositionsChange,
   onEdgesChange,
   onConnect,
   onDeleteNode,
@@ -59,25 +84,18 @@ export function GraphCanvas({
     [],
   );
 
-  const rfNodes: RFNode[] = useMemo(
-    () =>
-      workflow.nodes.map((node) => ({
-        id: node.id,
-        type: "workflow",
-        position: { x: node.position.x, y: node.position.y },
-        selected: node.id === selectedNode,
-        data: {
-          label: node.name,
-          nodeType: node.node_type.type,
-          icon: getNodeIcon(node.node_type.type),
-          color: categoryColors[node.node_type.type] || "#666",
-          isActive: node.id === activeNode,
-          enabled: node.enabled,
-          onDelete: () => onDeleteNode(node.id),
-        },
-      })),
-    [workflow.nodes, selectedNode, activeNode, onDeleteNode],
-  );
+  // Internal RF node state — React Flow fully controls this (including dimensions).
+  // We sync workflow data INTO it, preserving RF-internal props like measured/width/height.
+  const [rfNodes, setRfNodes] = useState<RFNode[]>([]);
+
+  useEffect(() => {
+    setRfNodes((prev) => {
+      const prevMap = new Map(prev.map((n) => [n.id, n]));
+      return workflow.nodes.map((node) =>
+        toRFNode(node, selectedNode, activeNode, onDeleteNode, prevMap.get(node.id)),
+      );
+    });
+  }, [workflow.nodes, selectedNode, activeNode, onDeleteNode]);
 
   const rfEdges: RFEdge[] = useMemo(
     () =>
@@ -92,32 +110,25 @@ export function GraphCanvas({
     [workflow.edges],
   );
 
+  // Apply ALL changes to internal state so React Flow can track dimensions.
+  // Propagate position changes back to workflow state.
   const handleNodesChange: OnNodesChange = useCallback(
     (changes) => {
-      const updated = applyNodeChanges(changes, rfNodes);
-      const nodeMap = new Map(workflow.nodes.map((n) => [n.id, n]));
-      const newNodes = updated
-        .map((rfn) => {
-          const original = nodeMap.get(rfn.id);
-          if (!original) return null;
-          return {
-            ...original,
-            position: {
-              x: rfn.position?.x ?? original.position.x,
-              y: rfn.position?.y ?? original.position.y,
-            },
-          };
-        })
-        .filter(Boolean) as Node[];
-      onNodesChange(newNodes);
+      setRfNodes((prev) => applyNodeChanges(changes, prev));
 
+      const posUpdates = new Map<string, { x: number; y: number }>();
       for (const change of changes) {
-        if (change.type === "select" && change.selected) {
+        if (change.type === "position" && change.position) {
+          posUpdates.set(change.id, change.position);
+        } else if (change.type === "select" && change.selected) {
           onSelectNode(change.id);
         }
       }
+      if (posUpdates.size > 0) {
+        onNodePositionsChange(posUpdates);
+      }
     },
-    [rfNodes, workflow.nodes, onNodesChange, onSelectNode],
+    [onNodePositionsChange, onSelectNode],
   );
 
   const handleEdgesChange: OnEdgesChange = useCallback(
@@ -156,6 +167,7 @@ export function GraphCanvas({
         onConnect={handleConnect}
         onPaneClick={handlePaneClick}
         fitView
+        fitViewOptions={{ maxZoom: 1 }}
         snapToGrid
         snapGrid={[20, 20]}
         defaultEdgeOptions={{

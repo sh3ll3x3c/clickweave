@@ -106,9 +106,7 @@ function App() {
               selectedNode={state.selectedNode}
               activeNode={state.activeNode}
               onSelectNode={actions.selectNode}
-              onNodesChange={(nodes) =>
-                actions.setWorkflow({ ...state.workflow, nodes })
-              }
+              onNodePositionsChange={actions.updateNodePositions}
               onEdgesChange={(edges) =>
                 actions.setWorkflow({ ...state.workflow, edges })
               }

@@ -39,6 +39,7 @@ export interface AppActions {
   clearLogs: () => void;
   addNode: (nodeType: NodeType) => void;
   removeNode: (id: string) => void;
+  updateNodePositions: (updates: Map<string, { x: number; y: number }>) => void;
   updateNode: (id: string, updates: Partial<Node>) => void;
   addEdge: (from: string, to: string) => void;
   removeEdge: (from: string, to: string) => void;
@@ -129,6 +130,19 @@ export function useAppStore(): [AppState, AppActions] {
         edges: prev.edges.filter((e) => e.from !== id && e.to !== id),
       }));
       setSelectedNode((prev) => (prev === id ? null : prev));
+    },
+    [],
+  );
+
+  const updateNodePositions = useCallback(
+    (updates: Map<string, { x: number; y: number }>) => {
+      setWorkflow((prev) => ({
+        ...prev,
+        nodes: prev.nodes.map((n) => {
+          const pos = updates.get(n.id);
+          return pos ? { ...n, position: { x: pos.x, y: pos.y } } : n;
+        }),
+      }));
     },
     [],
   );
@@ -255,6 +269,7 @@ export function useAppStore(): [AppState, AppActions] {
     clearLogs,
     addNode,
     removeNode,
+    updateNodePositions,
     updateNode,
     addEdge,
     removeEdge,
