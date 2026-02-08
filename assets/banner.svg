@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="wire" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <rect width="800" height="200" rx="12" fill="url(#bg)"/>
+
+  <!-- subtle grid -->
+  <g stroke="#334155" stroke-width="0.5" opacity="0.4">
+    <line x1="0" y1="50" x2="800" y2="50"/>
+    <line x1="0" y1="100" x2="800" y2="100"/>
+    <line x1="0" y1="150" x2="800" y2="150"/>
+    <line x1="200" y1="0" x2="200" y2="200"/>
+    <line x1="400" y1="0" x2="400" y2="200"/>
+    <line x1="600" y1="0" x2="600" y2="200"/>
+  </g>
+
+  <!-- wires connecting nodes -->
+  <path d="M148,90 C180,90 190,70 220,70" stroke="url(#wire)" stroke-width="2" fill="none"/>
+  <path d="M148,110 C180,110 190,150 220,150" stroke="url(#wire)" stroke-width="2" fill="none"/>
+
+  <!-- node 1: trigger -->
+  <rect x="60" y="70" width="88" height="60" rx="8" fill="#1e293b" stroke="#6366f1" stroke-width="1.5"/>
+  <circle cx="80" cy="100" r="6" fill="#6366f1"/>
+  <rect x="94" y="90" width="40" height="6" rx="3" fill="#94a3b8"/>
+  <rect x="94" y="102" width="28" height="4" rx="2" fill="#475569"/>
+  <!-- output port -->
+  <circle cx="148" cy="90" r="4" fill="#6366f1"/>
+  <circle cx="148" cy="110" r="4" fill="#6366f1"/>
+
+  <!-- node 2: AI step -->
+  <rect x="220" y="40" width="88" height="60" rx="8" fill="#1e293b" stroke="#a78bfa" stroke-width="1.5"/>
+  <polygon points="240,62 252,74 240,74" fill="#a78bfa"/>
+  <rect x="258" y="58" width="36" height="6" rx="3" fill="#94a3b8"/>
+  <rect x="258" y="70" width="24" height="4" rx="2" fill="#475569"/>
+  <!-- port -->
+  <circle cx="220" cy="70" r="4" fill="#a78bfa"/>
+
+  <!-- node 3: action -->
+  <rect x="220" y="120" width="88" height="60" rx="8" fill="#1e293b" stroke="#6366f1" stroke-width="1.5"/>
+  <rect x="240" y="140" width="14" height="14" rx="3" fill="none" stroke="#6366f1" stroke-width="1.5"/>
+  <line x1="244" y1="147" x2="250" y2="153" stroke="#6366f1" stroke-width="1.5"/>
+  <rect x="262" y="140" width="32" height="6" rx="3" fill="#94a3b8"/>
+  <rect x="262" y="152" width="20" height="4" rx="2" fill="#475569"/>
+  <!-- port -->
+  <circle cx="220" cy="150" r="4" fill="#6366f1"/>
+
+  <!-- title -->
+  <text x="400" y="96" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="42" font-weight="700" fill="white" text-anchor="middle" letter-spacing="-1">
+    Clickweave
+  </text>
+
+  <!-- tagline -->
+  <text x="400" y="126" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="15" fill="#94a3b8" text-anchor="middle" letter-spacing="0.5">
+    Visual Desktop Automation with AI
+  </text>
+
+  <!-- accent bar -->
+  <rect x="355" y="134" width="90" height="2" rx="1" fill="url(#accent)" opacity="0.6"/>
+
+  <!-- decorative dots (right side) -->
+  <g fill="#6366f1" opacity="0.3">
+    <circle cx="640" cy="60" r="2"/>
+    <circle cx="660" cy="60" r="2"/>
+    <circle cx="680" cy="60" r="2"/>
+    <circle cx="700" cy="60" r="2"/>
+    <circle cx="640" cy="80" r="2"/>
+    <circle cx="660" cy="80" r="2"/>
+    <circle cx="680" cy="80" r="2"/>
+    <circle cx="700" cy="80" r="2"/>
+    <circle cx="640" cy="100" r="2"/>
+    <circle cx="660" cy="100" r="2"/>
+    <circle cx="680" cy="100" r="2"/>
+    <circle cx="700" cy="100" r="2"/>
+    <circle cx="640" cy="120" r="2"/>
+    <circle cx="660" cy="120" r="2"/>
+    <circle cx="680" cy="120" r="2"/>
+    <circle cx="700" cy="120" r="2"/>
+    <circle cx="640" cy="140" r="2"/>
+    <circle cx="660" cy="140" r="2"/>
+    <circle cx="680" cy="140" r="2"/>
+    <circle cx="700" cy="140" r="2"/>
+  </g>
+</svg>
