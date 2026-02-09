@@ -164,3 +164,46 @@ pub struct Usage {
     pub completion_tokens: u32,
     pub total_tokens: u32,
 }
+
+/// Provider-agnostic model info from /v1/models.
+///
+/// Different providers return different fields:
+/// - LM Studio: `max_context_length`, `loaded_context_length`, `arch`, `quantization`
+/// - vLLM: `max_model_len`
+/// - OpenRouter: `context_length`
+/// - OpenAI standard: only `id`, `object`, `created`, `owned_by`
+///
+/// Extra fields are captured in `extra` for forward compatibility.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub owned_by: Option<String>,
+    // LM Studio fields
+    pub max_context_length: Option<u64>,
+    pub loaded_context_length: Option<u64>,
+    pub arch: Option<String>,
+    pub quantization: Option<String>,
+    // vLLM fields
+    pub max_model_len: Option<u64>,
+    // OpenRouter fields
+    pub context_length: Option<u64>,
+    /// All other provider-specific fields.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+impl ModelInfo {
+    /// Best-effort context length from whichever provider field is available.
+    /// Prefers loaded (actual) over max (theoretical).
+    pub fn effective_context_length(&self) -> Option<u64> {
+        self.loaded_context_length
+            .or(self.max_context_length)
+            .or(self.max_model_len)
+            .or(self.context_length)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ModelsResponse {
+    pub data: Vec<ModelInfo>,
+}

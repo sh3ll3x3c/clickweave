@@ -80,6 +80,22 @@ To build and run Clickweave from source, you need the standard Tauri development
     ```
     The output bundles will be located in `target/release/bundle/`.
 
+## Model Info Detection
+
+At workflow startup, Clickweave queries the inference provider for model metadata (context length, architecture, quantization). This is logged alongside per-request token usage to help diagnose context exhaustion issues.
+
+Context length detection is **provider-dependent** — not all providers expose this information:
+
+| Provider | Context length field | Endpoint |
+|----------|---------------------|----------|
+| LM Studio | `max_context_length`, `loaded_context_length` | `/api/v0/models` |
+| vLLM | `max_model_len` | `/v1/models` |
+| OpenRouter | `context_length` | `/v1/models` |
+| Ollama | Not supported yet | — |
+| OpenAI | Not available via API | — |
+
+If the provider does not return context length, Clickweave logs `ctx=?`. Token usage (`prompt_tokens`, `completion_tokens`, `total_tokens`) is always logged when the provider returns it (most do).
+
 ## Logs
 
 Clickweave writes JSON-formatted trace logs to a daily rolling file. These contain full LLM request/response bodies and tool call details, useful for diagnosing workflow failures.

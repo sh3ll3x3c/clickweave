@@ -13,6 +13,12 @@ pub trait ChatBackend: Send + Sync {
     ) -> impl Future<Output = Result<ChatResponse>> + Send;
 
     fn model_name(&self) -> &str;
+
+    /// Query the provider for model metadata (context length, etc.).
+    /// Returns None by default (e.g. for mock backends).
+    fn fetch_model_info(&self) -> impl Future<Output = Result<Option<ModelInfo>>> + Send {
+        async { Ok(None) }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +62,40 @@ impl LlmClient {
 
     pub fn config_mut(&mut self) -> &mut LlmConfig {
         &mut self.config
+    }
+
+    async fn try_models_endpoint(&self, url: &str, model_id: &str) -> Result<Option<ModelInfo>> {
+        let mut req = self.http.get(url);
+        if let Some(api_key) = &self.config.api_key {
+            req = req.bearer_auth(api_key);
+        }
+
+        let response = req
+            .send()
+            .await
+            .context("Failed to query models endpoint")?;
+
+        if !response.status().is_success() {
+            debug!(url = %url, status = %response.status(), "Models endpoint returned error");
+            return Ok(None);
+        }
+
+        let response_text = response
+            .text()
+            .await
+            .context("Failed to read models response")?;
+
+        trace!(url = %url, response = %response_text, "Raw models response");
+
+        let body: ModelsResponse =
+            serde_json::from_str(&response_text).context("Failed to parse models response")?;
+
+        let info = body
+            .data
+            .into_iter()
+            .find(|m| m.id == *model_id || model_id.contains(&m.id) || m.id.contains(model_id));
+
+        Ok(info)
     }
 }
 
@@ -121,6 +161,15 @@ impl ChatBackend for LlmClient {
         let chat_response: ChatResponse =
             serde_json::from_str(&response_text).context("Failed to parse LLM response")?;
 
+        if let Some(usage) = &chat_response.usage {
+            info!(
+                prompt_tokens = usage.prompt_tokens,
+                completion_tokens = usage.completion_tokens,
+                total_tokens = usage.total_tokens,
+                "LLM usage"
+            );
+        }
+
         let first_choice = chat_response.choices.first();
         info!(
             finish_reason = ?first_choice.and_then(|c| c.finish_reason.as_ref()),
@@ -144,6 +193,52 @@ impl ChatBackend for LlmClient {
         }
 
         Ok(chat_response)
+    }
+
+    async fn fetch_model_info(&self) -> Result<Option<ModelInfo>> {
+        let base = self.config.base_url.trim_end_matches('/');
+        let model_id = &self.config.model;
+
+        // Try endpoints in order of richness:
+        // 1. LM Studio /api/v0/models (has context length, arch, quantization)
+        // 2. OpenAI-compatible /v1/models (minimal, but widely supported)
+        let base_origin = base.find("/v1").map(|i| &base[..i]).unwrap_or(base);
+
+        let endpoints = [
+            format!("{}/api/v0/models", base_origin),
+            format!("{}/models", base),
+        ];
+
+        for endpoint in &endpoints {
+            let info = self.try_models_endpoint(endpoint, model_id).await;
+            match info {
+                Ok(Some(info)) if info.effective_context_length().is_some() => {
+                    return Ok(Some(info));
+                }
+                Ok(Some(info)) => {
+                    // Matched model but no context info, try next endpoint
+                    debug!(endpoint = %endpoint, "Model found but no context length, trying next");
+                    // Keep as fallback
+                    let fallback = info;
+                    // Try remaining endpoints for richer data
+                    for next in endpoints.iter().skip_while(|e| *e != endpoint).skip(1) {
+                        if let Ok(Some(better)) = self.try_models_endpoint(next, model_id).await {
+                            if better.effective_context_length().is_some() {
+                                return Ok(Some(better));
+                            }
+                        }
+                    }
+                    return Ok(Some(fallback));
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    debug!(endpoint = %endpoint, error = %e, "Endpoint failed");
+                    continue;
+                }
+            }
+        }
+
+        Ok(None)
     }
 }
 

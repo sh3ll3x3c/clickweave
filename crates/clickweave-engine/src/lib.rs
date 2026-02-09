@@ -84,6 +84,45 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         self.emit(ExecutorEvent::Log(msg));
     }
 
+    async fn log_model_info(&self, label: &str, backend: &C) {
+        match backend.fetch_model_info().await {
+            Ok(Some(info)) => {
+                let ctx = info
+                    .effective_context_length()
+                    .map_or("?".to_string(), |v| v.to_string());
+
+                let mut details = vec![format!("model={}", info.id), format!("ctx={}", ctx)];
+
+                if let Some(arch) = &info.arch {
+                    details.push(format!("arch={}", arch));
+                }
+                if let Some(quant) = &info.quantization {
+                    details.push(format!("quant={}", quant));
+                }
+                if let Some(owned_by) = &info.owned_by {
+                    details.push(format!("owned_by={}", owned_by));
+                }
+
+                self.log(format!("{}: {}", label, details.join(", ")));
+            }
+            Ok(None) => {
+                self.log(format!(
+                    "{}: {} (no model info from provider)",
+                    label,
+                    backend.model_name()
+                ));
+            }
+            Err(e) => {
+                debug!("Failed to fetch model info for {}: {}", label, e);
+                self.log(format!(
+                    "{}: {} (could not query model info)",
+                    label,
+                    backend.model_name()
+                ));
+            }
+        }
+    }
+
     fn emit_error(&self, msg: impl Into<String>) {
         let msg = msg.into();
         error!("{}", msg);
@@ -179,8 +218,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub async fn run(&mut self, mut command_rx: Receiver<ExecutorCommand>) {
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
         self.log("Starting workflow execution");
+
+        // Log model info from /v1/models
+        self.log_model_info("Orchestrator", &self.orchestrator)
+            .await;
         if let Some(vlm) = &self.vlm {
             self.log(format!("VLM enabled: {}", vlm.model_name()));
+            self.log_model_info("VLM", vlm).await;
         } else {
             self.log("VLM not configured — images sent directly to orchestrator");
         }
