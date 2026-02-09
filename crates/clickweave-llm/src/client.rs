@@ -69,7 +69,10 @@ impl ChatBackend for LlmClient {
         messages: Vec<Message>,
         tools: Option<Vec<Value>>,
     ) -> Result<ChatResponse> {
-        let url = format!("{}/chat/completions", self.config.base_url);
+        let url = format!(
+            "{}/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        );
 
         let request = ChatRequest {
             model: self.config.model.clone(),
