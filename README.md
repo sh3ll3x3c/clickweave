@@ -80,6 +80,17 @@ To build and run Clickweave from source, you need the standard Tauri development
     ```
     The output bundles will be located in `target/release/bundle/`.
 
+## Logs
+
+Clickweave writes JSON-formatted trace logs to a daily rolling file. These contain full LLM request/response bodies and tool call details, useful for diagnosing workflow failures.
+
+| Platform | Location |
+|----------|----------|
+| macOS | `~/Library/Logs/Clickweave/` |
+| Windows / Linux | `./logs/` (relative to the working directory) |
+
+Log files are named `clickweave.YYYY-MM-DD.txt`. The console log level defaults to `info` and can be changed with the `RUST_LOG` environment variable. The file layer always captures at `trace` level.
+
 ## 📄 License
 
 Distributed under the MIT License. See `LICENSE` for more information.

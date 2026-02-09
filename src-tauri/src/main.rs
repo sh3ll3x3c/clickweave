@@ -6,9 +6,47 @@ mod commands;
 use commands::*;
 use std::sync::Mutex;
 use tauri_specta::{Builder, collect_commands};
+use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+fn log_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").expect("HOME should be set");
+        std::path::PathBuf::from(home).join("Library/Logs/Clickweave")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        dir.push("logs");
+        dir
+    }
+}
 
 fn main() {
-    tracing_subscriber::fmt::init();
+    let log_dir = log_dir();
+    std::fs::create_dir_all(&log_dir).ok();
+
+    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("clickweave")
+        .filename_suffix("txt")
+        .build(&log_dir)
+        .expect("failed to create log file appender");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    let console_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let file_filter = EnvFilter::new("trace");
+
+    tracing_subscriber::registry()
+        .with(fmt::layer().with_filter(console_filter))
+        .with(
+            fmt::layer()
+                .json()
+                .with_writer(non_blocking)
+                .with_filter(file_filter),
+        )
+        .init();
 
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
         ping,

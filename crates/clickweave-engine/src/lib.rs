@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,6 +395,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 for tool_call in tool_calls {
                     tool_call_count += 1;
                     self.log(format!("Tool call: {}", tool_call.function.name));
+                    debug!(
+                        tool = %tool_call.function.name,
+                        arguments = %tool_call.function.arguments,
+                        "Tool call arguments"
+                    );
 
                     let args: Option<Value> =
                         serde_json::from_str(&tool_call.function.arguments).ok();
@@ -428,6 +433,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 result_text.len(),
                                 pending_images.len()
                             ));
+                            debug!(
+                                tool = %tool_call.function.name,
+                                result = %result_text,
+                                "Tool result text"
+                            );
 
                             if let Some(ref run) = node_run {
                                 self.record_event(

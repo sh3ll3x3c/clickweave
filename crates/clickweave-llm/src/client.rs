@@ -2,7 +2,7 @@ use crate::types::*;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::future::Future;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 /// Seam for LLM interaction, allowing mock backends in tests.
 pub trait ChatBackend: Send + Sync {
@@ -83,7 +83,16 @@ impl ChatBackend for LlmClient {
             max_tokens: self.config.max_tokens,
         };
 
-        debug!("LLM request to {}: {:?}", url, request.messages.len());
+        debug!(
+            url = %url,
+            message_count = request.messages.len(),
+            model = %request.model,
+            "LLM request"
+        );
+        trace!(
+            request_body = %serde_json::to_string(&request).unwrap_or_default(),
+            "LLM request body"
+        );
 
         let mut req_builder = self.http.post(&url).json(&request);
 
@@ -102,23 +111,37 @@ impl ChatBackend for LlmClient {
             anyhow::bail!("LLM request failed ({}): {}", status, error_text);
         }
 
-        let chat_response: ChatResponse = response
-            .json()
+        let response_text = response
+            .text()
             .await
-            .context("Failed to parse LLM response")?;
+            .context("Failed to read LLM response body")?;
 
+        trace!(response_body = %response_text, "LLM response body");
+
+        let chat_response: ChatResponse =
+            serde_json::from_str(&response_text).context("Failed to parse LLM response")?;
+
+        let first_choice = chat_response.choices.first();
         info!(
-            "LLM response: finish_reason={:?}, tool_calls={:?}",
-            chat_response
-                .choices
-                .first()
-                .and_then(|c| c.finish_reason.as_ref()),
-            chat_response.choices.first().and_then(|c| c
-                .message
-                .tool_calls
-                .as_ref()
-                .map(|tc| tc.len()))
+            finish_reason = ?first_choice.and_then(|c| c.finish_reason.as_ref()),
+            tool_calls = ?first_choice.and_then(|c| c.message.tool_calls.as_ref().map(|tc| tc.len())),
+            "LLM response"
         );
+
+        if let Some(choice) = first_choice {
+            if let Some(content) = choice.message.content_text() {
+                debug!(content = %content, "LLM response content");
+            }
+            if let Some(tool_calls) = &choice.message.tool_calls {
+                for tc in tool_calls {
+                    debug!(
+                        tool = %tc.function.name,
+                        arguments = %tc.function.arguments,
+                        "LLM tool call"
+                    );
+                }
+            }
+        }
 
         Ok(chat_response)
     }

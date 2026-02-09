@@ -21,6 +21,7 @@ anyhow.workspace = true
 base64.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
 clickweave-core = { workspace = true, features = ["specta"] }
