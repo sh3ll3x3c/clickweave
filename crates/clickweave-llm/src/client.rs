@@ -2,6 +2,7 @@ use crate::types::*;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, info, trace};
 
 /// Seam for LLM interaction, allowing mock backends in tests.
@@ -46,6 +47,8 @@ impl Default for LlmConfig {
 pub struct LlmClient {
     config: LlmConfig,
     http: reqwest::Client,
+    /// Cached context length from provider, 0 means unknown.
+    context_length: AtomicU64,
 }
 
 impl LlmClient {
@@ -53,6 +56,7 @@ impl LlmClient {
         Self {
             config,
             http: reqwest::Client::new(),
+            context_length: AtomicU64::new(0),
         }
     }
 
@@ -162,18 +166,39 @@ impl ChatBackend for LlmClient {
             serde_json::from_str(&response_text).context("Failed to parse LLM response")?;
 
         if let Some(usage) = &chat_response.usage {
-            info!(
-                prompt_tokens = usage.prompt_tokens,
-                completion_tokens = usage.completion_tokens,
-                total_tokens = usage.total_tokens,
-                "LLM usage"
-            );
+            let ctx = self.context_length.load(Ordering::Relaxed);
+            if ctx > 0 {
+                let pct = (usage.total_tokens as f64 / ctx as f64 * 100.0) as u32;
+                info!(
+                    prompt_tokens = usage.prompt_tokens,
+                    completion_tokens = usage.completion_tokens,
+                    total_tokens = usage.total_tokens,
+                    context_length = ctx,
+                    usage_pct = pct,
+                    "LLM usage ({}/{}  {}%)",
+                    usage.total_tokens,
+                    ctx,
+                    pct
+                );
+            } else {
+                info!(
+                    prompt_tokens = usage.prompt_tokens,
+                    completion_tokens = usage.completion_tokens,
+                    total_tokens = usage.total_tokens,
+                    "LLM usage"
+                );
+            }
         }
 
         let first_choice = chat_response.choices.first();
+        let tool_names: Vec<&str> = first_choice
+            .and_then(|c| c.message.tool_calls.as_ref())
+            .map(|tcs| tcs.iter().map(|tc| tc.function.name.as_str()).collect())
+            .unwrap_or_default();
+
         info!(
             finish_reason = ?first_choice.and_then(|c| c.finish_reason.as_ref()),
-            tool_calls = ?first_choice.and_then(|c| c.message.tool_calls.as_ref().map(|tc| tc.len())),
+            tool_calls = ?if tool_names.is_empty() { None } else { Some(&tool_names) },
             "LLM response"
         );
 
@@ -209,10 +234,17 @@ impl ChatBackend for LlmClient {
             format!("{}/models", base),
         ];
 
+        let cache_context = |info: &ModelInfo| {
+            if let Some(ctx) = info.effective_context_length() {
+                self.context_length.store(ctx, Ordering::Relaxed);
+            }
+        };
+
         for endpoint in &endpoints {
             let info = self.try_models_endpoint(endpoint, model_id).await;
             match info {
                 Ok(Some(info)) if info.effective_context_length().is_some() => {
+                    cache_context(&info);
                     return Ok(Some(info));
                 }
                 Ok(Some(info)) => {
@@ -222,10 +254,11 @@ impl ChatBackend for LlmClient {
                     let fallback = info;
                     // Try remaining endpoints for richer data
                     for next in endpoints.iter().skip_while(|e| *e != endpoint).skip(1) {
-                        if let Ok(Some(better)) = self.try_models_endpoint(next, model_id).await {
-                            if better.effective_context_length().is_some() {
-                                return Ok(Some(better));
-                            }
+                        if let Ok(Some(better)) = self.try_models_endpoint(next, model_id).await
+                            && better.effective_context_length().is_some()
+                        {
+                            cache_context(&better);
+                            return Ok(Some(better));
                         }
                     }
                     return Ok(Some(fallback));
