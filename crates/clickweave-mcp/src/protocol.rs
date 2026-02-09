@@ -126,6 +126,7 @@ pub enum ToolContent {
     },
     Image {
         data: String,
+        #[serde(rename = "mimeType")]
         mime_type: String,
     },
     #[serde(other)]
