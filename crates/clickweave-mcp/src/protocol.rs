@@ -105,7 +105,7 @@ pub struct ToolsListResult {
 #[derive(Debug, Serialize)]
 pub struct ToolCallParams {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Value>,
 }
 

@@ -16,6 +16,17 @@ interface SettingsModalProps {
 const inputClass =
   "w-full rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)]";
 
+const endpointFields: {
+  key: keyof EndpointConfig;
+  label: string;
+  type: string;
+  placeholder?: string;
+}[] = [
+  { key: "baseUrl", label: "Base URL", type: "text" },
+  { key: "model", label: "Model", type: "text" },
+  { key: "apiKey", label: "API Key", type: "password", placeholder: "Optional" },
+];
+
 function EndpointFields({
   config,
   onChange,
@@ -25,40 +36,20 @@ function EndpointFields({
 }) {
   return (
     <div className="space-y-2">
-      <div>
-        <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-          Base URL
-        </label>
-        <input
-          type="text"
-          value={config.baseUrl}
-          onChange={(e) => onChange({ ...config, baseUrl: e.target.value })}
-          className={inputClass}
-        />
-      </div>
-      <div>
-        <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-          Model
-        </label>
-        <input
-          type="text"
-          value={config.model}
-          onChange={(e) => onChange({ ...config, model: e.target.value })}
-          className={inputClass}
-        />
-      </div>
-      <div>
-        <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-          API Key
-        </label>
-        <input
-          type="password"
-          value={config.apiKey}
-          onChange={(e) => onChange({ ...config, apiKey: e.target.value })}
-          placeholder="Optional"
-          className={`${inputClass} placeholder-[var(--text-muted)]`}
-        />
-      </div>
+      {endpointFields.map((field) => (
+        <div key={field.key}>
+          <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+            {field.label}
+          </label>
+          <input
+            type={field.type}
+            value={config[field.key]}
+            onChange={(e) => onChange({ ...config, [field.key]: e.target.value })}
+            placeholder={field.placeholder}
+            className={`${inputClass}${field.placeholder ? " placeholder-[var(--text-muted)]" : ""}`}
+          />
+        </div>
+      ))}
     </div>
   );
 }

@@ -61,7 +61,7 @@ impl Workflow {
 
     pub fn add_node(&mut self, node_type: NodeType, position: Position) -> Uuid {
         let id = Uuid::new_v4();
-        let name = node_type.default_name().to_string();
+        let name = node_type.display_name().to_string();
         self.nodes.push(Node {
             id,
             node_type,
@@ -120,14 +120,9 @@ impl Workflow {
 
         for entry in entries {
             let mut current = entry;
-            loop {
-                if !visited.insert(current) {
-                    break;
-                }
+            while visited.insert(current) {
                 order.push(current);
-
-                let next = self.edges.iter().find(|e| e.from == current);
-                match next {
+                match self.edges.iter().find(|e| e.from == current) {
                     Some(edge) => current = edge.to,
                     None => break,
                 }
@@ -138,9 +133,7 @@ impl Workflow {
     }
 }
 
-// =============================================================================
-// New Node Type System
-// =============================================================================
+// --- Node type system ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -233,10 +226,6 @@ impl NodeType {
         }
     }
 
-    pub fn default_name(&self) -> &'static str {
-        self.display_name()
-    }
-
     pub fn is_deterministic(&self) -> bool {
         !matches!(self, NodeType::AiStep(_))
     }
@@ -258,9 +247,7 @@ impl NodeType {
     }
 }
 
-// =============================================================================
-// Parameter structs
-// =============================================================================
+// --- Parameter structs ---
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -424,9 +411,7 @@ pub struct AppDebugKitParams {
     pub parameters: Value,
 }
 
-// =============================================================================
-// Trace & Check types
-// =============================================================================
+// --- Trace & check types ---
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -463,9 +448,7 @@ pub struct Check {
     pub on_fail: OnCheckFail,
 }
 
-// =============================================================================
-// Run types
-// =============================================================================
+// --- Run types ---
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]

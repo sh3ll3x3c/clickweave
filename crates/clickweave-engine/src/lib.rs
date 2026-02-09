@@ -1,7 +1,8 @@
 use base64::Engine;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{
-    AiStepParams, ArtifactKind, NodeRun, NodeType, RunStatus, TraceEvent, TraceLevel, Workflow,
+    AiStepParams, ArtifactKind, FocusMethod, MouseButton, NodeRun, NodeType, RunStatus,
+    ScreenshotMode, TraceEvent, TraceLevel, Workflow,
 };
 use clickweave_llm::{
     ChatBackend, LlmClient, LlmConfig, Message, analyze_images, build_step_prompt,
@@ -136,16 +137,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .as_millis() as u64
     }
 
-    fn record_event(&self, run: &NodeRun, event_type: &str, payload: Value) {
-        if let Some(storage) = &self.storage {
-            let event = TraceEvent {
-                timestamp: Self::now_millis(),
-                event_type: event_type.to_string(),
-                payload,
-            };
-            if let Err(e) = storage.append_event(run, &event) {
-                tracing::warn!("Failed to append trace event: {}", e);
-            }
+    fn record_event(&self, run: Option<&NodeRun>, event_type: &str, payload: Value) {
+        let Some(run) = run else { return };
+        let Some(storage) = &self.storage else { return };
+        let event = TraceEvent {
+            timestamp: Self::now_millis(),
+            event_type: event_type.to_string(),
+            payload,
+        };
+        if let Err(e) = storage.append_event(run, &event) {
+            tracing::warn!("Failed to append trace event: {}", e);
         }
     }
 
@@ -219,7 +220,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
         self.log("Starting workflow execution");
 
-        // Log model info from /v1/models
         self.log_model_info("Orchestrator", &self.orchestrator)
             .await;
         if let Some(vlm) = &self.vlm {
@@ -229,7 +229,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.log("VLM not configured — images sent directly to orchestrator");
         }
 
-        // Spawn MCP server
         let mcp = if self.mcp_command == "npx" {
             McpClient::spawn_npx()
         } else {
@@ -247,16 +246,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log(format!("MCP server ready with {} tools", mcp.tools().len()));
 
-        // Get execution order
         let execution_order = self.workflow.execution_order();
         self.log(format!("Execution order: {} nodes", execution_order.len()));
 
-        // Convert MCP tools to OpenAI format
-        let tools: Vec<Value> = mcp
-            .tools_as_openai()
-            .into_iter()
-            .map(|t| serde_json::to_value(t).unwrap())
-            .collect();
+        let tools = mcp.tools_as_openai();
 
         for node_id in execution_order {
             if self.stop_requested(&mut command_rx) {
@@ -269,7 +262,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 continue;
             };
 
-            // Skip disabled nodes
             if !node.enabled {
                 self.log(format!("Skipping disabled node: {}", node.name));
                 continue;
@@ -288,7 +280,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let node_name = node.name.clone();
             let node_type = node.node_type.clone();
 
-            // Create a run record
             let mut node_run = self
                 .storage
                 .as_ref()
@@ -296,16 +287,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             if let Some(ref run) = node_run {
                 self.emit(ExecutorEvent::RunCreated(node_id, run.clone()));
-                self.record_event(
-                    run,
-                    "node_started",
-                    serde_json::json!({"name": node_name, "type": node_type.display_name()}),
-                );
             }
+            self.record_event(
+                node_run.as_ref(),
+                "node_started",
+                serde_json::json!({"name": node_name, "type": node_type.display_name()}),
+            );
 
             let mut attempt = 0;
 
-            let succeeded = loop {
+            loop {
                 let result = match &node_type {
                     NodeType::AiStep(params) => {
                         self.execute_ai_step(
@@ -325,43 +316,38 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 };
 
                 match result {
-                    Ok(()) => break true,
+                    Ok(()) => break,
+                    Err(e) if attempt < retries => {
+                        attempt += 1;
+                        self.log(format!(
+                            "Node {} failed (attempt {}/{}): {}. Retrying...",
+                            node_name,
+                            attempt,
+                            retries + 1,
+                            e
+                        ));
+                        self.record_event(
+                            node_run.as_ref(),
+                            "retry",
+                            serde_json::json!({"attempt": attempt, "error": e}),
+                        );
+                    }
                     Err(e) => {
-                        if attempt < retries {
-                            attempt += 1;
-                            self.log(format!(
-                                "Node {} failed (attempt {}/{}): {}. Retrying...",
-                                node_name,
-                                attempt,
-                                retries + 1,
-                                e
-                            ));
-                            if let Some(ref run) = node_run {
-                                self.record_event(
-                                    run,
-                                    "retry",
-                                    serde_json::json!({"attempt": attempt, "error": e}),
-                                );
-                            }
-                        } else {
-                            self.emit_error(format!("Node {} failed: {}", node_name, e));
-                            if let Some(ref mut run) = node_run {
-                                self.finalize_run(run, RunStatus::Failed);
-                            }
-                            self.emit(ExecutorEvent::NodeFailed(node_id, e));
-                            self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
-                            return;
+                        self.emit_error(format!("Node {} failed: {}", node_name, e));
+                        if let Some(ref mut run) = node_run {
+                            self.finalize_run(run, RunStatus::Failed);
                         }
+                        self.emit(ExecutorEvent::NodeFailed(node_id, e));
+                        self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
+                        return;
                     }
                 }
-            };
-
-            if succeeded {
-                if let Some(ref mut run) = node_run {
-                    self.finalize_run(run, RunStatus::Ok);
-                }
-                self.emit(ExecutorEvent::NodeCompleted(node_id));
             }
+
+            if let Some(ref mut run) = node_run {
+                self.finalize_run(run, RunStatus::Ok);
+            }
+            self.emit(ExecutorEvent::NodeCompleted(node_id));
         }
 
         self.log("Workflow execution completed");
@@ -421,136 +407,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             let msg = &choice.message;
 
-            if let Some(tool_calls) = &msg.tool_calls {
-                if tool_calls.is_empty() {
-                    if let Some(content) = msg.content_text()
-                        && self.check_step_complete(content)
-                    {
-                        self.log("Step completed");
-                    }
-                    break;
-                }
-
-                messages.push(Message::assistant_tool_calls(tool_calls.clone()));
-
-                let mut pending_images: Vec<(String, String)> = Vec::new();
-                let mut last_image_tool = String::new();
-
-                for tool_call in tool_calls {
-                    tool_call_count += 1;
-                    self.log(format!("Tool call: {}", tool_call.function.name));
-                    debug!(
-                        tool = %tool_call.function.name,
-                        arguments = %tool_call.function.arguments,
-                        "Tool call arguments"
-                    );
-
-                    let args: Option<Value> =
-                        serde_json::from_str(&tool_call.function.arguments).ok();
-                    let args = self.resolve_image_paths(args);
-
-                    // Record tool call event
-                    if let Some(ref run) = node_run {
-                        self.record_event(
-                            run,
-                            "tool_call",
-                            serde_json::json!({
-                                "name": tool_call.function.name,
-                                "index": tool_call_count - 1,
-                            }),
-                        );
-                    }
-
-                    match mcp.call_tool(&tool_call.function.name, args) {
-                        Ok(result) => {
-                            let prefix = format!("toolcall_{}", tool_call_count - 1);
-                            let images = self.save_result_images(&result, &prefix, &mut node_run);
-                            if !images.is_empty() {
-                                last_image_tool = tool_call.function.name.clone();
-                            }
-                            pending_images.extend(images);
-
-                            let result_text = Self::extract_result_text(&result);
-
-                            self.log(format!(
-                                "Tool result: {} chars, {} images",
-                                result_text.len(),
-                                pending_images.len()
-                            ));
-                            debug!(
-                                tool = %tool_call.function.name,
-                                result = %result_text,
-                                "Tool result text"
-                            );
-
-                            if let Some(ref run) = node_run {
-                                self.record_event(
-                                    run,
-                                    "tool_result",
-                                    serde_json::json!({
-                                        "name": tool_call.function.name,
-                                        "text_len": result_text.len(),
-                                        "image_count": pending_images.len(),
-                                    }),
-                                );
-                            }
-
-                            messages.push(Message::tool_result(&tool_call.id, result_text));
-                        }
-                        Err(e) => {
-                            self.log(format!("Tool call failed: {}", e));
-                            messages
-                                .push(Message::tool_result(&tool_call.id, format!("Error: {}", e)));
-                        }
-                    }
-                }
-
-                if !pending_images.is_empty() {
-                    let image_count = pending_images.len();
-                    if let Some(vlm) = &self.vlm {
-                        // Route images through the VLM
-                        self.log(format!(
-                            "Analyzing {} image(s) with VLM ({})",
-                            image_count,
-                            vlm.model_name()
-                        ));
-                        match analyze_images(vlm, &params.prompt, &last_image_tool, pending_images)
-                            .await
-                        {
-                            Ok(summary) => {
-                                if let Some(ref run) = node_run {
-                                    self.record_event(
-                                        run,
-                                        "vision_summary",
-                                        serde_json::json!({
-                                            "image_count": image_count,
-                                            "vlm_model": vlm.model_name(),
-                                            "summary_json": summary,
-                                        }),
-                                    );
-                                }
-                                messages.push(Message::user(format!(
-                                    "VLM_IMAGE_SUMMARY:\n{}",
-                                    summary
-                                )));
-                            }
-                            Err(e) => {
-                                self.log(format!("VLM analysis failed: {}", e));
-                                messages.push(Message::user(
-                                    "(Vision analysis failed; consider using find_text or find_image for precise targeting)"
-                                        .to_string(),
-                                ));
-                            }
-                        }
-                    } else {
-                        // No VLM configured — send images directly to orchestrator
-                        messages.push(Message::user_with_images(
-                            "Here are the images from the tool results above.",
-                            pending_images,
-                        ));
-                    }
-                }
-            } else {
+            let Some(tool_calls) = &msg.tool_calls else {
                 let completed = msg
                     .content_text()
                     .is_some_and(|c| self.check_step_complete(c));
@@ -560,6 +417,122 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "Step finished (no tool calls)"
                 });
                 break;
+            };
+
+            if tool_calls.is_empty() {
+                if let Some(content) = msg.content_text()
+                    && self.check_step_complete(content)
+                {
+                    self.log("Step completed");
+                }
+                break;
+            }
+
+            messages.push(Message::assistant_tool_calls(tool_calls.clone()));
+
+            let mut pending_images: Vec<(String, String)> = Vec::new();
+            let mut last_image_tool = String::new();
+
+            for tool_call in tool_calls {
+                tool_call_count += 1;
+                self.log(format!("Tool call: {}", tool_call.function.name));
+                debug!(
+                    tool = %tool_call.function.name,
+                    arguments = %tool_call.function.arguments,
+                    "Tool call arguments"
+                );
+
+                let args: Option<Value> = serde_json::from_str(&tool_call.function.arguments).ok();
+                let args = self.resolve_image_paths(args);
+
+                self.record_event(
+                    node_run.as_deref(),
+                    "tool_call",
+                    serde_json::json!({
+                        "name": tool_call.function.name,
+                        "index": tool_call_count - 1,
+                    }),
+                );
+
+                match mcp.call_tool(&tool_call.function.name, args) {
+                    Ok(result) => {
+                        let prefix = format!("toolcall_{}", tool_call_count - 1);
+                        let images = self.save_result_images(&result, &prefix, &mut node_run);
+                        if !images.is_empty() {
+                            last_image_tool = tool_call.function.name.clone();
+                        }
+                        pending_images.extend(images);
+
+                        let result_text = Self::extract_result_text(&result);
+
+                        self.log(format!(
+                            "Tool result: {} chars, {} images",
+                            result_text.len(),
+                            pending_images.len()
+                        ));
+                        debug!(
+                            tool = %tool_call.function.name,
+                            result = %result_text,
+                            "Tool result text"
+                        );
+
+                        self.record_event(
+                            node_run.as_deref(),
+                            "tool_result",
+                            serde_json::json!({
+                                "name": tool_call.function.name,
+                                "text_len": result_text.len(),
+                                "image_count": pending_images.len(),
+                            }),
+                        );
+
+                        messages.push(Message::tool_result(&tool_call.id, result_text));
+                    }
+                    Err(e) => {
+                        self.log(format!("Tool call failed: {}", e));
+                        messages.push(Message::tool_result(&tool_call.id, format!("Error: {}", e)));
+                    }
+                }
+            }
+
+            if !pending_images.is_empty() {
+                let image_count = pending_images.len();
+                if let Some(vlm) = &self.vlm {
+                    self.log(format!(
+                        "Analyzing {} image(s) with VLM ({})",
+                        image_count,
+                        vlm.model_name()
+                    ));
+                    match analyze_images(vlm, &params.prompt, &last_image_tool, pending_images)
+                        .await
+                    {
+                        Ok(summary) => {
+                            self.record_event(
+                                node_run.as_deref(),
+                                "vision_summary",
+                                serde_json::json!({
+                                    "image_count": image_count,
+                                    "vlm_model": vlm.model_name(),
+                                    "summary_json": summary,
+                                }),
+                            );
+                            messages
+                                .push(Message::user(format!("VLM_IMAGE_SUMMARY:\n{}", summary)));
+                        }
+                        Err(e) => {
+                            self.log(format!("VLM analysis failed: {}", e));
+                            messages.push(Message::user(
+                                "(Vision analysis failed; consider using find_text or find_image for precise targeting)"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                } else {
+                    messages.push(Message::user_with_images(
+                        "Here are the images from the tool results above.",
+                        pending_images,
+                    ));
+                }
             }
         }
 
@@ -574,116 +547,79 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ) -> Result<(), String> {
         let (tool_name, args) = match node_type {
             NodeType::TakeScreenshot(p) => {
-                let mut args = serde_json::Map::new();
-                args.insert(
-                    "mode".to_string(),
-                    Value::String(
-                        match p.mode {
-                            clickweave_core::ScreenshotMode::Screen => "screen",
-                            clickweave_core::ScreenshotMode::Window => "window",
-                            clickweave_core::ScreenshotMode::Region => "region",
-                        }
-                        .to_string(),
-                    ),
-                );
+                let mode = match p.mode {
+                    ScreenshotMode::Screen => "screen",
+                    ScreenshotMode::Window => "window",
+                    ScreenshotMode::Region => "region",
+                };
+                let mut args = serde_json::json!({
+                    "mode": mode,
+                    "include_ocr": p.include_ocr,
+                });
                 if let Some(target) = &p.target {
-                    args.insert("app_name".to_string(), Value::String(target.clone()));
+                    args["app_name"] = Value::String(target.clone());
                 }
-                args.insert("include_ocr".to_string(), Value::Bool(p.include_ocr));
-                ("take_screenshot", Value::Object(args))
+                ("take_screenshot", args)
             }
-            NodeType::FindText(p) => {
-                let mut args = serde_json::Map::new();
-                args.insert("text".to_string(), Value::String(p.search_text.clone()));
-                ("find_text", Value::Object(args))
-            }
+            NodeType::FindText(p) => ("find_text", serde_json::json!({"text": p.search_text})),
             NodeType::FindImage(p) => {
-                let mut args = serde_json::Map::new();
+                let mut args = serde_json::json!({
+                    "threshold": p.threshold,
+                    "max_results": p.max_results,
+                });
                 if let Some(img) = &p.template_image {
-                    args.insert(
-                        "template_image_base64".to_string(),
-                        Value::String(img.clone()),
-                    );
+                    args["template_image_base64"] = Value::String(img.clone());
                 }
-                args.insert(
-                    "threshold".to_string(),
-                    Value::Number(serde_json::Number::from_f64(p.threshold).unwrap()),
-                );
-                args.insert(
-                    "max_results".to_string(),
-                    Value::Number(p.max_results.into()),
-                );
-                ("find_image", Value::Object(args))
+                ("find_image", args)
             }
             NodeType::Click(p) => {
-                let mut args = serde_json::Map::new();
+                let button = match p.button {
+                    MouseButton::Left => "left",
+                    MouseButton::Right => "right",
+                    MouseButton::Center => "center",
+                };
+                let mut args = serde_json::json!({
+                    "button": button,
+                    "click_count": p.click_count,
+                });
                 if let Some(target) = &p.target {
-                    args.insert("target".to_string(), Value::String(target.clone()));
+                    args["target"] = Value::String(target.clone());
                 }
-                args.insert(
-                    "button".to_string(),
-                    Value::String(
-                        match p.button {
-                            clickweave_core::MouseButton::Left => "left",
-                            clickweave_core::MouseButton::Right => "right",
-                            clickweave_core::MouseButton::Center => "center",
-                        }
-                        .to_string(),
-                    ),
-                );
-                args.insert(
-                    "click_count".to_string(),
-                    Value::Number(p.click_count.into()),
-                );
-                ("click", Value::Object(args))
+                ("click", args)
             }
-            NodeType::TypeText(p) => {
-                let mut args = serde_json::Map::new();
-                args.insert("text".to_string(), Value::String(p.text.clone()));
-                ("type_text", Value::Object(args))
-            }
+            NodeType::TypeText(p) => ("type_text", serde_json::json!({"text": p.text})),
             NodeType::Scroll(p) => {
-                let mut args = serde_json::Map::new();
-                args.insert("delta_y".to_string(), Value::Number(p.delta_y.into()));
+                let mut args = serde_json::json!({"delta_y": p.delta_y});
                 if let Some(x) = p.x {
-                    args.insert(
-                        "x".to_string(),
-                        Value::Number(serde_json::Number::from_f64(x).unwrap()),
-                    );
+                    args["x"] = serde_json::json!(x);
                 }
                 if let Some(y) = p.y {
-                    args.insert(
-                        "y".to_string(),
-                        Value::Number(serde_json::Number::from_f64(y).unwrap()),
-                    );
+                    args["y"] = serde_json::json!(y);
                 }
-                ("scroll", Value::Object(args))
+                ("scroll", args)
             }
             NodeType::ListWindows(p) => {
-                let mut args = serde_json::Map::new();
+                let mut args = serde_json::json!({});
                 if let Some(app) = &p.app_name {
-                    args.insert("app_name".to_string(), Value::String(app.clone()));
+                    args["app_name"] = Value::String(app.clone());
                 }
-                ("list_windows", Value::Object(args))
+                ("list_windows", args)
             }
             NodeType::FocusWindow(p) => {
-                let mut args = serde_json::Map::new();
+                let mut args = serde_json::json!({});
                 if let Some(val) = &p.value {
                     match p.method {
-                        clickweave_core::FocusMethod::AppName => {
-                            args.insert("app_name".to_string(), Value::String(val.clone()));
+                        FocusMethod::AppName | FocusMethod::TitlePattern => {
+                            args["app_name"] = Value::String(val.clone());
                         }
-                        clickweave_core::FocusMethod::WindowId => {
+                        FocusMethod::WindowId => {
                             if let Ok(id) = val.parse::<u64>() {
-                                args.insert("window_id".to_string(), Value::Number(id.into()));
+                                args["window_id"] = serde_json::json!(id);
                             }
-                        }
-                        clickweave_core::FocusMethod::TitlePattern => {
-                            args.insert("app_name".to_string(), Value::String(val.clone()));
                         }
                     }
                 }
-                ("focus_window", Value::Object(args))
+                ("focus_window", args)
             }
             NodeType::AppDebugKitOp(p) => {
                 self.log(format!(
@@ -692,16 +628,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 ));
                 return Ok(());
             }
-            NodeType::AiStep(_) => {
-                // Should not reach here - handled separately
-                return Ok(());
-            }
+            NodeType::AiStep(_) => return Ok(()),
         };
 
-        // Record tool call event
-        if let Some(ref run) = node_run {
-            self.record_event(run, "tool_call", serde_json::json!({"name": tool_name}));
-        }
+        self.record_event(
+            node_run.as_deref(),
+            "tool_call",
+            serde_json::json!({"name": tool_name}),
+        );
 
         self.log(format!("Calling MCP tool: {}", tool_name));
         let args = self.resolve_image_paths(Some(args));
@@ -712,17 +646,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let images = self.save_result_images(&result, "result", &mut node_run);
         let result_text = Self::extract_result_text(&result);
 
-        if let Some(ref run) = node_run {
-            self.record_event(
-                run,
-                "tool_result",
-                serde_json::json!({
-                    "name": tool_name,
-                    "text_len": result_text.len(),
-                    "image_count": images.len(),
-                }),
-            );
-        }
+        self.record_event(
+            node_run.as_deref(),
+            "tool_result",
+            serde_json::json!({
+                "name": tool_name,
+                "text_len": result_text.len(),
+                "image_count": images.len(),
+            }),
+        );
 
         self.log(format!(
             "Tool result: {} chars, {} images",

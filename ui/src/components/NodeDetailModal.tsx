@@ -103,9 +103,7 @@ export function NodeDetailModal({
   );
 }
 
-// ============================================================
-// Setup Tab
-// ============================================================
+// --- Setup Tab
 
 function SetupTab({
   node,
@@ -179,9 +177,12 @@ function NodeTypeFields({
 }) {
   const nt = node.node_type;
 
-  const updateType = (patch: Partial<NodeType>) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const updateType = (patch: Record<string, any>) => {
     onUpdate({ node_type: { ...nt, ...patch } as NodeType });
   };
+
+  const optionalString = (v: string) => (v === "" ? null : v);
 
   switch (nt.type) {
     case "AiStep":
@@ -190,45 +191,34 @@ function NodeTypeFields({
           <TextAreaField
             label="Prompt"
             value={nt.prompt}
-            onChange={(prompt) => updateType({ prompt } as Partial<NodeType>)}
+            onChange={(prompt) => updateType({ prompt })}
           />
           <TextField
             label="Button Text"
             value={nt.button_text ?? ""}
-            onChange={(v) =>
-              updateType({ button_text: v === "" ? null : v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ button_text: optionalString(v) })}
             placeholder="Optional"
           />
           <ImagePathField
             label="Template Image"
             value={nt.template_image ?? ""}
             projectPath={projectPath}
-            onChange={(v) =>
-              updateType({
-                template_image: v === "" ? null : v,
-              } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ template_image: optionalString(v) })}
           />
           <NumberField
             label="Max Tool Calls"
             value={nt.max_tool_calls ?? 10}
             min={1}
             max={100}
-            onChange={(v) =>
-              updateType({ max_tool_calls: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ max_tool_calls: v })}
           />
           <TextField
             label="Allowed Tools"
             value={nt.allowed_tools?.join(", ") ?? ""}
             onChange={(v) =>
               updateType({
-                allowed_tools:
-                  v === ""
-                    ? null
-                    : v.split(",").map((s) => s.trim()),
-              } as Partial<NodeType>)
+                allowed_tools: v === "" ? null : v.split(",").map((s) => s.trim()),
+              })
             }
             placeholder="Comma-separated, blank = all"
           />
@@ -242,22 +232,18 @@ function NodeTypeFields({
             label="Mode"
             value={nt.mode}
             options={["Screen", "Window", "Region"]}
-            onChange={(v) => updateType({ mode: v } as Partial<NodeType>)}
+            onChange={(v) => updateType({ mode: v })}
           />
           <TextField
             label="Target"
             value={nt.target ?? ""}
-            onChange={(v) =>
-              updateType({ target: v === "" ? null : v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ target: optionalString(v) })}
             placeholder="App name or window ID"
           />
           <CheckboxField
             label="Include OCR"
             value={nt.include_ocr}
-            onChange={(v) =>
-              updateType({ include_ocr: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ include_ocr: v })}
           />
         </FieldGroup>
       );
@@ -268,34 +254,24 @@ function NodeTypeFields({
           <TextField
             label="Search Text"
             value={nt.search_text}
-            onChange={(v) =>
-              updateType({ search_text: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ search_text: v })}
           />
           <SelectField
             label="Match Mode"
             value={nt.match_mode}
             options={["Contains", "Exact"]}
-            onChange={(v) =>
-              updateType({ match_mode: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ match_mode: v })}
           />
           <TextField
             label="Scope"
             value={nt.scope ?? ""}
-            onChange={(v) =>
-              updateType({ scope: v === "" ? null : v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ scope: optionalString(v) })}
             placeholder="Optional"
           />
           <TextField
             label="Select Result"
             value={nt.select_result ?? ""}
-            onChange={(v) =>
-              updateType({
-                select_result: v === "" ? null : v,
-              } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ select_result: optionalString(v) })}
             placeholder="Optional"
           />
         </FieldGroup>
@@ -308,11 +284,7 @@ function NodeTypeFields({
             label="Template Image"
             value={nt.template_image ?? ""}
             projectPath={projectPath}
-            onChange={(v) =>
-              updateType({
-                template_image: v === "" ? null : v,
-              } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ template_image: optionalString(v) })}
           />
           <NumberField
             label="Threshold"
@@ -320,18 +292,14 @@ function NodeTypeFields({
             min={0}
             max={1}
             step={0.01}
-            onChange={(v) =>
-              updateType({ threshold: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ threshold: v })}
           />
           <NumberField
             label="Max Results"
             value={nt.max_results}
             min={1}
             max={20}
-            onChange={(v) =>
-              updateType({ max_results: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ max_results: v })}
           />
         </FieldGroup>
       );
@@ -342,25 +310,21 @@ function NodeTypeFields({
           <TextField
             label="Target"
             value={nt.target ?? ""}
-            onChange={(v) =>
-              updateType({ target: v === "" ? null : v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ target: optionalString(v) })}
             placeholder="Coordinates or element"
           />
           <SelectField
             label="Button"
             value={nt.button}
             options={["Left", "Right", "Center"]}
-            onChange={(v) => updateType({ button: v } as Partial<NodeType>)}
+            onChange={(v) => updateType({ button: v })}
           />
           <NumberField
             label="Click Count"
             value={nt.click_count}
             min={1}
             max={3}
-            onChange={(v) =>
-              updateType({ click_count: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ click_count: v })}
           />
         </FieldGroup>
       );
@@ -371,14 +335,12 @@ function NodeTypeFields({
           <TextAreaField
             label="Text"
             value={nt.text}
-            onChange={(v) => updateType({ text: v } as Partial<NodeType>)}
+            onChange={(v) => updateType({ text: v })}
           />
           <CheckboxField
             label="Press Enter After"
             value={nt.press_enter}
-            onChange={(v) =>
-              updateType({ press_enter: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ press_enter: v })}
           />
         </FieldGroup>
       );
@@ -391,21 +353,17 @@ function NodeTypeFields({
             value={nt.delta_y}
             min={-1000}
             max={1000}
-            onChange={(v) => updateType({ delta_y: v } as Partial<NodeType>)}
+            onChange={(v) => updateType({ delta_y: v })}
           />
           <NumberField
             label="X Position"
             value={nt.x ?? 0}
-            onChange={(v) =>
-              updateType({ x: v === 0 ? null : v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ x: v === 0 ? null : v })}
           />
           <NumberField
             label="Y Position"
             value={nt.y ?? 0}
-            onChange={(v) =>
-              updateType({ y: v === 0 ? null : v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ y: v === 0 ? null : v })}
           />
         </FieldGroup>
       );
@@ -416,21 +374,13 @@ function NodeTypeFields({
           <TextField
             label="App Name Filter"
             value={nt.app_name ?? ""}
-            onChange={(v) =>
-              updateType({
-                app_name: v === "" ? null : v,
-              } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ app_name: optionalString(v) })}
             placeholder="Optional"
           />
           <TextField
             label="Title Pattern"
             value={nt.title_pattern ?? ""}
-            onChange={(v) =>
-              updateType({
-                title_pattern: v === "" ? null : v,
-              } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ title_pattern: optionalString(v) })}
             placeholder="Optional"
           />
         </FieldGroup>
@@ -443,23 +393,19 @@ function NodeTypeFields({
             label="Method"
             value={nt.method}
             options={["WindowId", "AppName", "TitlePattern"]}
-            onChange={(v) => updateType({ method: v } as Partial<NodeType>)}
+            onChange={(v) => updateType({ method: v })}
           />
           <TextField
             label={
               { WindowId: "Window ID", AppName: "App Name", TitlePattern: "Title Pattern" }[nt.method] ?? nt.method
             }
             value={nt.value ?? ""}
-            onChange={(v) =>
-              updateType({ value: v === "" ? null : v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ value: optionalString(v) })}
           />
           <CheckboxField
             label="Bring to Front"
             value={nt.bring_to_front}
-            onChange={(v) =>
-              updateType({ bring_to_front: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ bring_to_front: v })}
           />
         </FieldGroup>
       );
@@ -470,9 +416,7 @@ function NodeTypeFields({
           <TextField
             label="Operation Name"
             value={nt.operation_name}
-            onChange={(v) =>
-              updateType({ operation_name: v } as Partial<NodeType>)
-            }
+            onChange={(v) => updateType({ operation_name: v })}
           />
           <TextAreaField
             label="Parameters (JSON)"
@@ -483,8 +427,7 @@ function NodeTypeFields({
             }
             onChange={(v) => {
               try {
-                const parsed = JSON.parse(v);
-                updateType({ parameters: parsed } as Partial<NodeType>);
+                updateType({ parameters: JSON.parse(v) });
               } catch {
                 // Keep raw text during editing
               }
@@ -495,9 +438,7 @@ function NodeTypeFields({
   }
 }
 
-// ============================================================
-// Checks Tab
-// ============================================================
+// --- Checks Tab
 
 function ChecksTab({
   node,
@@ -573,9 +514,7 @@ function ChecksTab({
   );
 }
 
-// ============================================================
-// Shared helpers
-// ============================================================
+// --- Shared helpers
 
 function runDuration(run: NodeRun): string | null {
   if (!run.ended_at) return null;
@@ -590,9 +529,7 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-// ============================================================
-// Shared hook for loading runs
-// ============================================================
+// --- Shared hook: useNodeRuns
 
 function useNodeRuns(
   projectPath: string | null,
@@ -619,9 +556,7 @@ function useNodeRuns(
   return runs;
 }
 
-// ============================================================
-// Trace Tab
-// ============================================================
+// --- Trace Tab
 
 function TraceTab({
   nodeId,
@@ -860,9 +795,7 @@ function ArtifactCard({
   );
 }
 
-// ============================================================
-// Runs Tab
-// ============================================================
+// --- Runs Tab
 
 function RunsTab({
   nodeId,
@@ -915,9 +848,7 @@ function RunsTab({
   );
 }
 
-// ============================================================
-// Reusable Field Components
-// ============================================================
+// --- Reusable Field Components
 
 function FieldGroup({
   title,

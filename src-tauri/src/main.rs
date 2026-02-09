@@ -11,14 +11,14 @@ use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::Subs
 fn log_dir() -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
-        let home = std::env::var("HOME").expect("HOME should be set");
-        std::path::PathBuf::from(home).join("Library/Logs/Clickweave")
+        std::path::PathBuf::from(std::env::var("HOME").expect("HOME should be set"))
+            .join("Library/Logs/Clickweave")
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let mut dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        dir.push("logs");
-        dir
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("logs")
     }
 }
 
@@ -69,9 +69,7 @@ fn main() {
         let bindings_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("CARGO_MANIFEST_DIR should have a parent")
-            .join("ui")
-            .join("src")
-            .join("bindings.ts");
+            .join("ui/src/bindings.ts");
         builder
             .export(
                 specta_typescript::Typescript::default()

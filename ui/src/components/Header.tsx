@@ -9,6 +9,9 @@ interface HeaderProps {
   onNameChange: (name: string) => void;
 }
 
+const ghostButtonClass =
+  "rounded px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]";
+
 export function Header({
   workflowName,
   projectPath,
@@ -45,16 +48,10 @@ export function Header({
       </div>
 
       <div className="flex items-center gap-1">
-        <button
-          onClick={onNew}
-          className="rounded px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        >
+        <button onClick={onNew} className={ghostButtonClass}>
           New
         </button>
-        <button
-          onClick={onOpen}
-          className="rounded px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        >
+        <button onClick={onOpen} className={ghostButtonClass}>
           Open
         </button>
         <button
@@ -63,10 +60,7 @@ export function Header({
         >
           Save
         </button>
-        <button
-          onClick={onSettings}
-          className="ml-2 rounded px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-        >
+        <button onClick={onSettings} className={`ml-2 ${ghostButtonClass}`}>
           Settings
         </button>
       </div>

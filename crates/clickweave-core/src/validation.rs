@@ -1,5 +1,6 @@
-use crate::Workflow;
 use thiserror::Error;
+
+use crate::Workflow;
 
 #[derive(Debug, Error)]
 pub enum ValidationError {
@@ -23,12 +24,8 @@ pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
 
     // Check for entry points (nodes with no incoming edges)
     let targets: std::collections::HashSet<_> = workflow.edges.iter().map(|e| e.to).collect();
-    let entry_count = workflow
-        .nodes
-        .iter()
-        .filter(|n| !targets.contains(&n.id))
-        .count();
-    if entry_count == 0 {
+    let has_entry_point = workflow.nodes.iter().any(|n| !targets.contains(&n.id));
+    if !has_entry_point {
         return Err(ValidationError::NoEntryPoint);
     }
 
@@ -40,7 +37,7 @@ pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
         }
     }
 
-    // Check for cycles using visited set
+    // Check for cycles by walking each unvisited chain
     let mut visited = std::collections::HashSet::new();
     for node in &workflow.nodes {
         if visited.contains(&node.id) {
@@ -53,8 +50,7 @@ pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
                 return Err(ValidationError::CycleDetected);
             }
             visited.insert(current);
-            let next = workflow.edges.iter().find(|e| e.from == current);
-            match next {
+            match workflow.edges.iter().find(|e| e.from == current) {
                 Some(edge) => current = edge.to,
                 None => break,
             }

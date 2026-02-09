@@ -1,6 +1,6 @@
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{NodeRun, NodeType, TraceEvent, Workflow, validate_workflow};
-use clickweave_engine::{ExecutorCommand, ExecutorEvent, WorkflowExecutor};
+use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
 use clickweave_llm::LlmConfig;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -24,18 +24,10 @@ fn project_dir(path: &str) -> PathBuf {
     }
 }
 
-// ============================================================
-// Shared state for executor management
-// ============================================================
-
 #[derive(Default)]
 pub struct ExecutorHandle {
     stop_tx: Option<tokio::sync::mpsc::Sender<ExecutorCommand>>,
 }
-
-// ============================================================
-// Request / response types
-// ============================================================
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct ProjectData {
@@ -64,6 +56,22 @@ pub struct EndpointConfig {
     pub api_key: Option<String>,
 }
 
+impl EndpointConfig {
+    fn into_llm_config(self, temperature: Option<f32>) -> LlmConfig {
+        LlmConfig {
+            base_url: self.base_url,
+            api_key: self.api_key.filter(|k| !k.is_empty()),
+            model: self.model,
+            temperature,
+            max_tokens: None,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.base_url.is_empty() || self.model.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct RunRequest {
     pub workflow: Workflow,
@@ -88,10 +96,6 @@ pub struct RunEventsQuery {
     pub run_id: String,
 }
 
-// ============================================================
-// Event payloads (emitted to frontend)
-// ============================================================
-
 #[derive(Debug, Clone, Serialize)]
 pub struct LogPayload {
     pub message: String,
@@ -112,10 +116,6 @@ pub struct NodeErrorPayload {
     pub node_id: String,
     pub error: String,
 }
-
-// ============================================================
-// Commands
-// ============================================================
 
 #[tauri::command]
 #[specta::specta]
@@ -214,58 +214,34 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
 #[tauri::command]
 #[specta::specta]
 pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<(), String> {
-    // Check if already running
     {
         let handle = app.state::<Mutex<ExecutorHandle>>();
-        let h = handle.lock().unwrap();
-        if h.stop_tx.is_some() {
+        if handle.lock().unwrap().stop_tx.is_some() {
             return Err("Workflow is already running".to_string());
         }
     }
 
-    // Validate first
-    let validation = validate(request.workflow.clone());
-    if !validation.valid {
-        return Err(format!(
-            "Validation failed: {}",
-            validation.errors.join(", ")
-        ));
-    }
+    validate_workflow(&request.workflow).map_err(|e| format!("Validation failed: {}", e))?;
 
-    let orchestrator_config = LlmConfig {
-        base_url: request.orchestrator.base_url,
-        api_key: request.orchestrator.api_key.filter(|k| !k.is_empty()),
-        model: request.orchestrator.model,
-        temperature: None,
-        max_tokens: None,
-    };
-
+    let orchestrator_config = request.orchestrator.into_llm_config(None);
     let vlm_config = request
         .vlm
-        .filter(|v| !v.base_url.is_empty() && !v.model.is_empty())
-        .map(|v| LlmConfig {
-            base_url: v.base_url,
-            api_key: v.api_key.filter(|k| !k.is_empty()),
-            model: v.model,
-            temperature: Some(0.1),
-            max_tokens: None,
-        });
+        .filter(|v| !v.is_empty())
+        .map(|v| v.into_llm_config(Some(0.1)));
 
     let project_path = request.project_path.map(|p| project_dir(&p));
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(256);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<ExecutorCommand>(8);
 
-    // Store the stop channel
     {
         let handle = app.state::<Mutex<ExecutorHandle>>();
-        let mut h = handle.lock().unwrap();
-        h.stop_tx = Some(cmd_tx);
+        handle.lock().unwrap().stop_tx = Some(cmd_tx);
     }
 
-    let app_handle = app.clone();
+    let emit_handle = app.clone();
+    let cleanup_handle = app.clone();
 
-    // Spawn executor task
     tauri::async_runtime::spawn(async move {
         let mut executor = WorkflowExecutor::new(
             request.workflow,
@@ -278,64 +254,61 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         executor.run(cmd_rx).await;
     });
 
-    // Spawn event forwarding task
-    let app_for_cleanup = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            match &event {
+            match event {
                 ExecutorEvent::Log(msg) | ExecutorEvent::Error(msg) => {
-                    let _ = app_handle.emit(
-                        "executor://log",
-                        LogPayload {
-                            message: msg.clone(),
-                        },
-                    );
+                    let _ = emit_handle.emit("executor://log", LogPayload { message: msg });
                 }
                 ExecutorEvent::StateChanged(state) => {
-                    let state_str = match state {
-                        clickweave_engine::ExecutorState::Idle => "idle",
-                        clickweave_engine::ExecutorState::Running => "running",
+                    let state = match state {
+                        ExecutorState::Idle => "idle",
+                        ExecutorState::Running => "running",
                     };
-                    let _ = app_handle.emit(
+                    let _ = emit_handle.emit(
                         "executor://state",
                         StatePayload {
-                            state: state_str.to_string(),
+                            state: state.to_string(),
                         },
                     );
                 }
-                ExecutorEvent::NodeStarted(id) | ExecutorEvent::NodeCompleted(id) => {
-                    let event_name = if matches!(&event, ExecutorEvent::NodeStarted(_)) {
-                        "executor://node_started"
-                    } else {
-                        "executor://node_completed"
-                    };
-                    let _ = app_handle.emit(
-                        event_name,
+                ExecutorEvent::NodeStarted(id) => {
+                    let _ = emit_handle.emit(
+                        "executor://node_started",
+                        NodePayload {
+                            node_id: id.to_string(),
+                        },
+                    );
+                }
+                ExecutorEvent::NodeCompleted(id) => {
+                    let _ = emit_handle.emit(
+                        "executor://node_completed",
                         NodePayload {
                             node_id: id.to_string(),
                         },
                     );
                 }
                 ExecutorEvent::NodeFailed(id, err) => {
-                    let _ = app_handle.emit(
+                    let _ = emit_handle.emit(
                         "executor://node_failed",
                         NodeErrorPayload {
                             node_id: id.to_string(),
-                            error: err.clone(),
+                            error: err,
                         },
                     );
                 }
                 ExecutorEvent::WorkflowCompleted => {
-                    let _ = app_handle.emit("executor://workflow_completed", ());
+                    let _ = emit_handle.emit("executor://workflow_completed", ());
                 }
                 ExecutorEvent::RunCreated(_, _) => {}
             }
         }
 
-        // Cleanup when executor finishes
-        let handle = app_for_cleanup.state::<Mutex<ExecutorHandle>>();
-        let mut h = handle.lock().unwrap();
-        h.stop_tx = None;
+        cleanup_handle
+            .state::<Mutex<ExecutorHandle>>()
+            .lock()
+            .unwrap()
+            .stop_tx = None;
     });
 
     Ok(())
@@ -344,14 +317,15 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 #[tauri::command]
 #[specta::specta]
 pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), String> {
-    let handle = app.state::<Mutex<ExecutorHandle>>();
-    let h = handle.lock().unwrap();
-    if let Some(tx) = &h.stop_tx {
-        let _ = tx.try_send(ExecutorCommand::Stop);
-        Ok(())
-    } else {
-        Err("No workflow is running".to_string())
-    }
+    let guard = app.state::<Mutex<ExecutorHandle>>();
+    let guard = guard.lock().unwrap();
+    guard
+        .stop_tx
+        .as_ref()
+        .ok_or_else(|| "No workflow is running".to_string())
+        .map(|tx| {
+            let _ = tx.try_send(ExecutorCommand::Stop);
+        })
 }
 
 #[tauri::command]

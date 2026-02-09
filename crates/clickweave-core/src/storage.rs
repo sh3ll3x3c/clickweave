@@ -1,9 +1,12 @@
-use crate::{Artifact, ArtifactKind, NodeRun, RunStatus, TraceEvent, TraceLevel};
-use anyhow::{Context, Result};
-use serde_json::Value;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result};
+use serde_json::Value;
 use uuid::Uuid;
+
+use crate::{Artifact, ArtifactKind, NodeRun, RunStatus, TraceEvent, TraceLevel};
 
 /// Manages on-disk storage for node run artifacts and trace data.
 ///
@@ -57,8 +60,8 @@ impl RunStorage {
             ended_at: None,
             status: RunStatus::Ok,
             trace_level,
-            events: vec![],
-            artifacts: vec![],
+            events: Vec::new(),
+            artifacts: Vec::new(),
             observed_summary: None,
         };
 
@@ -82,7 +85,6 @@ impl RunStorage {
         let mut line = serde_json::to_string(event).context("Failed to serialize event")?;
         line.push('\n');
 
-        use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -112,7 +114,7 @@ impl RunStorage {
             kind,
             path: artifact_path.to_string_lossy().to_string(),
             metadata,
-            overlays: vec![],
+            overlays: Vec::new(),
         };
 
         Ok(artifact)
@@ -121,32 +123,31 @@ impl RunStorage {
     pub fn load_runs_for_node(&self, node_id: Uuid) -> Result<Vec<NodeRun>> {
         let node_dir = self.base_path.join(node_id.to_string());
         if !node_dir.exists() {
-            return Ok(vec![]);
+            return Ok(Vec::new());
         }
 
-        let mut runs = Vec::new();
         let entries = std::fs::read_dir(&node_dir).context("Failed to read node run directory")?;
+        let mut runs = Vec::new();
 
         for entry in entries {
-            let entry = entry?;
-            let run_json = entry.path().join("run.json");
+            let run_json = entry?.path().join("run.json");
             if run_json.exists() {
-                let data = std::fs::read_to_string(&run_json).context("Failed to read run.json")?;
-                let run: NodeRun =
-                    serde_json::from_str(&data).context("Failed to parse run.json")?;
-                runs.push(run);
+                runs.push(Self::read_run_json(&run_json)?);
             }
         }
 
-        runs.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+        runs.sort_by_key(|r| r.started_at);
         Ok(runs)
     }
 
     pub fn load_run(&self, node_id: Uuid, run_id: Uuid) -> Result<NodeRun> {
         let run_json = self.run_dir(node_id, run_id).join("run.json");
-        let data = std::fs::read_to_string(&run_json).context("Failed to read run.json")?;
-        let run: NodeRun = serde_json::from_str(&data).context("Failed to parse run.json")?;
-        Ok(run)
+        Self::read_run_json(&run_json)
+    }
+
+    fn read_run_json(path: &Path) -> Result<NodeRun> {
+        let data = std::fs::read_to_string(path).context("Failed to read run.json")?;
+        serde_json::from_str(&data).context("Failed to parse run.json")
     }
 }
 

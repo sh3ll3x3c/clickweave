@@ -21,60 +21,37 @@ function App() {
     [state.selectedNode, state.workflow.nodes],
   );
 
-  // Subscribe to executor events from the Rust backend
   useEffect(() => {
-    const unlisteners: Array<() => void> = [];
+    const subscriptions = Promise.all([
+      listen<{ message: string }>("executor://log", (e) => {
+        actions.pushLog(e.payload.message);
+      }),
+      listen<{ state: string }>("executor://state", (e) => {
+        const s = e.payload.state as "idle" | "running";
+        actions.setExecutorState(s);
+        if (s === "idle") actions.setActiveNode(null);
+      }),
+      listen<{ node_id: string }>("executor://node_started", (e) => {
+        actions.setActiveNode(e.payload.node_id);
+        actions.pushLog(`Node started: ${e.payload.node_id}`);
+      }),
+      listen<{ node_id: string }>("executor://node_completed", (e) => {
+        actions.setActiveNode(null);
+        actions.pushLog(`Node completed: ${e.payload.node_id}`);
+      }),
+      listen<{ node_id: string; error: string }>("executor://node_failed", (e) => {
+        actions.setActiveNode(null);
+        actions.pushLog(`Node failed: ${e.payload.node_id} - ${e.payload.error}`);
+      }),
+      listen("executor://workflow_completed", () => {
+        actions.pushLog("Workflow completed");
+        actions.setExecutorState("idle");
+        actions.setActiveNode(null);
+      }),
+    ]);
 
-    const setup = async () => {
-      unlisteners.push(
-        await listen<{ message: string }>("executor://log", (e) => {
-          actions.pushLog(e.payload.message);
-        }),
-      );
-      unlisteners.push(
-        await listen<{ state: string }>("executor://state", (e) => {
-          const s = e.payload.state as "idle" | "running";
-          actions.setExecutorState(s);
-          if (s === "idle") {
-            actions.setActiveNode(null);
-          }
-        }),
-      );
-      unlisteners.push(
-        await listen<{ node_id: string }>("executor://node_started", (e) => {
-          actions.setActiveNode(e.payload.node_id);
-          actions.pushLog(`Node started: ${e.payload.node_id}`);
-        }),
-      );
-      unlisteners.push(
-        await listen<{ node_id: string }>("executor://node_completed", (e) => {
-          actions.setActiveNode(null);
-          actions.pushLog(`Node completed: ${e.payload.node_id}`);
-        }),
-      );
-      unlisteners.push(
-        await listen<{ node_id: string; error: string }>(
-          "executor://node_failed",
-          (e) => {
-            actions.setActiveNode(null);
-            actions.pushLog(
-              `Node failed: ${e.payload.node_id} - ${e.payload.error}`,
-            );
-          },
-        ),
-      );
-      unlisteners.push(
-        await listen("executor://workflow_completed", () => {
-          actions.pushLog("Workflow completed");
-          actions.setExecutorState("idle");
-          actions.setActiveNode(null);
-        }),
-      );
-    };
-
-    setup();
     return () => {
-      unlisteners.forEach((u) => u());
+      subscriptions.then((unlisteners) => unlisteners.forEach((u) => u()));
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -118,13 +95,11 @@ function App() {
               executorState={state.executorState}
               logsOpen={state.logsDrawerOpen}
               onToggleLogs={actions.toggleLogsDrawer}
-              onRunStop={() => {
-                if (state.executorState === "running") {
-                  actions.stopWorkflow();
-                } else {
-                  actions.runWorkflow();
-                }
-              }}
+              onRunStop={
+                state.executorState === "running"
+                  ? actions.stopWorkflow
+                  : actions.runWorkflow
+              }
             />
           </div>
 

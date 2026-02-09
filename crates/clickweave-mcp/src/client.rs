@@ -1,7 +1,6 @@
 use crate::protocol::*;
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
@@ -55,36 +54,48 @@ impl McpClient {
         self.request_id.fetch_add(1, Ordering::SeqCst)
     }
 
+    fn write_message(&self, json: &str) -> Result<()> {
+        let mut stdin = self.stdin.lock().unwrap();
+        writeln!(stdin, "{}", json)?;
+        stdin.flush()?;
+        Ok(())
+    }
+
+    fn read_response(&self) -> Result<JsonRpcResponse> {
+        let mut stdout = self.stdout.lock().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line)?;
+
+        debug!("MCP response: {}", line.trim());
+
+        serde_json::from_str(&line).context("Failed to parse MCP response")
+    }
+
     fn send_request(&self, method: &str, params: Option<Value>) -> Result<JsonRpcResponse> {
         let id = self.next_id();
         let request = JsonRpcRequest::new(id, method, params);
-        let request_json = serde_json::to_string(&request)?;
+        let json = serde_json::to_string(&request)?;
 
-        debug!("MCP request: {}", request_json);
+        debug!("MCP request: {}", json);
+        self.write_message(&json)?;
 
-        {
-            let mut stdin = self.stdin.lock().unwrap();
-            writeln!(stdin, "{}", request_json)?;
-            stdin.flush()?;
-        }
-
-        let response_line = {
-            let mut stdout = self.stdout.lock().unwrap();
-            let mut line = String::new();
-            stdout.read_line(&mut line)?;
-            line
-        };
-
-        debug!("MCP response: {}", response_line.trim());
-
-        let response: JsonRpcResponse =
-            serde_json::from_str(&response_line).context("Failed to parse MCP response")?;
-
+        let response = self.read_response()?;
         if let Some(err) = &response.error {
             error!("MCP error: {} (code {})", err.message, err.code);
         }
 
         Ok(response)
+    }
+
+    fn send_notification(&self, method: &str) -> Result<()> {
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method
+        });
+        let json = serde_json::to_string(&notification)?;
+
+        debug!("MCP notification: {}", json);
+        self.write_message(&json)
     }
 
     fn initialize(&mut self) -> Result<()> {
@@ -108,18 +119,7 @@ impl McpClient {
             );
         }
 
-        // Send initialized notification
-        let notification = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized"
-        });
-        {
-            let mut stdin = self.stdin.lock().unwrap();
-            writeln!(stdin, "{}", serde_json::to_string(&notification)?)?;
-            stdin.flush()?;
-        }
-
-        Ok(())
+        self.send_notification("notifications/initialized")
     }
 
     fn fetch_tools(&mut self) -> Result<()> {
@@ -164,21 +164,18 @@ impl McpClient {
     }
 
     /// Convert MCP tools to OpenAI-compatible tool format
-    pub fn tools_as_openai(&self) -> Vec<HashMap<String, Value>> {
+    pub fn tools_as_openai(&self) -> Vec<Value> {
         self.tools
             .iter()
             .map(|tool| {
-                let mut map = HashMap::new();
-                map.insert("type".to_string(), Value::String("function".to_string()));
-                map.insert(
-                    "function".to_string(),
-                    serde_json::json!({
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
                         "name": tool.name,
                         "description": tool.description,
                         "parameters": tool.input_schema
-                    }),
-                );
-                map
+                    }
+                })
             })
             .collect()
     }

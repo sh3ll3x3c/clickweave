@@ -97,9 +97,38 @@ impl LlmClient {
         let info = body
             .data
             .into_iter()
-            .find(|m| m.id == *model_id || model_id.contains(&m.id) || m.id.contains(model_id));
+            .find(|m| m.id == model_id || model_id.contains(&m.id) || m.id.contains(model_id));
 
         Ok(info)
+    }
+
+    fn log_usage(&self, response: &ChatResponse) {
+        let Some(usage) = &response.usage else {
+            return;
+        };
+
+        let ctx = self.context_length.load(Ordering::Relaxed);
+        if ctx > 0 {
+            let pct = (usage.total_tokens as f64 / ctx as f64 * 100.0) as u32;
+            info!(
+                prompt_tokens = usage.prompt_tokens,
+                completion_tokens = usage.completion_tokens,
+                total_tokens = usage.total_tokens,
+                context_length = ctx,
+                usage_pct = pct,
+                "LLM usage ({}/{}  {}%)",
+                usage.total_tokens,
+                ctx,
+                pct
+            );
+        } else {
+            info!(
+                prompt_tokens = usage.prompt_tokens,
+                completion_tokens = usage.completion_tokens,
+                total_tokens = usage.total_tokens,
+                "LLM usage"
+            );
+        }
     }
 }
 
@@ -165,30 +194,7 @@ impl ChatBackend for LlmClient {
         let chat_response: ChatResponse =
             serde_json::from_str(&response_text).context("Failed to parse LLM response")?;
 
-        if let Some(usage) = &chat_response.usage {
-            let ctx = self.context_length.load(Ordering::Relaxed);
-            if ctx > 0 {
-                let pct = (usage.total_tokens as f64 / ctx as f64 * 100.0) as u32;
-                info!(
-                    prompt_tokens = usage.prompt_tokens,
-                    completion_tokens = usage.completion_tokens,
-                    total_tokens = usage.total_tokens,
-                    context_length = ctx,
-                    usage_pct = pct,
-                    "LLM usage ({}/{}  {}%)",
-                    usage.total_tokens,
-                    ctx,
-                    pct
-                );
-            } else {
-                info!(
-                    prompt_tokens = usage.prompt_tokens,
-                    completion_tokens = usage.completion_tokens,
-                    total_tokens = usage.total_tokens,
-                    "LLM usage"
-                );
-            }
-        }
+        self.log_usage(&chat_response);
 
         let first_choice = chat_response.choices.first();
         let tool_names: Vec<&str> = first_choice
@@ -196,9 +202,14 @@ impl ChatBackend for LlmClient {
             .map(|tcs| tcs.iter().map(|tc| tc.function.name.as_str()).collect())
             .unwrap_or_default();
 
+        let tool_calls_display = if tool_names.is_empty() {
+            None
+        } else {
+            Some(&tool_names)
+        };
         info!(
             finish_reason = ?first_choice.and_then(|c| c.finish_reason.as_ref()),
-            tool_calls = ?if tool_names.is_empty() { None } else { Some(&tool_names) },
+            tool_calls = ?tool_calls_display,
             "LLM response"
         );
 
@@ -234,44 +245,28 @@ impl ChatBackend for LlmClient {
             format!("{}/models", base),
         ];
 
-        let cache_context = |info: &ModelInfo| {
-            if let Some(ctx) = info.effective_context_length() {
-                self.context_length.store(ctx, Ordering::Relaxed);
-            }
-        };
+        let mut fallback: Option<ModelInfo> = None;
 
         for endpoint in &endpoints {
-            let info = self.try_models_endpoint(endpoint, model_id).await;
-            match info {
+            match self.try_models_endpoint(endpoint, model_id).await {
                 Ok(Some(info)) if info.effective_context_length().is_some() => {
-                    cache_context(&info);
+                    if let Some(ctx) = info.effective_context_length() {
+                        self.context_length.store(ctx, Ordering::Relaxed);
+                    }
                     return Ok(Some(info));
                 }
                 Ok(Some(info)) => {
-                    // Matched model but no context info, try next endpoint
                     debug!(endpoint = %endpoint, "Model found but no context length, trying next");
-                    // Keep as fallback
-                    let fallback = info;
-                    // Try remaining endpoints for richer data
-                    for next in endpoints.iter().skip_while(|e| *e != endpoint).skip(1) {
-                        if let Ok(Some(better)) = self.try_models_endpoint(next, model_id).await
-                            && better.effective_context_length().is_some()
-                        {
-                            cache_context(&better);
-                            return Ok(Some(better));
-                        }
-                    }
-                    return Ok(Some(fallback));
+                    fallback.get_or_insert(info);
                 }
                 Ok(None) => continue,
                 Err(e) => {
                     debug!(endpoint = %endpoint, error = %e, "Endpoint failed");
-                    continue;
                 }
             }
         }
 
-        Ok(None)
+        Ok(fallback)
     }
 }
 
@@ -372,23 +367,23 @@ pub async fn analyze_images(
     Ok(text)
 }
 
-/// Build user message for a workflow step
+/// Build user message for a workflow step.
 pub fn build_step_prompt(
     prompt: &str,
     button_text: Option<&str>,
     image_path: Option<&str>,
 ) -> String {
-    let mut parts = vec![prompt.to_string()];
+    let mut result = prompt.to_string();
 
     if let Some(text) = button_text {
-        parts.push(format!("\nButton to find: \"{}\"", text));
+        result.push_str(&format!("\nButton to find: \"{}\"", text));
     }
 
     if let Some(path) = image_path {
-        parts.push(format!("\nImage to find: {}", path));
+        result.push_str(&format!("\nImage to find: {}", path));
     }
 
-    parts.join("")
+    result
 }
 
 #[cfg(test)]

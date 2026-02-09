@@ -148,10 +148,11 @@ export function useAppStore(): [AppState, AppActions] {
   }, []);
 
   const nodeTypesLoaded = useRef(false);
-  if (!nodeTypesLoaded.current) {
+  useEffect(() => {
+    if (nodeTypesLoaded.current) return;
     nodeTypesLoaded.current = true;
     commands.nodeTypeDefaults().then(setNodeTypes);
-  }
+  }, []);
 
   const pushLog = useCallback((msg: string) => {
     setLogs((prev) => {
@@ -278,6 +279,29 @@ export function useAppStore(): [AppState, AppActions] {
     pushLog("New project created");
   }, [pushLog]);
 
+  const toggleSidebar = useCallback(() => setSidebarCollapsed((p) => !p), []);
+  const toggleLogsDrawer = useCallback(() => setLogsDrawerOpen((p) => !p), []);
+
+  const persistOrchestratorConfig = useCallback((config: EndpointConfig) => {
+    setOrchestratorConfig(config);
+    saveSetting("orchestratorConfig", config);
+  }, []);
+
+  const persistVlmConfig = useCallback((config: EndpointConfig) => {
+    setVlmConfig(config);
+    saveSetting("vlmConfig", config);
+  }, []);
+
+  const persistVlmEnabled = useCallback((enabled: boolean) => {
+    setVlmEnabled(enabled);
+    saveSetting("vlmEnabled", enabled);
+  }, []);
+
+  const persistMcpCommand = useCallback((cmd: string) => {
+    setMcpCommand(cmd);
+    saveSetting("mcpCommand", cmd);
+  }, []);
+
   const latestRef = useRef({ workflow, projectPath, orchestratorConfig, vlmConfig, vlmEnabled, mcpCommand });
   latestRef.current = { workflow, projectPath, orchestratorConfig, vlmConfig, vlmEnabled, mcpCommand };
 
@@ -334,8 +358,8 @@ export function useAppStore(): [AppState, AppActions] {
     setWorkflow,
     selectNode: setSelectedNode,
     setDetailTab,
-    toggleSidebar: () => setSidebarCollapsed((p) => !p),
-    toggleLogsDrawer: () => setLogsDrawerOpen((p) => !p),
+    toggleSidebar,
+    toggleLogsDrawer,
     setNodeSearch,
     setShowSettings,
     pushLog,
@@ -349,22 +373,10 @@ export function useAppStore(): [AppState, AppActions] {
     openProject,
     saveProject,
     newProject,
-    setOrchestratorConfig: (config: EndpointConfig) => {
-      setOrchestratorConfig(config);
-      saveSetting("orchestratorConfig", config);
-    },
-    setVlmConfig: (config: EndpointConfig) => {
-      setVlmConfig(config);
-      saveSetting("vlmConfig", config);
-    },
-    setVlmEnabled: (enabled: boolean) => {
-      setVlmEnabled(enabled);
-      saveSetting("vlmEnabled", enabled);
-    },
-    setMcpCommand: (cmd: string) => {
-      setMcpCommand(cmd);
-      saveSetting("mcpCommand", cmd);
-    },
+    setOrchestratorConfig: persistOrchestratorConfig,
+    setVlmConfig: persistVlmConfig,
+    setVlmEnabled: persistVlmEnabled,
+    setMcpCommand: persistMcpCommand,
     setActiveNode,
     setExecutorState,
     runWorkflow,

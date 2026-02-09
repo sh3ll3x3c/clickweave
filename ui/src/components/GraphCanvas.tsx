@@ -29,18 +29,20 @@ interface GraphCanvasProps {
   onDeleteNode: (id: string) => void;
 }
 
-const categoryColors: Record<string, string> = {
-  AiStep: "#4c9ee8",
-  TakeScreenshot: "#a855f7",
-  FindText: "#a855f7",
-  FindImage: "#a855f7",
-  Click: "#f59e0b",
-  TypeText: "#f59e0b",
-  Scroll: "#f59e0b",
-  ListWindows: "#50c878",
-  FocusWindow: "#50c878",
-  AppDebugKitOp: "#ef4444",
+const nodeMetadata: Record<string, { color: string; icon: string }> = {
+  AiStep:         { color: "#4c9ee8", icon: "AI" },
+  TakeScreenshot: { color: "#a855f7", icon: "SS" },
+  FindText:       { color: "#a855f7", icon: "FT" },
+  FindImage:      { color: "#a855f7", icon: "FI" },
+  Click:          { color: "#f59e0b", icon: "CK" },
+  TypeText:       { color: "#f59e0b", icon: "TT" },
+  Scroll:         { color: "#f59e0b", icon: "SC" },
+  ListWindows:    { color: "#50c878", icon: "LW" },
+  FocusWindow:    { color: "#50c878", icon: "FW" },
+  AppDebugKitOp:  { color: "#ef4444", icon: "DK" },
 };
+
+const defaultMetadata = { color: "#666", icon: "??" };
 
 function toRFNode(
   node: Workflow["nodes"][number],
@@ -49,6 +51,7 @@ function toRFNode(
   onDeleteNode: (id: string) => void,
   existing?: RFNode,
 ): RFNode {
+  const meta = nodeMetadata[node.node_type.type] ?? defaultMetadata;
   return {
     ...(existing ?? {}),
     id: node.id,
@@ -58,8 +61,8 @@ function toRFNode(
     data: {
       label: node.name,
       nodeType: node.node_type.type,
-      icon: getNodeIcon(node.node_type.type),
-      color: categoryColors[node.node_type.type] || "#666",
+      icon: meta.icon,
+      color: meta.color,
       isActive: node.id === activeNode,
       enabled: node.enabled,
       onDelete: () => onDeleteNode(node.id),
@@ -103,9 +106,6 @@ export function GraphCanvas({
         id: `${edge.from}-${edge.to}`,
         source: edge.from,
         target: edge.to,
-        type: "default",
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#666" },
-        style: { stroke: "#555", strokeWidth: 2 },
       })),
     [workflow.edges],
   );
@@ -189,20 +189,4 @@ export function GraphCanvas({
       </ReactFlow>
     </div>
   );
-}
-
-function getNodeIcon(type: string): string {
-  const icons: Record<string, string> = {
-    AiStep: "AI",
-    TakeScreenshot: "SS",
-    FindText: "FT",
-    FindImage: "FI",
-    Click: "CK",
-    TypeText: "TT",
-    Scroll: "SC",
-    ListWindows: "LW",
-    FocusWindow: "FW",
-    AppDebugKitOp: "DK",
-  };
-  return icons[type] || "??";
 }
