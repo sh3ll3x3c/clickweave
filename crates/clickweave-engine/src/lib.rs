@@ -373,6 +373,26 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )),
         ];
 
+        let filtered_tools = if let Some(allowed) = &params.allowed_tools {
+            let filtered: Vec<Value> = tools
+                .iter()
+                .filter(|t| {
+                    t.pointer("/function/name")
+                        .and_then(|n| n.as_str())
+                        .is_some_and(|name| allowed.iter().any(|a| a == name))
+                })
+                .cloned()
+                .collect();
+            self.log(format!(
+                "Filtered tools: {}/{} allowed",
+                filtered.len(),
+                tools.len()
+            ));
+            filtered
+        } else {
+            tools.to_vec()
+        };
+
         let max_tool_calls = params.max_tool_calls.unwrap_or(10) as usize;
         let step_start = Instant::now();
         let mut tool_call_count = 0;
@@ -396,7 +416,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             let response = self
                 .orchestrator
-                .chat(messages.clone(), Some(tools.to_vec()))
+                .chat(messages.clone(), Some(filtered_tools.clone()))
                 .await
                 .map_err(|e| format!("LLM error: {}", e))?;
 
