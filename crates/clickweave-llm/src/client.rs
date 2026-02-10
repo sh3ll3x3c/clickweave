@@ -281,7 +281,8 @@ You have access to MCP tools for native UI interaction:
 - click: click at coordinates or on an element
 - type_text: type text at the cursor
 - scroll: scroll at a position
-- list_windows / focus_window: manage windows
+- list_apps: list running applications (use user_apps_only=true to filter system processes)
+- list_windows / focus_window: manage windows (focus_window accepts app_name, window_id, or pid)
 
 For each step, you will receive:
 - A prompt describing the objective
@@ -298,7 +299,7 @@ their analysis as a VLM_IMAGE_SUMMARY message containing a JSON object with:
 Use find_text / find_image for precise coordinate targeting. Do not guess coordinates.
 
 Strategy:
-1. Start by taking a screenshot to observe the current state
+1. If you need to see the screen, take a screenshot to observe the current state
 2. Use find_text or find_image to locate targets precisely
 3. Perform the required input actions (click, type, scroll)
 4. Verify the result with another screenshot if needed
@@ -309,7 +310,8 @@ When you have completed the step's objective, respond with a JSON object:
 If you cannot complete the step:
 {"step_complete": false, "error": "Description of the problem"}
 
-Be precise with coordinates. Always verify actions when the outcome matters."#
+Be precise with coordinates. Always verify actions when the outcome matters.
+Only use tool parameters that exist in the tool schema. Do not invent parameters."#
         .to_string()
 }
 
