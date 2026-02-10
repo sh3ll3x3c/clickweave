@@ -578,12 +578,57 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     MouseButton::Right => "right",
                     MouseButton::Center => "center",
                 };
+
+                // If there's a text target, resolve it to screen coordinates via find_text first
+                let (x, y) = if let Some(target) = &p.target {
+                    self.record_event(
+                        node_run.as_deref(),
+                        "tool_call",
+                        serde_json::json!({"name": "find_text"}),
+                    );
+                    self.log(format!("Calling MCP tool: find_text (target={})", target));
+
+                    let find_result = mcp
+                        .call_tool("find_text", Some(serde_json::json!({"text": target})))
+                        .map_err(|e| format!("find_text failed: {}", e))?;
+
+                    let result_text = Self::extract_result_text(&find_result);
+                    self.record_event(
+                        node_run.as_deref(),
+                        "tool_result",
+                        serde_json::json!({"name": "find_text", "text_len": result_text.len()}),
+                    );
+
+                    // Parse the find_text result to extract coordinates
+                    let matches: Vec<Value> = serde_json::from_str(&result_text)
+                        .map_err(|e| format!("Failed to parse find_text result: {}", e))?;
+
+                    let first = matches
+                        .first()
+                        .ok_or_else(|| format!("find_text found no matches for '{}'", target))?;
+
+                    let x = first["x"]
+                        .as_f64()
+                        .ok_or_else(|| "find_text result missing 'x' coordinate".to_string())?;
+                    let y = first["y"]
+                        .as_f64()
+                        .ok_or_else(|| "find_text result missing 'y' coordinate".to_string())?;
+
+                    self.log(format!("Found '{}' at ({}, {})", target, x, y));
+                    (Some(x), Some(y))
+                } else {
+                    (None, None)
+                };
+
                 let mut args = serde_json::json!({
                     "button": button,
                     "click_count": p.click_count,
                 });
-                if let Some(target) = &p.target {
-                    args["target"] = Value::String(target.clone());
+                if let Some(x) = x {
+                    args["x"] = serde_json::json!(x);
+                }
+                if let Some(y) = y {
+                    args["y"] = serde_json::json!(y);
                 }
                 ("click", args)
             }
