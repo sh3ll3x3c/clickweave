@@ -49,6 +49,7 @@ pub struct PlannerOutput {
 }
 
 /// Result of planning a workflow.
+#[derive(Debug)]
 pub struct PlanResult {
     pub workflow: Workflow,
     pub warnings: Vec<String>,
@@ -318,7 +319,10 @@ pub async fn plan_workflow(
     .await
 }
 
+const MAX_REPAIR_ATTEMPTS: usize = 1;
+
 /// Plan a workflow using a given ChatBackend (for testability).
+/// On parse or validation failure, retries once with the error message appended.
 pub async fn plan_workflow_with_backend(
     backend: &impl ChatBackend,
     intent: &str,
@@ -326,34 +330,77 @@ pub async fn plan_workflow_with_backend(
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
 ) -> Result<PlanResult> {
-    let mut warnings = Vec::new();
-
     let system = planner_system_prompt(mcp_tools_openai, allow_ai_transforms, allow_agent_steps);
     let user_msg = format!("Plan a workflow for: {}", intent);
 
     info!("Planning workflow for intent: {}", intent);
     debug!("Planner system prompt length: {} chars", system.len());
 
-    let messages = vec![Message::system(&system), Message::user(&user_msg)];
+    let mut messages = vec![Message::system(&system), Message::user(&user_msg)];
+    let mut last_error: Option<String> = None;
 
-    let response: ChatResponse = backend
-        .chat(messages, None)
-        .await
-        .context("Planner LLM call failed")?;
+    for attempt in 0..=MAX_REPAIR_ATTEMPTS {
+        if attempt > 0 {
+            if let Some(ref err) = last_error {
+                info!("Repair attempt {} for planning error: {}", attempt, err);
+                messages.push(Message::user(format!(
+                    "Your previous output had an error: {}\n\nPlease fix the JSON and try again. Output ONLY the corrected JSON object.",
+                    err
+                )));
+            }
+        }
 
-    let choice = response
-        .choices
-        .first()
-        .ok_or_else(|| anyhow!("No response from planner"))?;
+        let response: ChatResponse = backend
+            .chat(messages.clone(), None)
+            .await
+            .context("Planner LLM call failed")?;
 
-    let content = choice
-        .message
-        .text_content()
-        .ok_or_else(|| anyhow!("Planner returned no text content"))?;
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| anyhow!("No response from planner"))?;
 
-    debug!("Planner raw output: {}", content);
+        let content = choice
+            .message
+            .text_content()
+            .ok_or_else(|| anyhow!("Planner returned no text content"))?;
 
-    // Extract JSON from response (may be wrapped in markdown code fences)
+        debug!("Planner raw output (attempt {}): {}", attempt, content);
+
+        // Add assistant message to conversation for potential repair
+        messages.push(Message::assistant(content));
+
+        match parse_and_build_workflow(
+            content,
+            intent,
+            mcp_tools_openai,
+            allow_ai_transforms,
+            allow_agent_steps,
+        ) {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                if attempt < MAX_REPAIR_ATTEMPTS {
+                    last_error = Some(e.to_string());
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    Err(anyhow!("Planning failed after repair attempts"))
+}
+
+/// Parse planner output JSON and build a workflow.
+fn parse_and_build_workflow(
+    content: &str,
+    intent: &str,
+    mcp_tools_openai: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> Result<PlanResult> {
+    let mut warnings = Vec::new();
+
     let json_str = extract_json(content);
 
     let planner_output: PlannerOutput =
@@ -796,6 +843,107 @@ fn truncate_intent(intent: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ChatResponse, Choice};
+    use std::sync::Mutex;
+
+    /// Mock backend that returns a sequence of responses (for testing repair pass).
+    struct MockBackend {
+        responses: Mutex<Vec<String>>,
+        calls: Mutex<Vec<Vec<Message>>>,
+    }
+
+    impl MockBackend {
+        fn new(responses: Vec<&str>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into_iter().map(String::from).collect()),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn single(response: &str) -> Self {
+            Self::new(vec![response])
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    impl ChatBackend for MockBackend {
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+
+        async fn chat(
+            &self,
+            messages: Vec<Message>,
+            _tools: Option<Vec<Value>>,
+        ) -> Result<ChatResponse> {
+            self.calls.lock().unwrap().push(messages);
+            let mut responses = self.responses.lock().unwrap();
+            let text = if responses.is_empty() {
+                r#"{"steps": []}"#.to_string()
+            } else {
+                responses.remove(0)
+            };
+            Ok(ChatResponse {
+                id: "mock".to_string(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Message::assistant(&text),
+                    finish_reason: Some("stop".to_string()),
+                }],
+                usage: None,
+            })
+        }
+    }
+
+    fn sample_tools() -> Vec<Value> {
+        vec![
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "focus_window",
+                    "description": "Focus a window",
+                    "parameters": {"type": "object", "properties": {"app_name": {"type": "string"}}}
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "take_screenshot",
+                    "description": "Take a screenshot",
+                    "parameters": {"type": "object", "properties": {"mode": {"type": "string"}}}
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "click",
+                    "description": "Click at coordinates",
+                    "parameters": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}}
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "find_text",
+                    "description": "Find text on screen",
+                    "parameters": {"type": "object", "properties": {"text": {"type": "string"}}}
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "type_text",
+                    "description": "Type text",
+                    "parameters": {"type": "object", "properties": {"text": {"type": "string"}}}
+                }
+            }),
+        ]
+    }
+
+    // --- Unit tests ---
 
     #[test]
     fn test_extract_json_plain() {
@@ -828,7 +976,6 @@ mod tests {
         let prompt = planner_system_prompt(&tools, false, false);
         assert!(prompt.contains("click"));
         assert!(prompt.contains("Tool"));
-        // When features are off, the step type sections for AiTransform and AiStep should not appear
         assert!(!prompt.contains("step_type\": \"AiTransform\""));
         assert!(!prompt.contains("step_type\": \"AiStep\""));
     }
@@ -899,5 +1046,244 @@ mod tests {
         let truncated = truncate_intent(&long);
         assert!(truncated.len() <= 50);
         assert!(truncated.ends_with("..."));
+    }
+
+    // --- Integration tests with mock backend ---
+
+    #[tokio::test]
+    async fn test_plan_focus_screenshot_click() {
+        let response = r#"{"steps": [
+            {"step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Safari"}},
+            {"step_type": "Tool", "tool_name": "take_screenshot", "arguments": {"mode": "window", "app_name": "Safari", "include_ocr": true}},
+            {"step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "Login"}},
+            {"step_type": "Tool", "tool_name": "click", "arguments": {"x": 100, "y": 200}}
+        ]}"#;
+        let mock = MockBackend::single(response);
+        let result = plan_workflow_with_backend(
+            &mock,
+            "Focus Safari and click the Login button",
+            &sample_tools(),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.workflow.nodes.len(), 4);
+        assert_eq!(result.workflow.edges.len(), 3);
+        assert!(result.warnings.is_empty());
+        assert!(matches!(
+            result.workflow.nodes[0].node_type,
+            NodeType::FocusWindow(_)
+        ));
+        assert!(matches!(
+            result.workflow.nodes[1].node_type,
+            NodeType::TakeScreenshot(_)
+        ));
+        assert!(matches!(
+            result.workflow.nodes[2].node_type,
+            NodeType::FindText(_)
+        ));
+        assert!(matches!(
+            result.workflow.nodes[3].node_type,
+            NodeType::Click(_)
+        ));
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_plan_with_code_fence_wrapping() {
+        let response = r#"```json
+{"steps": [
+    {"step_type": "Tool", "tool_name": "type_text", "arguments": {"text": "hello"}}
+]}
+```"#;
+        let mock = MockBackend::single(response);
+        let result = plan_workflow_with_backend(&mock, "Type hello", &sample_tools(), false, false)
+            .await
+            .unwrap();
+
+        assert_eq!(result.workflow.nodes.len(), 1);
+        assert!(matches!(
+            result.workflow.nodes[0].node_type,
+            NodeType::TypeText(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_plan_agent_steps_filtered_when_disabled() {
+        let response = r#"{"steps": [
+            {"step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}},
+            {"step_type": "AiStep", "prompt": "Decide what to do"}
+        ]}"#;
+        let mock = MockBackend::single(response);
+        let result = plan_workflow_with_backend(
+            &mock,
+            "Take a screenshot and decide",
+            &sample_tools(),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.workflow.nodes.len(), 1);
+        assert!(!result.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_plan_agent_steps_kept_when_enabled() {
+        let response = r#"{"steps": [
+            {"step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}},
+            {"step_type": "AiStep", "prompt": "Decide what to do", "allowed_tools": ["click"]}
+        ]}"#;
+        let mock = MockBackend::single(response);
+        let result = plan_workflow_with_backend(
+            &mock,
+            "Take a screenshot and decide",
+            &sample_tools(),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.workflow.nodes.len(), 2);
+        assert!(matches!(
+            result.workflow.nodes[1].node_type,
+            NodeType::AiStep(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_repair_pass_fixes_invalid_json() {
+        let bad_response = r#"Here is the plan: {"steps": [invalid json}]}"#;
+        let good_response = r#"{"steps": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 50, "y": 50}}]}"#;
+        let mock = MockBackend::new(vec![bad_response, good_response]);
+
+        let result =
+            plan_workflow_with_backend(&mock, "Click somewhere", &sample_tools(), false, false)
+                .await
+                .unwrap();
+
+        assert_eq!(result.workflow.nodes.len(), 1);
+        // Should have called the backend twice (initial + repair)
+        assert_eq!(mock.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_repair_pass_fails_after_max_attempts() {
+        let bad = r#"not json at all"#;
+        let mock = MockBackend::new(vec![bad, bad]);
+
+        let result =
+            plan_workflow_with_backend(&mock, "Click somewhere", &sample_tools(), false, false)
+                .await;
+
+        assert!(result.is_err());
+        assert_eq!(mock.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_plan_empty_steps_returns_error() {
+        let response = r#"{"steps": []}"#;
+        let mock = MockBackend::single(response);
+        let result =
+            plan_workflow_with_backend(&mock, "Do nothing", &sample_tools(), false, false).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no steps"));
+    }
+
+    #[tokio::test]
+    async fn test_patch_adds_node() {
+        let workflow = Workflow {
+            id: Uuid::new_v4(),
+            name: "Test".to_string(),
+            nodes: vec![Node {
+                id: Uuid::new_v4(),
+                node_type: NodeType::TakeScreenshot(TakeScreenshotParams {
+                    mode: ScreenshotMode::Window,
+                    target: None,
+                    include_ocr: true,
+                }),
+                position: Position { x: 300.0, y: 100.0 },
+                name: "Screenshot".to_string(),
+                enabled: true,
+                timeout_ms: None,
+                retries: 0,
+                trace_level: clickweave_core::TraceLevel::Minimal,
+                expected_outcome: None,
+                checks: vec![],
+            }],
+            edges: vec![],
+        };
+
+        let response = r#"{"add": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 100, "y": 200}}]}"#;
+        let mock = MockBackend::single(response);
+
+        let result = patch_workflow_with_backend(
+            &mock,
+            &workflow,
+            "Add a click after the screenshot",
+            &sample_tools(),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.added_nodes.len(), 1);
+        assert!(matches!(
+            result.added_nodes[0].node_type,
+            NodeType::Click(_)
+        ));
+        // Should add an edge from existing node to new node
+        assert_eq!(result.added_edges.len(), 1);
+        assert_eq!(result.added_edges[0].from, workflow.nodes[0].id);
+    }
+
+    #[tokio::test]
+    async fn test_patch_removes_node() {
+        let node_id = Uuid::new_v4();
+        let workflow = Workflow {
+            id: Uuid::new_v4(),
+            name: "Test".to_string(),
+            nodes: vec![Node {
+                id: node_id,
+                node_type: NodeType::Click(ClickParams {
+                    x: Some(100.0),
+                    y: Some(200.0),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                }),
+                position: Position { x: 300.0, y: 100.0 },
+                name: "Click".to_string(),
+                enabled: true,
+                timeout_ms: None,
+                retries: 0,
+                trace_level: clickweave_core::TraceLevel::Minimal,
+                expected_outcome: None,
+                checks: vec![],
+            }],
+            edges: vec![],
+        };
+
+        let response = format!(r#"{{"remove_node_ids": ["{}"]}}"#, node_id);
+        let mock = MockBackend::single(&response);
+
+        let result = patch_workflow_with_backend(
+            &mock,
+            &workflow,
+            "Remove the click",
+            &sample_tools(),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.removed_node_ids.len(), 1);
+        assert_eq!(result.removed_node_ids[0], node_id);
     }
 }
