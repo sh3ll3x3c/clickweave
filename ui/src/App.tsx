@@ -24,6 +24,11 @@ function App() {
     [state.selectedNode, state.workflow.nodes],
   );
 
+  const hasAiNodes = useMemo(
+    () => state.workflow.nodes.some((n) => n.node_type.type === "AiStep"),
+    [state.workflow.nodes],
+  );
+
   useEffect(() => {
     const subscriptions = Promise.all([
       listen<{ message: string }>("executor://log", (e) => {
@@ -108,6 +113,7 @@ function App() {
                 <FloatingToolbar
                   executorState={state.executorState}
                   logsOpen={state.logsDrawerOpen}
+                  hasAiNodes={hasAiNodes}
                   onToggleLogs={actions.toggleLogsDrawer}
                   onRunStop={
                     state.executorState === "running"

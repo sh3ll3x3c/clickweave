@@ -39,6 +39,8 @@ const nodeMetadata: Record<string, { color: string; icon: string }> = {
   Scroll:         { color: "#f59e0b", icon: "SC" },
   ListWindows:    { color: "#50c878", icon: "LW" },
   FocusWindow:    { color: "#50c878", icon: "FW" },
+  PressKey:       { color: "#f59e0b", icon: "PK" },
+  McpToolCall:    { color: "#666",    icon: "MC" },
   AppDebugKitOp:  { color: "#ef4444", icon: "DK" },
 };
 
