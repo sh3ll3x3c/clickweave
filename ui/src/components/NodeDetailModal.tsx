@@ -307,11 +307,15 @@ function NodeTypeFields({
     case "Click":
       return (
         <FieldGroup title="Click">
-          <TextField
-            label="Target"
-            value={nt.target ?? ""}
-            onChange={(v) => updateType({ target: optionalString(v) })}
-            placeholder="Coordinates or element"
+          <NumberField
+            label="X"
+            value={nt.x ?? 0}
+            onChange={(v) => updateType({ x: v || null })}
+          />
+          <NumberField
+            label="Y"
+            value={nt.y ?? 0}
+            onChange={(v) => updateType({ y: v || null })}
           />
           <SelectField
             label="Button"
