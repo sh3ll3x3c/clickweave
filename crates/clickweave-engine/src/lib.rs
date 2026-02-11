@@ -656,6 +656,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }
                 ("focus_window", args)
             }
+            NodeType::McpToolCall(p) => {
+                let args = if p.arguments.is_null() {
+                    serde_json::json!({})
+                } else {
+                    p.arguments.clone()
+                };
+                (p.tool_name.as_str(), args)
+            }
             NodeType::AppDebugKitOp(p) => {
                 self.log(format!(
                     "AppDebugKit operation: {} (not yet fully implemented)",

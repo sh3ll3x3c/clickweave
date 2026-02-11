@@ -181,6 +181,7 @@ pub enum NodeType {
     Scroll(ScrollParams),
     ListWindows(ListWindowsParams),
     FocusWindow(FocusWindowParams),
+    McpToolCall(McpToolCallParams),
     AppDebugKitOp(AppDebugKitParams),
 }
 
@@ -196,7 +197,7 @@ impl NodeType {
             | NodeType::PressKey(_)
             | NodeType::Scroll(_) => NodeCategory::Input,
             NodeType::ListWindows(_) | NodeType::FocusWindow(_) => NodeCategory::Window,
-            NodeType::AppDebugKitOp(_) => NodeCategory::AppDebugKit,
+            NodeType::McpToolCall(_) | NodeType::AppDebugKitOp(_) => NodeCategory::AppDebugKit,
         }
     }
 
@@ -212,6 +213,7 @@ impl NodeType {
             NodeType::Scroll(_) => "Scroll",
             NodeType::ListWindows(_) => "List Windows",
             NodeType::FocusWindow(_) => "Focus Window",
+            NodeType::McpToolCall(_) => "MCP Tool Call",
             NodeType::AppDebugKitOp(_) => "AppDebugKit Op",
         }
     }
@@ -228,6 +230,7 @@ impl NodeType {
             NodeType::Scroll(_) => "📜",
             NodeType::ListWindows(_) => "📋",
             NodeType::FocusWindow(_) => "🪟",
+            NodeType::McpToolCall(_) => "🔧",
             NodeType::AppDebugKitOp(_) => "🔧",
         }
     }
@@ -249,6 +252,7 @@ impl NodeType {
             NodeType::Scroll(ScrollParams::default()),
             NodeType::ListWindows(ListWindowsParams::default()),
             NodeType::FocusWindow(FocusWindowParams::default()),
+            NodeType::McpToolCall(McpToolCallParams::default()),
             NodeType::AppDebugKitOp(AppDebugKitParams::default()),
         ]
     }
@@ -416,6 +420,13 @@ pub enum FocusMethod {
     WindowId,
     AppName,
     Pid,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct McpToolCallParams {
+    pub tool_name: String,
+    pub arguments: Value,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -590,7 +601,7 @@ mod tests {
     #[test]
     fn test_all_defaults_covers_all_categories() {
         let defaults = NodeType::all_defaults();
-        assert_eq!(defaults.len(), 11);
+        assert_eq!(defaults.len(), 12);
 
         let categories: std::collections::HashSet<NodeCategory> =
             defaults.iter().map(|nt| nt.category()).collect();
