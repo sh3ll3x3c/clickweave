@@ -102,6 +102,17 @@ impl Message {
         }
     }
 
+    pub fn text_content(&self) -> Option<&str> {
+        match &self.content {
+            Some(Content::Text(s)) => Some(s),
+            Some(Content::Parts(parts)) => parts.iter().find_map(|p| match p {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            }),
+            None => None,
+        }
+    }
+
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             content: Some(Content::Text(content.into())),

@@ -2,6 +2,7 @@ use clickweave_core::storage::RunStorage;
 use clickweave_core::{NodeRun, NodeType, TraceEvent, Workflow, validate_workflow};
 use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
 use clickweave_llm::LlmConfig;
+use clickweave_mcp::McpClient;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
@@ -245,6 +246,40 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
             node_type: nt,
         })
         .collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String> {
+    // Spawn MCP to get live tool schemas
+    let mut mcp = if request.mcp_command == "npx" {
+        McpClient::spawn_npx()
+    } else {
+        McpClient::spawn(&request.mcp_command, &[])
+    }
+    .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
+
+    let tools = mcp.tools_as_openai();
+
+    // Kill MCP — we only needed the tool schemas
+    let _ = mcp.kill();
+
+    let planner_config = request.planner.into_llm_config(None);
+
+    let result = clickweave_llm::planner::plan_workflow(
+        &request.intent,
+        planner_config,
+        &tools,
+        request.allow_ai_transforms,
+        request.allow_agent_steps,
+    )
+    .await
+    .map_err(|e| format!("Planning failed: {}", e))?;
+
+    Ok(PlanResponse {
+        workflow: result.workflow,
+        warnings: result.warnings,
+    })
 }
 
 #[tauri::command]

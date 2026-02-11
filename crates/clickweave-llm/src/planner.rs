@@ -1,0 +1,591 @@
+use crate::{ChatBackend, ChatResponse, LlmClient, LlmConfig, Message};
+use anyhow::{Context, Result, anyhow};
+use clickweave_core::{
+    AiStepParams, ClickParams, Edge, FindImageParams, FindTextParams, FocusMethod,
+    FocusWindowParams, ListWindowsParams, McpToolCallParams, MouseButton, Node, NodeType, Position,
+    PressKeyParams, ScreenshotMode, ScrollParams, TakeScreenshotParams, TypeTextParams, Workflow,
+    validate_workflow,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tracing::{debug, info};
+use uuid::Uuid;
+
+/// A single step in the planner's output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "step_type")]
+pub enum PlanStep {
+    Tool {
+        tool_name: String,
+        arguments: Value,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    AiTransform {
+        kind: String,
+        input_ref: String,
+        #[serde(default)]
+        output_schema: Option<Value>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    AiStep {
+        prompt: String,
+        #[serde(default)]
+        allowed_tools: Option<Vec<String>>,
+        #[serde(default)]
+        max_tool_calls: Option<u32>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+}
+
+/// The raw planner LLM output.
+#[derive(Debug, Deserialize)]
+pub struct PlannerOutput {
+    pub steps: Vec<PlanStep>,
+}
+
+/// Result of planning a workflow.
+pub struct PlanResult {
+    pub workflow: Workflow,
+    pub warnings: Vec<String>,
+}
+
+/// Build the planner system prompt.
+fn planner_system_prompt(
+    tools_json: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> String {
+    let tool_list = serde_json::to_string_pretty(tools_json).unwrap_or_default();
+
+    let mut step_types = r#"Available step types:
+
+1. **Tool** — calls exactly one MCP tool:
+   ```json
+   {"step_type": "Tool", "tool_name": "<name>", "arguments": {...}, "name": "optional label"}
+   ```
+   The arguments must be valid according to the tool's input schema."#
+        .to_string();
+
+    if allow_ai_transforms {
+        step_types.push_str(
+            r#"
+
+2. **AiTransform** — bounded AI operation (summarize, extract, classify) with no tool access:
+   ```json
+   {"step_type": "AiTransform", "kind": "summarize|extract|classify", "input_ref": "<step_name>", "output_schema": {...}, "name": "optional label"}
+   ```"#,
+        );
+    }
+
+    if allow_agent_steps {
+        step_types.push_str(
+            r#"
+
+3. **AiStep** — agentic loop with tool access (use sparingly, only when the task genuinely requires dynamic decision-making):
+   ```json
+   {"step_type": "AiStep", "prompt": "<what to accomplish>", "allowed_tools": ["tool1", "tool2"], "max_tool_calls": 10, "name": "optional label"}
+   ```"#,
+        );
+    }
+
+    format!(
+        r#"You are a workflow planner for UI automation. Given a user's intent, produce a sequence of steps that accomplish the goal.
+
+You have access to these MCP tools:
+
+{tool_list}
+
+{step_types}
+
+Rules:
+- Output ONLY a JSON object: {{"steps": [...]}}
+- Each Tool step must use exactly one tool from the list above with schema-valid arguments.
+- Steps execute in sequence (output of one step is available to the next).
+- Be precise: use find_text to locate UI elements before clicking them.
+- For clicking on text elements: first use find_text to get coordinates, then use click with those coordinates.
+- Always focus the target window before interacting with it.
+- Prefer deterministic Tool steps over AiStep whenever possible.
+- Do not add unnecessary steps. Be efficient."#,
+    )
+}
+
+/// Map a PlanStep to a NodeType.
+fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(NodeType, String)> {
+    match step {
+        PlanStep::Tool {
+            tool_name,
+            arguments,
+            name,
+        } => {
+            let display = name.clone().unwrap_or_else(|| tool_name.replace('_', " "));
+
+            // Try to map to a typed node, fall back to McpToolCall
+            let node_type = match tool_name.as_str() {
+                "take_screenshot" => {
+                    let mode = match arguments.get("mode").and_then(|v| v.as_str()) {
+                        Some("screen") => ScreenshotMode::Screen,
+                        Some("region") => ScreenshotMode::Region,
+                        _ => ScreenshotMode::Window,
+                    };
+                    NodeType::TakeScreenshot(TakeScreenshotParams {
+                        mode,
+                        target: arguments
+                            .get("app_name")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
+                        include_ocr: arguments
+                            .get("include_ocr")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true),
+                    })
+                }
+                "find_text" => NodeType::FindText(FindTextParams {
+                    search_text: arguments
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    ..Default::default()
+                }),
+                "find_image" => NodeType::FindImage(FindImageParams {
+                    template_image: arguments
+                        .get("template_image_base64")
+                        .or_else(|| arguments.get("template_id"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    threshold: arguments
+                        .get("threshold")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.75),
+                    max_results: arguments
+                        .get("max_results")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(3) as u32,
+                }),
+                "click" => NodeType::Click(ClickParams {
+                    x: arguments.get("x").and_then(|v| v.as_f64()),
+                    y: arguments.get("y").and_then(|v| v.as_f64()),
+                    button: match arguments.get("button").and_then(|v| v.as_str()) {
+                        Some("right") => MouseButton::Right,
+                        Some("center") => MouseButton::Center,
+                        _ => MouseButton::Left,
+                    },
+                    click_count: arguments
+                        .get("click_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1) as u32,
+                }),
+                "type_text" => NodeType::TypeText(TypeTextParams {
+                    text: arguments
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                }),
+                "press_key" => NodeType::PressKey(PressKeyParams {
+                    key: arguments
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    modifiers: arguments
+                        .get("modifiers")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                }),
+                "scroll" => NodeType::Scroll(ScrollParams {
+                    delta_y: arguments
+                        .get("delta_y")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0) as i32,
+                    x: arguments.get("x").and_then(|v| v.as_f64()),
+                    y: arguments.get("y").and_then(|v| v.as_f64()),
+                }),
+                "list_windows" => NodeType::ListWindows(ListWindowsParams {
+                    app_name: arguments
+                        .get("app_name")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                }),
+                "focus_window" => {
+                    let (method, value) = if let Some(app) =
+                        arguments.get("app_name").and_then(|v| v.as_str())
+                    {
+                        (FocusMethod::AppName, Some(app.to_string()))
+                    } else if let Some(wid) = arguments.get("window_id").and_then(|v| v.as_u64()) {
+                        (FocusMethod::WindowId, Some(wid.to_string()))
+                    } else if let Some(pid) = arguments.get("pid").and_then(|v| v.as_u64()) {
+                        (FocusMethod::Pid, Some(pid.to_string()))
+                    } else {
+                        (FocusMethod::AppName, None)
+                    };
+                    NodeType::FocusWindow(FocusWindowParams {
+                        method,
+                        value,
+                        bring_to_front: true,
+                    })
+                }
+                // Catch-all: use McpToolCall for unknown tools
+                _ => {
+                    // Verify the tool actually exists
+                    let tool_exists = tools
+                        .iter()
+                        .any(|t| t["function"]["name"].as_str() == Some(tool_name));
+                    if !tool_exists {
+                        return Err(anyhow!("Unknown tool: {}", tool_name));
+                    }
+                    NodeType::McpToolCall(McpToolCallParams {
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                    })
+                }
+            };
+
+            Ok((node_type, display))
+        }
+        PlanStep::AiTransform { name, kind, .. } => {
+            let display = name
+                .clone()
+                .unwrap_or_else(|| format!("AI Transform ({})", kind));
+            // Map AI transforms to an AiStep with no tools
+            Ok((
+                NodeType::AiStep(AiStepParams {
+                    prompt: format!("Perform a '{}' transform on the input.", kind),
+                    allowed_tools: Some(vec![]),
+                    max_tool_calls: Some(0),
+                    ..Default::default()
+                }),
+                display,
+            ))
+        }
+        PlanStep::AiStep {
+            prompt,
+            allowed_tools,
+            max_tool_calls,
+            name,
+            ..
+        } => {
+            let display = name.clone().unwrap_or_else(|| "AI Step".to_string());
+            Ok((
+                NodeType::AiStep(AiStepParams {
+                    prompt: prompt.clone(),
+                    allowed_tools: allowed_tools.clone(),
+                    max_tool_calls: *max_tool_calls,
+                    ..Default::default()
+                }),
+                display,
+            ))
+        }
+    }
+}
+
+/// Lay out nodes in a vertical chain.
+fn layout_nodes(count: usize) -> Vec<Position> {
+    (0..count)
+        .map(|i| Position {
+            x: 300.0,
+            y: 100.0 + (i as f32) * 120.0,
+        })
+        .collect()
+}
+
+/// Plan a workflow from an intent using the planner LLM.
+pub async fn plan_workflow(
+    intent: &str,
+    planner_config: LlmConfig,
+    mcp_tools_openai: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> Result<PlanResult> {
+    let planner = LlmClient::new(planner_config);
+    plan_workflow_with_backend(
+        &planner,
+        intent,
+        mcp_tools_openai,
+        allow_ai_transforms,
+        allow_agent_steps,
+    )
+    .await
+}
+
+/// Plan a workflow using a given ChatBackend (for testability).
+pub async fn plan_workflow_with_backend(
+    backend: &impl ChatBackend,
+    intent: &str,
+    mcp_tools_openai: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> Result<PlanResult> {
+    let mut warnings = Vec::new();
+
+    let system = planner_system_prompt(mcp_tools_openai, allow_ai_transforms, allow_agent_steps);
+    let user_msg = format!("Plan a workflow for: {}", intent);
+
+    info!("Planning workflow for intent: {}", intent);
+    debug!("Planner system prompt length: {} chars", system.len());
+
+    let messages = vec![Message::system(&system), Message::user(&user_msg)];
+
+    let response: ChatResponse = backend
+        .chat(messages, None)
+        .await
+        .context("Planner LLM call failed")?;
+
+    let choice = response
+        .choices
+        .first()
+        .ok_or_else(|| anyhow!("No response from planner"))?;
+
+    let content = choice
+        .message
+        .text_content()
+        .ok_or_else(|| anyhow!("Planner returned no text content"))?;
+
+    debug!("Planner raw output: {}", content);
+
+    // Extract JSON from response (may be wrapped in markdown code fences)
+    let json_str = extract_json(content);
+
+    let planner_output: PlannerOutput =
+        serde_json::from_str(json_str).context("Failed to parse planner output as JSON")?;
+
+    if planner_output.steps.is_empty() {
+        return Err(anyhow!("Planner returned no steps"));
+    }
+
+    // Validate: reject AiStep if not allowed
+    if !allow_agent_steps {
+        for step in &planner_output.steps {
+            if matches!(step, PlanStep::AiStep { .. }) {
+                warnings.push(
+                    "Planner returned an AiStep but agent steps are disabled; step was removed."
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    // Filter out rejected steps
+    let steps: Vec<&PlanStep> = planner_output
+        .steps
+        .iter()
+        .filter(|s| {
+            if !allow_agent_steps && matches!(s, PlanStep::AiStep { .. }) {
+                return false;
+            }
+            if !allow_ai_transforms && matches!(s, PlanStep::AiTransform { .. }) {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    if steps.is_empty() {
+        return Err(anyhow!(
+            "No valid steps after filtering (all were rejected by feature flags)"
+        ));
+    }
+
+    // Map steps to nodes
+    let positions = layout_nodes(steps.len());
+    let mut nodes = Vec::new();
+
+    for (i, step) in steps.iter().enumerate() {
+        match step_to_node_type(step, mcp_tools_openai) {
+            Ok((node_type, display_name)) => {
+                nodes.push(Node {
+                    id: Uuid::new_v4(),
+                    node_type,
+                    position: positions[i],
+                    name: display_name,
+                    enabled: true,
+                    timeout_ms: None,
+                    retries: 0,
+                    trace_level: clickweave_core::TraceLevel::Minimal,
+                    expected_outcome: None,
+                    checks: vec![],
+                });
+            }
+            Err(e) => {
+                warnings.push(format!("Step {} skipped: {}", i, e));
+            }
+        }
+    }
+
+    if nodes.is_empty() {
+        return Err(anyhow!("No valid nodes produced from planner output"));
+    }
+
+    // Build linear edges
+    let edges: Vec<Edge> = nodes
+        .windows(2)
+        .map(|pair| Edge {
+            from: pair[0].id,
+            to: pair[1].id,
+        })
+        .collect();
+
+    let workflow = Workflow {
+        id: Uuid::new_v4(),
+        name: truncate_intent(intent),
+        nodes,
+        edges,
+    };
+
+    // Validate
+    validate_workflow(&workflow).context("Generated workflow failed validation")?;
+
+    info!(
+        "Planned workflow: {} nodes, {} edges, {} warnings",
+        workflow.nodes.len(),
+        workflow.edges.len(),
+        warnings.len()
+    );
+
+    Ok(PlanResult { workflow, warnings })
+}
+
+/// Extract JSON from text that may be wrapped in markdown code fences.
+fn extract_json(text: &str) -> &str {
+    let trimmed = text.trim();
+    if let Some(start) = trimmed.find("```json") {
+        let after_fence = &trimmed[start + 7..];
+        if let Some(end) = after_fence.find("```") {
+            return after_fence[..end].trim();
+        }
+    }
+    if let Some(start) = trimmed.find("```") {
+        let after_fence = &trimmed[start + 3..];
+        if let Some(end) = after_fence.find("```") {
+            return after_fence[..end].trim();
+        }
+    }
+    trimmed
+}
+
+fn truncate_intent(intent: &str) -> String {
+    if intent.len() <= 50 {
+        intent.to_string()
+    } else {
+        format!("{}...", &intent[..47])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_json_plain() {
+        let input = r#"{"steps": []}"#;
+        assert_eq!(extract_json(input), input);
+    }
+
+    #[test]
+    fn test_extract_json_code_fence() {
+        let input = "```json\n{\"steps\": []}\n```";
+        assert_eq!(extract_json(input), r#"{"steps": []}"#);
+    }
+
+    #[test]
+    fn test_extract_json_plain_fence() {
+        let input = "```\n{\"steps\": []}\n```";
+        assert_eq!(extract_json(input), r#"{"steps": []}"#);
+    }
+
+    #[test]
+    fn test_planner_system_prompt_includes_tools() {
+        let tools = vec![serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "click",
+                "description": "Click at coordinates",
+                "parameters": {}
+            }
+        })];
+        let prompt = planner_system_prompt(&tools, false, false);
+        assert!(prompt.contains("click"));
+        assert!(prompt.contains("Tool"));
+        // When features are off, the step type sections for AiTransform and AiStep should not appear
+        assert!(!prompt.contains("step_type\": \"AiTransform\""));
+        assert!(!prompt.contains("step_type\": \"AiStep\""));
+    }
+
+    #[test]
+    fn test_planner_system_prompt_with_all_features() {
+        let prompt = planner_system_prompt(&[], true, true);
+        assert!(prompt.contains("AiTransform"));
+        assert!(prompt.contains("AiStep"));
+    }
+
+    #[test]
+    fn test_step_to_node_type_click() {
+        let step = PlanStep::Tool {
+            tool_name: "click".to_string(),
+            arguments: serde_json::json!({"x": 100.0, "y": 200.0, "button": "left"}),
+            name: Some("Click button".to_string()),
+        };
+        let (nt, name) = step_to_node_type(&step, &[]).unwrap();
+        assert_eq!(name, "Click button");
+        assert!(matches!(nt, NodeType::Click(_)));
+    }
+
+    #[test]
+    fn test_step_to_node_type_unknown_tool_uses_mcp_tool_call() {
+        let tools = vec![serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "custom_tool",
+                "description": "A custom tool",
+                "parameters": {}
+            }
+        })];
+        let step = PlanStep::Tool {
+            tool_name: "custom_tool".to_string(),
+            arguments: serde_json::json!({"foo": "bar"}),
+            name: None,
+        };
+        let (nt, _) = step_to_node_type(&step, &tools).unwrap();
+        assert!(matches!(nt, NodeType::McpToolCall(_)));
+    }
+
+    #[test]
+    fn test_step_to_node_type_unknown_tool_fails_if_not_in_schema() {
+        let result = step_to_node_type(
+            &PlanStep::Tool {
+                tool_name: "nonexistent".to_string(),
+                arguments: serde_json::json!({}),
+                name: None,
+            },
+            &[],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_layout_nodes() {
+        let positions = layout_nodes(3);
+        assert_eq!(positions.len(), 3);
+        assert!(positions[1].y > positions[0].y);
+        assert!(positions[2].y > positions[1].y);
+    }
+
+    #[test]
+    fn test_truncate_intent() {
+        assert_eq!(truncate_intent("short"), "short");
+        let long = "a".repeat(60);
+        let truncated = truncate_intent(&long);
+        assert!(truncated.len() <= 50);
+        assert!(truncated.ends_with("..."));
+    }
+}

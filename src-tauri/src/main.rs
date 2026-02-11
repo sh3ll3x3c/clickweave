@@ -56,6 +56,7 @@ fn main() {
         save_project,
         validate,
         node_type_defaults,
+        plan_workflow,
         run_workflow,
         stop_workflow,
         list_runs,
