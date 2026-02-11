@@ -341,10 +341,27 @@ function NodeTypeFields({
             value={nt.text}
             onChange={(v) => updateType({ text: v })}
           />
-          <CheckboxField
-            label="Press Enter After"
-            value={nt.press_enter}
-            onChange={(v) => updateType({ press_enter: v })}
+        </FieldGroup>
+      );
+
+    case "PressKey":
+      return (
+        <FieldGroup title="Press Key">
+          <TextField
+            label="Key"
+            value={nt.key}
+            onChange={(v) => updateType({ key: v })}
+            placeholder="e.g. return, tab, escape, a"
+          />
+          <TextField
+            label="Modifiers"
+            value={nt.modifiers.join(", ")}
+            onChange={(v) =>
+              updateType({
+                modifiers: v ? v.split(",").map((s: string) => s.trim()).filter(Boolean) : [],
+              })
+            }
+            placeholder="e.g. command, shift, control, option"
           />
         </FieldGroup>
       );
@@ -381,12 +398,6 @@ function NodeTypeFields({
             onChange={(v) => updateType({ app_name: optionalString(v) })}
             placeholder="Optional"
           />
-          <TextField
-            label="Title Pattern"
-            value={nt.title_pattern ?? ""}
-            onChange={(v) => updateType({ title_pattern: optionalString(v) })}
-            placeholder="Optional"
-          />
         </FieldGroup>
       );
 
@@ -396,12 +407,12 @@ function NodeTypeFields({
           <SelectField
             label="Method"
             value={nt.method}
-            options={["WindowId", "AppName", "TitlePattern"]}
+            options={["WindowId", "AppName", "Pid"]}
             onChange={(v) => updateType({ method: v })}
           />
           <TextField
             label={
-              { WindowId: "Window ID", AppName: "App Name", TitlePattern: "Title Pattern" }[nt.method] ?? nt.method
+              { WindowId: "Window ID", AppName: "App Name", Pid: "Process ID" }[nt.method] ?? nt.method
             }
             value={nt.value ?? ""}
             onChange={(v) => updateType({ value: optionalString(v) })}

@@ -177,6 +177,7 @@ pub enum NodeType {
     FindImage(FindImageParams),
     Click(ClickParams),
     TypeText(TypeTextParams),
+    PressKey(PressKeyParams),
     Scroll(ScrollParams),
     ListWindows(ListWindowsParams),
     FocusWindow(FocusWindowParams),
@@ -190,7 +191,10 @@ impl NodeType {
             NodeType::TakeScreenshot(_) | NodeType::FindText(_) | NodeType::FindImage(_) => {
                 NodeCategory::Vision
             }
-            NodeType::Click(_) | NodeType::TypeText(_) | NodeType::Scroll(_) => NodeCategory::Input,
+            NodeType::Click(_)
+            | NodeType::TypeText(_)
+            | NodeType::PressKey(_)
+            | NodeType::Scroll(_) => NodeCategory::Input,
             NodeType::ListWindows(_) | NodeType::FocusWindow(_) => NodeCategory::Window,
             NodeType::AppDebugKitOp(_) => NodeCategory::AppDebugKit,
         }
@@ -204,6 +208,7 @@ impl NodeType {
             NodeType::FindImage(_) => "Find Image",
             NodeType::Click(_) => "Click",
             NodeType::TypeText(_) => "Type Text",
+            NodeType::PressKey(_) => "Press Key",
             NodeType::Scroll(_) => "Scroll",
             NodeType::ListWindows(_) => "List Windows",
             NodeType::FocusWindow(_) => "Focus Window",
@@ -219,6 +224,7 @@ impl NodeType {
             NodeType::FindImage(_) => "🖼",
             NodeType::Click(_) => "🖱",
             NodeType::TypeText(_) => "⌨",
+            NodeType::PressKey(_) => "⌨",
             NodeType::Scroll(_) => "📜",
             NodeType::ListWindows(_) => "📋",
             NodeType::FocusWindow(_) => "🪟",
@@ -239,6 +245,7 @@ impl NodeType {
             NodeType::FindImage(FindImageParams::default()),
             NodeType::Click(ClickParams::default()),
             NodeType::TypeText(TypeTextParams::default()),
+            NodeType::PressKey(PressKeyParams::default()),
             NodeType::Scroll(ScrollParams::default()),
             NodeType::ListWindows(ListWindowsParams::default()),
             NodeType::FocusWindow(FocusWindowParams::default()),
@@ -362,7 +369,13 @@ pub enum MouseButton {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TypeTextParams {
     pub text: String,
-    pub press_enter: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct PressKeyParams {
+    pub key: String,
+    pub modifiers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -377,7 +390,6 @@ pub struct ScrollParams {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ListWindowsParams {
     pub app_name: Option<String>,
-    pub title_pattern: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -403,7 +415,7 @@ impl Default for FocusWindowParams {
 pub enum FocusMethod {
     WindowId,
     AppName,
-    TitlePattern,
+    Pid,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -578,7 +590,7 @@ mod tests {
     #[test]
     fn test_all_defaults_covers_all_categories() {
         let defaults = NodeType::all_defaults();
-        assert_eq!(defaults.len(), 10);
+        assert_eq!(defaults.len(), 11);
 
         let categories: std::collections::HashSet<NodeCategory> =
             defaults.iter().map(|nt| nt.category()).collect();

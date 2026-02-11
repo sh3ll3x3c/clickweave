@@ -611,6 +611,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 ("click", args)
             }
             NodeType::TypeText(p) => ("type_text", serde_json::json!({"text": p.text})),
+            NodeType::PressKey(p) => {
+                let mut args = serde_json::json!({"key": p.key});
+                if !p.modifiers.is_empty() {
+                    args["modifiers"] = serde_json::json!(p.modifiers);
+                }
+                ("press_key", args)
+            }
             NodeType::Scroll(p) => {
                 let mut args = serde_json::json!({"delta_y": p.delta_y});
                 if let Some(x) = p.x {
@@ -632,12 +639,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 let mut args = serde_json::json!({});
                 if let Some(val) = &p.value {
                     match p.method {
-                        FocusMethod::AppName | FocusMethod::TitlePattern => {
+                        FocusMethod::AppName => {
                             args["app_name"] = Value::String(val.clone());
                         }
                         FocusMethod::WindowId => {
                             if let Ok(id) = val.parse::<u64>() {
                                 args["window_id"] = serde_json::json!(id);
+                            }
+                        }
+                        FocusMethod::Pid => {
+                            if let Ok(pid) = val.parse::<u64>() {
+                                args["pid"] = serde_json::json!(pid);
                             }
                         }
                     }
