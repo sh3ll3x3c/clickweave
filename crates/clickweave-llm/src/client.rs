@@ -270,7 +270,7 @@ impl ChatBackend for LlmClient {
     }
 }
 
-/// System prompt for the orchestrator (text-only, no images).
+/// System prompt for the agent (text-only, no images).
 pub fn workflow_system_prompt() -> String {
     r#"You are a UI automation assistant executing an AI Step node within a workflow.
 
@@ -294,7 +294,7 @@ their analysis as a VLM_IMAGE_SUMMARY message containing a JSON object with:
 - summary: what is visible on screen
 - visible_text: key labels, buttons, headings
 - alerts: errors, popups, permission prompts
-- notes_for_orchestrator: non-prescriptive hints
+- notes_for_agent: non-prescriptive hints
 
 Use find_text / find_image for precise coordinate targeting. Do not guess coordinates.
 
@@ -317,20 +317,20 @@ Only use tool parameters that exist in the tool schema. Do not invent parameters
 
 /// System prompt for the VLM (vision model).
 pub fn vlm_system_prompt() -> String {
-    r#"You are a visual analyst for UI automation. You receive screenshots and images from tool results and produce structured descriptions for an orchestrator model that cannot see images.
+    r#"You are a visual analyst for UI automation. You receive screenshots and images from tool results and produce structured descriptions for an agent model that cannot see images.
 
 Output ONLY a JSON object with these fields:
 {
   "summary": "1-3 sentences describing what is visible on screen",
   "visible_text": ["key labels", "button text", "dialog headings"],
   "alerts": ["any errors", "popups", "permission prompts"],
-  "notes_for_orchestrator": "Non-prescriptive hints, e.g. 'There is a modal blocking the UI' or 'The search field is focused'"
+  "notes_for_agent": "Non-prescriptive hints, e.g. 'There is a modal blocking the UI' or 'The search field is focused'"
 }
 
 Rules:
 - Be factual and concise. Describe what you see, not what to do.
 - Include coordinates only if they are clearly visible (e.g. OCR overlay).
-- Do NOT suggest actions or next steps — the orchestrator decides.
+- Do NOT suggest actions or next steps — the agent decides.
 - If nothing notable is on screen, keep fields empty but still return valid JSON."#
         .to_string()
 }
@@ -338,7 +338,7 @@ Rules:
 /// Build the user prompt for a VLM image analysis call.
 pub fn build_vlm_prompt(step_goal: &str, tool_name: &str) -> String {
     format!(
-        "The orchestrator is working on: \"{}\"\n\
+        "The agent is working on: \"{}\"\n\
          The following image(s) were returned by the \"{}\" tool.\n\
          Analyze the image(s) and produce the JSON summary.",
         step_goal, tool_name
@@ -464,8 +464,8 @@ mod tests {
             "VLM prompt should mention alerts field"
         );
         assert!(
-            prompt.contains("notes_for_orchestrator"),
-            "VLM prompt should mention notes_for_orchestrator field"
+            prompt.contains("notes_for_agent"),
+            "VLM prompt should mention notes_for_agent field"
         );
     }
 
@@ -479,11 +479,11 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_prompt_mentions_vlm_summary() {
+    fn agent_prompt_mentions_vlm_summary() {
         let prompt = workflow_system_prompt();
         assert!(
             prompt.contains("VLM_IMAGE_SUMMARY"),
-            "Orchestrator prompt should describe VLM summary format"
+            "Agent prompt should describe VLM summary format"
         );
     }
 

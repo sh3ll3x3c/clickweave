@@ -131,12 +131,16 @@ function App() {
 
       <SettingsModal
         open={state.showSettings}
-        orchestratorConfig={state.orchestratorConfig}
+        plannerConfig={state.plannerConfig}
+        agentConfig={state.agentConfig}
+        transformConfig={state.transformConfig}
         vlmConfig={state.vlmConfig}
         vlmEnabled={state.vlmEnabled}
         mcpCommand={state.mcpCommand}
         onClose={() => actions.setShowSettings(false)}
-        onOrchestratorConfigChange={actions.setOrchestratorConfig}
+        onPlannerConfigChange={actions.setPlannerConfig}
+        onAgentConfigChange={actions.setAgentConfig}
+        onTransformConfigChange={actions.setTransformConfig}
         onVlmConfigChange={actions.setVlmConfig}
         onVlmEnabledChange={actions.setVlmEnabled}
         onMcpCommandChange={actions.setMcpCommand}

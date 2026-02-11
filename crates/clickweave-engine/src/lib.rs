@@ -42,7 +42,7 @@ pub enum ExecutorEvent {
 
 pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     workflow: Workflow,
-    orchestrator: C,
+    agent: C,
     vlm: Option<C>,
     mcp_command: String,
     project_path: Option<PathBuf>,
@@ -53,7 +53,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
 impl WorkflowExecutor {
     pub fn new(
         workflow: Workflow,
-        orchestrator_config: LlmConfig,
+        agent_config: LlmConfig,
         vlm_config: Option<LlmConfig>,
         mcp_command: String,
         project_path: Option<PathBuf>,
@@ -64,7 +64,7 @@ impl WorkflowExecutor {
             .map(|p| RunStorage::new(p, workflow.id));
         Self {
             workflow,
-            orchestrator: LlmClient::new(orchestrator_config),
+            agent: LlmClient::new(agent_config),
             vlm: vlm_config.map(LlmClient::new),
             mcp_command,
             project_path,
@@ -220,13 +220,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
         self.log("Starting workflow execution");
 
-        self.log_model_info("Orchestrator", &self.orchestrator)
-            .await;
+        self.log_model_info("Agent", &self.agent).await;
         if let Some(vlm) = &self.vlm {
             self.log(format!("VLM enabled: {}", vlm.model_name()));
             self.log_model_info("VLM", vlm).await;
         } else {
-            self.log("VLM not configured — images sent directly to orchestrator");
+            self.log("VLM not configured — images sent directly to agent");
         }
 
         let mcp = if self.mcp_command == "npx" {
@@ -415,7 +414,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
 
             let response = self
-                .orchestrator
+                .agent
                 .chat(messages.clone(), Some(filtered_tools.clone()))
                 .await
                 .map_err(|e| format!("LLM error: {}", e))?;
@@ -773,7 +772,7 @@ mod tests {
                 for part in parts {
                     if matches!(part, ContentPart::ImageUrl { .. }) {
                         panic!(
-                            "Message[{}] (role={}) contains image content — orchestrator should never receive images when VLM is configured",
+                            "Message[{}] (role={}) contains image content — agent should never receive images when VLM is configured",
                             i, msg.role
                         );
                     }
@@ -785,7 +784,7 @@ mod tests {
     impl<C: ChatBackend> WorkflowExecutor<C> {
         pub fn with_backends(
             workflow: Workflow,
-            orchestrator: C,
+            agent: C,
             vlm: Option<C>,
             mcp_command: String,
             project_path: Option<PathBuf>,
@@ -796,7 +795,7 @@ mod tests {
                 .map(|p| RunStorage::new(p, workflow.id));
             Self {
                 workflow,
-                orchestrator,
+                agent,
                 vlm,
                 mcp_command,
                 project_path,
@@ -837,7 +836,7 @@ mod tests {
             Message::user("Click the login button"),
         ];
 
-        // Simulate: orchestrator made a tool call, got a result with images
+        // Simulate: agent made a tool call, got a result with images
         messages.push(Message::tool_result("call_1", "screenshot taken"));
 
         // VLM analyzed the images and produced a summary
@@ -847,7 +846,7 @@ mod tests {
             vlm_summary
         )));
 
-        // Verify: no images in the orchestrator messages
+        // Verify: no images in the agent messages
         assert_no_images(&messages);
 
         // Verify: the VLM summary is present as plain text

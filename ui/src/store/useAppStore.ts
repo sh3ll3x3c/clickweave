@@ -24,7 +24,9 @@ export interface AppState {
   nodeSearch: string;
   showSettings: boolean;
   logs: string[];
-  orchestratorConfig: EndpointConfig;
+  plannerConfig: EndpointConfig;
+  agentConfig: EndpointConfig;
+  transformConfig: EndpointConfig;
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
   mcpCommand: string;
@@ -49,7 +51,9 @@ export interface AppActions {
   openProject: () => Promise<void>;
   saveProject: () => Promise<void>;
   newProject: () => void;
-  setOrchestratorConfig: (config: EndpointConfig) => void;
+  setPlannerConfig: (config: EndpointConfig) => void;
+  setAgentConfig: (config: EndpointConfig) => void;
+  setTransformConfig: (config: EndpointConfig) => void;
   setVlmConfig: (config: EndpointConfig) => void;
   setVlmEnabled: (enabled: boolean) => void;
   setMcpCommand: (cmd: string) => void;
@@ -59,13 +63,7 @@ export interface AppActions {
   stopWorkflow: () => Promise<void>;
 }
 
-const DEFAULT_ORCHESTRATOR_CONFIG: EndpointConfig = {
-  baseUrl: "http://localhost:1234/v1",
-  apiKey: "",
-  model: "local",
-};
-
-const DEFAULT_VLM_CONFIG: EndpointConfig = {
+const DEFAULT_ENDPOINT: EndpointConfig = {
   baseUrl: "http://localhost:1234/v1",
   apiKey: "",
   model: "local",
@@ -75,27 +73,40 @@ const DEFAULT_VLM_ENABLED = false;
 const DEFAULT_MCP_COMMAND = "npx";
 
 interface PersistedSettings {
-  orchestratorConfig: EndpointConfig;
+  plannerConfig: EndpointConfig;
+  agentConfig: EndpointConfig;
+  transformConfig: EndpointConfig;
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
   mcpCommand: string;
 }
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
-  orchestratorConfig: DEFAULT_ORCHESTRATOR_CONFIG,
-  vlmConfig: DEFAULT_VLM_CONFIG,
+  plannerConfig: DEFAULT_ENDPOINT,
+  agentConfig: DEFAULT_ENDPOINT,
+  transformConfig: DEFAULT_ENDPOINT,
+  vlmConfig: DEFAULT_ENDPOINT,
   vlmEnabled: DEFAULT_VLM_ENABLED,
   mcpCommand: DEFAULT_MCP_COMMAND,
 };
 
 async function loadSettings(): Promise<PersistedSettings> {
   const store = await load("settings.json", { autoSave: false, defaults: {} });
-  const orchestratorConfig = await store.get<EndpointConfig>("orchestratorConfig");
+
+  // Backward compat: if legacy orchestratorConfig exists, use it as fallback for new configs
+  const legacyConfig = await store.get<EndpointConfig>("orchestratorConfig");
+  const fallback = legacyConfig ?? SETTINGS_DEFAULTS.agentConfig;
+
+  const plannerConfig = await store.get<EndpointConfig>("plannerConfig");
+  const agentConfig = await store.get<EndpointConfig>("agentConfig");
+  const transformConfig = await store.get<EndpointConfig>("transformConfig");
   const vlmConfig = await store.get<EndpointConfig>("vlmConfig");
   const vlmEnabled = await store.get<boolean>("vlmEnabled");
   const mcpCommand = await store.get<string>("mcpCommand");
   return {
-    orchestratorConfig: orchestratorConfig ?? SETTINGS_DEFAULTS.orchestratorConfig,
+    plannerConfig: plannerConfig ?? fallback,
+    agentConfig: agentConfig ?? fallback,
+    transformConfig: transformConfig ?? fallback,
     vlmConfig: vlmConfig ?? SETTINGS_DEFAULTS.vlmConfig,
     vlmEnabled: vlmEnabled ?? SETTINGS_DEFAULTS.vlmEnabled,
     mcpCommand: mcpCommand ?? SETTINGS_DEFAULTS.mcpCommand,
@@ -130,8 +141,10 @@ export function useAppStore(): [AppState, AppActions] {
   const [nodeSearch, setNodeSearch] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [logs, setLogs] = useState<string[]>(["Clickweave started"]);
-  const [orchestratorConfig, setOrchestratorConfig] = useState<EndpointConfig>(DEFAULT_ORCHESTRATOR_CONFIG);
-  const [vlmConfig, setVlmConfig] = useState<EndpointConfig>(DEFAULT_VLM_CONFIG);
+  const [plannerConfig, setPlannerConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
+  const [agentConfig, setAgentConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
+  const [transformConfig, setTransformConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
+  const [vlmConfig, setVlmConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
   const [vlmEnabled, setVlmEnabled] = useState(DEFAULT_VLM_ENABLED);
   const [mcpCommand, setMcpCommand] = useState(DEFAULT_MCP_COMMAND);
 
@@ -140,7 +153,9 @@ export function useAppStore(): [AppState, AppActions] {
     if (settingsLoaded.current) return;
     settingsLoaded.current = true;
     loadSettings().then((s) => {
-      setOrchestratorConfig(s.orchestratorConfig);
+      setPlannerConfig(s.plannerConfig);
+      setAgentConfig(s.agentConfig);
+      setTransformConfig(s.transformConfig);
       setVlmConfig(s.vlmConfig);
       setVlmEnabled(s.vlmEnabled);
       setMcpCommand(s.mcpCommand);
@@ -282,9 +297,19 @@ export function useAppStore(): [AppState, AppActions] {
   const toggleSidebar = useCallback(() => setSidebarCollapsed((p) => !p), []);
   const toggleLogsDrawer = useCallback(() => setLogsDrawerOpen((p) => !p), []);
 
-  const persistOrchestratorConfig = useCallback((config: EndpointConfig) => {
-    setOrchestratorConfig(config);
-    saveSetting("orchestratorConfig", config);
+  const persistPlannerConfig = useCallback((config: EndpointConfig) => {
+    setPlannerConfig(config);
+    saveSetting("plannerConfig", config);
+  }, []);
+
+  const persistAgentConfig = useCallback((config: EndpointConfig) => {
+    setAgentConfig(config);
+    saveSetting("agentConfig", config);
+  }, []);
+
+  const persistTransformConfig = useCallback((config: EndpointConfig) => {
+    setTransformConfig(config);
+    saveSetting("transformConfig", config);
   }, []);
 
   const persistVlmConfig = useCallback((config: EndpointConfig) => {
@@ -302,24 +327,22 @@ export function useAppStore(): [AppState, AppActions] {
     saveSetting("mcpCommand", cmd);
   }, []);
 
-  const latestRef = useRef({ workflow, projectPath, orchestratorConfig, vlmConfig, vlmEnabled, mcpCommand });
-  latestRef.current = { workflow, projectPath, orchestratorConfig, vlmConfig, vlmEnabled, mcpCommand };
+  const latestRef = useRef({ workflow, projectPath, agentConfig, transformConfig, vlmConfig, vlmEnabled, mcpCommand });
+  latestRef.current = { workflow, projectPath, agentConfig, transformConfig, vlmConfig, vlmEnabled, mcpCommand };
 
   const runWorkflow = useCallback(async () => {
-    const { workflow, projectPath, orchestratorConfig, vlmConfig, vlmEnabled, mcpCommand } = latestRef.current;
+    const { workflow, projectPath, agentConfig, transformConfig, vlmConfig, vlmEnabled, mcpCommand } = latestRef.current;
+    const toEndpoint = (c: EndpointConfig) => ({
+      base_url: c.baseUrl,
+      model: c.model,
+      api_key: c.apiKey || null,
+    });
     const request: RunRequest = {
       workflow,
       project_path: projectPath,
-      orchestrator: {
-        base_url: orchestratorConfig.baseUrl,
-        model: orchestratorConfig.model,
-        api_key: orchestratorConfig.apiKey || null,
-      },
-      vlm: vlmEnabled ? {
-        base_url: vlmConfig.baseUrl,
-        model: vlmConfig.model,
-        api_key: vlmConfig.apiKey || null,
-      } : null,
+      agent: toEndpoint(agentConfig),
+      transform: toEndpoint(transformConfig),
+      vlm: vlmEnabled ? toEndpoint(vlmConfig) : null,
       mcp_command: mcpCommand,
     };
     const result = await commands.runWorkflow(request);
@@ -348,7 +371,9 @@ export function useAppStore(): [AppState, AppActions] {
     nodeSearch,
     showSettings,
     logs,
-    orchestratorConfig,
+    plannerConfig,
+    agentConfig,
+    transformConfig,
     vlmConfig,
     vlmEnabled,
     mcpCommand,
@@ -373,7 +398,9 @@ export function useAppStore(): [AppState, AppActions] {
     openProject,
     saveProject,
     newProject,
-    setOrchestratorConfig: persistOrchestratorConfig,
+    setPlannerConfig: persistPlannerConfig,
+    setAgentConfig: persistAgentConfig,
+    setTransformConfig: persistTransformConfig,
     setVlmConfig: persistVlmConfig,
     setVlmEnabled: persistVlmEnabled,
     setMcpCommand: persistMcpCommand,

@@ -76,9 +76,45 @@ impl EndpointConfig {
 pub struct RunRequest {
     pub workflow: Workflow,
     pub project_path: Option<String>,
-    pub orchestrator: EndpointConfig,
+    pub agent: EndpointConfig,
+    pub transform: EndpointConfig,
     pub vlm: Option<EndpointConfig>,
     pub mcp_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PlanRequest {
+    pub intent: String,
+    pub planner: EndpointConfig,
+    pub allow_ai_transforms: bool,
+    pub allow_agent_steps: bool,
+    pub mcp_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PlanResponse {
+    pub workflow: Workflow,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PatchRequest {
+    pub workflow: Workflow,
+    pub user_prompt: String,
+    pub planner: EndpointConfig,
+    pub allow_ai_transforms: bool,
+    pub allow_agent_steps: bool,
+    pub mcp_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct WorkflowPatch {
+    pub added_nodes: Vec<clickweave_core::Node>,
+    pub removed_node_ids: Vec<String>,
+    pub updated_nodes: Vec<clickweave_core::Node>,
+    pub added_edges: Vec<clickweave_core::Edge>,
+    pub removed_edges: Vec<clickweave_core::Edge>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
@@ -223,7 +259,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 
     validate_workflow(&request.workflow).map_err(|e| format!("Validation failed: {}", e))?;
 
-    let orchestrator_config = request.orchestrator.into_llm_config(None);
+    let agent_config = request.agent.into_llm_config(None);
     let vlm_config = request
         .vlm
         .filter(|v| !v.is_empty())
@@ -245,7 +281,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     tauri::async_runtime::spawn(async move {
         let mut executor = WorkflowExecutor::new(
             request.workflow,
-            orchestrator_config,
+            agent_config,
             vlm_config,
             request.mcp_command,
             project_path,

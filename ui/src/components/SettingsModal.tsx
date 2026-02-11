@@ -2,12 +2,16 @@ import type { EndpointConfig } from "../store/useAppStore";
 
 interface SettingsModalProps {
   open: boolean;
-  orchestratorConfig: EndpointConfig;
+  plannerConfig: EndpointConfig;
+  agentConfig: EndpointConfig;
+  transformConfig: EndpointConfig;
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
   mcpCommand: string;
   onClose: () => void;
-  onOrchestratorConfigChange: (config: EndpointConfig) => void;
+  onPlannerConfigChange: (config: EndpointConfig) => void;
+  onAgentConfigChange: (config: EndpointConfig) => void;
+  onTransformConfigChange: (config: EndpointConfig) => void;
   onVlmConfigChange: (config: EndpointConfig) => void;
   onVlmEnabledChange: (enabled: boolean) => void;
   onMcpCommandChange: (cmd: string) => void;
@@ -54,14 +58,40 @@ function EndpointFields({
   );
 }
 
+function ConfigSection({
+  title,
+  description,
+  config,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  config: EndpointConfig;
+  onChange: (config: EndpointConfig) => void;
+}) {
+  return (
+    <div>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+        {title}
+      </h3>
+      <p className="mb-2 text-[10px] text-[var(--text-muted)]">{description}</p>
+      <EndpointFields config={config} onChange={onChange} />
+    </div>
+  );
+}
+
 export function SettingsModal({
   open,
-  orchestratorConfig,
+  plannerConfig,
+  agentConfig,
+  transformConfig,
   vlmConfig,
   vlmEnabled,
   mcpCommand,
   onClose,
-  onOrchestratorConfigChange,
+  onPlannerConfigChange,
+  onAgentConfigChange,
+  onTransformConfigChange,
   onVlmConfigChange,
   onVlmEnabledChange,
   onMcpCommandChange,
@@ -84,18 +114,26 @@ export function SettingsModal({
         </div>
 
         <div className="space-y-4 p-4">
-          <div>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              Orchestrator
-            </h3>
-            <p className="mb-2 text-[10px] text-[var(--text-muted)]">
-              Decides tool calls and controls the workflow. Does not receive images.
-            </p>
-            <EndpointFields
-              config={orchestratorConfig}
-              onChange={onOrchestratorConfigChange}
-            />
-          </div>
+          <ConfigSection
+            title="Planner"
+            description="Generates workflows from intent and applies assistant diffs. Typically a larger model."
+            config={plannerConfig}
+            onChange={onPlannerConfigChange}
+          />
+
+          <ConfigSection
+            title="Agent"
+            description="Powers runtime AI Step nodes with tool access. Only used when workflow contains AI Steps."
+            config={agentConfig}
+            onChange={onAgentConfigChange}
+          />
+
+          <ConfigSection
+            title="Transform"
+            description="Handles runtime AI transforms (summarize, extract, classify). No tool access; can be a smaller model."
+            config={transformConfig}
+            onChange={onTransformConfigChange}
+          />
 
           <div>
             <div className="mb-2 flex items-center gap-2">
@@ -115,7 +153,7 @@ export function SettingsModal({
             {vlmEnabled ? (
               <>
                 <p className="mb-2 text-[10px] text-[var(--text-muted)]">
-                  Analyzes screenshots and images, returns text summaries to the orchestrator.
+                  Analyzes screenshots and images, returns text summaries to the agent.
                 </p>
                 <EndpointFields
                   config={vlmConfig}
@@ -124,7 +162,7 @@ export function SettingsModal({
               </>
             ) : (
               <p className="text-[10px] text-[var(--text-muted)]">
-                Using orchestrator model for vision. Enable to use a separate vision model.
+                Using agent model for vision. Enable to use a separate vision model.
               </p>
             )}
           </div>
