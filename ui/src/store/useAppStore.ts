@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { load } from "@tauri-apps/plugin-store";
 import { commands } from "../bindings";
-import type { Workflow, NodeTypeInfo, Node, NodeType, Edge, RunRequest } from "../bindings";
+import type { Workflow, NodeTypeInfo, Node, NodeType, Edge, RunRequest, PlanRequest } from "../bindings";
 
 export type DetailTab = "setup" | "trace" | "checks" | "runs";
 
@@ -23,6 +23,14 @@ export interface AppState {
   logsDrawerOpen: boolean;
   nodeSearch: string;
   showSettings: boolean;
+  isNewWorkflow: boolean;
+  showPlannerModal: boolean;
+  plannerLoading: boolean;
+  plannerError: string | null;
+  pendingWorkflow: Workflow | null;
+  plannerWarnings: string[];
+  allowAiTransforms: boolean;
+  allowAgentSteps: boolean;
   logs: string[];
   plannerConfig: EndpointConfig;
   agentConfig: EndpointConfig;
@@ -61,6 +69,13 @@ export interface AppActions {
   setExecutorState: (state: "idle" | "running") => void;
   runWorkflow: () => Promise<void>;
   stopWorkflow: () => Promise<void>;
+  setAllowAiTransforms: (allow: boolean) => void;
+  setAllowAgentSteps: (allow: boolean) => void;
+  planWorkflow: (intent: string) => Promise<void>;
+  applyPlannedWorkflow: () => void;
+  discardPlannedWorkflow: () => void;
+  setShowPlannerModal: (show: boolean) => void;
+  skipIntentEntry: () => void;
 }
 
 const DEFAULT_ENDPOINT: EndpointConfig = {
@@ -140,6 +155,14 @@ export function useAppStore(): [AppState, AppActions] {
   const [logsDrawerOpen, setLogsDrawerOpen] = useState(false);
   const [nodeSearch, setNodeSearch] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [isNewWorkflow, setIsNewWorkflow] = useState(true);
+  const [showPlannerModal, setShowPlannerModal] = useState(false);
+  const [plannerLoading, setPlannerLoading] = useState(false);
+  const [plannerError, setPlannerError] = useState<string | null>(null);
+  const [pendingWorkflow, setPendingWorkflow] = useState<Workflow | null>(null);
+  const [plannerWarnings, setPlannerWarnings] = useState<string[]>([]);
+  const [allowAiTransforms, setAllowAiTransforms] = useState(true);
+  const [allowAgentSteps, setAllowAgentSteps] = useState(false);
   const [logs, setLogs] = useState<string[]>(["Clickweave started"]);
   const [plannerConfig, setPlannerConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
   const [agentConfig, setAgentConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
@@ -268,6 +291,7 @@ export function useAppStore(): [AppState, AppActions] {
     setProjectPath(projectResult.data.path);
     setWorkflow(projectResult.data.workflow);
     setSelectedNode(null);
+    setIsNewWorkflow(false);
     pushLog(`Opened: ${filePath}`);
   }, [pushLog]);
 
@@ -291,6 +315,9 @@ export function useAppStore(): [AppState, AppActions] {
     setWorkflow(makeDefaultWorkflow());
     setProjectPath(null);
     setSelectedNode(null);
+    setIsNewWorkflow(true);
+    setPendingWorkflow(null);
+    setPlannerError(null);
     pushLog("New project created");
   }, [pushLog]);
 
@@ -327,16 +354,70 @@ export function useAppStore(): [AppState, AppActions] {
     saveSetting("mcpCommand", cmd);
   }, []);
 
+  const toEndpoint = (c: EndpointConfig) => ({
+    base_url: c.baseUrl,
+    model: c.model,
+    api_key: c.apiKey || null,
+  });
+
+  const plannerRef = useRef({ plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand });
+  plannerRef.current = { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand };
+
+  const planWorkflowAction = useCallback(async (intent: string) => {
+    const { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand } = plannerRef.current;
+    setPlannerLoading(true);
+    setPlannerError(null);
+    setPendingWorkflow(null);
+    setPlannerWarnings([]);
+    try {
+      const request: PlanRequest = {
+        intent,
+        planner: toEndpoint(plannerConfig),
+        allow_ai_transforms: allowAiTransforms,
+        allow_agent_steps: allowAgentSteps,
+        mcp_command: mcpCommand,
+      };
+      const result = await commands.planWorkflow(request);
+      if (result.status === "ok") {
+        setPendingWorkflow(result.data.workflow);
+        setPlannerWarnings(result.data.warnings);
+        pushLog(`Planner generated workflow with ${result.data.workflow.nodes.length} nodes`);
+      } else {
+        setPlannerError(result.error);
+        pushLog(`Planning failed: ${result.error}`);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPlannerError(msg);
+      pushLog(`Planning error: ${msg}`);
+    } finally {
+      setPlannerLoading(false);
+    }
+  }, [pushLog]);
+
+  const applyPlannedWorkflow = useCallback(() => {
+    if (!pendingWorkflow) return;
+    setWorkflow(pendingWorkflow);
+    setPendingWorkflow(null);
+    setPlannerWarnings([]);
+    setPlannerError(null);
+    setIsNewWorkflow(false);
+    setShowPlannerModal(false);
+    pushLog("Applied planned workflow");
+  }, [pendingWorkflow, pushLog]);
+
+  const discardPlannedWorkflow = useCallback(() => {
+    setPendingWorkflow(null);
+    setPlannerWarnings([]);
+    setPlannerError(null);
+    setShowPlannerModal(false);
+  }, []);
+
   const latestRef = useRef({ workflow, projectPath, agentConfig, transformConfig, vlmConfig, vlmEnabled, mcpCommand });
   latestRef.current = { workflow, projectPath, agentConfig, transformConfig, vlmConfig, vlmEnabled, mcpCommand };
 
   const runWorkflow = useCallback(async () => {
     const { workflow, projectPath, agentConfig, transformConfig, vlmConfig, vlmEnabled, mcpCommand } = latestRef.current;
-    const toEndpoint = (c: EndpointConfig) => ({
-      base_url: c.baseUrl,
-      model: c.model,
-      api_key: c.apiKey || null,
-    });
     const request: RunRequest = {
       workflow,
       project_path: projectPath,
@@ -370,6 +451,14 @@ export function useAppStore(): [AppState, AppActions] {
     logsDrawerOpen,
     nodeSearch,
     showSettings,
+    isNewWorkflow,
+    showPlannerModal,
+    plannerLoading,
+    plannerError,
+    pendingWorkflow,
+    plannerWarnings,
+    allowAiTransforms,
+    allowAgentSteps,
     logs,
     plannerConfig,
     agentConfig,
@@ -408,6 +497,13 @@ export function useAppStore(): [AppState, AppActions] {
     setExecutorState,
     runWorkflow,
     stopWorkflow,
+    setAllowAiTransforms,
+    setAllowAgentSteps,
+    planWorkflow: planWorkflowAction,
+    applyPlannedWorkflow,
+    discardPlannedWorkflow,
+    setShowPlannerModal,
+    skipIntentEntry: () => setIsNewWorkflow(false),
   };
 
   return [state, actions];

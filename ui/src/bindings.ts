@@ -46,6 +46,14 @@ async validate(workflow: Workflow) : Promise<ValidationResult> {
 async nodeTypeDefaults() : Promise<NodeTypeInfo[]> {
     return await TAURI_INVOKE("node_type_defaults");
 },
+async planWorkflow(request: PlanRequest) : Promise<Result<PlanResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("plan_workflow", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async runWorkflow(request: RunRequest) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("run_workflow", { request }) };
@@ -129,6 +137,8 @@ export type NodeRun = { run_id: string; node_id: string; started_at: number; end
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams)
 export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
+export type PlanRequest = { intent: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
+export type PlanResponse = { workflow: Workflow; warnings: string[] }
 export type OnCheckFail = "FailNode" | "WarnOnly"
 export type Position = { x: number; y: number }
 export type ProjectData = { path: string; workflow: Workflow }

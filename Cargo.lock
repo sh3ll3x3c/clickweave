@@ -336,11 +336,13 @@ name = "clickweave-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clickweave-core",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

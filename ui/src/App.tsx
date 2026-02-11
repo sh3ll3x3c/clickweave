@@ -7,6 +7,8 @@ import { FloatingToolbar } from "./components/FloatingToolbar";
 import { SettingsModal } from "./components/SettingsModal";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { NodeDetailModal } from "./components/NodeDetailModal";
+import { PlannerModal } from "./components/PlannerModal";
+import { IntentEmptyState } from "./components/IntentEmptyState";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 
@@ -77,38 +79,51 @@ function App() {
         />
 
         <div className="flex flex-1 overflow-hidden">
-          <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
-            <GraphCanvas
-              workflow={state.workflow}
-              selectedNode={state.selectedNode}
-              activeNode={state.activeNode}
-              onSelectNode={actions.selectNode}
-              onNodePositionsChange={actions.updateNodePositions}
-              onEdgesChange={(edges) =>
-                actions.setWorkflow({ ...state.workflow, edges })
-              }
-              onConnect={actions.addEdge}
-              onDeleteNode={actions.removeNode}
+          {state.isNewWorkflow && state.workflow.nodes.length === 0 ? (
+            <IntentEmptyState
+              onGenerate={(intent) => {
+                actions.setShowPlannerModal(true);
+                actions.planWorkflow(intent);
+              }}
+              onSkip={actions.skipIntentEntry}
+              loading={state.plannerLoading}
             />
+          ) : (
+            <>
+              <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
+                <GraphCanvas
+                  workflow={state.workflow}
+                  selectedNode={state.selectedNode}
+                  activeNode={state.activeNode}
+                  onSelectNode={actions.selectNode}
+                  onNodePositionsChange={actions.updateNodePositions}
+                  onEdgesChange={(edges) =>
+                    actions.setWorkflow({ ...state.workflow, edges })
+                  }
+                  onConnect={actions.addEdge}
+                  onDeleteNode={actions.removeNode}
+                />
 
-            <FloatingToolbar
-              executorState={state.executorState}
-              logsOpen={state.logsDrawerOpen}
-              onToggleLogs={actions.toggleLogsDrawer}
-              onRunStop={
-                state.executorState === "running"
-                  ? actions.stopWorkflow
-                  : actions.runWorkflow
-              }
-            />
-          </div>
+                <FloatingToolbar
+                  executorState={state.executorState}
+                  logsOpen={state.logsDrawerOpen}
+                  onToggleLogs={actions.toggleLogsDrawer}
+                  onRunStop={
+                    state.executorState === "running"
+                      ? actions.stopWorkflow
+                      : actions.runWorkflow
+                  }
+                />
+              </div>
 
-          <NodePalette
-            nodeTypes={state.nodeTypes}
-            search={state.nodeSearch}
-            onSearchChange={actions.setNodeSearch}
-            onAdd={actions.addNode}
-          />
+              <NodePalette
+                nodeTypes={state.nodeTypes}
+                search={state.nodeSearch}
+                onSearchChange={actions.setNodeSearch}
+                onAdd={actions.addNode}
+              />
+            </>
+          )}
         </div>
 
         <LogsDrawer
@@ -144,6 +159,21 @@ function App() {
         onVlmConfigChange={actions.setVlmConfig}
         onVlmEnabledChange={actions.setVlmEnabled}
         onMcpCommandChange={actions.setMcpCommand}
+      />
+
+      <PlannerModal
+        open={state.showPlannerModal}
+        loading={state.plannerLoading}
+        error={state.plannerError}
+        pendingWorkflow={state.pendingWorkflow}
+        warnings={state.plannerWarnings}
+        allowAiTransforms={state.allowAiTransforms}
+        allowAgentSteps={state.allowAgentSteps}
+        onGenerate={actions.planWorkflow}
+        onApply={actions.applyPlannedWorkflow}
+        onDiscard={actions.discardPlannedWorkflow}
+        onAllowAiTransformsChange={actions.setAllowAiTransforms}
+        onAllowAgentStepsChange={actions.setAllowAgentSteps}
       />
     </div>
   );
