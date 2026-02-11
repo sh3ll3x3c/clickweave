@@ -54,6 +54,14 @@ async planWorkflow(request: PlanRequest) : Promise<Result<PlanResponse, string>>
     else return { status: "error", error: e  as any };
 }
 },
+async patchWorkflow(request: PatchRequest) : Promise<Result<WorkflowPatch, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("patch_workflow", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async runWorkflow(request: RunRequest) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("run_workflow", { request }) };
@@ -139,6 +147,8 @@ export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScree
 export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
 export type PlanRequest = { intent: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
 export type PlanResponse = { workflow: Workflow; warnings: string[] }
+export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
+export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 export type OnCheckFail = "FailNode" | "WarnOnly"
 export type Position = { x: number; y: number }
 export type ProjectData = { path: string; workflow: Workflow }

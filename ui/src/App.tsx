@@ -8,6 +8,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { NodeDetailModal } from "./components/NodeDetailModal";
 import { PlannerModal } from "./components/PlannerModal";
+import { AssistantModal } from "./components/AssistantModal";
 import { IntentEmptyState } from "./components/IntentEmptyState";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -113,6 +114,7 @@ function App() {
                       ? actions.stopWorkflow
                       : actions.runWorkflow
                   }
+                  onAssistant={() => actions.setShowAssistant(true)}
                 />
               </div>
 
@@ -159,6 +161,16 @@ function App() {
         onVlmConfigChange={actions.setVlmConfig}
         onVlmEnabledChange={actions.setVlmEnabled}
         onMcpCommandChange={actions.setMcpCommand}
+      />
+
+      <AssistantModal
+        open={state.showAssistant}
+        loading={state.assistantLoading}
+        error={state.assistantError}
+        patch={state.assistantPatch}
+        onSubmit={actions.patchWorkflow}
+        onApply={actions.applyPatch}
+        onDiscard={actions.discardPatch}
       />
 
       <PlannerModal

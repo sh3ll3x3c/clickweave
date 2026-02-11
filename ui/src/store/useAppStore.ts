@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { load } from "@tauri-apps/plugin-store";
 import { commands } from "../bindings";
-import type { Workflow, NodeTypeInfo, Node, NodeType, Edge, RunRequest, PlanRequest } from "../bindings";
+import type { Workflow, NodeTypeInfo, Node, NodeType, Edge, RunRequest, PlanRequest, PatchRequest, WorkflowPatch } from "../bindings";
 
 export type DetailTab = "setup" | "trace" | "checks" | "runs";
 
@@ -31,6 +31,10 @@ export interface AppState {
   plannerWarnings: string[];
   allowAiTransforms: boolean;
   allowAgentSteps: boolean;
+  showAssistant: boolean;
+  assistantLoading: boolean;
+  assistantError: string | null;
+  assistantPatch: WorkflowPatch | null;
   logs: string[];
   plannerConfig: EndpointConfig;
   agentConfig: EndpointConfig;
@@ -76,6 +80,10 @@ export interface AppActions {
   discardPlannedWorkflow: () => void;
   setShowPlannerModal: (show: boolean) => void;
   skipIntentEntry: () => void;
+  setShowAssistant: (show: boolean) => void;
+  patchWorkflow: (prompt: string) => Promise<void>;
+  applyPatch: () => void;
+  discardPatch: () => void;
 }
 
 const DEFAULT_ENDPOINT: EndpointConfig = {
@@ -163,6 +171,10 @@ export function useAppStore(): [AppState, AppActions] {
   const [plannerWarnings, setPlannerWarnings] = useState<string[]>([]);
   const [allowAiTransforms, setAllowAiTransforms] = useState(true);
   const [allowAgentSteps, setAllowAgentSteps] = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
+  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [assistantError, setAssistantError] = useState<string | null>(null);
+  const [assistantPatch, setAssistantPatch] = useState<WorkflowPatch | null>(null);
   const [logs, setLogs] = useState<string[]>(["Clickweave started"]);
   const [plannerConfig, setPlannerConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
   const [agentConfig, setAgentConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
@@ -413,6 +425,74 @@ export function useAppStore(): [AppState, AppActions] {
     setShowPlannerModal(false);
   }, []);
 
+  const workflowRef = useRef(workflow);
+  workflowRef.current = workflow;
+
+  const patchWorkflowAction = useCallback(async (userPrompt: string) => {
+    const { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand } = plannerRef.current;
+    setAssistantLoading(true);
+    setAssistantError(null);
+    setAssistantPatch(null);
+    try {
+      const request: PatchRequest = {
+        workflow: workflowRef.current,
+        user_prompt: userPrompt,
+        planner: toEndpoint(plannerConfig),
+        allow_ai_transforms: allowAiTransforms,
+        allow_agent_steps: allowAgentSteps,
+        mcp_command: mcpCommand,
+      };
+      const result = await commands.patchWorkflow(request);
+      if (result.status === "ok") {
+        setAssistantPatch(result.data);
+        const total = result.data.added_nodes.length + result.data.removed_node_ids.length + result.data.updated_nodes.length;
+        pushLog(`Assistant generated ${total} changes`);
+      } else {
+        setAssistantError(result.error);
+        pushLog(`Patch failed: ${result.error}`);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setAssistantError(msg);
+      pushLog(`Patch error: ${msg}`);
+    } finally {
+      setAssistantLoading(false);
+    }
+  }, [pushLog]);
+
+  const applyPatch = useCallback(() => {
+    if (!assistantPatch) return;
+    setWorkflow((prev) => {
+      // Remove nodes
+      let nodes = prev.nodes.filter((n) => !assistantPatch.removed_node_ids.includes(n.id));
+      // Apply updates
+      nodes = nodes.map((n) => {
+        const update = assistantPatch.updated_nodes.find((u) => u.id === n.id);
+        return update ?? n;
+      });
+      // Add new nodes
+      nodes = [...nodes, ...assistantPatch.added_nodes];
+      // Remove edges
+      const removedEdgeKeys = new Set(
+        assistantPatch.removed_edges.map((e) => `${e.from}-${e.to}`),
+      );
+      let edges = prev.edges.filter((e) => !removedEdgeKeys.has(`${e.from}-${e.to}`));
+      // Add new edges
+      edges = [...edges, ...assistantPatch.added_edges];
+      return { ...prev, nodes, edges };
+    });
+    setAssistantPatch(null);
+    setAssistantError(null);
+    setShowAssistant(false);
+    pushLog("Applied assistant changes");
+  }, [assistantPatch, pushLog]);
+
+  const discardPatch = useCallback(() => {
+    setAssistantPatch(null);
+    setAssistantError(null);
+    setShowAssistant(false);
+  }, []);
+
   const latestRef = useRef({ workflow, projectPath, agentConfig, transformConfig, vlmConfig, vlmEnabled, mcpCommand });
   latestRef.current = { workflow, projectPath, agentConfig, transformConfig, vlmConfig, vlmEnabled, mcpCommand };
 
@@ -459,6 +539,10 @@ export function useAppStore(): [AppState, AppActions] {
     plannerWarnings,
     allowAiTransforms,
     allowAgentSteps,
+    showAssistant,
+    assistantLoading,
+    assistantError,
+    assistantPatch,
     logs,
     plannerConfig,
     agentConfig,
@@ -504,6 +588,10 @@ export function useAppStore(): [AppState, AppActions] {
     discardPlannedWorkflow,
     setShowPlannerModal,
     skipIntentEntry: () => setIsNewWorkflow(false),
+    setShowAssistant,
+    patchWorkflow: patchWorkflowAction,
+    applyPatch,
+    discardPatch,
   };
 
   return [state, actions];

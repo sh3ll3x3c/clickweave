@@ -284,6 +284,46 @@ pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String>
 
 #[tauri::command]
 #[specta::specta]
+pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, String> {
+    let mut mcp = if request.mcp_command == "npx" {
+        McpClient::spawn_npx()
+    } else {
+        McpClient::spawn(&request.mcp_command, &[])
+    }
+    .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
+
+    let tools = mcp.tools_as_openai();
+    let _ = mcp.kill();
+
+    let planner_config = request.planner.into_llm_config(None);
+
+    let result = clickweave_llm::planner::patch_workflow(
+        &request.workflow,
+        &request.user_prompt,
+        planner_config,
+        &tools,
+        request.allow_ai_transforms,
+        request.allow_agent_steps,
+    )
+    .await
+    .map_err(|e| format!("Patching failed: {}", e))?;
+
+    Ok(WorkflowPatch {
+        added_nodes: result.added_nodes,
+        removed_node_ids: result
+            .removed_node_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
+        updated_nodes: result.updated_nodes,
+        added_edges: result.added_edges,
+        removed_edges: result.removed_edges,
+        warnings: result.warnings,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<(), String> {
     {
         let handle = app.state::<Mutex<ExecutorHandle>>();

@@ -473,6 +473,318 @@ fn extract_json(text: &str) -> &str {
     trimmed
 }
 
+/// Output from the patcher LLM.
+#[derive(Debug, Deserialize)]
+struct PatcherOutput {
+    #[serde(default)]
+    add: Vec<PlanStep>,
+    #[serde(default)]
+    remove_node_ids: Vec<String>,
+    #[serde(default)]
+    update: Vec<PatchNodeUpdate>,
+}
+
+/// A node update from the patcher (only changed fields).
+#[derive(Debug, Deserialize)]
+struct PatchNodeUpdate {
+    node_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    node_type: Option<Value>,
+}
+
+/// Result of patching a workflow.
+pub struct PatchResult {
+    pub added_nodes: Vec<Node>,
+    pub removed_node_ids: Vec<Uuid>,
+    pub updated_nodes: Vec<Node>,
+    pub added_edges: Vec<Edge>,
+    pub removed_edges: Vec<Edge>,
+    pub warnings: Vec<String>,
+}
+
+/// Build the patcher system prompt.
+fn patcher_system_prompt(
+    workflow: &Workflow,
+    tools_json: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> String {
+    let tool_list = serde_json::to_string_pretty(tools_json).unwrap_or_default();
+
+    let nodes_summary: Vec<Value> = workflow
+        .nodes
+        .iter()
+        .map(|n| {
+            serde_json::json!({
+                "id": n.id.to_string(),
+                "name": n.name,
+                "type": format!("{:?}", n.node_type).split('(').next().unwrap_or("Unknown"),
+            })
+        })
+        .collect();
+    let nodes_json = serde_json::to_string_pretty(&nodes_summary).unwrap_or_default();
+
+    let edges_summary: Vec<Value> = workflow
+        .edges
+        .iter()
+        .map(|e| serde_json::json!({"from": e.from.to_string(), "to": e.to.to_string()}))
+        .collect();
+    let edges_json = serde_json::to_string_pretty(&edges_summary).unwrap_or_default();
+
+    let mut step_types = String::from("Step types for 'add': same as planning (Tool, ");
+    if allow_ai_transforms {
+        step_types.push_str("AiTransform, ");
+    }
+    if allow_agent_steps {
+        step_types.push_str("AiStep, ");
+    }
+    step_types.push_str("see the tool schemas below).");
+
+    format!(
+        r#"You are a workflow editor for UI automation. Given an existing workflow and a user's modification request, produce a JSON patch.
+
+Current workflow nodes:
+{nodes_json}
+
+Current edges:
+{edges_json}
+
+Available MCP tools:
+{tool_list}
+
+{step_types}
+
+Output ONLY a JSON object with these optional fields:
+{{
+  "add": [<steps to add, same format as planning>],
+  "remove_node_ids": ["<id1>", "<id2>"],
+  "update": [{{"node_id": "<id>", "name": "new name", "node_type": <step as Tool/AiStep/AiTransform>}}]
+}}
+
+Rules:
+- Only include fields that have changes (omit empty arrays).
+- For "add", use the same step format as planning (step_type: Tool/AiTransform/AiStep).
+- For "remove_node_ids", use the exact node IDs from the current workflow.
+- For "update", only include fields that changed.
+- New nodes from "add" will be appended after the last existing node.
+- Keep the workflow functional — don't remove nodes that break the flow without replacement."#,
+    )
+}
+
+/// Patch an existing workflow using the planner LLM.
+pub async fn patch_workflow(
+    workflow: &Workflow,
+    user_prompt: &str,
+    planner_config: LlmConfig,
+    mcp_tools_openai: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> Result<PatchResult> {
+    let planner = LlmClient::new(planner_config);
+    patch_workflow_with_backend(
+        &planner,
+        workflow,
+        user_prompt,
+        mcp_tools_openai,
+        allow_ai_transforms,
+        allow_agent_steps,
+    )
+    .await
+}
+
+/// Patch a workflow using a given ChatBackend (for testability).
+pub async fn patch_workflow_with_backend(
+    backend: &impl ChatBackend,
+    workflow: &Workflow,
+    user_prompt: &str,
+    mcp_tools_openai: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> Result<PatchResult> {
+    let mut warnings = Vec::new();
+
+    let system = patcher_system_prompt(
+        workflow,
+        mcp_tools_openai,
+        allow_ai_transforms,
+        allow_agent_steps,
+    );
+    let user_msg = format!("Modify the workflow: {}", user_prompt);
+
+    info!("Patching workflow for prompt: {}", user_prompt);
+
+    let messages = vec![Message::system(&system), Message::user(&user_msg)];
+
+    let response: ChatResponse = backend
+        .chat(messages, None)
+        .await
+        .context("Patcher LLM call failed")?;
+
+    let choice = response
+        .choices
+        .first()
+        .ok_or_else(|| anyhow!("No response from patcher"))?;
+
+    let content = choice
+        .message
+        .text_content()
+        .ok_or_else(|| anyhow!("Patcher returned no text content"))?;
+
+    debug!("Patcher raw output: {}", content);
+
+    let json_str = extract_json(content);
+    let patcher_output: PatcherOutput =
+        serde_json::from_str(json_str).context("Failed to parse patcher output as JSON")?;
+
+    // Process added nodes
+    let mut added_nodes = Vec::new();
+    let last_y = workflow
+        .nodes
+        .iter()
+        .map(|n| n.position.y)
+        .fold(0.0_f32, f32::max);
+
+    for (i, step) in patcher_output.add.iter().enumerate() {
+        match step_to_node_type(step, mcp_tools_openai) {
+            Ok((node_type, display_name)) => {
+                added_nodes.push(Node {
+                    id: Uuid::new_v4(),
+                    node_type,
+                    position: Position {
+                        x: 300.0,
+                        y: last_y + 120.0 + (i as f32) * 120.0,
+                    },
+                    name: display_name,
+                    enabled: true,
+                    timeout_ms: None,
+                    retries: 0,
+                    trace_level: clickweave_core::TraceLevel::Minimal,
+                    expected_outcome: None,
+                    checks: vec![],
+                });
+            }
+            Err(e) => {
+                warnings.push(format!("Added step {} skipped: {}", i, e));
+            }
+        }
+    }
+
+    // Process removed nodes
+    let mut removed_node_ids = Vec::new();
+    for id_str in &patcher_output.remove_node_ids {
+        match id_str.parse::<Uuid>() {
+            Ok(id) => {
+                if workflow.nodes.iter().any(|n| n.id == id) {
+                    removed_node_ids.push(id);
+                } else {
+                    warnings.push(format!("Remove: node {} not found in workflow", id_str));
+                }
+            }
+            Err(_) => {
+                warnings.push(format!("Remove: invalid node ID: {}", id_str));
+            }
+        }
+    }
+
+    // Process updated nodes
+    let mut updated_nodes = Vec::new();
+    for update in &patcher_output.update {
+        match update.node_id.parse::<Uuid>() {
+            Ok(id) => {
+                if let Some(existing) = workflow.nodes.iter().find(|n| n.id == id) {
+                    let mut node = existing.clone();
+                    if let Some(name) = &update.name {
+                        node.name = name.clone();
+                    }
+                    if let Some(nt_value) = &update.node_type {
+                        // Try to parse as a PlanStep and convert
+                        match serde_json::from_value::<PlanStep>(nt_value.clone()) {
+                            Ok(step) => match step_to_node_type(&step, mcp_tools_openai) {
+                                Ok((node_type, _)) => node.node_type = node_type,
+                                Err(e) => {
+                                    warnings.push(format!("Update {}: {}", id_str_short(&id), e))
+                                }
+                            },
+                            Err(e) => warnings.push(format!(
+                                "Update {}: failed to parse node_type: {}",
+                                id_str_short(&id),
+                                e
+                            )),
+                        }
+                    }
+                    updated_nodes.push(node);
+                } else {
+                    warnings.push(format!("Update: node {} not found", update.node_id));
+                }
+            }
+            Err(_) => {
+                warnings.push(format!("Update: invalid node ID: {}", update.node_id));
+            }
+        }
+    }
+
+    // Build added edges: connect last existing node to first added node,
+    // then chain added nodes
+    let mut added_edges = Vec::new();
+    let mut removed_edges = Vec::new();
+
+    if !added_nodes.is_empty() {
+        // Find the last node that isn't removed
+        let last_existing = workflow
+            .nodes
+            .iter()
+            .rev()
+            .find(|n| !removed_node_ids.contains(&n.id));
+
+        if let Some(last) = last_existing {
+            added_edges.push(Edge {
+                from: last.id,
+                to: added_nodes[0].id,
+            });
+        }
+
+        // Chain added nodes
+        for pair in added_nodes.windows(2) {
+            added_edges.push(Edge {
+                from: pair[0].id,
+                to: pair[1].id,
+            });
+        }
+    }
+
+    // Remove edges to/from removed nodes
+    for edge in &workflow.edges {
+        if removed_node_ids.contains(&edge.from) || removed_node_ids.contains(&edge.to) {
+            removed_edges.push(edge.clone());
+        }
+    }
+
+    info!(
+        "Patch: +{} nodes, -{} nodes, ~{} nodes, +{} edges, -{} edges, {} warnings",
+        added_nodes.len(),
+        removed_node_ids.len(),
+        updated_nodes.len(),
+        added_edges.len(),
+        removed_edges.len(),
+        warnings.len(),
+    );
+
+    Ok(PatchResult {
+        added_nodes,
+        removed_node_ids,
+        updated_nodes,
+        added_edges,
+        removed_edges,
+        warnings,
+    })
+}
+
+fn id_str_short(id: &Uuid) -> String {
+    id.to_string()[..8].to_string()
+}
+
 fn truncate_intent(intent: &str) -> String {
     if intent.len() <= 50 {
         intent.to_string()

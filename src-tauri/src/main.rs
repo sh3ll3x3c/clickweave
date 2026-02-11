@@ -57,6 +57,7 @@ fn main() {
         validate,
         node_type_defaults,
         plan_workflow,
+        patch_workflow,
         run_workflow,
         stop_workflow,
         list_runs,
