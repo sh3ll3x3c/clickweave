@@ -51,6 +51,23 @@ pub struct Edge {
     pub to: Uuid,
 }
 
+impl Node {
+    pub fn new(node_type: NodeType, position: Position, name: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            node_type,
+            position,
+            name: name.into(),
+            enabled: true,
+            timeout_ms: None,
+            retries: 0,
+            trace_level: TraceLevel::Minimal,
+            expected_outcome: None,
+            checks: vec![],
+        }
+    }
+}
+
 impl Workflow {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -60,20 +77,10 @@ impl Workflow {
     }
 
     pub fn add_node(&mut self, node_type: NodeType, position: Position) -> Uuid {
-        let id = Uuid::new_v4();
         let name = node_type.display_name().to_string();
-        self.nodes.push(Node {
-            id,
-            node_type,
-            position,
-            name,
-            enabled: true,
-            timeout_ms: None,
-            retries: 0,
-            trace_level: TraceLevel::Minimal,
-            expected_outcome: None,
-            checks: vec![],
-        });
+        let node = Node::new(node_type, position, name);
+        let id = node.id;
+        self.nodes.push(node);
         id
     }
 

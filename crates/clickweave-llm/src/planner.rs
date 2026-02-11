@@ -410,32 +410,25 @@ fn parse_and_build_workflow(
         return Err(anyhow!("Planner returned no steps"));
     }
 
-    // Validate: reject AiStep if not allowed
-    if !allow_agent_steps {
-        for step in &planner_output.steps {
-            if matches!(step, PlanStep::AiStep { .. }) {
-                warnings.push(
-                    "Planner returned an AiStep but agent steps are disabled; step was removed."
-                        .to_string(),
-                );
-            }
+    // Filter out rejected steps and collect warnings in a single pass
+    let mut steps = Vec::new();
+    for step in &planner_output.steps {
+        if !allow_agent_steps && matches!(step, PlanStep::AiStep { .. }) {
+            warnings.push(
+                "Planner returned an AiStep but agent steps are disabled; step was removed."
+                    .to_string(),
+            );
+            continue;
         }
+        if !allow_ai_transforms && matches!(step, PlanStep::AiTransform { .. }) {
+            warnings.push(
+                "Planner returned an AiTransform but AI transforms are disabled; step was removed."
+                    .to_string(),
+            );
+            continue;
+        }
+        steps.push(step);
     }
-
-    // Filter out rejected steps
-    let steps: Vec<&PlanStep> = planner_output
-        .steps
-        .iter()
-        .filter(|s| {
-            if !allow_agent_steps && matches!(s, PlanStep::AiStep { .. }) {
-                return false;
-            }
-            if !allow_ai_transforms && matches!(s, PlanStep::AiTransform { .. }) {
-                return false;
-            }
-            true
-        })
-        .collect();
 
     if steps.is_empty() {
         return Err(anyhow!(
@@ -450,18 +443,7 @@ fn parse_and_build_workflow(
     for (i, step) in steps.iter().enumerate() {
         match step_to_node_type(step, mcp_tools_openai) {
             Ok((node_type, display_name)) => {
-                nodes.push(Node {
-                    id: Uuid::new_v4(),
-                    node_type,
-                    position: positions[i],
-                    name: display_name,
-                    enabled: true,
-                    timeout_ms: None,
-                    retries: 0,
-                    trace_level: clickweave_core::TraceLevel::Minimal,
-                    expected_outcome: None,
-                    checks: vec![],
-                });
+                nodes.push(Node::new(node_type, positions[i], display_name));
             }
             Err(e) => {
                 warnings.push(format!("Step {} skipped: {}", i, e));
@@ -696,21 +678,11 @@ pub async fn patch_workflow_with_backend(
     for (i, step) in patcher_output.add.iter().enumerate() {
         match step_to_node_type(step, mcp_tools_openai) {
             Ok((node_type, display_name)) => {
-                added_nodes.push(Node {
-                    id: Uuid::new_v4(),
-                    node_type,
-                    position: Position {
-                        x: 300.0,
-                        y: last_y + 120.0 + (i as f32) * 120.0,
-                    },
-                    name: display_name,
-                    enabled: true,
-                    timeout_ms: None,
-                    retries: 0,
-                    trace_level: clickweave_core::TraceLevel::Minimal,
-                    expected_outcome: None,
-                    checks: vec![],
-                });
+                let position = Position {
+                    x: 300.0,
+                    y: last_y + 120.0 + (i as f32) * 120.0,
+                };
+                added_nodes.push(Node::new(node_type, position, display_name));
             }
             Err(e) => {
                 warnings.push(format!("Added step {} skipped: {}", i, e));
@@ -1200,22 +1172,15 @@ mod tests {
         let workflow = Workflow {
             id: Uuid::new_v4(),
             name: "Test".to_string(),
-            nodes: vec![Node {
-                id: Uuid::new_v4(),
-                node_type: NodeType::TakeScreenshot(TakeScreenshotParams {
+            nodes: vec![Node::new(
+                NodeType::TakeScreenshot(TakeScreenshotParams {
                     mode: ScreenshotMode::Window,
                     target: None,
                     include_ocr: true,
                 }),
-                position: Position { x: 300.0, y: 100.0 },
-                name: "Screenshot".to_string(),
-                enabled: true,
-                timeout_ms: None,
-                retries: 0,
-                trace_level: clickweave_core::TraceLevel::Minimal,
-                expected_outcome: None,
-                checks: vec![],
-            }],
+                Position { x: 300.0, y: 100.0 },
+                "Screenshot",
+            )],
             edges: vec![],
         };
 
@@ -1245,27 +1210,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_patch_removes_node() {
-        let node_id = Uuid::new_v4();
+        let node = Node::new(
+            NodeType::Click(ClickParams {
+                x: Some(100.0),
+                y: Some(200.0),
+                button: MouseButton::Left,
+                click_count: 1,
+            }),
+            Position { x: 300.0, y: 100.0 },
+            "Click",
+        );
+        let node_id = node.id;
         let workflow = Workflow {
             id: Uuid::new_v4(),
             name: "Test".to_string(),
-            nodes: vec![Node {
-                id: node_id,
-                node_type: NodeType::Click(ClickParams {
-                    x: Some(100.0),
-                    y: Some(200.0),
-                    button: MouseButton::Left,
-                    click_count: 1,
-                }),
-                position: Position { x: 300.0, y: 100.0 },
-                name: "Click".to_string(),
-                enabled: true,
-                timeout_ms: None,
-                retries: 0,
-                trace_level: clickweave_core::TraceLevel::Minimal,
-                expected_outcome: None,
-                checks: vec![],
-            }],
+            nodes: vec![node],
             edges: vec![],
         };
 

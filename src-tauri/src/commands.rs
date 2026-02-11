@@ -15,6 +15,19 @@ fn parse_uuid(s: &str, label: &str) -> Result<Uuid, String> {
     s.parse().map_err(|_| format!("Invalid {} ID", label))
 }
 
+/// Spawn an MCP server, grab the tool schemas, then kill it.
+fn fetch_mcp_tool_schemas(mcp_command: &str) -> Result<Vec<serde_json::Value>, String> {
+    let mut mcp = if mcp_command == "npx" {
+        McpClient::spawn_npx()
+    } else {
+        McpClient::spawn(mcp_command, &[])
+    }
+    .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
+    let tools = mcp.tools_as_openai();
+    let _ = mcp.kill();
+    Ok(tools)
+}
+
 /// Derive the project directory from a path that may be a file or directory.
 fn project_dir(path: &str) -> PathBuf {
     let p = PathBuf::from(path);
@@ -251,19 +264,7 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
 #[tauri::command]
 #[specta::specta]
 pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String> {
-    // Spawn MCP to get live tool schemas
-    let mut mcp = if request.mcp_command == "npx" {
-        McpClient::spawn_npx()
-    } else {
-        McpClient::spawn(&request.mcp_command, &[])
-    }
-    .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
-
-    let tools = mcp.tools_as_openai();
-
-    // Kill MCP — we only needed the tool schemas
-    let _ = mcp.kill();
-
+    let tools = fetch_mcp_tool_schemas(&request.mcp_command)?;
     let planner_config = request.planner.into_llm_config(None);
 
     let result = clickweave_llm::planner::plan_workflow(
@@ -285,16 +286,7 @@ pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String>
 #[tauri::command]
 #[specta::specta]
 pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, String> {
-    let mut mcp = if request.mcp_command == "npx" {
-        McpClient::spawn_npx()
-    } else {
-        McpClient::spawn(&request.mcp_command, &[])
-    }
-    .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
-
-    let tools = mcp.tools_as_openai();
-    let _ = mcp.kill();
-
+    let tools = fetch_mcp_tool_schemas(&request.mcp_command)?;
     let planner_config = request.planner.into_llm_config(None);
 
     let result = clickweave_llm::planner::patch_workflow(

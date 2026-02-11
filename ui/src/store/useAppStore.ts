@@ -336,35 +336,15 @@ export function useAppStore(): [AppState, AppActions] {
   const toggleSidebar = useCallback(() => setSidebarCollapsed((p) => !p), []);
   const toggleLogsDrawer = useCallback(() => setLogsDrawerOpen((p) => !p), []);
 
-  const persistPlannerConfig = useCallback((config: EndpointConfig) => {
-    setPlannerConfig(config);
-    saveSetting("plannerConfig", config);
-  }, []);
-
-  const persistAgentConfig = useCallback((config: EndpointConfig) => {
-    setAgentConfig(config);
-    saveSetting("agentConfig", config);
-  }, []);
-
-  const persistTransformConfig = useCallback((config: EndpointConfig) => {
-    setTransformConfig(config);
-    saveSetting("transformConfig", config);
-  }, []);
-
-  const persistVlmConfig = useCallback((config: EndpointConfig) => {
-    setVlmConfig(config);
-    saveSetting("vlmConfig", config);
-  }, []);
-
-  const persistVlmEnabled = useCallback((enabled: boolean) => {
-    setVlmEnabled(enabled);
-    saveSetting("vlmEnabled", enabled);
-  }, []);
-
-  const persistMcpCommand = useCallback((cmd: string) => {
-    setMcpCommand(cmd);
-    saveSetting("mcpCommand", cmd);
-  }, []);
+  function persist<K extends keyof PersistedSettings>(
+    key: K,
+    setter: (value: PersistedSettings[K]) => void,
+  ) {
+    return (value: PersistedSettings[K]) => {
+      setter(value);
+      saveSetting(key, value);
+    };
+  }
 
   const toEndpoint = (c: EndpointConfig) => ({
     base_url: c.baseUrl,
@@ -571,12 +551,12 @@ export function useAppStore(): [AppState, AppActions] {
     openProject,
     saveProject,
     newProject,
-    setPlannerConfig: persistPlannerConfig,
-    setAgentConfig: persistAgentConfig,
-    setTransformConfig: persistTransformConfig,
-    setVlmConfig: persistVlmConfig,
-    setVlmEnabled: persistVlmEnabled,
-    setMcpCommand: persistMcpCommand,
+    setPlannerConfig: persist("plannerConfig", setPlannerConfig),
+    setAgentConfig: persist("agentConfig", setAgentConfig),
+    setTransformConfig: persist("transformConfig", setTransformConfig),
+    setVlmConfig: persist("vlmConfig", setVlmConfig),
+    setVlmEnabled: persist("vlmEnabled", setVlmEnabled),
+    setMcpCommand: persist("mcpCommand", setMcpCommand),
     setActiveNode,
     setExecutorState,
     runWorkflow,
