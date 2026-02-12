@@ -5,6 +5,7 @@ use clickweave_core::{
 };
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::{McpClient, ToolCallResult};
+use serde_json::Value;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn execute_deterministic(
@@ -27,31 +28,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return Err("McpToolCall has empty tool_name".to_string());
         }
 
-        // For Click nodes with a target and no explicit coordinates, resolve via find_text
-        let resolved;
+        let resolved_click;
         let effective = if let NodeType::Click(p) = node_type
             && p.target.is_some()
             && p.x.is_none()
         {
-            resolved = self.resolve_click_target(mcp, p, &mut node_run)?;
-            &resolved
+            resolved_click = self.resolve_click_target(mcp, p, &mut node_run)?;
+            &resolved_click
         } else {
             node_type
         };
 
-        // For FocusWindow with AppName method, resolve the app name to a PID
         let resolved_fw;
         let effective = if let NodeType::FocusWindow(p) = effective
             && p.method == FocusMethod::AppName
             && p.value.is_some()
         {
             let user_input = p.value.as_deref().unwrap();
-            let resolved_app = self
+            let app = self
                 .resolve_app_name(user_input, mcp, node_run.as_deref())
                 .await?;
             resolved_fw = NodeType::FocusWindow(FocusWindowParams {
                 method: FocusMethod::Pid,
-                value: Some(resolved_app.pid.to_string()),
+                value: Some(app.pid.to_string()),
                 bring_to_front: p.bring_to_front,
             });
             &resolved_fw
@@ -59,19 +58,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             effective
         };
 
-        // For TakeScreenshot with Window mode and a target, resolve the app name
         let resolved_ss;
         let effective = if let NodeType::TakeScreenshot(p) = effective
             && p.target.is_some()
             && p.mode == ScreenshotMode::Window
         {
             let user_input = p.target.as_deref().unwrap();
-            let resolved_app = self
+            let app = self
                 .resolve_app_name(user_input, mcp, node_run.as_deref())
                 .await?;
             resolved_ss = NodeType::TakeScreenshot(TakeScreenshotParams {
                 mode: p.mode,
-                target: Some(resolved_app.name.clone()),
+                target: Some(app.name.clone()),
                 include_ocr: p.include_ocr,
             });
             &resolved_ss
@@ -132,10 +130,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     fn resolve_click_target(
         &self,
         mcp: &McpClient,
-        click_params: &ClickParams,
+        params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> Result<NodeType, String> {
-        let target = click_params
+        let target = params
             .target
             .as_deref()
             .ok_or("resolve_click_target called with no target")?;
@@ -143,29 +141,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let find_result = mcp
             .call_tool("find_text", Some(serde_json::json!({"text": target})))
-            .map_err(|e| format!("find_text for target '{}' failed: {}", target, e))?;
+            .map_err(|e| format!("find_text for '{}' failed: {}", target, e))?;
 
         Self::check_tool_error(&find_result, "find_text")?;
 
         let result_text = Self::extract_result_text(&find_result);
-        let matches: Vec<serde_json::Value> = serde_json::from_str(&result_text)
+        let matches: Vec<Value> = serde_json::from_str(&result_text)
             .map_err(|e| format!("Failed to parse find_text result for '{}': {}", target, e))?;
 
-        if matches.is_empty() {
-            return Err(format!("Could not find text '{}' on screen", target));
-        }
+        let best = matches
+            .first()
+            .ok_or_else(|| format!("Could not find text '{}' on screen", target))?;
 
-        let best = &matches[0];
-        let x = best
-            .get("x")
-            .and_then(|v| v.as_f64())
+        let x = best["x"]
+            .as_f64()
             .ok_or_else(|| format!("find_text match for '{}' missing 'x' coordinate", target))?;
-        let y = best
-            .get("y")
-            .and_then(|v| v.as_f64())
+        let y = best["y"]
+            .as_f64()
             .ok_or_else(|| format!("find_text match for '{}' missing 'y' coordinate", target))?;
-
-        let matched_text = best.get("text").and_then(|v| v.as_str()).unwrap_or(target);
+        let matched_text = best["text"].as_str().unwrap_or(target);
 
         self.log(format!(
             "Resolved target '{}' -> ({}, {}) from '{}'",
@@ -184,11 +178,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         Ok(NodeType::Click(ClickParams {
-            target: click_params.target.clone(),
+            target: params.target.clone(),
             x: Some(x),
             y: Some(y),
-            button: click_params.button,
-            click_count: click_params.click_count,
+            button: params.button,
+            click_count: params.click_count,
         }))
     }
 }

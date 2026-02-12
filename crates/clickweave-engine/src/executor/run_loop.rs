@@ -1,5 +1,5 @@
 use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
-use clickweave_core::{FocusMethod, NodeType, RunStatus};
+use clickweave_core::{NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpClient;
 use tokio::sync::mpsc::Receiver;
@@ -114,20 +114,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             retries + 1,
                             e
                         ));
-                        // Evict app cache so retry re-resolves the app name
-                        match &node_type {
-                            NodeType::FocusWindow(p) if p.method == FocusMethod::AppName => {
-                                if let Some(val) = &p.value {
-                                    self.evict_app_cache(val);
-                                }
-                            }
-                            NodeType::TakeScreenshot(p) => {
-                                if let Some(target) = &p.target {
-                                    self.evict_app_cache(target);
-                                }
-                            }
-                            _ => {}
-                        }
+                        self.evict_app_cache_for_node(&node_type);
                         self.record_event(
                             node_run.as_ref(),
                             "retry",
