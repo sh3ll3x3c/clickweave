@@ -310,12 +310,12 @@ function NodeTypeFields({
           <NumberField
             label="X"
             value={nt.x ?? 0}
-            onChange={(v) => updateType({ x: v || null })}
+            onChange={(v) => updateType({ x: v ?? null })}
           />
           <NumberField
             label="Y"
             value={nt.y ?? 0}
-            onChange={(v) => updateType({ y: v || null })}
+            onChange={(v) => updateType({ y: v ?? null })}
           />
           <SelectField
             label="Button"

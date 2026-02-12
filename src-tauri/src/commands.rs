@@ -98,7 +98,6 @@ pub struct RunRequest {
     pub workflow: Workflow,
     pub project_path: Option<String>,
     pub agent: EndpointConfig,
-    pub transform: EndpointConfig,
     pub vlm: Option<EndpointConfig>,
     pub mcp_command: String,
 }
@@ -463,11 +462,27 @@ pub fn load_run_events(query: RunEventsQuery) -> Result<Vec<TraceEvent>, String>
     let content = std::fs::read_to_string(&events_path)
         .map_err(|e| format!("Failed to read events.jsonl: {}", e))?;
 
-    let events: Vec<TraceEvent> = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
+    let mut events = Vec::new();
+    let mut malformed = 0u32;
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<TraceEvent>(line) {
+            Ok(event) => events.push(event),
+            Err(e) => {
+                malformed += 1;
+                warn!("Malformed trace event line: {}", e);
+            }
+        }
+    }
+    if malformed > 0 {
+        warn!(
+            "Skipped {} malformed line(s) in {}",
+            malformed,
+            events_path.display()
+        );
+    }
 
     Ok(events)
 }

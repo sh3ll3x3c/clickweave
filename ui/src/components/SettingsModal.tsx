@@ -4,14 +4,12 @@ interface SettingsModalProps {
   open: boolean;
   plannerConfig: EndpointConfig;
   agentConfig: EndpointConfig;
-  transformConfig: EndpointConfig;
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
   mcpCommand: string;
   onClose: () => void;
   onPlannerConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
-  onTransformConfigChange: (config: EndpointConfig) => void;
   onVlmConfigChange: (config: EndpointConfig) => void;
   onVlmEnabledChange: (enabled: boolean) => void;
   onMcpCommandChange: (cmd: string) => void;
@@ -84,14 +82,12 @@ export function SettingsModal({
   open,
   plannerConfig,
   agentConfig,
-  transformConfig,
   vlmConfig,
   vlmEnabled,
   mcpCommand,
   onClose,
   onPlannerConfigChange,
   onAgentConfigChange,
-  onTransformConfigChange,
   onVlmConfigChange,
   onVlmEnabledChange,
   onMcpCommandChange,
@@ -126,13 +122,6 @@ export function SettingsModal({
             description="Powers runtime AI Step nodes with tool access. Only used when workflow contains AI Steps."
             config={agentConfig}
             onChange={onAgentConfigChange}
-          />
-
-          <ConfigSection
-            title="Transform"
-            description="Handles runtime AI transforms (summarize, extract, classify). No tool access; can be a smaller model."
-            config={transformConfig}
-            onChange={onTransformConfigChange}
           />
 
           <div>

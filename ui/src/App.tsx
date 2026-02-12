@@ -156,14 +156,12 @@ function App() {
         open={state.showSettings}
         plannerConfig={state.plannerConfig}
         agentConfig={state.agentConfig}
-        transformConfig={state.transformConfig}
         vlmConfig={state.vlmConfig}
         vlmEnabled={state.vlmEnabled}
         mcpCommand={state.mcpCommand}
         onClose={() => actions.setShowSettings(false)}
         onPlannerConfigChange={actions.setPlannerConfig}
         onAgentConfigChange={actions.setAgentConfig}
-        onTransformConfigChange={actions.setTransformConfig}
         onVlmConfigChange={actions.setVlmConfig}
         onVlmEnabledChange={actions.setVlmEnabled}
         onMcpCommandChange={actions.setMcpCommand}
