@@ -187,21 +187,26 @@ export function useAppStore(): [AppState, AppActions] {
   useEffect(() => {
     if (settingsLoaded.current) return;
     settingsLoaded.current = true;
-    loadSettings().then((s) => {
-      setPlannerConfig(s.plannerConfig);
-      setAgentConfig(s.agentConfig);
-      setTransformConfig(s.transformConfig);
-      setVlmConfig(s.vlmConfig);
-      setVlmEnabled(s.vlmEnabled);
-      setMcpCommand(s.mcpCommand);
-    });
+    loadSettings()
+      .then((s) => {
+        setPlannerConfig(s.plannerConfig);
+        setAgentConfig(s.agentConfig);
+        setTransformConfig(s.transformConfig);
+        setVlmConfig(s.vlmConfig);
+        setVlmEnabled(s.vlmEnabled);
+        setMcpCommand(s.mcpCommand);
+      })
+      .catch((e) => console.error("Failed to load settings:", e));
   }, []);
 
   const nodeTypesLoaded = useRef(false);
   useEffect(() => {
     if (nodeTypesLoaded.current) return;
     nodeTypesLoaded.current = true;
-    commands.nodeTypeDefaults().then(setNodeTypes);
+    commands
+      .nodeTypeDefaults()
+      .then(setNodeTypes)
+      .catch((e) => console.error("Failed to load node type defaults:", e));
   }, []);
 
   const pushLog = useCallback((msg: string) => {
