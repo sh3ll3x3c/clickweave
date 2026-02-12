@@ -347,7 +347,9 @@ export function useAppStore(): [AppState, AppActions] {
   ) {
     return (value: PersistedSettings[K]) => {
       setter(value);
-      saveSetting(key, value);
+      saveSetting(key, value).catch((e) =>
+        console.error(`Failed to save setting "${key}":`, e),
+      );
     };
   }
 
@@ -461,9 +463,14 @@ export function useAppStore(): [AppState, AppActions] {
       ...assistantPatch.added_edges,
     ];
     const patched: Workflow = { ...workflow, nodes, edges };
-    const validation = await commands.validate(patched);
-    if (!validation.valid) {
-      pushLog(`Patch rejected: ${validation.errors.join(", ")}`);
+    try {
+      const validation = await commands.validate(patched);
+      if (!validation.valid) {
+        pushLog(`Patch rejected: ${validation.errors.join(", ")}`);
+        return;
+      }
+    } catch (e) {
+      pushLog(`Patch validation failed: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
     setWorkflow(patched);
