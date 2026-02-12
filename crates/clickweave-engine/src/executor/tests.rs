@@ -1,8 +1,40 @@
 use super::*;
 use clickweave_core::Workflow;
 use clickweave_core::storage::RunStorage;
-use clickweave_llm::{ChatBackend, Content, ContentPart, Message};
+use clickweave_llm::{ChatBackend, ChatResponse, Content, ContentPart, Message};
+use serde_json::Value;
 use std::path::PathBuf;
+
+/// A stub ChatBackend that never expects to be called.
+/// Useful for tests that only exercise cache mechanics without LLM interaction.
+struct StubBackend;
+
+impl ChatBackend for StubBackend {
+    fn model_name(&self) -> &str {
+        "stub"
+    }
+
+    async fn chat(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Option<Vec<Value>>,
+    ) -> anyhow::Result<ChatResponse> {
+        panic!("StubBackend::chat should not be called in this test");
+    }
+}
+
+/// Helper to create a `WorkflowExecutor<StubBackend>` with minimal setup.
+fn make_test_executor() -> WorkflowExecutor<StubBackend> {
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    WorkflowExecutor::with_backends(
+        Workflow::default(),
+        StubBackend,
+        None,
+        "stub-mcp".to_string(),
+        None,
+        tx,
+    )
+}
 
 /// Check that a list of messages contains no image content parts.
 fn assert_no_images(messages: &[Message]) {
@@ -94,4 +126,70 @@ fn vlm_summary_replaces_images_in_message_flow() {
     // Verify: the VLM summary is present as plain text
     let last = messages.last().unwrap();
     assert!(matches!(&last.content, Some(Content::Text(t)) if t.contains("VLM_IMAGE_SUMMARY")));
+}
+
+// ---------------------------------------------------------------------------
+// App cache tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn evict_app_cache_removes_entry() {
+    let exec = make_test_executor();
+
+    // Insert a resolved app into the cache
+    exec.app_cache.borrow_mut().insert(
+        "chrome".to_string(),
+        ResolvedApp {
+            name: "Google Chrome".to_string(),
+            pid: 1234,
+        },
+    );
+    assert!(exec.app_cache.borrow().contains_key("chrome"));
+
+    // Evict it
+    exec.evict_app_cache("chrome");
+    assert!(
+        !exec.app_cache.borrow().contains_key("chrome"),
+        "cache entry should be removed after eviction"
+    );
+}
+
+#[test]
+fn evict_app_cache_noop_for_missing_key() {
+    let exec = make_test_executor();
+
+    // Evicting a key that was never cached should not panic
+    exec.evict_app_cache("nonexistent");
+    assert!(exec.app_cache.borrow().is_empty());
+}
+
+#[test]
+fn evict_app_cache_leaves_other_entries() {
+    let exec = make_test_executor();
+
+    exec.app_cache.borrow_mut().insert(
+        "chrome".to_string(),
+        ResolvedApp {
+            name: "Google Chrome".to_string(),
+            pid: 1234,
+        },
+    );
+    exec.app_cache.borrow_mut().insert(
+        "firefox".to_string(),
+        ResolvedApp {
+            name: "Firefox".to_string(),
+            pid: 5678,
+        },
+    );
+
+    exec.evict_app_cache("chrome");
+
+    assert!(
+        !exec.app_cache.borrow().contains_key("chrome"),
+        "evicted entry should be gone"
+    );
+    assert!(
+        exec.app_cache.borrow().contains_key("firefox"),
+        "other entries should remain"
+    );
 }

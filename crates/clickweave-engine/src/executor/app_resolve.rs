@@ -152,3 +152,57 @@ fn strip_code_block(text: &str) -> &str {
     }
     trimmed
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_code_block_bare_json() {
+        let input = r#"{"name": "Foo", "pid": 1}"#;
+        assert_eq!(strip_code_block(input), input);
+    }
+
+    #[test]
+    fn strip_code_block_with_json_fence() {
+        let input = "```json\n{\"name\": \"Foo\", \"pid\": 1}\n```";
+        assert_eq!(strip_code_block(input), r#"{"name": "Foo", "pid": 1}"#);
+    }
+
+    #[test]
+    fn strip_code_block_with_plain_fence() {
+        let input = "```\n{\"name\": \"Bar\", \"pid\": 42}\n```";
+        assert_eq!(strip_code_block(input), r#"{"name": "Bar", "pid": 42}"#);
+    }
+
+    #[test]
+    fn strip_code_block_with_extra_whitespace() {
+        let input = "  \n```json\n  {\"name\": \"Baz\", \"pid\": 7}  \n```\n  ";
+        assert_eq!(strip_code_block(input), r#"{"name": "Baz", "pid": 7}"#);
+    }
+
+    #[test]
+    fn strip_code_block_uppercase_json_tag() {
+        let input = "```JSON\n{\"name\": \"Qux\", \"pid\": 99}\n```";
+        assert_eq!(strip_code_block(input), r#"{"name": "Qux", "pid": 99}"#);
+    }
+
+    #[test]
+    fn strip_code_block_missing_closing_fence() {
+        let input = "```json\n{\"name\": \"Open\", \"pid\": 5}";
+        assert_eq!(strip_code_block(input), r#"{"name": "Open", "pid": 5}"#);
+    }
+
+    #[test]
+    fn strip_code_block_multiline_json() {
+        let input = "```json\n{\n  \"name\": \"Multi\",\n  \"pid\": 3\n}\n```";
+        let expected = "{\n  \"name\": \"Multi\",\n  \"pid\": 3\n}";
+        assert_eq!(strip_code_block(input), expected);
+    }
+
+    #[test]
+    fn strip_code_block_only_whitespace_around_bare_json() {
+        let input = "   {\"name\": \"Trim\", \"pid\": 0}   ";
+        assert_eq!(strip_code_block(input), r#"{"name": "Trim", "pid": 0}"#);
+    }
+}
