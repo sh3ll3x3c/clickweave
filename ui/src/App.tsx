@@ -6,7 +6,7 @@ import { LogsDrawer } from "./components/LogsDrawer";
 import { FloatingToolbar } from "./components/FloatingToolbar";
 import { SettingsModal } from "./components/SettingsModal";
 import { GraphCanvas } from "./components/GraphCanvas";
-import { NodeDetailModal } from "./components/NodeDetailModal";
+import { NodeDetailModal } from "./components/node-detail/NodeDetailModal";
 import { PlannerModal } from "./components/PlannerModal";
 import { AssistantModal } from "./components/AssistantModal";
 import { IntentEmptyState } from "./components/IntentEmptyState";
