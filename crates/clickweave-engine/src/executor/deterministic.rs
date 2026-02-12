@@ -1,7 +1,7 @@
 use super::WorkflowExecutor;
 use clickweave_core::{NodeRun, NodeType, tool_mapping};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::McpClient;
+use clickweave_mcp::{McpClient, ToolCallResult};
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn execute_deterministic(
@@ -40,6 +40,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .call_tool(tool_name, args)
             .map_err(|e| format!("MCP tool {} failed: {}", tool_name, e))?;
 
+        Self::check_tool_error(&result, tool_name)?;
+
         let images = self.save_result_images(&result, "result", &mut node_run);
         let result_text = Self::extract_result_text(&result);
 
@@ -58,6 +60,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             result_text.len(),
             images.len()
         ));
+        Ok(())
+    }
+
+    fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> Result<(), String> {
+        if result.is_error == Some(true) {
+            let error_text = Self::extract_result_text(result);
+            return Err(format!(
+                "MCP tool {} returned error: {}",
+                tool_name, error_text
+            ));
+        }
         Ok(())
     }
 }
