@@ -164,10 +164,10 @@ export function PlannerModal({
             <>
               <button
                 onClick={() => {
-                  // Re-generate: clear result and let user edit intent
+                  if (!intent.trim()) return;
                   onGenerate(intent);
                 }}
-                disabled={loading}
+                disabled={loading || !intent.trim()}
                 className="rounded px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
               >
                 Regenerate
