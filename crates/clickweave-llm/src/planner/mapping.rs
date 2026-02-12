@@ -20,7 +20,6 @@ pub(crate) fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(Nod
             let display = name
                 .clone()
                 .unwrap_or_else(|| format!("AI Transform ({})", kind));
-            // Map AI transforms to an AiStep with no tools
             Ok((
                 NodeType::AiStep(AiStepParams {
                     prompt: format!("Perform a '{}' transform on the input.", kind),

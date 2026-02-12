@@ -5,12 +5,7 @@ export function runDuration(run: NodeRun): string | null {
   return ((run.ended_at - run.started_at) / 1000).toFixed(1);
 }
 
-export const statusColors: Record<string, string> = {
-  Ok: "bg-[var(--accent-green)]/20 text-[var(--accent-green)]",
-  Failed: "bg-red-500/20 text-red-400",
-};
-
-export const eventTypeColors: Record<string, string> = {
+const eventTypeColors: Record<string, string> = {
   node_started: "bg-blue-500/20 text-blue-400",
   tool_call: "bg-purple-500/20 text-purple-400",
   tool_result: "bg-green-500/20 text-green-400",

@@ -10,14 +10,13 @@ const MAX_REPAIR_ATTEMPTS: usize = 1;
 pub(crate) async fn chat_with_repair<T>(
     backend: &impl ChatBackend,
     label: &str,
-    messages: Vec<Message>,
+    mut messages: Vec<Message>,
     mut process: impl FnMut(&str) -> Result<T>,
 ) -> Result<T> {
-    let mut messages = messages;
     let mut last_error: Option<String> = None;
 
     for attempt in 0..=MAX_REPAIR_ATTEMPTS {
-        if let Some(ref err) = last_error {
+        if let Some(err) = &last_error {
             info!("Repair attempt {} for {} error: {}", attempt, label, err);
             messages.push(Message::user(format!(
                 "Your previous output had an error: {}\n\nPlease fix the JSON and try again. Output ONLY the corrected JSON object.",

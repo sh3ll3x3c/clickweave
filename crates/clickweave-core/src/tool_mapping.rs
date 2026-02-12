@@ -42,6 +42,20 @@ impl fmt::Display for ToolMappingError {
 
 impl std::error::Error for ToolMappingError {}
 
+fn required_str<'a>(
+    args: &'a Value,
+    tool: &str,
+    argument: &str,
+) -> Result<&'a str, ToolMappingError> {
+    args.get(argument)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ToolMappingError::MissingArgument {
+            tool: tool.into(),
+            argument: argument.into(),
+        })
+}
+
 /// Convert a `NodeType` to a `ToolInvocation` (tool name + JSON arguments).
 ///
 /// Returns `Err(NotAToolNode)` for `AiStep` and `AppDebugKitOp`, which are not
@@ -123,9 +137,7 @@ pub fn node_type_to_tool_invocation(
             let mut args = serde_json::json!({});
             if let Some(val) = &p.value {
                 match p.method {
-                    FocusMethod::AppName => {
-                        args["app_name"] = Value::String(val.clone());
-                    }
+                    FocusMethod::AppName => args["app_name"] = Value::String(val.clone()),
                     FocusMethod::WindowId => {
                         if let Ok(id) = val.parse::<u64>() {
                             args["window_id"] = serde_json::json!(id);
@@ -146,10 +158,7 @@ pub fn node_type_to_tool_invocation(
             } else {
                 p.arguments.clone()
             };
-            return Ok(ToolInvocation {
-                name: p.tool_name.clone(),
-                arguments: args,
-            });
+            (&*p.tool_name, args)
         }
         NodeType::AiStep(_) | NodeType::AppDebugKitOp(_) => {
             return Err(ToolMappingError::NotAToolNode);
@@ -192,14 +201,7 @@ pub fn tool_invocation_to_node_type(
             }))
         }
         "find_text" => {
-            let text = args
-                .get("text")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| ToolMappingError::MissingArgument {
-                    tool: "find_text".into(),
-                    argument: "text".into(),
-                })?;
+            let text = required_str(args, "find_text", "text")?;
             Ok(NodeType::FindText(FindTextParams {
                 search_text: text.to_string(),
                 ..Default::default()
@@ -234,27 +236,13 @@ pub fn tool_invocation_to_node_type(
                 .unwrap_or(1) as u32,
         })),
         "type_text" => {
-            let text = args
-                .get("text")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| ToolMappingError::MissingArgument {
-                    tool: "type_text".into(),
-                    argument: "text".into(),
-                })?;
+            let text = required_str(args, "type_text", "text")?;
             Ok(NodeType::TypeText(TypeTextParams {
                 text: text.to_string(),
             }))
         }
         "press_key" => {
-            let key = args
-                .get("key")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| ToolMappingError::MissingArgument {
-                    tool: "press_key".into(),
-                    argument: "key".into(),
-                })?;
+            let key = required_str(args, "press_key", "key")?;
             Ok(NodeType::PressKey(PressKeyParams {
                 key: key.to_string(),
                 modifiers: args
@@ -295,19 +283,16 @@ pub fn tool_invocation_to_node_type(
                 bring_to_front: true,
             }))
         }
-        // Unknown tool: check if it exists in the schema, fall back to McpToolCall
-        _ => {
-            let tool_exists = known_tools
-                .iter()
-                .any(|t| t["function"]["name"].as_str() == Some(name));
-            if !tool_exists {
-                return Err(ToolMappingError::UnknownTool(name.to_string()));
-            }
+        _ if known_tools
+            .iter()
+            .any(|t| t["function"]["name"].as_str() == Some(name)) =>
+        {
             Ok(NodeType::McpToolCall(McpToolCallParams {
                 tool_name: name.to_string(),
                 arguments: args.clone(),
             }))
         }
+        _ => Err(ToolMappingError::UnknownTool(name.to_string())),
     }
 }
 

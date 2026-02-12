@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
 
-/// Derive the project directory from a path that may be a file or directory.
 pub fn project_dir(path: &str) -> PathBuf {
     let p = PathBuf::from(path);
     if p.extension().is_some() {
@@ -17,8 +16,6 @@ pub fn project_dir(path: &str) -> PathBuf {
 pub fn parse_uuid(s: &str, label: &str) -> Result<uuid::Uuid, String> {
     s.parse().map_err(|_| format!("Invalid {} ID", label))
 }
-
-// --- Specta-exported types ---
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct ProjectData {
@@ -127,8 +124,6 @@ pub struct ImportedAsset {
     pub relative_path: String,
     pub absolute_path: String,
 }
-
-// --- Event payloads (not specta-exported, used by executor) ---
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogPayload {

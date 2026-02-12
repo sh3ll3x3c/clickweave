@@ -10,7 +10,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &McpClient,
         mut node_run: Option<&mut NodeRun>,
     ) -> Result<(), String> {
-        // Handle non-tool node types
         if let NodeType::AppDebugKitOp(p) = node_type {
             self.log(format!(
                 "AppDebugKit operation: {} (not yet fully implemented)",
@@ -18,19 +17,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ));
             return Ok(());
         }
-        if matches!(node_type, NodeType::AiStep(_)) {
-            return Ok(());
-        }
-
-        let invocation = tool_mapping::node_type_to_tool_invocation(node_type)
-            .map_err(|e| format!("Tool mapping failed: {}", e))?;
-        let tool_name = &invocation.name;
 
         if let NodeType::McpToolCall(p) = node_type
             && p.tool_name.is_empty()
         {
             return Err("McpToolCall has empty tool_name".to_string());
         }
+
+        let invocation = tool_mapping::node_type_to_tool_invocation(node_type)
+            .map_err(|e| format!("Tool mapping failed: {}", e))?;
+        let tool_name = &invocation.name;
 
         self.record_event(
             node_run.as_deref(),

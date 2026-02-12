@@ -14,8 +14,6 @@ use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
-// ── Public types ────────────────────────────────────────────────
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutorState {
     Idle,
@@ -38,8 +36,6 @@ pub enum ExecutorEvent {
     WorkflowCompleted,
     Error(String),
 }
-
-// ── Executor struct ─────────────────────────────────────────────
 
 pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     workflow: Workflow,

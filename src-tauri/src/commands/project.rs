@@ -54,7 +54,7 @@ pub fn open_project(path: String) -> Result<ProjectData, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn save_project(path: String, workflow: Workflow) -> Result<(), String> {
-    let file_path = PathBuf::from(&path);
+    let file_path = PathBuf::from(path);
 
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent)

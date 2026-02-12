@@ -1,8 +1,6 @@
 use super::types::*;
 use clickweave_mcp::McpClient;
 
-/// Spawn an MCP server, grab the tool schemas, then kill it.
-/// Runs on a blocking thread to avoid stalling the async runtime.
 async fn fetch_mcp_tool_schemas(mcp_command: &str) -> Result<Vec<serde_json::Value>, String> {
     let mcp_command = mcp_command.to_string();
     tokio::task::spawn_blocking(move || {

@@ -91,64 +91,60 @@ pub async fn patch_workflow_with_backend(
     // Process removed nodes
     let mut removed_node_ids = Vec::new();
     for id_str in &patcher_output.remove_node_ids {
-        match id_str.parse::<Uuid>() {
-            Ok(id) => {
-                if workflow.nodes.iter().any(|n| n.id == id) {
-                    removed_node_ids.push(id);
-                } else {
-                    warnings.push(format!("Remove: node {} not found in workflow", id_str));
-                }
-            }
+        let id = match id_str.parse::<Uuid>() {
+            Ok(id) => id,
             Err(_) => {
                 warnings.push(format!("Remove: invalid node ID: {}", id_str));
+                continue;
             }
+        };
+        if workflow.nodes.iter().any(|n| n.id == id) {
+            removed_node_ids.push(id);
+        } else {
+            warnings.push(format!("Remove: node {} not found in workflow", id_str));
         }
     }
 
     // Process updated nodes
     let mut updated_nodes = Vec::new();
     for update in &patcher_output.update {
-        match update.node_id.parse::<Uuid>() {
-            Ok(id) => {
-                if let Some(existing) = workflow.nodes.iter().find(|n| n.id == id) {
-                    let mut node = existing.clone();
-                    if let Some(name) = &update.name {
-                        node.name = name.clone();
-                    }
-                    if let Some(nt_value) = &update.node_type {
-                        let short_id = id_str_short(&id);
-                        match serde_json::from_value::<PlanStep>(nt_value.clone()) {
-                            Ok(step) => {
-                                if let Some(reason) = step_rejected_reason(
-                                    &step,
-                                    allow_ai_transforms,
-                                    allow_agent_steps,
-                                ) {
-                                    warnings.push(format!("Update {}: {}", short_id, reason));
-                                } else {
-                                    match step_to_node_type(&step, mcp_tools_openai) {
-                                        Ok((node_type, _)) => node.node_type = node_type,
-                                        Err(e) => {
-                                            warnings.push(format!("Update {}: {}", short_id, e))
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => warnings.push(format!(
-                                "Update {}: failed to parse node_type: {}",
-                                short_id, e
-                            )),
-                        }
-                    }
-                    updated_nodes.push(node);
-                } else {
-                    warnings.push(format!("Update: node {} not found", update.node_id));
-                }
-            }
+        let id = match update.node_id.parse::<Uuid>() {
+            Ok(id) => id,
             Err(_) => {
                 warnings.push(format!("Update: invalid node ID: {}", update.node_id));
+                continue;
+            }
+        };
+        let Some(existing) = workflow.nodes.iter().find(|n| n.id == id) else {
+            warnings.push(format!("Update: node {} not found", update.node_id));
+            continue;
+        };
+        let mut node = existing.clone();
+        if let Some(name) = &update.name {
+            node.name = name.clone();
+        }
+        if let Some(nt_value) = &update.node_type {
+            let short_id = id_str_short(&id);
+            match serde_json::from_value::<PlanStep>(nt_value.clone()) {
+                Ok(step) => {
+                    if let Some(reason) =
+                        step_rejected_reason(&step, allow_ai_transforms, allow_agent_steps)
+                    {
+                        warnings.push(format!("Update {}: {}", short_id, reason));
+                    } else {
+                        match step_to_node_type(&step, mcp_tools_openai) {
+                            Ok((node_type, _)) => node.node_type = node_type,
+                            Err(e) => warnings.push(format!("Update {}: {}", short_id, e)),
+                        }
+                    }
+                }
+                Err(e) => warnings.push(format!(
+                    "Update {}: failed to parse node_type: {}",
+                    short_id, e
+                )),
             }
         }
+        updated_nodes.push(node);
     }
 
     // Build added edges: connect last existing node to first added node,

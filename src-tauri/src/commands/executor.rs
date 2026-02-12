@@ -39,7 +39,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     }
 
     let emit_handle = app.clone();
-    let cleanup_handle = app.clone();
+    let cleanup_handle = emit_handle.clone();
 
     tauri::async_runtime::spawn(async move {
         let mut executor = WorkflowExecutor::new(
@@ -59,18 +59,15 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                 ExecutorEvent::Log(msg) | ExecutorEvent::Error(msg) => {
                     emit_handle.emit("executor://log", LogPayload { message: msg })
                 }
-                ExecutorEvent::StateChanged(state) => {
-                    let state = match state {
-                        ExecutorState::Idle => "idle",
-                        ExecutorState::Running => "running",
-                    };
-                    emit_handle.emit(
-                        "executor://state",
-                        StatePayload {
-                            state: state.to_string(),
+                ExecutorEvent::StateChanged(state) => emit_handle.emit(
+                    "executor://state",
+                    StatePayload {
+                        state: match state {
+                            ExecutorState::Idle => "idle".to_owned(),
+                            ExecutorState::Running => "running".to_owned(),
                         },
-                    )
-                }
+                    },
+                ),
                 ExecutorEvent::NodeStarted(id) => emit_handle.emit(
                     "executor://node_started",
                     NodePayload {

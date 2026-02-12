@@ -33,7 +33,7 @@ pub fn load_run_events(query: RunEventsQuery) -> Result<Vec<TraceEvent>, String>
         .map_err(|e| format!("Failed to read events.jsonl: {}", e))?;
 
     let mut events = Vec::new();
-    let mut malformed = 0u32;
+    let mut malformed = 0;
     for line in content.lines() {
         if line.trim().is_empty() {
             continue;

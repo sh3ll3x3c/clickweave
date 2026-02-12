@@ -1,4 +1,4 @@
-use super::{ExecutorCommand, ExecutorEvent};
+use super::{ExecutorCommand, ExecutorEvent, WorkflowExecutor};
 use base64::Engine;
 use clickweave_core::{ArtifactKind, NodeRun, RunStatus, TraceEvent, TraceLevel};
 use clickweave_llm::ChatBackend;
@@ -7,8 +7,6 @@ use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, error, info};
-
-use super::WorkflowExecutor;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) fn emit(&self, event: ExecutorEvent) {
@@ -88,16 +86,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    pub(crate) fn save_image_artifact(&self, run: &mut NodeRun, filename: &str, data: &[u8]) {
-        if let Some(storage) = &self.storage {
-            match storage.save_artifact(run, ArtifactKind::Screenshot, filename, data, Value::Null)
-            {
-                Ok(artifact) => run.artifacts.push(artifact),
-                Err(e) => tracing::warn!("Failed to save artifact: {}", e),
-            }
-        }
-    }
-
     pub(crate) fn extract_result_text(result: &ToolCallResult) -> String {
         result
             .content
@@ -123,6 +111,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                 if let Some(run) = &mut *node_run
                     && run.trace_level != TraceLevel::Off
+                    && let Some(storage) = &self.storage
                 {
                     let ext = if mime_type.contains("png") {
                         "png"
@@ -131,7 +120,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     };
                     let filename = format!("{}_{}.{}", prefix, idx, ext);
                     if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data) {
-                        self.save_image_artifact(run, &filename, &decoded);
+                        match storage.save_artifact(
+                            run,
+                            ArtifactKind::Screenshot,
+                            &filename,
+                            &decoded,
+                            Value::Null,
+                        ) {
+                            Ok(artifact) => run.artifacts.push(artifact),
+                            Err(e) => tracing::warn!("Failed to save artifact: {}", e),
+                        }
                     }
                 }
             }
@@ -149,7 +147,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    /// Returns true if a stop command was received.
     pub(crate) fn stop_requested(&self, command_rx: &mut Receiver<ExecutorCommand>) -> bool {
         matches!(command_rx.try_recv(), Ok(ExecutorCommand::Stop))
     }

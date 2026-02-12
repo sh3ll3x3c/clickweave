@@ -5,16 +5,12 @@ use uuid::Uuid;
 /// Extract JSON from text that may be wrapped in markdown code fences.
 pub(crate) fn extract_json(text: &str) -> &str {
     let trimmed = text.trim();
-    if let Some(start) = trimmed.find("```json") {
-        let after_fence = &trimmed[start + 7..];
-        if let Some(end) = after_fence.find("```") {
-            return after_fence[..end].trim();
-        }
-    }
-    if let Some(start) = trimmed.find("```") {
-        let after_fence = &trimmed[start + 3..];
-        if let Some(end) = after_fence.find("```") {
-            return after_fence[..end].trim();
+    for fence in ["```json", "```"] {
+        if let Some(start) = trimmed.find(fence) {
+            let after_fence = &trimmed[start + fence.len()..];
+            if let Some(end) = after_fence.find("```") {
+                return after_fence[..end].trim();
+            }
         }
     }
     trimmed
@@ -58,5 +54,5 @@ pub(crate) fn truncate_intent(intent: &str) -> String {
 }
 
 pub(crate) fn id_str_short(id: &Uuid) -> String {
-    id.to_string()[..8].to_string()
+    format!("{:.8}", id.as_hyphenated())
 }
