@@ -1,5 +1,8 @@
 use super::WorkflowExecutor;
-use clickweave_core::{ClickParams, NodeRun, NodeType, tool_mapping};
+use clickweave_core::{
+    ClickParams, FocusMethod, FocusWindowParams, NodeRun, NodeType, ScreenshotMode,
+    TakeScreenshotParams, tool_mapping,
+};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::{McpClient, ToolCallResult};
 
@@ -34,6 +37,46 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             &resolved
         } else {
             node_type
+        };
+
+        // For FocusWindow with AppName method, resolve the app name to a PID
+        let resolved_fw;
+        let effective = if let NodeType::FocusWindow(p) = effective
+            && p.method == FocusMethod::AppName
+            && p.value.is_some()
+        {
+            let user_input = p.value.as_deref().unwrap();
+            let resolved_app = self
+                .resolve_app_name(user_input, mcp, node_run.as_deref())
+                .await?;
+            resolved_fw = NodeType::FocusWindow(FocusWindowParams {
+                method: FocusMethod::Pid,
+                value: Some(resolved_app.pid.to_string()),
+                bring_to_front: p.bring_to_front,
+            });
+            &resolved_fw
+        } else {
+            effective
+        };
+
+        // For TakeScreenshot with Window mode and a target, resolve the app name
+        let resolved_ss;
+        let effective = if let NodeType::TakeScreenshot(p) = effective
+            && p.target.is_some()
+            && p.mode == ScreenshotMode::Window
+        {
+            let user_input = p.target.as_deref().unwrap();
+            let resolved_app = self
+                .resolve_app_name(user_input, mcp, node_run.as_deref())
+                .await?;
+            resolved_ss = NodeType::TakeScreenshot(TakeScreenshotParams {
+                mode: p.mode,
+                target: Some(resolved_app.name.clone()),
+                include_ocr: p.include_ocr,
+            });
+            &resolved_ss
+        } else {
+            effective
         };
 
         let invocation = tool_mapping::node_type_to_tool_invocation(effective)
