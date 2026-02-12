@@ -122,7 +122,7 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, st
 
 /** user-defined types **/
 
-export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null }
+export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
@@ -139,18 +139,18 @@ export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type ListWindowsParams = { app_name: string | null }
 export type MatchMode = "Contains" | "Exact"
+export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
 export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; retries: number; trace_level: TraceLevel; expected_outcome: string | null; checks: Check[] }
 export type NodeRun = { run_id: string; node_id: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
-export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams)
 export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
+export type OnCheckFail = "FailNode" | "WarnOnly"
+export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
 export type PlanRequest = { intent: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
 export type PlanResponse = { workflow: Workflow; warnings: string[] }
-export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
-export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
-export type OnCheckFail = "FailNode" | "WarnOnly"
 export type Position = { x: number; y: number }
+export type PressKeyParams = { key: string; modifiers: string[] }
 export type ProjectData = { path: string; workflow: Workflow }
 export type RunEventsQuery = { project_path: string; workflow_id: string; node_id: string; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; vlm: EndpointConfig | null; mcp_command: string }
@@ -161,10 +161,10 @@ export type ScrollParams = { delta_y: number; x: number | null; y: number | null
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
-export type PressKeyParams = { key: string; modifiers: string[] }
 export type TypeTextParams = { text: string }
 export type ValidationResult = { valid: boolean; errors: string[] }
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }
+export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 
 /** tauri-specta globals **/
 
