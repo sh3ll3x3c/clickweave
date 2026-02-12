@@ -676,6 +676,20 @@ pub async fn patch_workflow_with_backend(
         .fold(0.0_f32, f32::max);
 
     for (i, step) in patcher_output.add.iter().enumerate() {
+        if !allow_agent_steps && matches!(step, PlanStep::AiStep { .. }) {
+            warnings.push(
+                "Patcher added an AiStep but agent steps are disabled; step was removed."
+                    .to_string(),
+            );
+            continue;
+        }
+        if !allow_ai_transforms && matches!(step, PlanStep::AiTransform { .. }) {
+            warnings.push(
+                "Patcher added an AiTransform but AI transforms are disabled; step was removed."
+                    .to_string(),
+            );
+            continue;
+        }
         match step_to_node_type(step, mcp_tools_openai) {
             Ok((node_type, display_name)) => {
                 let position = Position {
@@ -720,6 +734,24 @@ pub async fn patch_workflow_with_backend(
                     if let Some(nt_value) = &update.node_type {
                         // Try to parse as a PlanStep and convert
                         match serde_json::from_value::<PlanStep>(nt_value.clone()) {
+                            Ok(ref step)
+                                if !allow_agent_steps
+                                    && matches!(step, PlanStep::AiStep { .. }) =>
+                            {
+                                warnings.push(format!(
+                                    "Update {}: AiStep rejected (agent steps disabled)",
+                                    id_str_short(&id)
+                                ));
+                            }
+                            Ok(ref step)
+                                if !allow_ai_transforms
+                                    && matches!(step, PlanStep::AiTransform { .. }) =>
+                            {
+                                warnings.push(format!(
+                                    "Update {}: AiTransform rejected (AI transforms disabled)",
+                                    id_str_short(&id)
+                                ));
+                            }
                             Ok(step) => match step_to_node_type(&step, mcp_tools_openai) {
                                 Ok((node_type, _)) => node.node_type = node_type,
                                 Err(e) => {
@@ -1267,5 +1299,98 @@ mod tests {
 
         assert_eq!(result.removed_node_ids.len(), 1);
         assert_eq!(result.removed_node_ids[0], node_id);
+    }
+
+    #[tokio::test]
+    async fn test_patch_add_filters_disallowed_step_types() {
+        let workflow = Workflow {
+            id: Uuid::new_v4(),
+            name: "Test".to_string(),
+            nodes: vec![Node::new(
+                NodeType::TakeScreenshot(TakeScreenshotParams {
+                    mode: ScreenshotMode::Window,
+                    target: None,
+                    include_ocr: true,
+                }),
+                Position { x: 300.0, y: 100.0 },
+                "Screenshot",
+            )],
+            edges: vec![],
+        };
+
+        // Patcher tries to add an AiStep and an AiTransform, but both flags are disabled
+        let response = r#"{"add": [
+            {"step_type": "AiStep", "prompt": "Decide what to do"},
+            {"step_type": "AiTransform", "kind": "summarize", "input_ref": "step1"},
+            {"step_type": "Tool", "tool_name": "click", "arguments": {"x": 50, "y": 50}}
+        ]}"#;
+        let mock = MockBackend::single(response);
+
+        let result = patch_workflow_with_backend(
+            &mock,
+            &workflow,
+            "Add some steps",
+            &sample_tools(),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Only the Tool step should survive
+        assert_eq!(result.added_nodes.len(), 1);
+        assert!(matches!(
+            result.added_nodes[0].node_type,
+            NodeType::Click(_)
+        ));
+        // Two warnings for the filtered steps
+        assert!(result.warnings.len() >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_patch_update_rejects_disallowed_node_type_change() {
+        let node = Node::new(
+            NodeType::Click(ClickParams {
+                x: Some(100.0),
+                y: Some(200.0),
+                button: MouseButton::Left,
+                click_count: 1,
+            }),
+            Position { x: 300.0, y: 100.0 },
+            "Click",
+        );
+        let node_id = node.id;
+        let workflow = Workflow {
+            id: Uuid::new_v4(),
+            name: "Test".to_string(),
+            nodes: vec![node],
+            edges: vec![],
+        };
+
+        // Try to update the node to an AiStep with agent steps disabled
+        let response = format!(
+            r#"{{"update": [{{"node_id": "{}", "node_type": {{"step_type": "AiStep", "prompt": "do something"}}}}]}}"#,
+            node_id
+        );
+        let mock = MockBackend::single(&response);
+
+        let result = patch_workflow_with_backend(
+            &mock,
+            &workflow,
+            "Change to AI",
+            &sample_tools(),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Node should still be in updated_nodes (name update still applies) but type unchanged
+        assert_eq!(result.updated_nodes.len(), 1);
+        assert!(matches!(
+            result.updated_nodes[0].node_type,
+            NodeType::Click(_)
+        ));
+        assert!(!result.warnings.is_empty());
     }
 }
