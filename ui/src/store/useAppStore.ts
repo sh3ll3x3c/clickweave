@@ -1,10 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { commands } from "../bindings";
-import type { Workflow, Node, NodeType, Edge, RunRequest, PlanRequest, PatchRequest, WorkflowPatch, NodeTypeInfo } from "../bindings";
+import type { Workflow, RunRequest, PlanRequest, PatchRequest, WorkflowPatch, NodeTypeInfo } from "../bindings";
 import type { AppState, AppActions, DetailTab, EndpointConfig } from "./state";
 import { DEFAULT_ENDPOINT, DEFAULT_MCP_COMMAND, DEFAULT_VLM_ENABLED, makeDefaultWorkflow } from "./state";
 import { loadSettings, saveSetting, toEndpoint } from "./settings";
 import type { PersistedSettings } from "./settings";
+import { useWorkflowMutations } from "./useWorkflowMutations";
 
 export type { DetailTab, EndpointConfig, AppState, AppActions } from "./state";
 
@@ -91,72 +92,8 @@ export function useAppStore(): [AppState, AppActions] {
 
   // ── Workflow mutations ──────────────────────────────────────
 
-  const addNode = useCallback(
-    (nodeType: NodeType) => {
-      const id = crypto.randomUUID();
-      const offsetX = (workflow.nodes.length % 4) * 250;
-      const offsetY = Math.floor(workflow.nodes.length / 4) * 150;
-      const node: Node = {
-        id,
-        node_type: nodeType,
-        position: { x: 200 + offsetX, y: 150 + offsetY },
-        name: nodeType.type === "AiStep" ? "AI Step" : nodeType.type.replace(/([A-Z])/g, " $1").trim(),
-        enabled: true,
-        timeout_ms: null,
-        retries: 0,
-        trace_level: "Minimal",
-        expected_outcome: null,
-        checks: [],
-      };
-      setWorkflow((prev) => ({ ...prev, nodes: [...prev.nodes, node] }));
-      setSelectedNode(id);
-    },
-    [workflow.nodes.length],
-  );
-
-  const removeNode = useCallback((id: string) => {
-    setWorkflow((prev) => ({
-      ...prev,
-      nodes: prev.nodes.filter((n) => n.id !== id),
-      edges: prev.edges.filter((e) => e.from !== id && e.to !== id),
-    }));
-    setSelectedNode((prev) => (prev === id ? null : prev));
-  }, []);
-
-  const updateNodePositions = useCallback(
-    (updates: Map<string, { x: number; y: number }>) => {
-      setWorkflow((prev) => ({
-        ...prev,
-        nodes: prev.nodes.map((n) => {
-          const pos = updates.get(n.id);
-          return pos ? { ...n, position: { x: pos.x, y: pos.y } } : n;
-        }),
-      }));
-    },
-    [],
-  );
-
-  const updateNode = useCallback((id: string, updates: Partial<Node>) => {
-    setWorkflow((prev) => ({
-      ...prev,
-      nodes: prev.nodes.map((n) => (n.id === id ? { ...n, ...updates } : n)),
-    }));
-  }, []);
-
-  const addEdge = useCallback((from: string, to: string) => {
-    setWorkflow((prev) => {
-      const filtered = prev.edges.filter((e) => e.from !== from);
-      const edge: Edge = { from, to };
-      return { ...prev, edges: [...filtered, edge] };
-    });
-  }, []);
-
-  const removeEdge = useCallback((from: string, to: string) => {
-    setWorkflow((prev) => ({
-      ...prev,
-      edges: prev.edges.filter((e) => !(e.from === from && e.to === to)),
-    }));
-  }, []);
+  const { addNode, removeNode, updateNodePositions, updateNode, addEdge, removeEdge } =
+    useWorkflowMutations(setWorkflow, setSelectedNode, workflow.nodes.length);
 
   // ── Project IO ──────────────────────────────────────────────
 

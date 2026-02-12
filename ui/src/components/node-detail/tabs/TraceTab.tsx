@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { commands } from "../../../bindings";
 import type { Artifact, TraceEvent } from "../../../bindings";
-import { useNodeRuns } from "../hooks/useNodeRuns";
+import { useNodeRuns } from "../hooks";
 import { EmptyState, StatusBadge } from "../fields";
 import { eventTypeColor, formatEventPayload, runDuration } from "../formatters";
 
@@ -9,24 +9,29 @@ export function TraceTab({
   nodeId,
   projectPath,
   workflowId,
+  initialRunId,
 }: {
   nodeId: string;
   projectPath: string | null;
   workflowId: string;
+  initialRunId?: string | null;
 }) {
   const runs = useNodeRuns(projectPath, workflowId, nodeId);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(initialRunId ?? null);
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [artifactPreviews, setArtifactPreviews] = useState<
     Record<string, string>
   >({});
 
-  // Auto-select first run when runs load
+  // Select initialRunId if provided, otherwise auto-select first run
   useEffect(() => {
-    if (runs.length > 0 && !selectedRunId) {
+    if (runs.length === 0) return;
+    if (initialRunId && runs.some((r) => r.run_id === initialRunId)) {
+      setSelectedRunId(initialRunId);
+    } else if (!selectedRunId) {
       setSelectedRunId(runs[0].run_id);
     }
-  }, [runs, selectedRunId]);
+  }, [runs, selectedRunId, initialRunId]);
 
   // Load events for selected run
   useEffect(() => {

@@ -1,9 +1,7 @@
+import { useState } from "react";
 import type { Node } from "../../bindings";
 import type { DetailTab } from "../../store/useAppStore";
-import { SetupTab } from "./tabs/SetupTab";
-import { TraceTab } from "./tabs/TraceTab";
-import { ChecksTab } from "./tabs/ChecksTab";
-import { RunsTab } from "./tabs/RunsTab";
+import { ChecksTab, RunsTab, SetupTab, TraceTab } from "./tabs";
 
 interface NodeDetailModalProps {
   node: Node | null;
@@ -31,6 +29,8 @@ export function NodeDetailModal({
   onUpdate,
   onClose,
 }: NodeDetailModalProps) {
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
   if (!node) return null;
 
   return (
@@ -78,6 +78,7 @@ export function NodeDetailModal({
               nodeId={node.id}
               projectPath={projectPath}
               workflowId={workflowId}
+              initialRunId={selectedRunId}
             />
           )}
           {tab === "checks" && (
@@ -88,7 +89,10 @@ export function NodeDetailModal({
               nodeId={node.id}
               projectPath={projectPath}
               workflowId={workflowId}
-              onSelectRun={() => onTabChange("trace")}
+              onSelectRun={(runId) => {
+                setSelectedRunId(runId);
+                onTabChange("trace");
+              }}
             />
           )}
         </div>

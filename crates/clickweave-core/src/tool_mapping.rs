@@ -18,7 +18,7 @@ pub struct ToolInvocation {
 }
 
 /// Errors that can occur during tool mapping.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolMappingError {
     /// The tool name is not in the known tools list.
     UnknownTool(String),

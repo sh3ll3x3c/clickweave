@@ -1,4 +1,4 @@
-import { useNodeRuns } from "../hooks/useNodeRuns";
+import { useNodeRuns } from "../hooks";
 import { EmptyState, StatusBadge } from "../fields";
 import { runDuration } from "../formatters";
 
@@ -11,7 +11,7 @@ export function RunsTab({
   nodeId: string;
   projectPath: string | null;
   workflowId: string;
-  onSelectRun: () => void;
+  onSelectRun: (runId: string) => void;
 }) {
   const runs = useNodeRuns(projectPath, workflowId, nodeId);
 
@@ -31,7 +31,7 @@ export function RunsTab({
         return (
           <button
             key={run.run_id}
-            onClick={onSelectRun}
+            onClick={() => onSelectRun(run.run_id)}
             className="flex w-full items-center gap-3 rounded bg-[var(--bg-input)] px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]"
           >
             <StatusBadge status={run.status} />

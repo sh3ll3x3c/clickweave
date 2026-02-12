@@ -63,7 +63,7 @@ pub struct PlanResult {
 
 /// Output from the patcher LLM.
 #[derive(Debug, Deserialize)]
-pub(crate) struct PatcherOutput {
+struct PatcherOutput {
     #[serde(default)]
     pub add: Vec<PlanStep>,
     #[serde(default)]
@@ -74,7 +74,7 @@ pub(crate) struct PatcherOutput {
 
 /// A node update from the patcher (only changed fields).
 #[derive(Debug, Deserialize)]
-pub(crate) struct PatchNodeUpdate {
+struct PatchNodeUpdate {
     pub node_id: String,
     #[serde(default)]
     pub name: Option<String>,
