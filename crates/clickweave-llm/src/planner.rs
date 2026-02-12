@@ -282,8 +282,8 @@ fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(NodeType, Stri
             prompt,
             allowed_tools,
             max_tool_calls,
+            timeout_ms,
             name,
-            ..
         } => {
             let display = name.clone().unwrap_or_else(|| "AI Step".to_string());
             Ok((
@@ -291,6 +291,7 @@ fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(NodeType, Stri
                     prompt: prompt.clone(),
                     allowed_tools: allowed_tools.clone(),
                     max_tool_calls: *max_tool_calls,
+                    timeout_ms: *timeout_ms,
                     ..Default::default()
                 }),
                 display,

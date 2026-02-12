@@ -275,6 +275,8 @@ pub struct AiStepParams {
     pub template_image: Option<String>,
     pub max_tool_calls: Option<u32>,
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
