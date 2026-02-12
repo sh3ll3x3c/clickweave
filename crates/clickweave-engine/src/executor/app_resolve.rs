@@ -1,5 +1,5 @@
 use super::{ResolvedApp, WorkflowExecutor};
-use clickweave_core::NodeRun;
+use clickweave_core::{FocusMethod, NodeRun, NodeType};
 use clickweave_llm::{ChatBackend, Message};
 use clickweave_mcp::McpClient;
 use serde_json::Value;
@@ -16,13 +16,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &McpClient,
         node_run: Option<&NodeRun>,
     ) -> Result<ResolvedApp, String> {
-        // Check cache first
-        if let Some(cached) = self.app_cache.read().unwrap().get(user_input).cloned() {
-            debug!(
-                user_input,
-                resolved_name = %cached.name,
-                "app_cache hit"
-            );
+        if let Some(cached) = self
+            .app_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(user_input)
+            .cloned()
+        {
+            debug!(user_input, resolved_name = %cached.name, "app_cache hit");
             self.log(format!(
                 "App resolved (cached): \"{}\" -> {} (pid {})",
                 user_input, cached.name, cached.pid
@@ -30,7 +31,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return Ok(cached);
         }
 
-        // Fetch live app and window lists from the MCP server
         let apps_result = mcp
             .call_tool("list_apps", None)
             .map_err(|e| format!("Failed to list apps: {}", e))?;
@@ -41,7 +41,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let apps_text = Self::extract_result_text(&apps_result);
         let windows_text = Self::extract_result_text(&windows_result);
 
-        // Build the LLM prompt
         let prompt = format!(
             "You are resolving an application name. The user wrote: \"{user_input}\"\n\
              \n\
@@ -75,7 +74,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .content_text()
             .ok_or_else(|| "LLM returned empty content during app resolution".to_string())?;
 
-        // Strip markdown code fences if present
         let json_text = strip_code_block(raw_text);
 
         let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
@@ -85,21 +83,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
         })?;
 
-        let name = parsed.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+        let name = parsed["name"].as_str().ok_or_else(|| {
             format!(
                 "LLM could not resolve app for \"{}\": name is null or missing",
                 user_input
             )
         })?;
 
-        let pid = parsed.get("pid").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let pid = parsed["pid"].as_i64().ok_or_else(|| {
+            format!(
+                "LLM resolved name \"{}\" for \"{}\" but returned no PID",
+                name, user_input
+            )
+        })? as i32;
 
         let resolved = ResolvedApp {
             name: name.to_string(),
             pid,
         };
 
-        // Record trace event
         self.record_event(
             node_run,
             "app_resolved",
@@ -115,43 +117,55 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             user_input, resolved.name, resolved.pid
         ));
 
-        // Cache the result
         self.app_cache
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(user_input.to_string(), resolved.clone());
 
         Ok(resolved)
     }
 
-    /// Remove a cached app resolution, e.g. when a focus attempt fails and we
-    /// want to re-resolve on retry.
+    /// Remove a cached app resolution so the next attempt re-resolves via LLM.
     pub(crate) fn evict_app_cache(&self, user_input: &str) {
-        let removed = self.app_cache.write().unwrap().remove(user_input).is_some();
-        if removed {
+        if self
+            .app_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(user_input)
+            .is_some()
+        {
             debug!(user_input, "evicted app_cache entry");
             self.log(format!("App cache evicted for \"{}\"", user_input));
         }
     }
+
+    /// Evict any app-name cache entry associated with a node type, so that
+    /// retries re-resolve the app via LLM.
+    pub(crate) fn evict_app_cache_for_node(&self, node_type: &NodeType) {
+        let key = match node_type {
+            NodeType::FocusWindow(p) if p.method == FocusMethod::AppName => p.value.as_deref(),
+            NodeType::TakeScreenshot(p) => p.target.as_deref(),
+            _ => None,
+        };
+        if let Some(key) = key {
+            self.evict_app_cache(key);
+        }
+    }
 }
 
-/// Strip optional markdown code fences (```json ... ``` or ``` ... ```)
+/// Strip optional markdown code fences (```` ```json ... ``` ```` or ```` ``` ... ``` ````)
 /// so we can parse the inner JSON.
 fn strip_code_block(text: &str) -> &str {
     let trimmed = text.trim();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        // Skip optional language tag on the first line
-        let rest = rest
-            .strip_prefix("json")
-            .or_else(|| rest.strip_prefix("JSON"))
-            .unwrap_or(rest);
-        let rest = rest.trim_start_matches(['\r', '\n']);
-        if let Some(inner) = rest.strip_suffix("```") {
-            return inner.trim();
-        }
-        return rest.trim();
-    }
-    trimmed
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    // Skip any language tag on the opening fence line
+    let rest = match rest.find('\n') {
+        Some(pos) => &rest[pos + 1..],
+        None => rest,
+    };
+    rest.strip_suffix("```").unwrap_or(rest).trim()
 }
 
 #[cfg(test)]
@@ -199,6 +213,12 @@ mod tests {
         let input = "```json\n{\n  \"name\": \"Multi\",\n  \"pid\": 3\n}\n```";
         let expected = "{\n  \"name\": \"Multi\",\n  \"pid\": 3\n}";
         assert_eq!(strip_code_block(input), expected);
+    }
+
+    #[test]
+    fn strip_code_block_arbitrary_language_tag() {
+        let input = "```text\n{\"name\": \"Any\", \"pid\": 10}\n```";
+        assert_eq!(strip_code_block(input), r#"{"name": "Any", "pid": 10}"#);
     }
 
     #[test]
