@@ -644,28 +644,58 @@ pub async fn patch_workflow_with_backend(
 
     info!("Patching workflow for prompt: {}", user_prompt);
 
-    let messages = vec![Message::system(&system), Message::user(&user_msg)];
+    let mut messages = vec![Message::system(&system), Message::user(&user_msg)];
+    let mut last_error: Option<String> = None;
+    let mut patcher_output: Option<PatcherOutput> = None;
 
-    let response: ChatResponse = backend
-        .chat(messages, None)
-        .await
-        .context("Patcher LLM call failed")?;
+    for attempt in 0..=MAX_REPAIR_ATTEMPTS {
+        if attempt > 0 {
+            if let Some(ref err) = last_error {
+                info!("Repair attempt {} for patcher error: {}", attempt, err);
+                messages.push(Message::user(format!(
+                    "Your previous output had an error: {}\n\nPlease fix the JSON and try again. Output ONLY the corrected JSON object.",
+                    err
+                )));
+            }
+        }
 
-    let choice = response
-        .choices
-        .first()
-        .ok_or_else(|| anyhow!("No response from patcher"))?;
+        let response: ChatResponse = backend
+            .chat(messages.clone(), None)
+            .await
+            .context("Patcher LLM call failed")?;
 
-    let content = choice
-        .message
-        .text_content()
-        .ok_or_else(|| anyhow!("Patcher returned no text content"))?;
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| anyhow!("No response from patcher"))?;
 
-    debug!("Patcher raw output: {}", content);
+        let content = choice
+            .message
+            .text_content()
+            .ok_or_else(|| anyhow!("Patcher returned no text content"))?;
 
-    let json_str = extract_json(content);
-    let patcher_output: PatcherOutput =
-        serde_json::from_str(json_str).context("Failed to parse patcher output as JSON")?;
+        debug!("Patcher raw output (attempt {}): {}", attempt, content);
+
+        messages.push(Message::assistant(content));
+
+        let json_str = extract_json(content);
+        match serde_json::from_str::<PatcherOutput>(json_str) {
+            Ok(output) => {
+                patcher_output = Some(output);
+                break;
+            }
+            Err(e) => {
+                if attempt < MAX_REPAIR_ATTEMPTS {
+                    last_error = Some(e.to_string());
+                    continue;
+                }
+                return Err(anyhow!("Failed to parse patcher output as JSON: {}", e));
+            }
+        }
+    }
+
+    let patcher_output =
+        patcher_output.ok_or_else(|| anyhow!("Patching failed after repair attempts"))?;
 
     // Process added nodes
     let mut added_nodes = Vec::new();
@@ -1392,5 +1422,75 @@ mod tests {
             NodeType::Click(_)
         ));
         assert!(!result.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_patch_repair_pass_fixes_invalid_json() {
+        let workflow = Workflow {
+            id: Uuid::new_v4(),
+            name: "Test".to_string(),
+            nodes: vec![Node::new(
+                NodeType::TakeScreenshot(TakeScreenshotParams {
+                    mode: ScreenshotMode::Window,
+                    target: None,
+                    include_ocr: true,
+                }),
+                Position { x: 300.0, y: 100.0 },
+                "Screenshot",
+            )],
+            edges: vec![],
+        };
+
+        let bad_response = r#"Here's the patch: {"add": [invalid}]}"#;
+        let good_response = r#"{"add": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 50, "y": 50}}]}"#;
+        let mock = MockBackend::new(vec![bad_response, good_response]);
+
+        let result = patch_workflow_with_backend(
+            &mock,
+            &workflow,
+            "Add a click",
+            &sample_tools(),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.added_nodes.len(), 1);
+        assert_eq!(mock.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_patch_repair_pass_fails_after_max_attempts() {
+        let workflow = Workflow {
+            id: Uuid::new_v4(),
+            name: "Test".to_string(),
+            nodes: vec![Node::new(
+                NodeType::TakeScreenshot(TakeScreenshotParams {
+                    mode: ScreenshotMode::Window,
+                    target: None,
+                    include_ocr: true,
+                }),
+                Position { x: 300.0, y: 100.0 },
+                "Screenshot",
+            )],
+            edges: vec![],
+        };
+
+        let bad = r#"not json at all"#;
+        let mock = MockBackend::new(vec![bad, bad]);
+
+        let result = patch_workflow_with_backend(
+            &mock,
+            &workflow,
+            "Add a click",
+            &sample_tools(),
+            false,
+            false,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(mock.call_count(), 2);
     }
 }
