@@ -808,7 +808,13 @@ fn truncate_intent(intent: &str) -> String {
     if intent.len() <= 50 {
         intent.to_string()
     } else {
-        format!("{}...", &intent[..47])
+        let end = intent
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= 47)
+            .last()
+            .unwrap_or(0);
+        format!("{}...", &intent[..end])
     }
 }
 
@@ -1018,6 +1024,23 @@ mod tests {
         let truncated = truncate_intent(&long);
         assert!(truncated.len() <= 50);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_intent_multibyte_utf8() {
+        // Each emoji is 4 bytes; 13 emojis = 52 bytes > 50 limit
+        let emojis = "🎉".repeat(13);
+        let truncated = truncate_intent(&emojis);
+        assert!(truncated.ends_with("..."));
+        // Must not panic and must be valid UTF-8
+
+        // Multi-byte char spanning the byte-47 boundary
+        // 46 ASCII bytes + "é" (2 bytes) + padding = well over 50
+        let mixed = format!("{}é{}", "a".repeat(46), "b".repeat(10));
+        let truncated = truncate_intent(&mixed);
+        assert!(truncated.ends_with("..."));
+        // The "é" at byte 46-47 should be included or excluded cleanly
+        assert!(!truncated.contains('\u{FFFD}')); // no replacement chars
     }
 
     // --- Integration tests with mock backend ---
