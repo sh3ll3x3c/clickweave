@@ -76,7 +76,9 @@ impl WorkflowExecutor {
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     fn emit(&self, event: ExecutorEvent) {
-        let _ = self.event_tx.try_send(event);
+        if let Err(e) = self.event_tx.try_send(event) {
+            error!("Failed to send executor event: {}", e);
+        }
     }
 
     fn log(&self, msg: impl Into<String>) {

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tracing::warn;
 use uuid::Uuid;
 
 fn parse_uuid(s: &str, label: &str) -> Result<Uuid, String> {
@@ -365,51 +366,48 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 
     tauri::async_runtime::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            match event {
+            let emit_result = match event {
                 ExecutorEvent::Log(msg) | ExecutorEvent::Error(msg) => {
-                    let _ = emit_handle.emit("executor://log", LogPayload { message: msg });
+                    emit_handle.emit("executor://log", LogPayload { message: msg })
                 }
                 ExecutorEvent::StateChanged(state) => {
                     let state = match state {
                         ExecutorState::Idle => "idle",
                         ExecutorState::Running => "running",
                     };
-                    let _ = emit_handle.emit(
+                    emit_handle.emit(
                         "executor://state",
                         StatePayload {
                             state: state.to_string(),
                         },
-                    );
+                    )
                 }
-                ExecutorEvent::NodeStarted(id) => {
-                    let _ = emit_handle.emit(
-                        "executor://node_started",
-                        NodePayload {
-                            node_id: id.to_string(),
-                        },
-                    );
-                }
-                ExecutorEvent::NodeCompleted(id) => {
-                    let _ = emit_handle.emit(
-                        "executor://node_completed",
-                        NodePayload {
-                            node_id: id.to_string(),
-                        },
-                    );
-                }
-                ExecutorEvent::NodeFailed(id, err) => {
-                    let _ = emit_handle.emit(
-                        "executor://node_failed",
-                        NodeErrorPayload {
-                            node_id: id.to_string(),
-                            error: err,
-                        },
-                    );
-                }
+                ExecutorEvent::NodeStarted(id) => emit_handle.emit(
+                    "executor://node_started",
+                    NodePayload {
+                        node_id: id.to_string(),
+                    },
+                ),
+                ExecutorEvent::NodeCompleted(id) => emit_handle.emit(
+                    "executor://node_completed",
+                    NodePayload {
+                        node_id: id.to_string(),
+                    },
+                ),
+                ExecutorEvent::NodeFailed(id, err) => emit_handle.emit(
+                    "executor://node_failed",
+                    NodeErrorPayload {
+                        node_id: id.to_string(),
+                        error: err,
+                    },
+                ),
                 ExecutorEvent::WorkflowCompleted => {
-                    let _ = emit_handle.emit("executor://workflow_completed", ());
+                    emit_handle.emit("executor://workflow_completed", ())
                 }
-                ExecutorEvent::RunCreated(_, _) => {}
+                ExecutorEvent::RunCreated(_, _) => Ok(()),
+            };
+            if let Err(e) = emit_result {
+                warn!("Failed to emit executor event to UI: {}", e);
             }
         }
 
@@ -428,13 +426,12 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), String> {
     let guard = app.state::<Mutex<ExecutorHandle>>();
     let guard = guard.lock().unwrap();
-    guard
+    let tx = guard
         .stop_tx
         .as_ref()
-        .ok_or_else(|| "No workflow is running".to_string())
-        .map(|tx| {
-            let _ = tx.try_send(ExecutorCommand::Stop);
-        })
+        .ok_or_else(|| "No workflow is running".to_string())?;
+    tx.try_send(ExecutorCommand::Stop)
+        .map_err(|e| format!("Failed to send stop command: {}", e))
 }
 
 #[tauri::command]
