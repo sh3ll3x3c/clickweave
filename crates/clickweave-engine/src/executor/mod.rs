@@ -1,4 +1,5 @@
 mod ai_step;
+mod app_resolve;
 mod deterministic;
 mod run_loop;
 mod trace;
