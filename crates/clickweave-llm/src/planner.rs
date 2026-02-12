@@ -1,10 +1,7 @@
 use crate::{ChatBackend, ChatResponse, LlmClient, LlmConfig, Message};
 use anyhow::{Context, Result, anyhow};
 use clickweave_core::{
-    AiStepParams, ClickParams, Edge, FindImageParams, FindTextParams, FocusMethod,
-    FocusWindowParams, ListWindowsParams, McpToolCallParams, MouseButton, Node, NodeType, Position,
-    PressKeyParams, ScreenshotMode, ScrollParams, TakeScreenshotParams, TypeTextParams, Workflow,
-    validate_workflow,
+    AiStepParams, Edge, Node, NodeType, Position, Workflow, tool_mapping, validate_workflow,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -124,143 +121,8 @@ fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(NodeType, Stri
             name,
         } => {
             let display = name.clone().unwrap_or_else(|| tool_name.replace('_', " "));
-
-            // Try to map to a typed node, fall back to McpToolCall
-            let node_type = match tool_name.as_str() {
-                "take_screenshot" => {
-                    let mode = match arguments.get("mode").and_then(|v| v.as_str()) {
-                        Some("screen") => ScreenshotMode::Screen,
-                        Some("region") => ScreenshotMode::Region,
-                        _ => ScreenshotMode::Window,
-                    };
-                    NodeType::TakeScreenshot(TakeScreenshotParams {
-                        mode,
-                        target: arguments
-                            .get("app_name")
-                            .and_then(|v| v.as_str())
-                            .map(String::from),
-                        include_ocr: arguments
-                            .get("include_ocr")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(true),
-                    })
-                }
-                "find_text" => {
-                    let text = arguments
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .ok_or_else(|| anyhow!("find_text requires non-empty 'text' argument"))?;
-                    NodeType::FindText(FindTextParams {
-                        search_text: text.to_string(),
-                        ..Default::default()
-                    })
-                }
-                "find_image" => NodeType::FindImage(FindImageParams {
-                    template_image: arguments
-                        .get("template_image_base64")
-                        .or_else(|| arguments.get("template_id"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                    threshold: arguments
-                        .get("threshold")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.75),
-                    max_results: arguments
-                        .get("max_results")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(3) as u32,
-                }),
-                "click" => NodeType::Click(ClickParams {
-                    x: arguments.get("x").and_then(|v| v.as_f64()),
-                    y: arguments.get("y").and_then(|v| v.as_f64()),
-                    button: match arguments.get("button").and_then(|v| v.as_str()) {
-                        Some("right") => MouseButton::Right,
-                        Some("center") => MouseButton::Center,
-                        _ => MouseButton::Left,
-                    },
-                    click_count: arguments
-                        .get("click_count")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(1) as u32,
-                }),
-                "type_text" => {
-                    let text = arguments
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .ok_or_else(|| anyhow!("type_text requires non-empty 'text' argument"))?;
-                    NodeType::TypeText(TypeTextParams {
-                        text: text.to_string(),
-                    })
-                }
-                "press_key" => {
-                    let key = arguments
-                        .get("key")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .ok_or_else(|| anyhow!("press_key requires non-empty 'key' argument"))?;
-                    NodeType::PressKey(PressKeyParams {
-                        key: key.to_string(),
-                        modifiers: arguments
-                            .get("modifiers")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str().map(String::from))
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                    })
-                }
-                "scroll" => NodeType::Scroll(ScrollParams {
-                    delta_y: arguments
-                        .get("delta_y")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0) as i32,
-                    x: arguments.get("x").and_then(|v| v.as_f64()),
-                    y: arguments.get("y").and_then(|v| v.as_f64()),
-                }),
-                "list_windows" => NodeType::ListWindows(ListWindowsParams {
-                    app_name: arguments
-                        .get("app_name")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                }),
-                "focus_window" => {
-                    let (method, value) = if let Some(app) =
-                        arguments.get("app_name").and_then(|v| v.as_str())
-                    {
-                        (FocusMethod::AppName, Some(app.to_string()))
-                    } else if let Some(wid) = arguments.get("window_id").and_then(|v| v.as_u64()) {
-                        (FocusMethod::WindowId, Some(wid.to_string()))
-                    } else if let Some(pid) = arguments.get("pid").and_then(|v| v.as_u64()) {
-                        (FocusMethod::Pid, Some(pid.to_string()))
-                    } else {
-                        (FocusMethod::AppName, None)
-                    };
-                    NodeType::FocusWindow(FocusWindowParams {
-                        method,
-                        value,
-                        bring_to_front: true,
-                    })
-                }
-                // Catch-all: use McpToolCall for unknown tools
-                _ => {
-                    // Verify the tool actually exists
-                    let tool_exists = tools
-                        .iter()
-                        .any(|t| t["function"]["name"].as_str() == Some(tool_name));
-                    if !tool_exists {
-                        return Err(anyhow!("Unknown tool: {}", tool_name));
-                    }
-                    NodeType::McpToolCall(McpToolCallParams {
-                        tool_name: tool_name.clone(),
-                        arguments: arguments.clone(),
-                    })
-                }
-            };
-
+            let node_type = tool_mapping::tool_invocation_to_node_type(tool_name, arguments, tools)
+                .map_err(|e| anyhow!("{}", e))?;
             Ok((node_type, display))
         }
         PlanStep::AiTransform { name, kind, .. } => {
@@ -845,6 +707,7 @@ fn truncate_intent(intent: &str) -> String {
 mod tests {
     use super::*;
     use crate::{ChatResponse, Choice};
+    use clickweave_core::{ClickParams, MouseButton, ScreenshotMode, TakeScreenshotParams};
     use std::sync::Mutex;
 
     /// Mock backend that returns a sequence of responses (for testing repair pass).

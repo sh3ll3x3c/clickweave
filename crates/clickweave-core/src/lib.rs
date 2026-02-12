@@ -1,4 +1,5 @@
 pub mod storage;
+pub mod tool_mapping;
 mod validation;
 mod workflow;
 

@@ -1,8 +1,8 @@
 use base64::Engine;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{
-    AiStepParams, ArtifactKind, FocusMethod, MouseButton, NodeRun, NodeType, RunStatus,
-    ScreenshotMode, TraceEvent, TraceLevel, Workflow,
+    AiStepParams, ArtifactKind, NodeRun, NodeType, RunStatus, TraceEvent, TraceLevel, Workflow,
+    tool_mapping,
 };
 use clickweave_llm::{
     ChatBackend, LlmClient, LlmConfig, Message, analyze_images, build_step_prompt,
@@ -566,118 +566,27 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &McpClient,
         mut node_run: Option<&mut NodeRun>,
     ) -> Result<(), String> {
-        let (tool_name, args) = match node_type {
-            NodeType::TakeScreenshot(p) => {
-                let mode = match p.mode {
-                    ScreenshotMode::Screen => "screen",
-                    ScreenshotMode::Window => "window",
-                    ScreenshotMode::Region => "region",
-                };
-                let mut args = serde_json::json!({
-                    "mode": mode,
-                    "include_ocr": p.include_ocr,
-                });
-                if let Some(target) = &p.target {
-                    args["app_name"] = Value::String(target.clone());
-                }
-                ("take_screenshot", args)
-            }
-            NodeType::FindText(p) => ("find_text", serde_json::json!({"text": p.search_text})),
-            NodeType::FindImage(p) => {
-                let mut args = serde_json::json!({
-                    "threshold": p.threshold,
-                    "max_results": p.max_results,
-                });
-                if let Some(img) = &p.template_image {
-                    args["template_image_base64"] = Value::String(img.clone());
-                }
-                ("find_image", args)
-            }
-            NodeType::Click(p) => {
-                let button = match p.button {
-                    MouseButton::Left => "left",
-                    MouseButton::Right => "right",
-                    MouseButton::Center => "center",
-                };
+        // Handle non-tool node types
+        if let NodeType::AppDebugKitOp(p) = node_type {
+            self.log(format!(
+                "AppDebugKit operation: {} (not yet fully implemented)",
+                p.operation_name
+            ));
+            return Ok(());
+        }
+        if matches!(node_type, NodeType::AiStep(_)) {
+            return Ok(());
+        }
 
-                let mut args = serde_json::json!({
-                    "button": button,
-                    "click_count": p.click_count,
-                });
-                if let Some(x) = p.x {
-                    args["x"] = serde_json::json!(x);
-                }
-                if let Some(y) = p.y {
-                    args["y"] = serde_json::json!(y);
-                }
-                ("click", args)
-            }
-            NodeType::TypeText(p) => ("type_text", serde_json::json!({"text": p.text})),
-            NodeType::PressKey(p) => {
-                let mut args = serde_json::json!({"key": p.key});
-                if !p.modifiers.is_empty() {
-                    args["modifiers"] = serde_json::json!(p.modifiers);
-                }
-                ("press_key", args)
-            }
-            NodeType::Scroll(p) => {
-                let mut args = serde_json::json!({"delta_y": p.delta_y});
-                if let Some(x) = p.x {
-                    args["x"] = serde_json::json!(x);
-                }
-                if let Some(y) = p.y {
-                    args["y"] = serde_json::json!(y);
-                }
-                ("scroll", args)
-            }
-            NodeType::ListWindows(p) => {
-                let mut args = serde_json::json!({});
-                if let Some(app) = &p.app_name {
-                    args["app_name"] = Value::String(app.clone());
-                }
-                ("list_windows", args)
-            }
-            NodeType::FocusWindow(p) => {
-                let mut args = serde_json::json!({});
-                if let Some(val) = &p.value {
-                    match p.method {
-                        FocusMethod::AppName => {
-                            args["app_name"] = Value::String(val.clone());
-                        }
-                        FocusMethod::WindowId => {
-                            if let Ok(id) = val.parse::<u64>() {
-                                args["window_id"] = serde_json::json!(id);
-                            }
-                        }
-                        FocusMethod::Pid => {
-                            if let Ok(pid) = val.parse::<u64>() {
-                                args["pid"] = serde_json::json!(pid);
-                            }
-                        }
-                    }
-                }
-                ("focus_window", args)
-            }
-            NodeType::McpToolCall(p) => {
-                if p.tool_name.is_empty() {
-                    return Err("McpToolCall has empty tool_name".to_string());
-                }
-                let args = if p.arguments.is_null() {
-                    serde_json::json!({})
-                } else {
-                    p.arguments.clone()
-                };
-                (p.tool_name.as_str(), args)
-            }
-            NodeType::AppDebugKitOp(p) => {
-                self.log(format!(
-                    "AppDebugKit operation: {} (not yet fully implemented)",
-                    p.operation_name
-                ));
-                return Ok(());
-            }
-            NodeType::AiStep(_) => return Ok(()),
-        };
+        let invocation = tool_mapping::node_type_to_tool_invocation(node_type)
+            .map_err(|e| format!("Tool mapping failed: {}", e))?;
+        let tool_name = &invocation.name;
+
+        if let NodeType::McpToolCall(p) = node_type
+            && p.tool_name.is_empty()
+        {
+            return Err("McpToolCall has empty tool_name".to_string());
+        }
 
         self.record_event(
             node_run.as_deref(),
@@ -686,7 +595,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         self.log(format!("Calling MCP tool: {}", tool_name));
-        let args = self.resolve_image_paths(Some(args));
+        let args = self.resolve_image_paths(Some(invocation.arguments));
         let result = mcp
             .call_tool(tool_name, args)
             .map_err(|e| format!("MCP tool {} failed: {}", tool_name, e))?;
