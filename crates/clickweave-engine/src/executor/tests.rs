@@ -1,6 +1,8 @@
 use super::*;
-use clickweave_core::Workflow;
 use clickweave_core::storage::RunStorage;
+use clickweave_core::{
+    FocusMethod, FocusWindowParams, NodeType, ScreenshotMode, TakeScreenshotParams, Workflow,
+};
 use clickweave_llm::{ChatBackend, ChatResponse, Content, ContentPart, Message};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -192,4 +194,60 @@ fn evict_app_cache_leaves_other_entries() {
         exec.app_cache.read().unwrap().contains_key("firefox"),
         "other entries should remain"
     );
+}
+
+#[test]
+fn evict_app_cache_for_focus_window_node() {
+    let exec = make_test_executor();
+    exec.app_cache.write().unwrap().insert(
+        "chrome".to_string(),
+        ResolvedApp {
+            name: "Google Chrome".to_string(),
+            pid: 1234,
+        },
+    );
+
+    let node = NodeType::FocusWindow(FocusWindowParams {
+        method: FocusMethod::AppName,
+        value: Some("chrome".to_string()),
+        bring_to_front: true,
+    });
+    exec.evict_app_cache_for_node(&node);
+    assert!(!exec.app_cache.read().unwrap().contains_key("chrome"));
+}
+
+#[test]
+fn evict_app_cache_for_screenshot_node() {
+    let exec = make_test_executor();
+    exec.app_cache.write().unwrap().insert(
+        "safari".to_string(),
+        ResolvedApp {
+            name: "Safari".to_string(),
+            pid: 999,
+        },
+    );
+
+    let node = NodeType::TakeScreenshot(TakeScreenshotParams {
+        mode: ScreenshotMode::Window,
+        target: Some("safari".to_string()),
+        include_ocr: true,
+    });
+    exec.evict_app_cache_for_node(&node);
+    assert!(!exec.app_cache.read().unwrap().contains_key("safari"));
+}
+
+#[test]
+fn evict_app_cache_for_unrelated_node_is_noop() {
+    let exec = make_test_executor();
+    exec.app_cache.write().unwrap().insert(
+        "chrome".to_string(),
+        ResolvedApp {
+            name: "Google Chrome".to_string(),
+            pid: 1234,
+        },
+    );
+
+    let node = NodeType::Click(clickweave_core::ClickParams::default());
+    exec.evict_app_cache_for_node(&node);
+    assert!(exec.app_cache.read().unwrap().contains_key("chrome"));
 }
