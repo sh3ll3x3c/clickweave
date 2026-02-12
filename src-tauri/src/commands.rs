@@ -16,16 +16,22 @@ fn parse_uuid(s: &str, label: &str) -> Result<Uuid, String> {
 }
 
 /// Spawn an MCP server, grab the tool schemas, then kill it.
-fn fetch_mcp_tool_schemas(mcp_command: &str) -> Result<Vec<serde_json::Value>, String> {
-    let mut mcp = if mcp_command == "npx" {
-        McpClient::spawn_npx()
-    } else {
-        McpClient::spawn(mcp_command, &[])
-    }
-    .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
-    let tools = mcp.tools_as_openai();
-    let _ = mcp.kill();
-    Ok(tools)
+/// Runs on a blocking thread to avoid stalling the async runtime.
+async fn fetch_mcp_tool_schemas(mcp_command: &str) -> Result<Vec<serde_json::Value>, String> {
+    let mcp_command = mcp_command.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut mcp = if mcp_command == "npx" {
+            McpClient::spawn_npx()
+        } else {
+            McpClient::spawn(&mcp_command, &[])
+        }
+        .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
+        let tools = mcp.tools_as_openai();
+        let _ = mcp.kill();
+        Ok(tools)
+    })
+    .await
+    .map_err(|e| format!("MCP schema fetch task failed: {}", e))?
 }
 
 /// Derive the project directory from a path that may be a file or directory.
@@ -264,7 +270,7 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
 #[tauri::command]
 #[specta::specta]
 pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String> {
-    let tools = fetch_mcp_tool_schemas(&request.mcp_command)?;
+    let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
     let planner_config = request.planner.into_llm_config(None);
 
     let result = clickweave_llm::planner::plan_workflow(
@@ -286,7 +292,7 @@ pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String>
 #[tauri::command]
 #[specta::specta]
 pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, String> {
-    let tools = fetch_mcp_tool_schemas(&request.mcp_command)?;
+    let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
     let planner_config = request.planner.into_llm_config(None);
 
     let result = clickweave_llm::planner::patch_workflow(
