@@ -1,0 +1,152 @@
+use clickweave_core::{NodeType, Workflow};
+use clickweave_llm::LlmConfig;
+use serde::{Deserialize, Serialize};
+use specta::Type;
+use std::path::PathBuf;
+
+/// Derive the project directory from a path that may be a file or directory.
+pub fn project_dir(path: &str) -> PathBuf {
+    let p = PathBuf::from(path);
+    if p.extension().is_some() {
+        p.parent().unwrap_or(&p).to_path_buf()
+    } else {
+        p
+    }
+}
+
+pub fn parse_uuid(s: &str, label: &str) -> Result<uuid::Uuid, String> {
+    s.parse().map_err(|_| format!("Invalid {} ID", label))
+}
+
+// --- Specta-exported types ---
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct ProjectData {
+    pub path: String,
+    pub workflow: Workflow,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct ValidationResult {
+    pub valid: bool,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct NodeTypeInfo {
+    pub name: &'static str,
+    pub category: String,
+    pub icon: &'static str,
+    pub node_type: NodeType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct EndpointConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key: Option<String>,
+}
+
+impl EndpointConfig {
+    pub fn into_llm_config(self, temperature: Option<f32>) -> LlmConfig {
+        LlmConfig {
+            base_url: self.base_url,
+            api_key: self.api_key.filter(|k| !k.is_empty()),
+            model: self.model,
+            temperature,
+            max_tokens: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.base_url.is_empty() || self.model.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct RunRequest {
+    pub workflow: Workflow,
+    pub project_path: Option<String>,
+    pub agent: EndpointConfig,
+    pub vlm: Option<EndpointConfig>,
+    pub mcp_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PlanRequest {
+    pub intent: String,
+    pub planner: EndpointConfig,
+    pub allow_ai_transforms: bool,
+    pub allow_agent_steps: bool,
+    pub mcp_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PlanResponse {
+    pub workflow: Workflow,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PatchRequest {
+    pub workflow: Workflow,
+    pub user_prompt: String,
+    pub planner: EndpointConfig,
+    pub allow_ai_transforms: bool,
+    pub allow_agent_steps: bool,
+    pub mcp_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct WorkflowPatch {
+    pub added_nodes: Vec<clickweave_core::Node>,
+    pub removed_node_ids: Vec<String>,
+    pub updated_nodes: Vec<clickweave_core::Node>,
+    pub added_edges: Vec<clickweave_core::Edge>,
+    pub removed_edges: Vec<clickweave_core::Edge>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct RunsQuery {
+    pub project_path: String,
+    pub workflow_id: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct RunEventsQuery {
+    pub project_path: String,
+    pub workflow_id: String,
+    pub node_id: String,
+    pub run_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct ImportedAsset {
+    pub relative_path: String,
+    pub absolute_path: String,
+}
+
+// --- Event payloads (not specta-exported, used by executor) ---
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LogPayload {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatePayload {
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NodePayload {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeErrorPayload {
+    pub node_id: String,
+    pub error: String,
+}

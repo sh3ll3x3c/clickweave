@@ -1,0 +1,66 @@
+use super::types::*;
+use clickweave_core::storage::RunStorage;
+use clickweave_core::{NodeRun, TraceEvent};
+use tracing::warn;
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_runs(query: RunsQuery) -> Result<Vec<NodeRun>, String> {
+    let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
+    let node_id = parse_uuid(&query.node_id, "node")?;
+
+    let storage = RunStorage::new(&project_dir(&query.project_path), workflow_id);
+    storage
+        .load_runs_for_node(node_id)
+        .map_err(|e| format!("Failed to load runs: {}", e))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn load_run_events(query: RunEventsQuery) -> Result<Vec<TraceEvent>, String> {
+    let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
+    let node_id = parse_uuid(&query.node_id, "node")?;
+    let run_id = parse_uuid(&query.run_id, "run")?;
+
+    let storage = RunStorage::new(&project_dir(&query.project_path), workflow_id);
+    let events_path = storage.run_dir(node_id, run_id).join("events.jsonl");
+
+    if !events_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = std::fs::read_to_string(&events_path)
+        .map_err(|e| format!("Failed to read events.jsonl: {}", e))?;
+
+    let mut events = Vec::new();
+    let mut malformed = 0u32;
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<TraceEvent>(line) {
+            Ok(event) => events.push(event),
+            Err(e) => {
+                malformed += 1;
+                warn!("Malformed trace event line: {}", e);
+            }
+        }
+    }
+    if malformed > 0 {
+        warn!(
+            "Skipped {} malformed line(s) in {}",
+            malformed,
+            events_path.display()
+        );
+    }
+
+    Ok(events)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn read_artifact_base64(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let data = std::fs::read(&path).map_err(|e| format!("Failed to read artifact: {}", e))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&data))
+}

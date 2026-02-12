@@ -1,0 +1,74 @@
+use super::types::*;
+use clickweave_mcp::McpClient;
+
+/// Spawn an MCP server, grab the tool schemas, then kill it.
+/// Runs on a blocking thread to avoid stalling the async runtime.
+async fn fetch_mcp_tool_schemas(mcp_command: &str) -> Result<Vec<serde_json::Value>, String> {
+    let mcp_command = mcp_command.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut mcp = if mcp_command == "npx" {
+            McpClient::spawn_npx()
+        } else {
+            McpClient::spawn(&mcp_command, &[])
+        }
+        .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
+        let tools = mcp.tools_as_openai();
+        let _ = mcp.kill();
+        Ok(tools)
+    })
+    .await
+    .map_err(|e| format!("MCP schema fetch task failed: {}", e))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String> {
+    let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
+    let planner_config = request.planner.into_llm_config(None);
+
+    let result = clickweave_llm::planner::plan_workflow(
+        &request.intent,
+        planner_config,
+        &tools,
+        request.allow_ai_transforms,
+        request.allow_agent_steps,
+    )
+    .await
+    .map_err(|e| format!("Planning failed: {}", e))?;
+
+    Ok(PlanResponse {
+        workflow: result.workflow,
+        warnings: result.warnings,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, String> {
+    let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
+    let planner_config = request.planner.into_llm_config(None);
+
+    let result = clickweave_llm::planner::patch_workflow(
+        &request.workflow,
+        &request.user_prompt,
+        planner_config,
+        &tools,
+        request.allow_ai_transforms,
+        request.allow_agent_steps,
+    )
+    .await
+    .map_err(|e| format!("Patching failed: {}", e))?;
+
+    Ok(WorkflowPatch {
+        added_nodes: result.added_nodes,
+        removed_node_ids: result
+            .removed_node_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
+        updated_nodes: result.updated_nodes,
+        added_edges: result.added_edges,
+        removed_edges: result.removed_edges,
+        warnings: result.warnings,
+    })
+}
