@@ -40,6 +40,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             project_path,
             event_tx,
             storage,
+            app_cache: RefCell::new(HashMap::new()),
         }
     }
 }
