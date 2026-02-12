@@ -1,149 +1,12 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { load } from "@tauri-apps/plugin-store";
 import { commands } from "../bindings";
-import type { Workflow, NodeTypeInfo, Node, NodeType, Edge, RunRequest, PlanRequest, PatchRequest, WorkflowPatch } from "../bindings";
+import type { Workflow, Node, NodeType, Edge, RunRequest, PlanRequest, PatchRequest, WorkflowPatch, NodeTypeInfo } from "../bindings";
+import type { AppState, AppActions, DetailTab, EndpointConfig } from "./state";
+import { DEFAULT_ENDPOINT, DEFAULT_MCP_COMMAND, DEFAULT_VLM_ENABLED, makeDefaultWorkflow } from "./state";
+import { loadSettings, saveSetting, toEndpoint } from "./settings";
+import type { PersistedSettings } from "./settings";
 
-export type DetailTab = "setup" | "trace" | "checks" | "runs";
-
-export interface EndpointConfig {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-}
-
-export interface AppState {
-  workflow: Workflow;
-  projectPath: string | null;
-  nodeTypes: NodeTypeInfo[];
-  selectedNode: string | null;
-  activeNode: string | null;
-  executorState: "idle" | "running";
-  detailTab: DetailTab;
-  sidebarCollapsed: boolean;
-  logsDrawerOpen: boolean;
-  nodeSearch: string;
-  showSettings: boolean;
-  isNewWorkflow: boolean;
-  showPlannerModal: boolean;
-  plannerLoading: boolean;
-  plannerError: string | null;
-  pendingWorkflow: Workflow | null;
-  plannerWarnings: string[];
-  allowAiTransforms: boolean;
-  allowAgentSteps: boolean;
-  showAssistant: boolean;
-  assistantLoading: boolean;
-  assistantError: string | null;
-  assistantPatch: WorkflowPatch | null;
-  logs: string[];
-  plannerConfig: EndpointConfig;
-  agentConfig: EndpointConfig;
-  vlmConfig: EndpointConfig;
-  vlmEnabled: boolean;
-  mcpCommand: string;
-}
-
-export interface AppActions {
-  setWorkflow: (w: Workflow) => void;
-  selectNode: (id: string | null) => void;
-  setDetailTab: (tab: DetailTab) => void;
-  toggleSidebar: () => void;
-  toggleLogsDrawer: () => void;
-  setNodeSearch: (s: string) => void;
-  setShowSettings: (show: boolean) => void;
-  pushLog: (msg: string) => void;
-  clearLogs: () => void;
-  addNode: (nodeType: NodeType) => void;
-  removeNode: (id: string) => void;
-  updateNodePositions: (updates: Map<string, { x: number; y: number }>) => void;
-  updateNode: (id: string, updates: Partial<Node>) => void;
-  addEdge: (from: string, to: string) => void;
-  removeEdge: (from: string, to: string) => void;
-  openProject: () => Promise<void>;
-  saveProject: () => Promise<void>;
-  newProject: () => void;
-  setPlannerConfig: (config: EndpointConfig) => void;
-  setAgentConfig: (config: EndpointConfig) => void;
-  setVlmConfig: (config: EndpointConfig) => void;
-  setVlmEnabled: (enabled: boolean) => void;
-  setMcpCommand: (cmd: string) => void;
-  setActiveNode: (id: string | null) => void;
-  setExecutorState: (state: "idle" | "running") => void;
-  runWorkflow: () => Promise<void>;
-  stopWorkflow: () => Promise<void>;
-  setAllowAiTransforms: (allow: boolean) => void;
-  setAllowAgentSteps: (allow: boolean) => void;
-  planWorkflow: (intent: string) => Promise<void>;
-  applyPlannedWorkflow: () => void;
-  discardPlannedWorkflow: () => void;
-  setShowPlannerModal: (show: boolean) => void;
-  skipIntentEntry: () => void;
-  setShowAssistant: (show: boolean) => void;
-  patchWorkflow: (prompt: string) => Promise<void>;
-  applyPatch: () => void;
-  discardPatch: () => void;
-}
-
-const DEFAULT_ENDPOINT: EndpointConfig = {
-  baseUrl: "http://localhost:1234/v1",
-  apiKey: "",
-  model: "local",
-};
-
-const DEFAULT_VLM_ENABLED = false;
-const DEFAULT_MCP_COMMAND = "npx";
-
-interface PersistedSettings {
-  plannerConfig: EndpointConfig;
-  agentConfig: EndpointConfig;
-  vlmConfig: EndpointConfig;
-  vlmEnabled: boolean;
-  mcpCommand: string;
-}
-
-const SETTINGS_DEFAULTS: PersistedSettings = {
-  plannerConfig: DEFAULT_ENDPOINT,
-  agentConfig: DEFAULT_ENDPOINT,
-  vlmConfig: DEFAULT_ENDPOINT,
-  vlmEnabled: DEFAULT_VLM_ENABLED,
-  mcpCommand: DEFAULT_MCP_COMMAND,
-};
-
-async function loadSettings(): Promise<PersistedSettings> {
-  const store = await load("settings.json", { autoSave: false, defaults: {} });
-
-  // Backward compat: if legacy orchestratorConfig exists, use it as fallback for new configs
-  const legacyConfig = await store.get<EndpointConfig>("orchestratorConfig");
-  const fallback = legacyConfig ?? SETTINGS_DEFAULTS.agentConfig;
-
-  const plannerConfig = await store.get<EndpointConfig>("plannerConfig");
-  const agentConfig = await store.get<EndpointConfig>("agentConfig");
-  const vlmConfig = await store.get<EndpointConfig>("vlmConfig");
-  const vlmEnabled = await store.get<boolean>("vlmEnabled");
-  const mcpCommand = await store.get<string>("mcpCommand");
-  return {
-    plannerConfig: plannerConfig ?? fallback,
-    agentConfig: agentConfig ?? fallback,
-    vlmConfig: vlmConfig ?? SETTINGS_DEFAULTS.vlmConfig,
-    vlmEnabled: vlmEnabled ?? SETTINGS_DEFAULTS.vlmEnabled,
-    mcpCommand: mcpCommand ?? SETTINGS_DEFAULTS.mcpCommand,
-  };
-}
-
-async function saveSetting<K extends keyof PersistedSettings>(key: K, value: PersistedSettings[K]): Promise<void> {
-  const store = await load("settings.json", { autoSave: false, defaults: {} });
-  await store.set(key, value);
-  await store.save();
-}
-
-function makeDefaultWorkflow(): Workflow {
-  return {
-    id: crypto.randomUUID(),
-    name: "New Workflow",
-    nodes: [],
-    edges: [],
-  };
-}
+export type { DetailTab, EndpointConfig, AppState, AppActions } from "./state";
 
 export function useAppStore(): [AppState, AppActions] {
   const [workflow, setWorkflow] = useState<Workflow>(makeDefaultWorkflow);
@@ -176,6 +39,8 @@ export function useAppStore(): [AppState, AppActions] {
   const [vlmEnabled, setVlmEnabled] = useState(DEFAULT_VLM_ENABLED);
   const [mcpCommand, setMcpCommand] = useState(DEFAULT_MCP_COMMAND);
 
+  // ── Settings persistence ────────────────────────────────────
+
   const settingsLoaded = useRef(false);
   useEffect(() => {
     if (settingsLoaded.current) return;
@@ -201,6 +66,20 @@ export function useAppStore(): [AppState, AppActions] {
       .catch((e) => console.error("Failed to load node type defaults:", e));
   }, []);
 
+  function persist<K extends keyof PersistedSettings>(
+    key: K,
+    setter: (value: PersistedSettings[K]) => void,
+  ) {
+    return (value: PersistedSettings[K]) => {
+      setter(value);
+      saveSetting(key, value).catch((e) =>
+        console.error(`Failed to save setting "${key}":`, e),
+      );
+    };
+  }
+
+  // ── Logging ─────────────────────────────────────────────────
+
   const pushLog = useCallback((msg: string) => {
     setLogs((prev) => {
       const next = [...prev, msg];
@@ -210,10 +89,11 @@ export function useAppStore(): [AppState, AppActions] {
 
   const clearLogs = useCallback(() => setLogs([]), []);
 
+  // ── Workflow mutations ──────────────────────────────────────
+
   const addNode = useCallback(
     (nodeType: NodeType) => {
       const id = crypto.randomUUID();
-      // Position new nodes with some offset based on count
       const offsetX = (workflow.nodes.length % 4) * 250;
       const offsetY = Math.floor(workflow.nodes.length / 4) * 150;
       const node: Node = {
@@ -234,17 +114,14 @@ export function useAppStore(): [AppState, AppActions] {
     [workflow.nodes.length],
   );
 
-  const removeNode = useCallback(
-    (id: string) => {
-      setWorkflow((prev) => ({
-        ...prev,
-        nodes: prev.nodes.filter((n) => n.id !== id),
-        edges: prev.edges.filter((e) => e.from !== id && e.to !== id),
-      }));
-      setSelectedNode((prev) => (prev === id ? null : prev));
-    },
-    [],
-  );
+  const removeNode = useCallback((id: string) => {
+    setWorkflow((prev) => ({
+      ...prev,
+      nodes: prev.nodes.filter((n) => n.id !== id),
+      edges: prev.edges.filter((e) => e.from !== id && e.to !== id),
+    }));
+    setSelectedNode((prev) => (prev === id ? null : prev));
+  }, []);
 
   const updateNodePositions = useCallback(
     (updates: Map<string, { x: number; y: number }>) => {
@@ -266,27 +143,22 @@ export function useAppStore(): [AppState, AppActions] {
     }));
   }, []);
 
-  const addEdge = useCallback(
-    (from: string, to: string) => {
-      setWorkflow((prev) => {
-        // Enforce max 1 outgoing edge per node
-        const filtered = prev.edges.filter((e) => e.from !== from);
-        const edge: Edge = { from, to };
-        return { ...prev, edges: [...filtered, edge] };
-      });
-    },
-    [],
-  );
+  const addEdge = useCallback((from: string, to: string) => {
+    setWorkflow((prev) => {
+      const filtered = prev.edges.filter((e) => e.from !== from);
+      const edge: Edge = { from, to };
+      return { ...prev, edges: [...filtered, edge] };
+    });
+  }, []);
 
-  const removeEdge = useCallback(
-    (from: string, to: string) => {
-      setWorkflow((prev) => ({
-        ...prev,
-        edges: prev.edges.filter((e) => !(e.from === from && e.to === to)),
-      }));
-    },
-    [],
-  );
+  const removeEdge = useCallback((from: string, to: string) => {
+    setWorkflow((prev) => ({
+      ...prev,
+      edges: prev.edges.filter((e) => !(e.from === from && e.to === to)),
+    }));
+  }, []);
+
+  // ── Project IO ──────────────────────────────────────────────
 
   const openProject = useCallback(async () => {
     const result = await commands.pickWorkflowFile();
@@ -330,26 +202,12 @@ export function useAppStore(): [AppState, AppActions] {
     pushLog("New project created");
   }, [pushLog]);
 
+  // ── UI toggles ─────────────────────────────────────────────
+
   const toggleSidebar = useCallback(() => setSidebarCollapsed((p) => !p), []);
   const toggleLogsDrawer = useCallback(() => setLogsDrawerOpen((p) => !p), []);
 
-  function persist<K extends keyof PersistedSettings>(
-    key: K,
-    setter: (value: PersistedSettings[K]) => void,
-  ) {
-    return (value: PersistedSettings[K]) => {
-      setter(value);
-      saveSetting(key, value).catch((e) =>
-        console.error(`Failed to save setting "${key}":`, e),
-      );
-    };
-  }
-
-  const toEndpoint = (c: EndpointConfig) => ({
-    base_url: c.baseUrl,
-    model: c.model,
-    api_key: c.apiKey || null,
-  });
+  // ── Planner actions ─────────────────────────────────────────
 
   const plannerRef = useRef({ plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand });
   plannerRef.current = { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand };
@@ -403,6 +261,8 @@ export function useAppStore(): [AppState, AppActions] {
     setPlannerError(null);
     setShowPlannerModal(false);
   }, []);
+
+  // ── Assistant/patcher actions ───────────────────────────────
 
   const workflowRef = useRef(workflow);
   workflowRef.current = workflow;
@@ -478,6 +338,8 @@ export function useAppStore(): [AppState, AppActions] {
     setShowAssistant(false);
   }, []);
 
+  // ── Executor actions ────────────────────────────────────────
+
   const latestRef = useRef({ workflow, projectPath, agentConfig, vlmConfig, vlmEnabled, mcpCommand });
   latestRef.current = { workflow, projectPath, agentConfig, vlmConfig, vlmEnabled, mcpCommand };
 
@@ -503,36 +365,15 @@ export function useAppStore(): [AppState, AppActions] {
     }
   }, [pushLog]);
 
+  // ── Compose state + actions ─────────────────────────────────
+
   const state: AppState = {
-    workflow,
-    projectPath,
-    nodeTypes,
-    selectedNode,
-    activeNode,
-    executorState,
-    detailTab,
-    sidebarCollapsed,
-    logsDrawerOpen,
-    nodeSearch,
-    showSettings,
-    isNewWorkflow,
-    showPlannerModal,
-    plannerLoading,
-    plannerError,
-    pendingWorkflow,
-    plannerWarnings,
-    allowAiTransforms,
-    allowAgentSteps,
-    showAssistant,
-    assistantLoading,
-    assistantError,
-    assistantPatch,
-    logs,
-    plannerConfig,
-    agentConfig,
-    vlmConfig,
-    vlmEnabled,
-    mcpCommand,
+    workflow, projectPath, nodeTypes, selectedNode, activeNode, executorState,
+    detailTab, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings,
+    isNewWorkflow, showPlannerModal, plannerLoading, plannerError,
+    pendingWorkflow, plannerWarnings, allowAiTransforms, allowAgentSteps,
+    showAssistant, assistantLoading, assistantError, assistantPatch,
+    logs, plannerConfig, agentConfig, vlmConfig, vlmEnabled, mcpCommand,
   };
 
   const actions: AppActions = {
