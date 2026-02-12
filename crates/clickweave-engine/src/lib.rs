@@ -659,6 +659,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 ("focus_window", args)
             }
             NodeType::McpToolCall(p) => {
+                if p.tool_name.is_empty() {
+                    return Err("McpToolCall has empty tool_name".to_string());
+                }
                 let args = if p.arguments.is_null() {
                     serde_json::json!({})
                 } else {

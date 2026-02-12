@@ -145,14 +145,17 @@ fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(NodeType, Stri
                             .unwrap_or(true),
                     })
                 }
-                "find_text" => NodeType::FindText(FindTextParams {
-                    search_text: arguments
+                "find_text" => {
+                    let text = arguments
                         .get("text")
                         .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    ..Default::default()
-                }),
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| anyhow!("find_text requires non-empty 'text' argument"))?;
+                    NodeType::FindText(FindTextParams {
+                        search_text: text.to_string(),
+                        ..Default::default()
+                    })
+                }
                 "find_image" => NodeType::FindImage(FindImageParams {
                     template_image: arguments
                         .get("template_image_base64")
@@ -181,29 +184,35 @@ fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(NodeType, Stri
                         .and_then(|v| v.as_u64())
                         .unwrap_or(1) as u32,
                 }),
-                "type_text" => NodeType::TypeText(TypeTextParams {
-                    text: arguments
+                "type_text" => {
+                    let text = arguments
                         .get("text")
                         .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                }),
-                "press_key" => NodeType::PressKey(PressKeyParams {
-                    key: arguments
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| anyhow!("type_text requires non-empty 'text' argument"))?;
+                    NodeType::TypeText(TypeTextParams {
+                        text: text.to_string(),
+                    })
+                }
+                "press_key" => {
+                    let key = arguments
                         .get("key")
                         .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    modifiers: arguments
-                        .get("modifiers")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                }),
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| anyhow!("press_key requires non-empty 'key' argument"))?;
+                    NodeType::PressKey(PressKeyParams {
+                        key: key.to_string(),
+                        modifiers: arguments
+                            .get("modifiers")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
+                }
                 "scroll" => NodeType::Scroll(ScrollParams {
                     delta_y: arguments
                         .get("delta_y")
