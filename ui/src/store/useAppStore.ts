@@ -445,32 +445,35 @@ export function useAppStore(): [AppState, AppActions] {
     }
   }, [pushLog]);
 
-  const applyPatch = useCallback(() => {
+  const applyPatch = useCallback(async () => {
     if (!assistantPatch) return;
-    setWorkflow((prev) => {
-      // Remove nodes
+    // Build the patched workflow to validate before applying
+    const buildPatched = (prev: Workflow): Workflow => {
       let nodes = prev.nodes.filter((n) => !assistantPatch.removed_node_ids.includes(n.id));
-      // Apply updates
       nodes = nodes.map((n) => {
         const update = assistantPatch.updated_nodes.find((u) => u.id === n.id);
         return update ?? n;
       });
-      // Add new nodes
       nodes = [...nodes, ...assistantPatch.added_nodes];
-      // Remove edges
       const removedEdgeKeys = new Set(
         assistantPatch.removed_edges.map((e) => `${e.from}-${e.to}`),
       );
       let edges = prev.edges.filter((e) => !removedEdgeKeys.has(`${e.from}-${e.to}`));
-      // Add new edges
       edges = [...edges, ...assistantPatch.added_edges];
       return { ...prev, nodes, edges };
-    });
+    };
+    const patched = buildPatched(workflow);
+    const validation = await commands.validate(patched);
+    if (!validation.valid) {
+      pushLog(`Patch rejected: ${validation.errors.join(", ")}`);
+      return;
+    }
+    setWorkflow(patched);
     setAssistantPatch(null);
     setAssistantError(null);
     setShowAssistant(false);
     pushLog("Applied assistant changes");
-  }, [assistantPatch, pushLog]);
+  }, [assistantPatch, workflow, pushLog]);
 
   const discardPatch = useCallback(() => {
     setAssistantPatch(null);
