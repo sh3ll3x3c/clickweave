@@ -169,10 +169,7 @@ export function AssistantModal({
           {hasPatch && !isEmpty ? (
             <>
               <button
-                onClick={() => {
-                  if (!prompt.trim()) return;
-                  onSubmit(prompt);
-                }}
+                onClick={() => onSubmit(prompt)}
                 disabled={loading || !prompt.trim()}
                 className="rounded px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
               >

@@ -331,6 +331,58 @@ pub async fn plan_workflow(
 
 const MAX_REPAIR_ATTEMPTS: usize = 1;
 
+/// Chat with the LLM, retrying once with error feedback on failure.
+/// `label` is used for log messages (e.g. "Planner", "Patcher").
+/// `process` receives the raw text content and returns Ok(T) or Err to trigger a repair.
+async fn chat_with_repair<T>(
+    backend: &impl ChatBackend,
+    label: &str,
+    messages: Vec<Message>,
+    mut process: impl FnMut(&str) -> Result<T>,
+) -> Result<T> {
+    let mut messages = messages;
+    let mut last_error: Option<String> = None;
+
+    for attempt in 0..=MAX_REPAIR_ATTEMPTS {
+        if let Some(ref err) = last_error {
+            info!("Repair attempt {} for {} error: {}", attempt, label, err);
+            messages.push(Message::user(format!(
+                "Your previous output had an error: {}\n\nPlease fix the JSON and try again. Output ONLY the corrected JSON object.",
+                err
+            )));
+        }
+
+        let response: ChatResponse = backend
+            .chat(messages.clone(), None)
+            .await
+            .context(format!("{} LLM call failed", label))?;
+
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| anyhow!("No response from {}", label.to_lowercase()))?;
+
+        let content = choice
+            .message
+            .text_content()
+            .ok_or_else(|| anyhow!("{} returned no text content", label))?;
+
+        debug!("{} raw output (attempt {}): {}", label, attempt, content);
+
+        messages.push(Message::assistant(content));
+
+        match process(content) {
+            Ok(result) => return Ok(result),
+            Err(e) if attempt < MAX_REPAIR_ATTEMPTS => {
+                last_error = Some(e.to_string());
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(anyhow!("{} failed after repair attempts", label))
+}
+
 /// Plan a workflow using a given ChatBackend (for testability).
 /// On parse or validation failure, retries once with the error message appended.
 pub async fn plan_workflow_with_backend(
@@ -346,59 +398,18 @@ pub async fn plan_workflow_with_backend(
     info!("Planning workflow for intent: {}", intent);
     debug!("Planner system prompt length: {} chars", system.len());
 
-    let mut messages = vec![Message::system(&system), Message::user(&user_msg)];
-    let mut last_error: Option<String> = None;
+    let messages = vec![Message::system(&system), Message::user(&user_msg)];
 
-    for attempt in 0..=MAX_REPAIR_ATTEMPTS {
-        if attempt > 0 {
-            if let Some(ref err) = last_error {
-                info!("Repair attempt {} for planning error: {}", attempt, err);
-                messages.push(Message::user(format!(
-                    "Your previous output had an error: {}\n\nPlease fix the JSON and try again. Output ONLY the corrected JSON object.",
-                    err
-                )));
-            }
-        }
-
-        let response: ChatResponse = backend
-            .chat(messages.clone(), None)
-            .await
-            .context("Planner LLM call failed")?;
-
-        let choice = response
-            .choices
-            .first()
-            .ok_or_else(|| anyhow!("No response from planner"))?;
-
-        let content = choice
-            .message
-            .text_content()
-            .ok_or_else(|| anyhow!("Planner returned no text content"))?;
-
-        debug!("Planner raw output (attempt {}): {}", attempt, content);
-
-        // Add assistant message to conversation for potential repair
-        messages.push(Message::assistant(content));
-
-        match parse_and_build_workflow(
+    chat_with_repair(backend, "Planner", messages, |content| {
+        parse_and_build_workflow(
             content,
             intent,
             mcp_tools_openai,
             allow_ai_transforms,
             allow_agent_steps,
-        ) {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                if attempt < MAX_REPAIR_ATTEMPTS {
-                    last_error = Some(e.to_string());
-                    continue;
-                }
-                return Err(e);
-            }
-        }
-    }
-
-    Err(anyhow!("Planning failed after repair attempts"))
+        )
+    })
+    .await
 }
 
 /// Parse planner output JSON and build a workflow.
@@ -423,18 +434,8 @@ fn parse_and_build_workflow(
     // Filter out rejected steps and collect warnings in a single pass
     let mut steps = Vec::new();
     for step in &planner_output.steps {
-        if !allow_agent_steps && matches!(step, PlanStep::AiStep { .. }) {
-            warnings.push(
-                "Planner returned an AiStep but agent steps are disabled; step was removed."
-                    .to_string(),
-            );
-            continue;
-        }
-        if !allow_ai_transforms && matches!(step, PlanStep::AiTransform { .. }) {
-            warnings.push(
-                "Planner returned an AiTransform but AI transforms are disabled; step was removed."
-                    .to_string(),
-            );
+        if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps) {
+            warnings.push(format!("Planner step removed: {}", reason));
             continue;
         }
         steps.push(step);
@@ -492,6 +493,21 @@ fn parse_and_build_workflow(
     );
 
     Ok(PlanResult { workflow, warnings })
+}
+
+/// Check if a step is rejected by feature flags. Returns Some(reason) if rejected.
+fn step_rejected_reason(
+    step: &PlanStep,
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> Option<&'static str> {
+    if !allow_agent_steps && matches!(step, PlanStep::AiStep { .. }) {
+        return Some("AiStep rejected (agent steps disabled)");
+    }
+    if !allow_ai_transforms && matches!(step, PlanStep::AiTransform { .. }) {
+        return Some("AiTransform rejected (AI transforms disabled)");
+    }
+    None
 }
 
 /// Extract JSON from text that may be wrapped in markdown code fences.
@@ -654,58 +670,14 @@ pub async fn patch_workflow_with_backend(
 
     info!("Patching workflow for prompt: {}", user_prompt);
 
-    let mut messages = vec![Message::system(&system), Message::user(&user_msg)];
-    let mut last_error: Option<String> = None;
-    let mut patcher_output: Option<PatcherOutput> = None;
+    let messages = vec![Message::system(&system), Message::user(&user_msg)];
 
-    for attempt in 0..=MAX_REPAIR_ATTEMPTS {
-        if attempt > 0 {
-            if let Some(ref err) = last_error {
-                info!("Repair attempt {} for patcher error: {}", attempt, err);
-                messages.push(Message::user(format!(
-                    "Your previous output had an error: {}\n\nPlease fix the JSON and try again. Output ONLY the corrected JSON object.",
-                    err
-                )));
-            }
-        }
-
-        let response: ChatResponse = backend
-            .chat(messages.clone(), None)
-            .await
-            .context("Patcher LLM call failed")?;
-
-        let choice = response
-            .choices
-            .first()
-            .ok_or_else(|| anyhow!("No response from patcher"))?;
-
-        let content = choice
-            .message
-            .text_content()
-            .ok_or_else(|| anyhow!("Patcher returned no text content"))?;
-
-        debug!("Patcher raw output (attempt {}): {}", attempt, content);
-
-        messages.push(Message::assistant(content));
-
+    let patcher_output = chat_with_repair(backend, "Patcher", messages, |content| {
         let json_str = extract_json(content);
-        match serde_json::from_str::<PatcherOutput>(json_str) {
-            Ok(output) => {
-                patcher_output = Some(output);
-                break;
-            }
-            Err(e) => {
-                if attempt < MAX_REPAIR_ATTEMPTS {
-                    last_error = Some(e.to_string());
-                    continue;
-                }
-                return Err(anyhow!("Failed to parse patcher output as JSON: {}", e));
-            }
-        }
-    }
-
-    let patcher_output =
-        patcher_output.ok_or_else(|| anyhow!("Patching failed after repair attempts"))?;
+        serde_json::from_str::<PatcherOutput>(json_str)
+            .context("Failed to parse patcher output as JSON")
+    })
+    .await?;
 
     // Process added nodes
     let mut added_nodes = Vec::new();
@@ -716,18 +688,8 @@ pub async fn patch_workflow_with_backend(
         .fold(0.0_f32, f32::max);
 
     for (i, step) in patcher_output.add.iter().enumerate() {
-        if !allow_agent_steps && matches!(step, PlanStep::AiStep { .. }) {
-            warnings.push(
-                "Patcher added an AiStep but agent steps are disabled; step was removed."
-                    .to_string(),
-            );
-            continue;
-        }
-        if !allow_ai_transforms && matches!(step, PlanStep::AiTransform { .. }) {
-            warnings.push(
-                "Patcher added an AiTransform but AI transforms are disabled; step was removed."
-                    .to_string(),
-            );
+        if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps) {
+            warnings.push(format!("Added step {} removed: {}", i, reason));
             continue;
         }
         match step_to_node_type(step, mcp_tools_openai) {
@@ -772,36 +734,27 @@ pub async fn patch_workflow_with_backend(
                         node.name = name.clone();
                     }
                     if let Some(nt_value) = &update.node_type {
-                        // Try to parse as a PlanStep and convert
+                        let short_id = id_str_short(&id);
                         match serde_json::from_value::<PlanStep>(nt_value.clone()) {
-                            Ok(ref step)
-                                if !allow_agent_steps
-                                    && matches!(step, PlanStep::AiStep { .. }) =>
-                            {
-                                warnings.push(format!(
-                                    "Update {}: AiStep rejected (agent steps disabled)",
-                                    id_str_short(&id)
-                                ));
-                            }
-                            Ok(ref step)
-                                if !allow_ai_transforms
-                                    && matches!(step, PlanStep::AiTransform { .. }) =>
-                            {
-                                warnings.push(format!(
-                                    "Update {}: AiTransform rejected (AI transforms disabled)",
-                                    id_str_short(&id)
-                                ));
-                            }
-                            Ok(step) => match step_to_node_type(&step, mcp_tools_openai) {
-                                Ok((node_type, _)) => node.node_type = node_type,
-                                Err(e) => {
-                                    warnings.push(format!("Update {}: {}", id_str_short(&id), e))
+                            Ok(step) => {
+                                if let Some(reason) = step_rejected_reason(
+                                    &step,
+                                    allow_ai_transforms,
+                                    allow_agent_steps,
+                                ) {
+                                    warnings.push(format!("Update {}: {}", short_id, reason));
+                                } else {
+                                    match step_to_node_type(&step, mcp_tools_openai) {
+                                        Ok((node_type, _)) => node.node_type = node_type,
+                                        Err(e) => {
+                                            warnings.push(format!("Update {}: {}", short_id, e))
+                                        }
+                                    }
                                 }
-                            },
+                            }
                             Err(e) => warnings.push(format!(
                                 "Update {}: failed to parse node_type: {}",
-                                id_str_short(&id),
-                                e
+                                short_id, e
                             )),
                         }
                     }
@@ -878,16 +831,14 @@ fn id_str_short(id: &Uuid) -> String {
 
 fn truncate_intent(intent: &str) -> String {
     if intent.len() <= 50 {
-        intent.to_string()
-    } else {
-        let end = intent
-            .char_indices()
-            .map(|(i, _)| i)
-            .take_while(|&i| i <= 47)
-            .last()
-            .unwrap_or(0);
-        format!("{}...", &intent[..end])
+        return intent.to_string();
     }
+    // Find the last char boundary at or before byte 47, leaving room for "..."
+    let mut end = 47;
+    while end > 0 && !intent.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &intent[..end])
 }
 
 #[cfg(test)]

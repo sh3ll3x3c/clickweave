@@ -447,22 +447,20 @@ export function useAppStore(): [AppState, AppActions] {
 
   const applyPatch = useCallback(async () => {
     if (!assistantPatch) return;
-    // Build the patched workflow to validate before applying
-    const buildPatched = (prev: Workflow): Workflow => {
-      let nodes = prev.nodes.filter((n) => !assistantPatch.removed_node_ids.includes(n.id));
-      nodes = nodes.map((n) => {
-        const update = assistantPatch.updated_nodes.find((u) => u.id === n.id);
-        return update ?? n;
-      });
-      nodes = [...nodes, ...assistantPatch.added_nodes];
-      const removedEdgeKeys = new Set(
-        assistantPatch.removed_edges.map((e) => `${e.from}-${e.to}`),
-      );
-      let edges = prev.edges.filter((e) => !removedEdgeKeys.has(`${e.from}-${e.to}`));
-      edges = [...edges, ...assistantPatch.added_edges];
-      return { ...prev, nodes, edges };
-    };
-    const patched = buildPatched(workflow);
+    const removedEdgeKeys = new Set(
+      assistantPatch.removed_edges.map((e) => `${e.from}-${e.to}`),
+    );
+    const nodes = [
+      ...workflow.nodes
+        .filter((n) => !assistantPatch.removed_node_ids.includes(n.id))
+        .map((n) => assistantPatch.updated_nodes.find((u) => u.id === n.id) ?? n),
+      ...assistantPatch.added_nodes,
+    ];
+    const edges = [
+      ...workflow.edges.filter((e) => !removedEdgeKeys.has(`${e.from}-${e.to}`)),
+      ...assistantPatch.added_edges,
+    ];
+    const patched: Workflow = { ...workflow, nodes, edges };
     const validation = await commands.validate(patched);
     if (!validation.valid) {
       pushLog(`Patch rejected: ${validation.errors.join(", ")}`);
