@@ -72,7 +72,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             project_path,
             event_tx,
             storage,
-            app_cache: RefCell::new(HashMap::new()),
+            app_cache: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -137,19 +137,19 @@ fn evict_app_cache_removes_entry() {
     let exec = make_test_executor();
 
     // Insert a resolved app into the cache
-    exec.app_cache.borrow_mut().insert(
+    exec.app_cache.write().unwrap().insert(
         "chrome".to_string(),
         ResolvedApp {
             name: "Google Chrome".to_string(),
             pid: 1234,
         },
     );
-    assert!(exec.app_cache.borrow().contains_key("chrome"));
+    assert!(exec.app_cache.read().unwrap().contains_key("chrome"));
 
     // Evict it
     exec.evict_app_cache("chrome");
     assert!(
-        !exec.app_cache.borrow().contains_key("chrome"),
+        !exec.app_cache.read().unwrap().contains_key("chrome"),
         "cache entry should be removed after eviction"
     );
 }
@@ -160,21 +160,21 @@ fn evict_app_cache_noop_for_missing_key() {
 
     // Evicting a key that was never cached should not panic
     exec.evict_app_cache("nonexistent");
-    assert!(exec.app_cache.borrow().is_empty());
+    assert!(exec.app_cache.read().unwrap().is_empty());
 }
 
 #[test]
 fn evict_app_cache_leaves_other_entries() {
     let exec = make_test_executor();
 
-    exec.app_cache.borrow_mut().insert(
+    exec.app_cache.write().unwrap().insert(
         "chrome".to_string(),
         ResolvedApp {
             name: "Google Chrome".to_string(),
             pid: 1234,
         },
     );
-    exec.app_cache.borrow_mut().insert(
+    exec.app_cache.write().unwrap().insert(
         "firefox".to_string(),
         ResolvedApp {
             name: "Firefox".to_string(),
@@ -185,11 +185,11 @@ fn evict_app_cache_leaves_other_entries() {
     exec.evict_app_cache("chrome");
 
     assert!(
-        !exec.app_cache.borrow().contains_key("chrome"),
+        !exec.app_cache.read().unwrap().contains_key("chrome"),
         "evicted entry should be gone"
     );
     assert!(
-        exec.app_cache.borrow().contains_key("firefox"),
+        exec.app_cache.read().unwrap().contains_key("firefox"),
         "other entries should remain"
     );
 }

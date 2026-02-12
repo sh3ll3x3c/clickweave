@@ -11,9 +11,9 @@ use clickweave_core::storage::RunStorage;
 use clickweave_core::{NodeRun, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
@@ -54,7 +54,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
     storage: Option<RunStorage>,
-    app_cache: RefCell<HashMap<String, ResolvedApp>>,
+    app_cache: RwLock<HashMap<String, ResolvedApp>>,
 }
 
 impl WorkflowExecutor {
@@ -77,7 +77,7 @@ impl WorkflowExecutor {
             project_path,
             event_tx,
             storage,
-            app_cache: RefCell::new(HashMap::new()),
+            app_cache: RwLock::new(HashMap::new()),
         }
     }
 }

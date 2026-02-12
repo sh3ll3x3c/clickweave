@@ -17,7 +17,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_run: Option<&NodeRun>,
     ) -> Result<ResolvedApp, String> {
         // Check cache first
-        if let Some(cached) = self.app_cache.borrow().get(user_input).cloned() {
+        if let Some(cached) = self.app_cache.read().unwrap().get(user_input).cloned() {
             debug!(
                 user_input,
                 resolved_name = %cached.name,
@@ -117,7 +117,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // Cache the result
         self.app_cache
-            .borrow_mut()
+            .write()
+            .unwrap()
             .insert(user_input.to_string(), resolved.clone());
 
         Ok(resolved)
@@ -126,7 +127,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Remove a cached app resolution, e.g. when a focus attempt fails and we
     /// want to re-resolve on retry.
     pub(crate) fn evict_app_cache(&self, user_input: &str) {
-        let removed = self.app_cache.borrow_mut().remove(user_input).is_some();
+        let removed = self.app_cache.write().unwrap().remove(user_input).is_some();
         if removed {
             debug!(user_input, "evicted app_cache entry");
             self.log(format!("App cache evicted for \"{}\"", user_input));
