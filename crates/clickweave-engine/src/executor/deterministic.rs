@@ -1,5 +1,5 @@
 use super::WorkflowExecutor;
-use clickweave_core::{NodeRun, NodeType, tool_mapping};
+use clickweave_core::{ClickParams, NodeRun, NodeType, tool_mapping};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::{McpClient, ToolCallResult};
 
@@ -24,7 +24,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return Err("McpToolCall has empty tool_name".to_string());
         }
 
-        let invocation = tool_mapping::node_type_to_tool_invocation(node_type)
+        // For Click nodes with a target and no explicit coordinates, resolve via find_text
+        let resolved;
+        let effective = if let NodeType::Click(p) = node_type
+            && p.target.is_some()
+            && p.x.is_none()
+        {
+            resolved = self.resolve_click_target(mcp, p, &mut node_run)?;
+            &resolved
+        } else {
+            node_type
+        };
+
+        let invocation = tool_mapping::node_type_to_tool_invocation(effective)
             .map_err(|e| format!("Tool mapping failed: {}", e))?;
         let tool_name = &invocation.name;
 
@@ -72,5 +84,68 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ));
         }
         Ok(())
+    }
+
+    fn resolve_click_target(
+        &self,
+        mcp: &McpClient,
+        click_params: &ClickParams,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> Result<NodeType, String> {
+        let target = click_params
+            .target
+            .as_deref()
+            .ok_or("resolve_click_target called with no target")?;
+        self.log(format!("Resolving click target: '{}'", target));
+
+        let find_result = mcp
+            .call_tool("find_text", Some(serde_json::json!({"text": target})))
+            .map_err(|e| format!("find_text for target '{}' failed: {}", target, e))?;
+
+        Self::check_tool_error(&find_result, "find_text")?;
+
+        let result_text = Self::extract_result_text(&find_result);
+        let matches: Vec<serde_json::Value> = serde_json::from_str(&result_text)
+            .map_err(|e| format!("Failed to parse find_text result for '{}': {}", target, e))?;
+
+        if matches.is_empty() {
+            return Err(format!("Could not find text '{}' on screen", target));
+        }
+
+        let best = &matches[0];
+        let x = best
+            .get("x")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| format!("find_text match for '{}' missing 'x' coordinate", target))?;
+        let y = best
+            .get("y")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| format!("find_text match for '{}' missing 'y' coordinate", target))?;
+
+        let matched_text = best.get("text").and_then(|v| v.as_str()).unwrap_or(target);
+
+        self.log(format!(
+            "Resolved target '{}' -> ({}, {}) from '{}'",
+            target, x, y, matched_text
+        ));
+
+        self.record_event(
+            node_run.as_deref(),
+            "target_resolved",
+            serde_json::json!({
+                "target": target,
+                "x": x,
+                "y": y,
+                "matched_text": matched_text,
+            }),
+        );
+
+        Ok(NodeType::Click(ClickParams {
+            target: click_params.target.clone(),
+            x: Some(x),
+            y: Some(y),
+            button: click_params.button,
+            click_count: click_params.click_count,
+        }))
     }
 }

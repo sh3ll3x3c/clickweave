@@ -7,7 +7,7 @@ function makeNode(overrides: Partial<Node> = {}): Node {
   return {
     id: "node-1",
     name: "Test Node",
-    node_type: { type: "Click", x: null, y: null, button: "Left", click_count: 1 },
+    node_type: { type: "Click", target: null, x: null, y: null, button: "Left", click_count: 1 },
     position: { x: 0, y: 0 },
     enabled: true,
     timeout_ms: null,

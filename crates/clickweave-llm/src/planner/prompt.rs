@@ -54,7 +54,7 @@ Rules:
 - Each Tool step must use exactly one tool from the list above with schema-valid arguments.
 - Steps execute in sequence (output of one step is available to the next).
 - Be precise: use find_text to locate UI elements before clicking them.
-- For clicking on text elements: first use find_text to get coordinates, then use click with those coordinates.
+- For clicking on text elements: use click with a `target` argument (the text to find on screen) instead of explicit coordinates. The runtime will find the text and click it. Only use find_text separately when you need to verify text is present without clicking.
 - Always focus the target window before interacting with it.
 - Prefer deterministic Tool steps over AiStep whenever possible.
 - Do not add unnecessary steps. Be efficient."#,

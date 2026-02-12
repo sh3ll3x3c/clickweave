@@ -211,6 +211,12 @@ function NodeTypeFields({
     case "Click":
       return (
         <FieldGroup title="Click">
+          <TextField
+            label="Target"
+            value={nt.target ?? ""}
+            onChange={(v) => updateType({ target: optionalString(v) })}
+            placeholder="Text to find and click (auto-resolves coordinates)"
+          />
           <NumberField
             label="X"
             value={nt.x ?? 0}

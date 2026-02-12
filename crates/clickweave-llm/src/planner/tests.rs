@@ -420,6 +420,7 @@ async fn test_patch_adds_node() {
 async fn test_patch_removes_node() {
     let node = Node::new(
         NodeType::Click(ClickParams {
+            target: None,
             x: Some(100.0),
             y: Some(200.0),
             button: MouseButton::Left,
@@ -504,6 +505,7 @@ async fn test_patch_add_filters_disallowed_step_types() {
 async fn test_patch_update_rejects_disallowed_node_type_change() {
     let node = Node::new(
         NodeType::Click(ClickParams {
+            target: None,
             x: Some(100.0),
             y: Some(200.0),
             button: MouseButton::Left,

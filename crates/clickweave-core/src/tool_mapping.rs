@@ -223,6 +223,10 @@ pub fn tool_invocation_to_node_type(
                 .unwrap_or(3) as u32,
         })),
         "click" => Ok(NodeType::Click(ClickParams {
+            target: args
+                .get("target")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             x: args.get("x").and_then(|v| v.as_f64()),
             y: args.get("y").and_then(|v| v.as_f64()),
             button: match args.get("button").and_then(|v| v.as_str()) {
@@ -375,6 +379,7 @@ mod tests {
     #[test]
     fn roundtrip_click() {
         let nt = NodeType::Click(ClickParams {
+            target: None,
             x: Some(100.0),
             y: Some(200.0),
             button: MouseButton::Right,
@@ -389,8 +394,21 @@ mod tests {
     }
 
     #[test]
+    fn click_with_target_omits_target_from_invocation() {
+        let nt = NodeType::Click(ClickParams {
+            target: Some("Submit".into()),
+            ..Default::default()
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert_eq!(inv.name, "click");
+        // target is a clickweave-internal field, not an MCP tool argument
+        assert!(inv.arguments.get("target").is_none());
+    }
+
+    #[test]
     fn roundtrip_click_no_coords() {
         let nt = NodeType::Click(ClickParams {
+            target: None,
             x: None,
             y: None,
             button: MouseButton::Left,

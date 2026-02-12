@@ -353,6 +353,7 @@ impl Default for FindImageParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ClickParams {
+    pub target: Option<String>,
     pub x: Option<f64>,
     pub y: Option<f64>,
     pub button: MouseButton,
@@ -362,6 +363,7 @@ pub struct ClickParams {
 impl Default for ClickParams {
     fn default() -> Self {
         Self {
+            target: None,
             x: None,
             y: None,
             button: MouseButton::Left,
