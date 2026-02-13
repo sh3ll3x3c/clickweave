@@ -1,9 +1,18 @@
 import { useEffect, useState } from "react";
 import { commands } from "../../../bindings";
 import type { Artifact, TraceEvent } from "../../../bindings";
-import { useNodeRuns } from "../hooks";
+import { ImageLightbox, type LightboxImage } from "../../ImageLightbox";
 import { EmptyState, StatusBadge } from "../fields";
 import { eventTypeColor, formatEventPayload, formatEventDetail, runDuration } from "../formatters";
+import { useNodeRuns } from "../hooks";
+
+function isImageArtifact(art: Artifact): boolean {
+  return art.kind === "Screenshot" || art.kind === "TemplateMatch";
+}
+
+function artifactFilename(art: Artifact): string {
+  return art.path.split("/").pop() ?? art.path;
+}
 
 export function TraceTab({
   nodeName,
@@ -25,6 +34,7 @@ export function TraceTab({
   const [artifactPreviews, setArtifactPreviews] = useState<
     Record<string, string>
   >({});
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   // Select initialRunId if provided, otherwise auto-select first run
   useEffect(() => {
@@ -39,6 +49,7 @@ export function TraceTab({
   // Load events for selected run
   useEffect(() => {
     setExpandedEvent(null);
+    setLightboxIndex(null);
     if (!selectedRunId) {
       setEvents([]);
       return;
@@ -65,9 +76,7 @@ export function TraceTab({
   // Load artifact previews for selected run
   useEffect(() => {
     if (!selectedRun) return;
-    const screenshots = selectedRun.artifacts.filter(
-      (a) => a.kind === "Screenshot",
-    );
+    const screenshots = selectedRun.artifacts.filter(isImageArtifact);
     for (const art of screenshots) {
       if (artifactPreviews[art.artifact_id]) continue;
       commands.readArtifactBase64(art.path).then((result) => {
@@ -86,6 +95,22 @@ export function TraceTab({
   }
 
   const duration = selectedRun ? runDuration(selectedRun) : null;
+
+  // Build lightbox images and a map from artifact_id to lightbox index
+  const lightboxImages: LightboxImage[] = [];
+  const artifactLightboxIndex = new Map<string, number>();
+  if (selectedRun) {
+    for (const art of selectedRun.artifacts) {
+      const preview = artifactPreviews[art.artifact_id];
+      if (isImageArtifact(art) && preview) {
+        artifactLightboxIndex.set(art.artifact_id, lightboxImages.length);
+        lightboxImages.push({
+          src: `data:image/png;base64,${preview}`,
+          filename: artifactFilename(art),
+        });
+      }
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -167,15 +192,31 @@ export function TraceTab({
             Artifacts
           </h4>
           <div className="grid grid-cols-2 gap-2">
-            {selectedRun.artifacts.map((art) => (
-              <ArtifactCard
-                key={art.artifact_id}
-                artifact={art}
-                preview={artifactPreviews[art.artifact_id]}
-              />
-            ))}
+            {selectedRun.artifacts.map((art) => {
+              const lightboxIdx = artifactLightboxIndex.get(art.artifact_id);
+              return (
+                <ArtifactCard
+                  key={art.artifact_id}
+                  artifact={art}
+                  preview={artifactPreviews[art.artifact_id]}
+                  onClick={lightboxIdx !== undefined
+                    ? () => setLightboxIndex(lightboxIdx)
+                    : undefined}
+                />
+              );
+            })}
           </div>
         </div>
+      )}
+
+      {/* Image lightbox */}
+      {lightboxIndex !== null && lightboxImages.length > 0 && (
+        <ImageLightbox
+          images={lightboxImages}
+          index={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+          onNavigate={setLightboxIndex}
+        />
       )}
     </div>
   );
@@ -184,15 +225,31 @@ export function TraceTab({
 function ArtifactCard({
   artifact,
   preview,
+  onClick,
 }: {
   artifact: Artifact;
   preview?: string;
+  onClick?: () => void;
 }) {
-  const filename = artifact.path.split("/").pop() ?? artifact.path;
-  const isImage = artifact.kind === "Screenshot" || artifact.kind === "TemplateMatch";
+  const filename = artifactFilename(artifact);
+  const isImage = isImageArtifact(artifact);
+  const clickable = isImage && preview && onClick;
 
   return (
-    <div className="rounded border border-[var(--border)] bg-[var(--bg-input)] p-2">
+    <div
+      className={`rounded border border-[var(--border)] bg-[var(--bg-input)] p-2${clickable ? " cursor-pointer hover:border-[var(--accent-coral)] transition-colors" : ""}`}
+      onClick={onClick}
+      {...(clickable ? {
+        role: "button" as const,
+        tabIndex: 0,
+        onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onClick?.();
+          }
+        },
+      } : {})}
+    >
       {isImage && preview ? (
         <img
           src={`data:image/png;base64,${preview}`}
