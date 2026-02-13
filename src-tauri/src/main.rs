@@ -2,10 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod menu;
 
 use commands::*;
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_specta::{Builder, collect_commands};
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -90,6 +91,7 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(Mutex::new(ExecutorHandle::default()))
         .invoke_handler(builder.invoke_handler())
+        .menu(menu::build_menu)
         .setup(move |app| {
             let app_data_dir = app
                 .path()
@@ -98,6 +100,12 @@ fn main() {
             std::fs::create_dir_all(&app_data_dir).ok();
             app.manage(AppDataDir(app_data_dir));
             builder.mount_events(app);
+
+            app.on_menu_event(|handle, event| {
+                let id = event.id().as_ref();
+                let _ = handle.emit(&format!("menu://{id}"), ());
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

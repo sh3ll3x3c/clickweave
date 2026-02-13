@@ -56,6 +56,15 @@ function App() {
         actions.setExecutorState("idle");
         actions.setActiveNode(null);
       }),
+      listen("menu://new", () => actions.newProject()),
+      listen("menu://open", () => actions.openProject()),
+      listen("menu://save", () => actions.saveProject()),
+      listen("menu://toggle-sidebar", () => actions.toggleSidebar()),
+      listen("menu://toggle-logs", () => actions.toggleLogsDrawer()),
+      listen("menu://run-workflow", () => actions.runWorkflow()),
+      listen("menu://stop-workflow", () => actions.stopWorkflow()),
+      listen("menu://generate-intent", () => actions.setShowPlannerModal(true)),
+      listen("menu://patch-assistant", () => actions.setShowAssistant(true)),
     ]);
 
     return () => {
