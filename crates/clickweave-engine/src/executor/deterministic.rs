@@ -164,12 +164,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Self::check_tool_error(&find_result, "find_text")?;
 
         let result_text = Self::extract_result_text(&find_result);
-        let matches: Vec<Value> = serde_json::from_str(&result_text)
-            .map_err(|e| format!("Failed to parse find_text result for '{}': {}", target, e))?;
+        let matches: Vec<Value> = serde_json::from_str(&result_text).unwrap_or_default();
 
-        let best = matches
-            .first()
-            .ok_or_else(|| format!("Could not find text '{}' on screen", target))?;
+        let best = matches.first().ok_or_else(|| {
+            format!(
+                "Could not find text '{}' on screen (find_text returned: {})",
+                target,
+                truncate_for_error(&result_text, 120),
+            )
+        })?;
 
         let x = best["x"]
             .as_f64()
@@ -203,5 +206,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             button: params.button,
             click_count: params.click_count,
         }))
+    }
+}
+
+fn truncate_for_error(s: &str, max_len: usize) -> &str {
+    match s.char_indices().nth(max_len) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
     }
 }
