@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 pub struct McpClient {
     process: Child,
@@ -66,7 +66,7 @@ impl McpClient {
         let mut line = String::new();
         stdout.read_line(&mut line)?;
 
-        debug!("MCP response: {}", line.trim());
+        trace!("MCP response: {}", line.trim());
 
         serde_json::from_str(&line).context("Failed to parse MCP response")
     }
@@ -76,7 +76,7 @@ impl McpClient {
         let request = JsonRpcRequest::new(id, method, params);
         let json = serde_json::to_string(&request)?;
 
-        debug!("MCP request: {}", json);
+        trace!("MCP request: {}", json);
         self.write_message(&json)?;
 
         let response = self.read_response()?;
