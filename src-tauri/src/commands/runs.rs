@@ -6,11 +6,10 @@ use tracing::warn;
 #[specta::specta]
 pub fn list_runs(app: tauri::AppHandle, query: RunsQuery) -> Result<Vec<NodeRun>, String> {
     let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
-    let node_id = parse_uuid(&query.node_id, "node")?;
 
-    let storage = resolve_storage(&app, &query.project_path, workflow_id);
+    let storage = resolve_storage(&app, &query.project_path, &query.workflow_name, workflow_id);
     storage
-        .load_runs_for_node(node_id)
+        .load_runs_for_node(&query.node_name)
         .map_err(|e| format!("Failed to load runs: {}", e))
 }
 
@@ -21,12 +20,11 @@ pub fn load_run_events(
     query: RunEventsQuery,
 ) -> Result<Vec<TraceEvent>, String> {
     let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
-    let node_id = parse_uuid(&query.node_id, "node")?;
     let run_id = parse_uuid(&query.run_id, "run")?;
 
-    let storage = resolve_storage(&app, &query.project_path, workflow_id);
+    let storage = resolve_storage(&app, &query.project_path, &query.workflow_name, workflow_id);
     let run_dir = storage
-        .find_run_dir(node_id, run_id)
+        .find_run_dir(&query.node_name, run_id, query.execution_dir.as_deref())
         .map_err(|e| format!("Failed to find run directory: {}", e))?;
     let events_path = run_dir.join("events.jsonl");
 

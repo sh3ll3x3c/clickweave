@@ -28,7 +28,12 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         .filter(|v| !v.is_empty())
         .map(|v| v.into_llm_config(Some(0.1)));
 
-    let storage = resolve_storage(&app, &request.project_path, request.workflow.id);
+    let storage = resolve_storage(
+        &app,
+        &request.project_path,
+        &request.workflow.name,
+        request.workflow.id,
+    );
     let project_path = request.project_path.map(|p| project_dir(&p));
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(256);

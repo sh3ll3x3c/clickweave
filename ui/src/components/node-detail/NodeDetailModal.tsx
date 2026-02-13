@@ -7,6 +7,7 @@ interface NodeDetailModalProps {
   node: Node | null;
   projectPath: string | null;
   workflowId: string;
+  workflowName: string;
   tab: DetailTab;
   onTabChange: (tab: DetailTab) => void;
   onUpdate: (id: string, updates: Partial<Node>) => void;
@@ -24,6 +25,7 @@ export function NodeDetailModal({
   node,
   projectPath,
   workflowId,
+  workflowName,
   tab,
   onTabChange,
   onUpdate,
@@ -75,9 +77,10 @@ export function NodeDetailModal({
           )}
           {tab === "trace" && (
             <TraceTab
-              nodeId={node.id}
+              nodeName={node.name}
               projectPath={projectPath}
               workflowId={workflowId}
+              workflowName={workflowName}
               initialRunId={selectedRunId}
             />
           )}
@@ -86,9 +89,10 @@ export function NodeDetailModal({
           )}
           {tab === "runs" && (
             <RunsTab
-              nodeId={node.id}
+              nodeName={node.name}
               projectPath={projectPath}
               workflowId={workflowId}
+              workflowName={workflowName}
               onSelectRun={(runId) => {
                 setSelectedRunId(runId);
                 onTabChange("trace");

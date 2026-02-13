@@ -11,13 +11,14 @@ pub struct AppDataDir(pub PathBuf);
 pub fn resolve_storage(
     app: &tauri::AppHandle,
     project_path: &Option<String>,
+    workflow_name: &str,
     workflow_id: uuid::Uuid,
 ) -> RunStorage {
     match project_path {
-        Some(p) => RunStorage::new(&project_dir(p), workflow_id),
+        Some(p) => RunStorage::new(&project_dir(p), workflow_name),
         None => {
             let app_data_dir = app.state::<AppDataDir>();
-            RunStorage::new_app_data(&app_data_dir.0, workflow_id)
+            RunStorage::new_app_data(&app_data_dir.0, workflow_name, workflow_id)
         }
     }
 }
@@ -126,14 +127,17 @@ pub struct WorkflowPatch {
 pub struct RunsQuery {
     pub project_path: Option<String>,
     pub workflow_id: String,
-    pub node_id: String,
+    pub workflow_name: String,
+    pub node_name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct RunEventsQuery {
     pub project_path: Option<String>,
     pub workflow_id: String,
-    pub node_id: String,
+    pub workflow_name: String,
+    pub node_name: String,
+    pub execution_dir: Option<String>,
     pub run_id: String,
 }
 

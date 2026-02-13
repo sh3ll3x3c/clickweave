@@ -34,6 +34,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log(format!("MCP server ready with {} tools", mcp.tools().len()));
 
+        match self.storage.begin_execution() {
+            Ok(exec_dir) => self.log(format!("Execution dir: {}", exec_dir)),
+            Err(e) => {
+                self.emit_error(format!("Failed to create execution directory: {}", e));
+                self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
+                return;
+            }
+        }
+
         let execution_order = self.workflow.execution_order();
         self.log(format!("Execution order: {} nodes", execution_order.len()));
 
@@ -68,7 +77,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let node_name = node.name.clone();
             let node_type = node.node_type.clone();
 
-            let mut node_run = self.storage.create_run(node_id, trace_level).ok();
+            let mut node_run = self
+                .storage
+                .create_run(node_id, &node_name, trace_level)
+                .ok();
 
             if let Some(ref run) = node_run {
                 self.emit(ExecutorEvent::RunCreated(node_id, run.clone()));

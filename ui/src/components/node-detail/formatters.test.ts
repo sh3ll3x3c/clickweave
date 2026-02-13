@@ -6,6 +6,8 @@ function makeRun(overrides: Partial<NodeRun> = {}): NodeRun {
   return {
     node_id: "n1",
     run_id: "r1",
+    node_name: "Test Node",
+    execution_dir: "2026-01-01_00-00-00_abc123",
     started_at: 1000,
     ended_at: null,
     status: "Ok",

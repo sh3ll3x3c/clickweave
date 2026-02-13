@@ -3,17 +3,19 @@ import { EmptyState, StatusBadge } from "../fields";
 import { runDuration } from "../formatters";
 
 export function RunsTab({
-  nodeId,
+  nodeName,
   projectPath,
   workflowId,
+  workflowName,
   onSelectRun,
 }: {
-  nodeId: string;
+  nodeName: string;
   projectPath: string | null;
   workflowId: string;
+  workflowName: string;
   onSelectRun: (runId: string) => void;
 }) {
-  const runs = useNodeRuns(projectPath, workflowId, nodeId);
+  const runs = useNodeRuns(projectPath, workflowId, workflowName, nodeName);
 
   if (runs.length === 0) {
     return <EmptyState message="No runs yet. Execute the workflow to create runs." />;

@@ -6,17 +6,19 @@ import { EmptyState, StatusBadge } from "../fields";
 import { eventTypeColor, formatEventPayload, runDuration } from "../formatters";
 
 export function TraceTab({
-  nodeId,
+  nodeName,
   projectPath,
   workflowId,
+  workflowName,
   initialRunId,
 }: {
-  nodeId: string;
+  nodeName: string;
   projectPath: string | null;
   workflowId: string;
+  workflowName: string;
   initialRunId?: string | null;
 }) {
-  const runs = useNodeRuns(projectPath, workflowId, nodeId);
+  const runs = useNodeRuns(projectPath, workflowId, workflowName, nodeName);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(initialRunId ?? null);
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [artifactPreviews, setArtifactPreviews] = useState<
@@ -39,11 +41,14 @@ export function TraceTab({
       setEvents([]);
       return;
     }
+    const run = runs.find((r) => r.run_id === selectedRunId);
     commands
       .loadRunEvents({
         project_path: projectPath,
         workflow_id: workflowId,
-        node_id: nodeId,
+        workflow_name: workflowName,
+        node_name: nodeName,
+        execution_dir: run?.execution_dir ?? null,
         run_id: selectedRunId,
       })
       .then((result) => {
@@ -51,7 +56,7 @@ export function TraceTab({
           setEvents(result.data);
         }
       });
-  }, [projectPath, workflowId, nodeId, selectedRunId]);
+  }, [projectPath, workflowId, workflowName, nodeName, selectedRunId, runs]);
 
   const selectedRun = runs.find((r) => r.run_id === selectedRunId) ?? null;
 

@@ -5,7 +5,8 @@ import type { NodeRun } from "../../../bindings";
 export function useNodeRuns(
   projectPath: string | null,
   workflowId: string,
-  nodeId: string,
+  workflowName: string,
+  nodeName: string,
 ): NodeRun[] {
   const [runs, setRuns] = useState<NodeRun[]>([]);
 
@@ -14,14 +15,15 @@ export function useNodeRuns(
       .listRuns({
         project_path: projectPath,
         workflow_id: workflowId,
-        node_id: nodeId,
+        workflow_name: workflowName,
+        node_name: nodeName,
       })
       .then((result) => {
         if (result.status === "ok") {
           setRuns([...result.data].reverse());
         }
       });
-  }, [projectPath, workflowId, nodeId]);
+  }, [projectPath, workflowId, workflowName, nodeName]);
 
   return runs;
 }

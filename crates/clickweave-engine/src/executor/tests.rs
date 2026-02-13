@@ -30,7 +30,7 @@ fn make_test_executor() -> WorkflowExecutor<StubBackend> {
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
     let workflow = Workflow::default();
     let temp_dir = std::env::temp_dir().join("clickweave_test_executor");
-    let storage = RunStorage::new_app_data(&temp_dir, workflow.id);
+    let storage = RunStorage::new_app_data(&temp_dir, &workflow.name, workflow.id);
     WorkflowExecutor::with_backends(
         workflow,
         StubBackend,

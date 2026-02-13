@@ -146,6 +146,7 @@ function App() {
         node={selectedNodeData}
         projectPath={state.projectPath}
         workflowId={state.workflow.id}
+        workflowName={state.workflow.name}
         tab={state.detailTab}
         onTabChange={actions.setDetailTab}
         onUpdate={actions.updateNode}

@@ -500,6 +500,10 @@ pub enum RunStatus {
 pub struct NodeRun {
     pub run_id: Uuid,
     pub node_id: Uuid,
+    #[serde(default)]
+    pub node_name: String,
+    #[serde(default)]
+    pub execution_dir: String,
     pub started_at: u64,
     pub ended_at: Option<u64>,
     pub status: RunStatus,
