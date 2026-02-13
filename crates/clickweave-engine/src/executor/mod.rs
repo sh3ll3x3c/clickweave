@@ -55,6 +55,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     event_tx: Sender<ExecutorEvent>,
     storage: RunStorage,
     app_cache: RwLock<HashMap<String, ResolvedApp>>,
+    focused_app: RwLock<Option<String>>,
 }
 
 impl WorkflowExecutor {
@@ -76,6 +77,7 @@ impl WorkflowExecutor {
             event_tx,
             storage,
             app_cache: RwLock::new(HashMap::new()),
+            focused_app: RwLock::new(None),
         }
     }
 }

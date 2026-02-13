@@ -175,6 +175,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if let Some(key) = key {
             self.evict_app_cache(key);
         }
+        if matches!(node_type, NodeType::FocusWindow(_)) {
+            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = None;
+        }
     }
 }
 

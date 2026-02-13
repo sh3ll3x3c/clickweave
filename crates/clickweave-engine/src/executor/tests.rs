@@ -77,6 +77,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             event_tx,
             storage,
             app_cache: RwLock::new(HashMap::new()),
+            focused_app: RwLock::new(None),
         }
     }
 }

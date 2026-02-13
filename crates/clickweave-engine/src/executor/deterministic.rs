@@ -48,6 +48,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let app = self
                 .resolve_app_name(user_input, mcp, node_run.as_deref())
                 .await?;
+            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = Some(app.name.clone());
             resolved_fw = NodeType::FocusWindow(FocusWindowParams {
                 method: FocusMethod::Pid,
                 value: Some(app.pid.to_string()),
@@ -137,10 +138,27 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .target
             .as_deref()
             .ok_or("resolve_click_target called with no target")?;
-        self.log(format!("Resolving click target: '{}'", target));
+
+        let mut find_args = serde_json::json!({"text": target});
+        let scoped_app = self
+            .focused_app
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(ref app_name) = scoped_app {
+            find_args["app_name"] = serde_json::Value::String(app_name.clone());
+        }
+
+        match &scoped_app {
+            Some(app) => self.log(format!("Resolving click target: '{}' in '{}'", target, app)),
+            None => self.log(format!(
+                "Resolving click target: '{}' (screen-wide)",
+                target
+            )),
+        }
 
         let find_result = mcp
-            .call_tool("find_text", Some(serde_json::json!({"text": target})))
+            .call_tool("find_text", Some(find_args))
             .map_err(|e| format!("find_text for '{}' failed: {}", target, e))?;
 
         Self::check_tool_error(&find_result, "find_text")?;
@@ -174,6 +192,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "x": x,
                 "y": y,
                 "matched_text": matched_text,
+                "app_name": scoped_app,
             }),
         );
 
