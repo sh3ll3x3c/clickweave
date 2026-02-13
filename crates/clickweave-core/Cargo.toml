@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
-anyhow.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 specta = { version = "2.0.0-rc", features = ["derive", "uuid", "serde_json"], optional = true }
 
 [features]

@@ -23,7 +23,10 @@ pub fn load_run_events(query: RunEventsQuery) -> Result<Vec<TraceEvent>, String>
     let run_id = parse_uuid(&query.run_id, "run")?;
 
     let storage = RunStorage::new(&project_dir(&query.project_path), workflow_id);
-    let events_path = storage.run_dir(node_id, run_id).join("events.jsonl");
+    let run_dir = storage
+        .find_run_dir(node_id, run_id)
+        .map_err(|e| format!("Failed to find run directory: {}", e))?;
+    let events_path = run_dir.join("events.jsonl");
 
     if !events_path.exists() {
         return Ok(vec![]);
