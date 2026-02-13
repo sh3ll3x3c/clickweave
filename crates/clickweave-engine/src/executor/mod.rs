@@ -53,7 +53,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     mcp_command: String,
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
-    storage: Option<RunStorage>,
+    storage: RunStorage,
     app_cache: RwLock<HashMap<String, ResolvedApp>>,
 }
 
@@ -65,10 +65,8 @@ impl WorkflowExecutor {
         mcp_command: String,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
+        storage: RunStorage,
     ) -> Self {
-        let storage = project_path
-            .as_ref()
-            .map(|p| RunStorage::new(p, workflow.id));
         Self {
             workflow,
             agent: LlmClient::new(agent_config),

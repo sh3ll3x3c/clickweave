@@ -1,8 +1,26 @@
+use clickweave_core::storage::RunStorage;
 use clickweave_core::{NodeType, Workflow};
 use clickweave_llm::LlmConfig;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
+use tauri::Manager;
+
+pub struct AppDataDir(pub PathBuf);
+
+pub fn resolve_storage(
+    app: &tauri::AppHandle,
+    project_path: &Option<String>,
+    workflow_id: uuid::Uuid,
+) -> RunStorage {
+    match project_path {
+        Some(p) => RunStorage::new(&project_dir(p), workflow_id),
+        None => {
+            let app_data_dir = app.state::<AppDataDir>();
+            RunStorage::new_app_data(&app_data_dir.0, workflow_id)
+        }
+    }
+}
 
 pub fn project_dir(path: &str) -> PathBuf {
     let p = PathBuf::from(path);
@@ -106,14 +124,14 @@ pub struct WorkflowPatch {
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct RunsQuery {
-    pub project_path: String,
+    pub project_path: Option<String>,
     pub workflow_id: String,
     pub node_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct RunEventsQuery {
-    pub project_path: String,
+    pub project_path: Option<String>,
     pub workflow_id: String,
     pub node_id: String,
     pub run_id: String,

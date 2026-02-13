@@ -11,3 +11,4 @@ pub use project::{
     save_project, validate,
 };
 pub use runs::{list_runs, load_run_events, read_artifact_base64};
+pub use types::AppDataDir;

@@ -5,6 +5,7 @@ mod commands;
 
 use commands::*;
 use std::sync::Mutex;
+use tauri::Manager;
 use tauri_specta::{Builder, collect_commands};
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -88,6 +89,12 @@ fn main() {
         .manage(Mutex::new(ExecutorHandle::default()))
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("Failed to resolve app data dir");
+            std::fs::create_dir_all(&app_data_dir).ok();
+            app.manage(AppDataDir(app_data_dir));
             builder.mount_events(app);
             Ok(())
         })

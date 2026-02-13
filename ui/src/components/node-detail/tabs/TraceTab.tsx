@@ -35,7 +35,7 @@ export function TraceTab({
 
   // Load events for selected run
   useEffect(() => {
-    if (!projectPath || !selectedRunId) {
+    if (!selectedRunId) {
       setEvents([]);
       return;
     }
@@ -73,10 +73,6 @@ export function TraceTab({
       });
     }
   }, [selectedRun]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (!projectPath) {
-    return <EmptyState message="Save the project first to see trace data." />;
-  }
 
   if (runs.length === 0) {
     return <EmptyState message="No runs yet. Execute the workflow to see trace data." />;

@@ -45,6 +45,12 @@ impl RunStorage {
         }
     }
 
+    pub fn new_app_data(app_data_dir: &Path, workflow_id: Uuid) -> Self {
+        Self {
+            base_path: app_data_dir.join("runs").join(workflow_id.to_string()),
+        }
+    }
+
     fn node_dir(&self, node_id: Uuid) -> PathBuf {
         self.base_path.join(node_id.to_string())
     }
@@ -332,6 +338,17 @@ mod tests {
 
         let dirname = format_run_dirname(ts_ms, run_id);
         assert_eq!(dirname, "2026-02-13_16-30-00_550e8400-e29");
+    }
+
+    #[test]
+    fn test_new_app_data_path_structure() {
+        let app_data_dir = PathBuf::from("/tmp/com.clickweave.app");
+        let workflow_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let storage = RunStorage::new_app_data(&app_data_dir, workflow_id);
+        assert_eq!(
+            storage.base_path,
+            PathBuf::from("/tmp/com.clickweave.app/runs/550e8400-e29b-41d4-a716-446655440000")
+        );
     }
 
     #[test]

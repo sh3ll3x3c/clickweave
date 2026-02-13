@@ -10,7 +10,6 @@ export function useNodeRuns(
   const [runs, setRuns] = useState<NodeRun[]>([]);
 
   useEffect(() => {
-    if (!projectPath) return;
     commands
       .listRuns({
         project_path: projectPath,

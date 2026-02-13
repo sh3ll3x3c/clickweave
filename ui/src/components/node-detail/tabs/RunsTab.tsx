@@ -15,10 +15,6 @@ export function RunsTab({
 }) {
   const runs = useNodeRuns(projectPath, workflowId, nodeId);
 
-  if (!projectPath) {
-    return <EmptyState message="Save the project first to see run history." />;
-  }
-
   if (runs.length === 0) {
     return <EmptyState message="No runs yet. Execute the workflow to create runs." />;
   }

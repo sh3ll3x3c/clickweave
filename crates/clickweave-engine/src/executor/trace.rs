@@ -75,13 +75,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     pub(crate) fn record_event(&self, run: Option<&NodeRun>, event_type: &str, payload: Value) {
         let Some(run) = run else { return };
-        let Some(storage) = &self.storage else { return };
         let event = TraceEvent {
             timestamp: Self::now_millis(),
             event_type: event_type.to_string(),
             payload,
         };
-        if let Err(e) = storage.append_event(run, &event) {
+        if let Err(e) = self.storage.append_event(run, &event) {
             tracing::warn!("Failed to append trace event: {}", e);
         }
     }
@@ -111,7 +110,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                 if let Some(run) = &mut *node_run
                     && run.trace_level != TraceLevel::Off
-                    && let Some(storage) = &self.storage
                 {
                     let ext = if mime_type.contains("png") {
                         "png"
@@ -120,7 +118,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     };
                     let filename = format!("{}_{}.{}", prefix, idx, ext);
                     if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data) {
-                        match storage.save_artifact(
+                        match self.storage.save_artifact(
                             run,
                             ArtifactKind::Screenshot,
                             &filename,
@@ -140,9 +138,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) fn finalize_run(&self, run: &mut NodeRun, status: RunStatus) {
         run.ended_at = Some(Self::now_millis());
         run.status = status;
-        if let Some(storage) = &self.storage
-            && let Err(e) = storage.save_run(run)
-        {
+        if let Err(e) = self.storage.save_run(run) {
             tracing::warn!("Failed to save run: {}", e);
         }
     }

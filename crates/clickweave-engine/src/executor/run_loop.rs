@@ -68,10 +68,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let node_name = node.name.clone();
             let node_type = node.node_type.clone();
 
-            let mut node_run = self
-                .storage
-                .as_ref()
-                .and_then(|s| s.create_run(node_id, trace_level).ok());
+            let mut node_run = self.storage.create_run(node_id, trace_level).ok();
 
             if let Some(ref run) = node_run {
                 self.emit(ExecutorEvent::RunCreated(node_id, run.clone()));

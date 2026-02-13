@@ -28,13 +28,17 @@ impl ChatBackend for StubBackend {
 /// Helper to create a `WorkflowExecutor<StubBackend>` with minimal setup.
 fn make_test_executor() -> WorkflowExecutor<StubBackend> {
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let workflow = Workflow::default();
+    let temp_dir = std::env::temp_dir().join("clickweave_test_executor");
+    let storage = RunStorage::new_app_data(&temp_dir, workflow.id);
     WorkflowExecutor::with_backends(
-        Workflow::default(),
+        workflow,
         StubBackend,
         None,
         "stub-mcp".to_string(),
         None,
         tx,
+        storage,
     )
 }
 
@@ -62,10 +66,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp_command: String,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
+        storage: RunStorage,
     ) -> Self {
-        let storage = project_path
-            .as_ref()
-            .map(|p| RunStorage::new(p, workflow.id));
         Self {
             workflow,
             agent,
