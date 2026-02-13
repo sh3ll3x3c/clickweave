@@ -89,7 +89,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .content_text()
             .ok_or_else(|| "LLM returned empty content during app resolution".to_string())?;
 
-        let json_text = strip_code_block(raw_text);
+        let json_text = extract_json_object(strip_code_block(raw_text))
+            .ok_or_else(|| format!("No JSON object found in LLM response (raw: {})", raw_text))?;
 
         let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
             format!(
@@ -181,6 +182,41 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 }
 
+/// Extract the first top-level `{…}` JSON object from `text`, ignoring any
+/// leading or trailing prose the LLM may have added around it.
+fn extract_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+    for (i, ch) in text[start..].char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\\' => escape_next = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..start + i + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Strip optional markdown code fences (```` ```json ... ``` ```` or ```` ``` ... ``` ````)
 /// so we can parse the inner JSON.
 fn strip_code_block(text: &str) -> &str {
@@ -253,5 +289,60 @@ mod tests {
     fn strip_code_block_only_whitespace_around_bare_json() {
         let input = "   {\"name\": \"Trim\", \"pid\": 0}   ";
         assert_eq!(strip_code_block(input), r#"{"name": "Trim", "pid": 0}"#);
+    }
+
+    #[test]
+    fn extract_json_object_clean() {
+        let input = r#"{"name": "Calculator", "pid": 70392}"#;
+        assert_eq!(extract_json_object(input), Some(input));
+    }
+
+    #[test]
+    fn extract_json_object_with_trailing_prose() {
+        let input = r#"{"name": "Calculator", "pid": 70392}
+
+The user's query specifically mentions the application name as "Calculator"."#;
+        assert_eq!(
+            extract_json_object(input),
+            Some(r#"{"name": "Calculator", "pid": 70392}"#)
+        );
+    }
+
+    #[test]
+    fn extract_json_object_with_leading_prose() {
+        let input = r#"Here is the result:
+{"name": "Safari", "pid": 1234}"#;
+        assert_eq!(
+            extract_json_object(input),
+            Some(r#"{"name": "Safari", "pid": 1234}"#)
+        );
+    }
+
+    #[test]
+    fn extract_json_object_with_nested_braces_in_string() {
+        let input = r#"{"name": "App {v2}", "pid": 42} trailing"#;
+        assert_eq!(
+            extract_json_object(input),
+            Some(r#"{"name": "App {v2}", "pid": 42}"#)
+        );
+    }
+
+    #[test]
+    fn extract_json_object_with_escaped_quotes() {
+        let input = r#"{"name": "say \"hello\"", "pid": 7} extra"#;
+        assert_eq!(
+            extract_json_object(input),
+            Some(r#"{"name": "say \"hello\"", "pid": 7}"#)
+        );
+    }
+
+    #[test]
+    fn extract_json_object_no_object() {
+        assert_eq!(extract_json_object("no json here"), None);
+    }
+
+    #[test]
+    fn extract_json_object_unclosed() {
+        assert_eq!(extract_json_object("{\"name\": \"bad\""), None);
     }
 }
