@@ -56,6 +56,7 @@ Rules:
 - Be precise: use find_text to locate UI elements before clicking them.
 - For clicking on text elements: use click with a `target` argument (the text to find on screen) instead of explicit coordinates. The runtime will find the text and click it. Only use find_text separately when you need to verify text is present without clicking.
 - Always focus the target window before interacting with it.
+- If the user's intent implies opening or using an app that may not already be running, emit a launch_app step before focus_window. For example, "open Calculator and calculate 5×6" should start with launch_app(app_name="Calculator").
 - Prefer deterministic Tool steps over AiStep whenever possible.
 - Do not add unnecessary steps. Be efficient."#,
     )

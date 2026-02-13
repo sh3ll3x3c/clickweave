@@ -44,6 +44,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let apps_text = Self::extract_result_text(&apps_result);
         let windows_text = Self::extract_result_text(&windows_result);
 
+        // Short-circuit: if no apps are running, don't ask the LLM — it will hallucinate.
+        let apps_trimmed = apps_text.trim();
+        if apps_trimmed.is_empty() || apps_trimmed == "[]" || apps_trimmed == "No apps found" {
+            return Err(format!(
+                "App \"{}\" is not running (no matching apps found). \
+                 Use launch_app to start it first.",
+                user_input
+            ));
+        }
+
         let prompt = format!(
             "You are resolving an application name. The user wrote: \"{user_input}\"\n\
              \n\
@@ -53,10 +63,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
              Visible windows:\n\
              {windows_text}\n\
              \n\
-             Which application does the user mean? Return ONLY a JSON object:\n\
-             {{\"name\": \"<exact app name>\", \"pid\": <pid>}}\n\
+             Which running application does the user mean? Return ONLY a JSON object:\n\
+             {{\"name\": \"<exact app name from the list above>\", \"pid\": <pid>}}\n\
              \n\
-             If no match found, return:\n\
+             IMPORTANT: The name MUST be an exact match from the Running apps list above.\n\
+             Do NOT guess or invent app names. Do NOT return an unrelated app.\n\
+             If no running app is a plausible match, return:\n\
              {{\"name\": null, \"pid\": null}}"
         );
 
@@ -88,10 +100,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let name = parsed["name"].as_str().ok_or_else(|| {
             format!(
-                "LLM could not resolve app for \"{}\": name is null or missing",
+                "App \"{}\" is not running (LLM found no match). \
+                 Use launch_app to start it first.",
                 user_input
             )
         })?;
+
+        // Post-validate: ensure the LLM returned a name that actually appears in the app list.
+        if !apps_text.contains(name) {
+            return Err(format!(
+                "App \"{}\" is not running (resolved name \"{}\" not found in app list). \
+                 Use launch_app to start it first.",
+                user_input, name
+            ));
+        }
 
         let pid = parsed["pid"].as_i64().ok_or_else(|| {
             format!(
