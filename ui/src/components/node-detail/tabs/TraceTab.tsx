@@ -3,7 +3,7 @@ import { commands } from "../../../bindings";
 import type { Artifact, TraceEvent } from "../../../bindings";
 import { useNodeRuns } from "../hooks";
 import { EmptyState, StatusBadge } from "../fields";
-import { eventTypeColor, formatEventPayload, runDuration } from "../formatters";
+import { eventTypeColor, formatEventPayload, formatEventDetail, runDuration } from "../formatters";
 
 export function TraceTab({
   nodeName,
@@ -21,6 +21,7 @@ export function TraceTab({
   const runs = useNodeRuns(projectPath, workflowId, workflowName, nodeName);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(initialRunId ?? null);
   const [events, setEvents] = useState<TraceEvent[]>([]);
+  const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
   const [artifactPreviews, setArtifactPreviews] = useState<
     Record<string, string>
   >({});
@@ -37,6 +38,7 @@ export function TraceTab({
 
   // Load events for selected run
   useEffect(() => {
+    setExpandedEvent(null);
     if (!selectedRunId) {
       setEvents([]);
       return;
@@ -129,21 +131,29 @@ export function TraceTab({
           </h4>
           <div className="max-h-48 space-y-1 overflow-y-auto">
             {events.map((event, i) => (
-              <div
-                key={i}
-                className="flex items-start gap-2 rounded bg-[var(--bg-input)] px-2.5 py-1.5"
-              >
-                <span className="mt-px shrink-0 text-[10px] font-mono text-[var(--text-muted)]">
-                  {new Date(event.timestamp).toLocaleTimeString()}
-                </span>
-                <span
-                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${eventTypeColor(event.event_type)}`}
+              <div key={i}>
+                <button
+                  type="button"
+                  onClick={() => setExpandedEvent(expandedEvent === i ? null : i)}
+                  className="flex w-full items-start gap-2 rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-left hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
                 >
-                  {event.event_type}
-                </span>
-                <span className="text-[11px] text-[var(--text-secondary)] truncate">
-                  {formatEventPayload(event.payload)}
-                </span>
+                  <span className="mt-px shrink-0 text-[10px] font-mono text-[var(--text-muted)]">
+                    {new Date(event.timestamp).toLocaleTimeString()}
+                  </span>
+                  <span
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${eventTypeColor(event.event_type)}`}
+                  >
+                    {event.event_type}
+                  </span>
+                  <span className="text-[11px] text-[var(--text-secondary)] truncate">
+                    {formatEventPayload(event.payload)}
+                  </span>
+                </button>
+                {expandedEvent === i && (
+                  <pre className="mt-1 max-h-56 overflow-auto rounded border border-[var(--border)] bg-[var(--bg-dark)] p-2 whitespace-pre-wrap break-words text-[11px] font-mono text-[var(--text-secondary)]">
+                    {formatEventDetail(event.payload)}
+                  </pre>
+                )}
               </div>
             ))}
           </div>

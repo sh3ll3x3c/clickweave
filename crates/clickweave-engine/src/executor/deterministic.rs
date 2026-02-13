@@ -82,14 +82,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .map_err(|e| format!("Tool mapping failed: {}", e))?;
         let tool_name = &invocation.name;
 
+        self.log(format!("Calling MCP tool: {}", tool_name));
+        let args = self.resolve_image_paths(Some(invocation.arguments));
+
         self.record_event(
             node_run.as_deref(),
             "tool_call",
-            serde_json::json!({"name": tool_name}),
+            serde_json::json!({"name": tool_name, "args": args}),
         );
-
-        self.log(format!("Calling MCP tool: {}", tool_name));
-        let args = self.resolve_image_paths(Some(invocation.arguments));
         let result = mcp
             .call_tool(tool_name, args)
             .map_err(|e| format!("MCP tool {} failed: {}", tool_name, e))?;
@@ -104,6 +104,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             "tool_result",
             serde_json::json!({
                 "name": tool_name,
+                "text": Self::truncate_for_trace(&result_text, 8192),
                 "text_len": result_text.len(),
                 "image_count": images.len(),
             }),

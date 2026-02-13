@@ -97,6 +97,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .join("\n")
     }
 
+    /// Truncate text to a max byte length, snapping to a char boundary.
+    pub(crate) fn truncate_for_trace(text: &str, max_bytes: usize) -> String {
+        if text.len() <= max_bytes {
+            return text.to_string();
+        }
+        let end = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= max_bytes)
+            .last()
+            .unwrap_or(0);
+        format!("{}...[truncated, {} total]", &text[..end], text.len())
+    }
+
     pub(crate) fn save_result_images(
         &self,
         result: &ToolCallResult,

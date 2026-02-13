@@ -126,6 +126,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     serde_json::json!({
                         "name": tool_call.function.name,
                         "index": tool_call_count - 1,
+                        "args": args,
                     }),
                 );
 
@@ -156,6 +157,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             "tool_result",
                             serde_json::json!({
                                 "name": tool_call.function.name,
+                                "text": Self::truncate_for_trace(&result_text, 8192),
                                 "text_len": result_text.len(),
                                 "image_count": pending_images.len(),
                             }),

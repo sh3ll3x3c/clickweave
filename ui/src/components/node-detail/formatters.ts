@@ -36,3 +36,19 @@ export function formatEventPayload(payload: unknown): string {
     .map(([key, fmt]) => fmt(obj[key]));
   return parts.join(" | ") || JSON.stringify(payload);
 }
+
+/** Keys to omit from the detail view (shown in summary already or too noisy). */
+const detailOmitKeys = new Set(["text_len", "image_count"]);
+
+export function formatEventDetail(payload: unknown): string {
+  if (payload == null) return "(empty)";
+  if (typeof payload === "string") return payload;
+  if (typeof payload !== "object") return String(payload);
+
+  const obj = payload as Record<string, unknown>;
+  const filtered: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (!detailOmitKeys.has(k)) filtered[k] = v;
+  }
+  return JSON.stringify(filtered, null, 2);
+}
