@@ -18,6 +18,7 @@ export function useWorkflowMutations(
         name: nodeType.type === "AiStep" ? "AI Step" : nodeType.type.replace(/([A-Z])/g, " $1").trim(),
         enabled: true,
         timeout_ms: null,
+        settle_ms: null,
         retries: 0,
         trace_level: "Minimal",
         expected_outcome: null,

@@ -2,6 +2,7 @@ use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
 use clickweave_core::{NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpClient;
+use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -72,6 +73,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ));
 
             let timeout_ms = node.timeout_ms;
+            let settle_ms = node.settle_ms;
             let retries = node.retries;
             let trace_level = node.trace_level;
             let node_name = node.name.clone();
@@ -140,6 +142,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         return;
                     }
                 }
+            }
+
+            if let Some(ms) = settle_ms.filter(|&ms| ms > 0) {
+                self.log(format!("Settling for {}ms", ms));
+                tokio::time::sleep(Duration::from_millis(ms)).await;
             }
 
             if let Some(ref mut run) = node_run {

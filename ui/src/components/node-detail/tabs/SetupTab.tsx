@@ -37,6 +37,11 @@ export function SetupTab({
           onChange={(v) => onUpdate({ timeout_ms: v === 0 ? null : v })}
         />
         <NumberField
+          label="Settle (ms)"
+          value={node.settle_ms ?? 0}
+          onChange={(v) => onUpdate({ settle_ms: v === 0 ? null : v })}
+        />
+        <NumberField
           label="Retries"
           value={node.retries}
           min={0}
