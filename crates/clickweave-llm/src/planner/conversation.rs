@@ -115,12 +115,17 @@ impl ConversationSession {
         !self.unsummarized_overflow(window_size).is_empty()
     }
 
-    /// Update the summary after summarization.
-    pub fn set_summary(&mut self, summary: String, window_size: Option<usize>) {
+    /// Compute the summary_cutoff value for the current message count.
+    pub fn current_cutoff(&self, window_size: Option<usize>) -> usize {
         let n = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
         let len = self.messages.len();
+        if len > n { len - n } else { len }
+    }
+
+    /// Update the summary after summarization.
+    pub fn set_summary(&mut self, summary: String, window_size: Option<usize>) {
         self.summary = Some(summary);
-        self.summary_cutoff = if len > n { len - n } else { len };
+        self.summary_cutoff = self.current_cutoff(window_size);
     }
 }
 

@@ -12,10 +12,9 @@ fn dto_to_session(
     let messages = history
         .iter()
         .map(|e| ChatEntry {
-            role: if e.role == "user" {
-                ChatRole::User
-            } else {
-                ChatRole::Assistant
+            role: match e.role.as_str() {
+                "user" => ChatRole::User,
+                _ => ChatRole::Assistant,
             },
             content: e.content.clone(),
             timestamp: e.timestamp,
@@ -92,9 +91,7 @@ pub async fn assistant_chat(
     });
 
     let new_cutoff = if result.new_summary.is_some() {
-        let window = 5 * 2;
-        let len = request.history.len();
-        if len > window { len - window } else { len }
+        session.current_cutoff(None)
     } else {
         request.summary_cutoff
     };

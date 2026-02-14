@@ -243,7 +243,10 @@ export function useAppStore(): [AppState, AppActions] {
     setAssistantLoading(true);
     setAssistantError(null);
 
-    // Add user message to conversation immediately
+    // Capture conversation state BEFORE adding the user message — the backend
+    // receives the new message separately as `user_message`.
+    const conv = conversationRef.current;
+
     const userEntry: ChatEntryLocal = {
       role: "user",
       content: message,
@@ -255,9 +258,6 @@ export function useAppStore(): [AppState, AppActions] {
     }));
 
     try {
-      // History does NOT include the current user message — the backend receives
-      // it separately as `user_message` and appends it when building the LLM prompt.
-      const conv = conversationRef.current;
       const historyDto = conv.messages.map(localEntryToDto);
 
       const request: AssistantChatRequest = {
