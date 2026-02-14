@@ -19,6 +19,9 @@ function localEntryToDto(e: ChatEntryLocal): ChatEntryDto {
       added: e.patchSummary.added,
       removed: e.patchSummary.removed,
       updated: e.patchSummary.updated,
+      added_names: e.patchSummary.addedNames,
+      removed_names: e.patchSummary.removedNames,
+      updated_names: e.patchSummary.updatedNames,
       description: e.patchSummary.description ?? null,
     } : null,
     run_context: e.runContext ? {
@@ -41,6 +44,9 @@ function dtoEntryToLocal(m: ChatEntryDto): ChatEntryLocal {
       added: m.patch_summary.added,
       removed: m.patch_summary.removed,
       updated: m.patch_summary.updated,
+      addedNames: m.patch_summary.added_names ?? [],
+      removedNames: m.patch_summary.removed_names ?? [],
+      updatedNames: m.patch_summary.updated_names ?? [],
       description: m.patch_summary.description ?? undefined,
     } : undefined,
     runContext: m.run_context ? {
@@ -280,10 +286,18 @@ export function useAppStore(): [AppState, AppActions] {
         // Build patch summary if there's a patch
         let patchSummary: ChatEntryLocal["patchSummary"] | undefined;
         if (data.patch) {
+          const currentNodes = workflowRef.current.nodes;
+          const removedNames = data.patch.removed_node_ids.map(id => {
+            const node = currentNodes.find(n => n.id === id);
+            return node?.name ?? id;
+          });
           patchSummary = {
             added: data.patch.added_nodes.length,
             removed: data.patch.removed_node_ids.length,
             updated: data.patch.updated_nodes.length,
+            addedNames: data.patch.added_nodes.map(n => n.name),
+            removedNames: removedNames,
+            updatedNames: data.patch.updated_nodes.map(n => n.name),
           };
         }
 

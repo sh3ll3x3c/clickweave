@@ -196,6 +196,12 @@ pub struct PatchSummaryDto {
     pub added: u32,
     pub removed: u32,
     pub updated: u32,
+    #[serde(default)]
+    pub added_names: Vec<String>,
+    #[serde(default)]
+    pub removed_names: Vec<String>,
+    #[serde(default)]
+    pub updated_names: Vec<String>,
     pub description: Option<String>,
 }
 

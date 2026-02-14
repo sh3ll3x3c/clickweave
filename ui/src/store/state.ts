@@ -12,7 +12,7 @@ export interface ChatEntryLocal {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
-  patchSummary?: { added: number; removed: number; updated: number; description?: string };
+  patchSummary?: { added: number; removed: number; updated: number; addedNames: string[]; removedNames: string[]; updatedNames: string[]; description?: string };
   runContext?: { executionDir: string; nodeResults: Array<{ nodeName: string; status: string; error?: string }> };
 }
 
