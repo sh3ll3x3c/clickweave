@@ -80,6 +80,11 @@ struct PatchNodeUpdate {
     pub name: Option<String>,
     #[serde(default)]
     pub node_type: Option<Value>,
+    /// Flat alternative: LLMs often echo the node summary format.
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<Value>,
 }
 
 /// Result of patching a workflow.

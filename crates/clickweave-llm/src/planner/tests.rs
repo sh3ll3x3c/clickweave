@@ -3,7 +3,10 @@ use super::parse::{extract_json, layout_nodes, truncate_intent};
 use super::prompt::planner_system_prompt;
 use super::*;
 use crate::{ChatBackend, ChatResponse, Choice, Message};
-use clickweave_core::{ClickParams, MouseButton, NodeType, ScreenshotMode, TakeScreenshotParams};
+use clickweave_core::{
+    ClickParams, FindTextParams, FocusMethod, FocusWindowParams, MouseButton, NodeType, Position,
+    ScreenshotMode, TakeScreenshotParams,
+};
 use std::sync::Mutex;
 
 // ── Test helpers ────────────────────────────────────────────────
@@ -103,6 +106,28 @@ fn sample_tools() -> Vec<serde_json::Value> {
             }
         }),
     ]
+}
+
+/// Create a single-node workflow for patch tests. Returns the node ID and workflow.
+fn single_node_workflow(node_type: NodeType, name: &str) -> (uuid::Uuid, Workflow) {
+    let node = Node::new(node_type, Position { x: 300.0, y: 100.0 }, name);
+    let id = node.id;
+    let workflow = Workflow {
+        id: uuid::Uuid::new_v4(),
+        name: "Test".to_string(),
+        nodes: vec![node],
+        edges: vec![],
+    };
+    (id, workflow)
+}
+
+/// Run `patch_workflow_with_backend` with standard test defaults (no AI transforms, no agent steps).
+async fn patch_with_mock(
+    mock: &MockBackend,
+    workflow: &Workflow,
+    prompt: &str,
+) -> anyhow::Result<PatchResult> {
+    patch_workflow_with_backend(mock, workflow, prompt, &sample_tools(), false, false).await
 }
 
 // ── Unit tests ──────────────────────────────────────────────────
@@ -373,52 +398,90 @@ async fn test_plan_empty_steps_returns_error() {
     assert!(result.unwrap_err().to_string().contains("no steps"));
 }
 
+// ── Patcher prompt tests ────────────────────────────────────────
+
+#[test]
+fn test_patcher_prompt_includes_node_arguments() {
+    use super::prompt::patcher_system_prompt;
+
+    let mut workflow = Workflow::new("Test");
+    workflow.add_node(
+        NodeType::FocusWindow(FocusWindowParams {
+            method: FocusMethod::AppName,
+            value: Some("Signal".into()),
+            bring_to_front: true,
+        }),
+        Position { x: 0.0, y: 0.0 },
+    );
+    workflow.add_node(
+        NodeType::FindText(FindTextParams {
+            search_text: "Vesna".into(),
+            ..Default::default()
+        }),
+        Position { x: 0.0, y: 100.0 },
+    );
+    workflow.add_node(
+        NodeType::Click(ClickParams {
+            target: Some("Vesna".into()),
+            ..Default::default()
+        }),
+        Position { x: 0.0, y: 200.0 },
+    );
+
+    let prompt = patcher_system_prompt(&workflow, &sample_tools(), false, false);
+
+    // Must contain the actual tool arguments so the LLM knows what to change
+    assert!(
+        prompt.contains("\"text\": \"Vesna\""),
+        "Patcher prompt must include find_text arguments"
+    );
+    assert!(
+        prompt.contains("\"tool_name\": \"find_text\""),
+        "Patcher prompt must include tool_name"
+    );
+    assert!(
+        prompt.contains("\"tool_name\": \"focus_window\""),
+        "Patcher prompt must include focus_window tool_name"
+    );
+    // Click target is internal but must appear in prompt for the LLM
+    assert!(
+        prompt.contains("\"target\": \"Vesna\""),
+        "Patcher prompt must include click target"
+    );
+}
+
 // ── Patching integration tests ──────────────────────────────────
 
 #[tokio::test]
 async fn test_patch_adds_node() {
-    let workflow = Workflow {
-        id: uuid::Uuid::new_v4(),
-        name: "Test".to_string(),
-        nodes: vec![Node::new(
-            NodeType::TakeScreenshot(TakeScreenshotParams {
-                mode: ScreenshotMode::Window,
-                target: None,
-                include_ocr: true,
-            }),
-            clickweave_core::Position { x: 300.0, y: 100.0 },
-            "Screenshot",
-        )],
-        edges: vec![],
-    };
+    let (_id, workflow) = single_node_workflow(
+        NodeType::TakeScreenshot(TakeScreenshotParams {
+            mode: ScreenshotMode::Window,
+            target: None,
+            include_ocr: true,
+        }),
+        "Screenshot",
+    );
 
     let response = r#"{"add": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 100, "y": 200}}]}"#;
     let mock = MockBackend::single(response);
 
-    let result = patch_workflow_with_backend(
-        &mock,
-        &workflow,
-        "Add a click after the screenshot",
-        &sample_tools(),
-        false,
-        false,
-    )
-    .await
-    .unwrap();
+    let result = patch_with_mock(&mock, &workflow, "Add a click after the screenshot")
+        .await
+        .unwrap();
 
     assert_eq!(result.added_nodes.len(), 1);
     assert!(matches!(
         result.added_nodes[0].node_type,
         NodeType::Click(_)
     ));
-    // Should add an edge from existing node to new node
     assert_eq!(result.added_edges.len(), 1);
     assert_eq!(result.added_edges[0].from, workflow.nodes[0].id);
 }
 
 #[tokio::test]
 async fn test_patch_removes_node() {
-    let node = Node::new(
+    let (node_id, workflow) = single_node_workflow(
         NodeType::Click(ClickParams {
             target: None,
             x: Some(100.0),
@@ -426,30 +489,15 @@ async fn test_patch_removes_node() {
             button: MouseButton::Left,
             click_count: 1,
         }),
-        clickweave_core::Position { x: 300.0, y: 100.0 },
         "Click",
     );
-    let node_id = node.id;
-    let workflow = Workflow {
-        id: uuid::Uuid::new_v4(),
-        name: "Test".to_string(),
-        nodes: vec![node],
-        edges: vec![],
-    };
 
     let response = format!(r#"{{"remove_node_ids": ["{}"]}}"#, node_id);
     let mock = MockBackend::single(&response);
 
-    let result = patch_workflow_with_backend(
-        &mock,
-        &workflow,
-        "Remove the click",
-        &sample_tools(),
-        false,
-        false,
-    )
-    .await
-    .unwrap();
+    let result = patch_with_mock(&mock, &workflow, "Remove the click")
+        .await
+        .unwrap();
 
     assert_eq!(result.removed_node_ids.len(), 1);
     assert_eq!(result.removed_node_ids[0], node_id);
@@ -457,20 +505,14 @@ async fn test_patch_removes_node() {
 
 #[tokio::test]
 async fn test_patch_add_filters_disallowed_step_types() {
-    let workflow = Workflow {
-        id: uuid::Uuid::new_v4(),
-        name: "Test".to_string(),
-        nodes: vec![Node::new(
-            NodeType::TakeScreenshot(TakeScreenshotParams {
-                mode: ScreenshotMode::Window,
-                target: None,
-                include_ocr: true,
-            }),
-            clickweave_core::Position { x: 300.0, y: 100.0 },
-            "Screenshot",
-        )],
-        edges: vec![],
-    };
+    let (_id, workflow) = single_node_workflow(
+        NodeType::TakeScreenshot(TakeScreenshotParams {
+            mode: ScreenshotMode::Window,
+            target: None,
+            include_ocr: true,
+        }),
+        "Screenshot",
+    );
 
     // Patcher tries to add an AiStep and an AiTransform, but both flags are disabled
     let response = r#"{"add": [
@@ -480,16 +522,9 @@ async fn test_patch_add_filters_disallowed_step_types() {
     ]}"#;
     let mock = MockBackend::single(response);
 
-    let result = patch_workflow_with_backend(
-        &mock,
-        &workflow,
-        "Add some steps",
-        &sample_tools(),
-        false,
-        false,
-    )
-    .await
-    .unwrap();
+    let result = patch_with_mock(&mock, &workflow, "Add some steps")
+        .await
+        .unwrap();
 
     // Only the Tool step should survive
     assert_eq!(result.added_nodes.len(), 1);
@@ -497,13 +532,69 @@ async fn test_patch_add_filters_disallowed_step_types() {
         result.added_nodes[0].node_type,
         NodeType::Click(_)
     ));
-    // Two warnings for the filtered steps
     assert!(result.warnings.len() >= 2);
 }
 
 #[tokio::test]
+async fn test_patch_update_with_flat_arguments_only() {
+    let (node_id, workflow) = single_node_workflow(
+        NodeType::FindText(FindTextParams {
+            search_text: "Vesna".into(),
+            ..Default::default()
+        }),
+        "Find Vesna",
+    );
+
+    // LLM returns only `arguments` (no tool_name, no node_type) -- tool inferred from existing node
+    let response = format!(
+        r#"{{"update": [{{"node_id": "{}", "name": "Find Me", "arguments": {{"text": "Me"}}}}]}}"#,
+        node_id
+    );
+    let mock = MockBackend::single(&response);
+
+    let result = patch_with_mock(&mock, &workflow, "Change target")
+        .await
+        .unwrap();
+
+    assert_eq!(result.updated_nodes.len(), 1);
+    assert_eq!(result.updated_nodes[0].name, "Find Me");
+    match &result.updated_nodes[0].node_type {
+        NodeType::FindText(p) => assert_eq!(p.search_text, "Me"),
+        other => panic!("Expected FindText, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_patch_update_with_flat_tool_name_and_arguments() {
+    let (node_id, workflow) = single_node_workflow(
+        NodeType::FindText(FindTextParams {
+            search_text: "old".into(),
+            ..Default::default()
+        }),
+        "Find Old",
+    );
+
+    // LLM returns `tool_name` + `arguments` (no nested node_type)
+    let response = format!(
+        r#"{{"update": [{{"node_id": "{}", "tool_name": "type_text", "arguments": {{"text": "hello"}}}}]}}"#,
+        node_id
+    );
+    let mock = MockBackend::single(&response);
+
+    let result = patch_with_mock(&mock, &workflow, "Change to type_text")
+        .await
+        .unwrap();
+
+    assert_eq!(result.updated_nodes.len(), 1);
+    match &result.updated_nodes[0].node_type {
+        NodeType::TypeText(p) => assert_eq!(p.text, "hello"),
+        other => panic!("Expected TypeText, got {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn test_patch_update_rejects_disallowed_node_type_change() {
-    let node = Node::new(
+    let (node_id, workflow) = single_node_workflow(
         NodeType::Click(ClickParams {
             target: None,
             x: Some(100.0),
@@ -511,16 +602,8 @@ async fn test_patch_update_rejects_disallowed_node_type_change() {
             button: MouseButton::Left,
             click_count: 1,
         }),
-        clickweave_core::Position { x: 300.0, y: 100.0 },
         "Click",
     );
-    let node_id = node.id;
-    let workflow = Workflow {
-        id: uuid::Uuid::new_v4(),
-        name: "Test".to_string(),
-        nodes: vec![node],
-        edges: vec![],
-    };
 
     // Try to update the node to an AiStep with agent steps disabled
     let response = format!(
@@ -529,16 +612,9 @@ async fn test_patch_update_rejects_disallowed_node_type_change() {
     );
     let mock = MockBackend::single(&response);
 
-    let result = patch_workflow_with_backend(
-        &mock,
-        &workflow,
-        "Change to AI",
-        &sample_tools(),
-        false,
-        false,
-    )
-    .await
-    .unwrap();
+    let result = patch_with_mock(&mock, &workflow, "Change to AI")
+        .await
+        .unwrap();
 
     // Node should still be in updated_nodes (name update still applies) but type unchanged
     assert_eq!(result.updated_nodes.len(), 1);
@@ -551,35 +627,22 @@ async fn test_patch_update_rejects_disallowed_node_type_change() {
 
 #[tokio::test]
 async fn test_patch_repair_pass_fixes_invalid_json() {
-    let workflow = Workflow {
-        id: uuid::Uuid::new_v4(),
-        name: "Test".to_string(),
-        nodes: vec![Node::new(
-            NodeType::TakeScreenshot(TakeScreenshotParams {
-                mode: ScreenshotMode::Window,
-                target: None,
-                include_ocr: true,
-            }),
-            clickweave_core::Position { x: 300.0, y: 100.0 },
-            "Screenshot",
-        )],
-        edges: vec![],
-    };
+    let (_id, workflow) = single_node_workflow(
+        NodeType::TakeScreenshot(TakeScreenshotParams {
+            mode: ScreenshotMode::Window,
+            target: None,
+            include_ocr: true,
+        }),
+        "Screenshot",
+    );
 
     let bad_response = r#"Here's the patch: {"add": [invalid}]}"#;
     let good_response = r#"{"add": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 50, "y": 50}}]}"#;
     let mock = MockBackend::new(vec![bad_response, good_response]);
 
-    let result = patch_workflow_with_backend(
-        &mock,
-        &workflow,
-        "Add a click",
-        &sample_tools(),
-        false,
-        false,
-    )
-    .await
-    .unwrap();
+    let result = patch_with_mock(&mock, &workflow, "Add a click")
+        .await
+        .unwrap();
 
     assert_eq!(result.added_nodes.len(), 1);
     assert_eq!(mock.call_count(), 2);
@@ -587,33 +650,19 @@ async fn test_patch_repair_pass_fixes_invalid_json() {
 
 #[tokio::test]
 async fn test_patch_repair_pass_fails_after_max_attempts() {
-    let workflow = Workflow {
-        id: uuid::Uuid::new_v4(),
-        name: "Test".to_string(),
-        nodes: vec![Node::new(
-            NodeType::TakeScreenshot(TakeScreenshotParams {
-                mode: ScreenshotMode::Window,
-                target: None,
-                include_ocr: true,
-            }),
-            clickweave_core::Position { x: 300.0, y: 100.0 },
-            "Screenshot",
-        )],
-        edges: vec![],
-    };
+    let (_id, workflow) = single_node_workflow(
+        NodeType::TakeScreenshot(TakeScreenshotParams {
+            mode: ScreenshotMode::Window,
+            target: None,
+            include_ocr: true,
+        }),
+        "Screenshot",
+    );
 
     let bad = r#"not json at all"#;
     let mock = MockBackend::new(vec![bad, bad]);
 
-    let result = patch_workflow_with_backend(
-        &mock,
-        &workflow,
-        "Add a click",
-        &sample_tools(),
-        false,
-        false,
-    )
-    .await;
+    let result = patch_with_mock(&mock, &workflow, "Add a click").await;
 
     assert!(result.is_err());
     assert_eq!(mock.call_count(), 2);

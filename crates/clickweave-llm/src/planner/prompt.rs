@@ -1,4 +1,4 @@
-use clickweave_core::Workflow;
+use clickweave_core::{NodeType, Workflow, tool_mapping};
 use serde_json::Value;
 
 /// Build the planner system prompt.
@@ -75,11 +75,31 @@ pub(crate) fn patcher_system_prompt(
         .nodes
         .iter()
         .map(|n| {
-            serde_json::json!({
+            let mut summary = serde_json::json!({
                 "id": n.id.to_string(),
                 "name": n.name,
-                "type": format!("{:?}", n.node_type).split('(').next().unwrap_or("Unknown"),
-            })
+            });
+            match tool_mapping::node_type_to_tool_invocation(&n.node_type) {
+                Ok(inv) => {
+                    summary["tool_name"] = inv.name.into();
+                    let mut args = inv.arguments;
+                    // Click `target` is internal (not sent to MCP) but the LLM
+                    // needs it to know what text the click resolves against.
+                    if let NodeType::Click(p) = &n.node_type
+                        && let Some(target) = &p.target
+                    {
+                        args["target"] = Value::String(target.clone());
+                    }
+                    summary["arguments"] = args;
+                }
+                Err(_) => {
+                    // AiStep / AppDebugKitOp — show the raw node_type
+                    if let Ok(v) = serde_json::to_value(&n.node_type) {
+                        summary["node_type"] = v;
+                    }
+                }
+            }
+            summary
         })
         .collect();
     let nodes_json = serde_json::to_string_pretty(&nodes_summary).unwrap_or_default();
@@ -125,7 +145,7 @@ Rules:
 - Only include fields that have changes (omit empty arrays).
 - For "add", use the same step format as planning (step_type: Tool/AiTransform/AiStep).
 - For "remove_node_ids", use the exact node IDs from the current workflow.
-- For "update", only include fields that changed.
+- For "update", include "node_type" whenever tool arguments need to change (e.g. different search text, click target, key). Changing only the "name" does NOT change what the node actually does at runtime.
 - New nodes from "add" will be appended after the last existing node.
 - Keep the workflow functional — don't remove nodes that break the flow without replacement."#,
     )
