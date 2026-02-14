@@ -11,6 +11,7 @@ function makeNode(overrides: Partial<Node> = {}): Node {
     position: { x: 0, y: 0 },
     enabled: true,
     timeout_ms: null,
+    settle_ms: null,
     retries: 0,
     trace_level: "Minimal",
     expected_outcome: null,

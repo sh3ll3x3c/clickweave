@@ -1,13 +1,58 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { commands } from "../bindings";
-import type { Workflow, RunRequest, PlanRequest, PatchRequest, WorkflowPatch, NodeTypeInfo } from "../bindings";
-import type { AppState, AppActions, DetailTab, EndpointConfig } from "./state";
-import { DEFAULT_ENDPOINT, DEFAULT_MCP_COMMAND, DEFAULT_VLM_ENABLED, makeDefaultWorkflow } from "./state";
+import type { Workflow, RunRequest, AssistantChatRequest, WorkflowPatch, ConversationData, ChatEntryDto, NodeTypeInfo } from "../bindings";
+import type { AppState, AppActions, DetailTab, EndpointConfig, ChatEntryLocal } from "./state";
+import { DEFAULT_ENDPOINT, DEFAULT_MCP_COMMAND, DEFAULT_VLM_ENABLED, makeDefaultWorkflow, makeEmptyConversation } from "./state";
+import type { ConversationSession } from "./state";
 import { loadSettings, saveSetting, toEndpoint } from "./settings";
 import type { PersistedSettings } from "./settings";
 import { useWorkflowMutations } from "./useWorkflowMutations";
 
 export type { DetailTab, EndpointConfig, AppState, AppActions } from "./state";
+
+function localEntryToDto(e: ChatEntryLocal): ChatEntryDto {
+  return {
+    role: e.role,
+    content: e.content,
+    timestamp: e.timestamp,
+    patch_summary: e.patchSummary ? {
+      added: e.patchSummary.added,
+      removed: e.patchSummary.removed,
+      updated: e.patchSummary.updated,
+      description: e.patchSummary.description ?? null,
+    } : null,
+    run_context: e.runContext ? {
+      execution_dir: e.runContext.executionDir,
+      node_results: e.runContext.nodeResults.map(nr => ({
+        node_name: nr.nodeName,
+        status: nr.status,
+        error: nr.error ?? null,
+      })),
+    } : null,
+  };
+}
+
+function dtoEntryToLocal(m: ChatEntryDto): ChatEntryLocal {
+  return {
+    role: m.role as "user" | "assistant",
+    content: m.content,
+    timestamp: m.timestamp,
+    patchSummary: m.patch_summary ? {
+      added: m.patch_summary.added,
+      removed: m.patch_summary.removed,
+      updated: m.patch_summary.updated,
+      description: m.patch_summary.description ?? undefined,
+    } : undefined,
+    runContext: m.run_context ? {
+      executionDir: m.run_context.execution_dir,
+      nodeResults: m.run_context.node_results.map(nr => ({
+        nodeName: nr.node_name,
+        status: nr.status,
+        error: nr.error ?? undefined,
+      })),
+    } : undefined,
+  };
+}
 
 export function useAppStore(): [AppState, AppActions] {
   const [workflow, setWorkflow] = useState<Workflow>(makeDefaultWorkflow);
@@ -22,23 +67,31 @@ export function useAppStore(): [AppState, AppActions] {
   const [nodeSearch, setNodeSearch] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [isNewWorkflow, setIsNewWorkflow] = useState(true);
-  const [showPlannerModal, setShowPlannerModal] = useState(false);
-  const [plannerLoading, setPlannerLoading] = useState(false);
-  const [plannerError, setPlannerError] = useState<string | null>(null);
-  const [pendingWorkflow, setPendingWorkflow] = useState<Workflow | null>(null);
-  const [plannerWarnings, setPlannerWarnings] = useState<string[]>([]);
   const [allowAiTransforms, setAllowAiTransforms] = useState(true);
   const [allowAgentSteps, setAllowAgentSteps] = useState(false);
-  const [showAssistant, setShowAssistant] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantError, setAssistantError] = useState<string | null>(null);
-  const [assistantPatch, setAssistantPatch] = useState<WorkflowPatch | null>(null);
+  const [conversation, setConversation] = useState<ConversationSession>(makeEmptyConversation);
+  const [pendingPatch, setPendingPatch] = useState<WorkflowPatch | null>(null);
+  const [pendingPatchWarnings, setPendingPatchWarnings] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>(["Clickweave started"]);
   const [plannerConfig, setPlannerConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
   const [agentConfig, setAgentConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
   const [vlmConfig, setVlmConfig] = useState<EndpointConfig>(DEFAULT_ENDPOINT);
   const [vlmEnabled, setVlmEnabled] = useState(DEFAULT_VLM_ENABLED);
   const [mcpCommand, setMcpCommand] = useState(DEFAULT_MCP_COMMAND);
+
+  // ── Refs for stable callbacks ─────────────────────────────
+
+  const conversationRef = useRef(conversation);
+  conversationRef.current = conversation;
+
+  const workflowRef = useRef(workflow);
+  workflowRef.current = workflow;
+
+  const plannerRef = useRef({ plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand });
+  plannerRef.current = { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand };
 
   // ── Settings persistence ────────────────────────────────────
 
@@ -110,32 +163,70 @@ export function useAppStore(): [AppState, AppActions] {
     setWorkflow(projectResult.data.workflow);
     setSelectedNode(null);
     setIsNewWorkflow(false);
+
+    // Load conversation
+    try {
+      const convResult = await commands.loadConversation(filePath);
+      if (convResult.status === "ok" && convResult.data) {
+        setConversation({
+          messages: convResult.data.messages.map(dtoEntryToLocal),
+          summary: convResult.data.summary,
+          summaryCutoff: convResult.data.summary_cutoff,
+        });
+      } else {
+        setConversation(makeEmptyConversation());
+      }
+    } catch {
+      setConversation(makeEmptyConversation());
+    }
+
     pushLog(`Opened: ${filePath}`);
   }, [pushLog]);
 
+  const projectPathRef = useRef(projectPath);
+  projectPathRef.current = projectPath;
+
   const saveProject = useCallback(async () => {
-    let savePath = projectPath;
+    let savePath = projectPathRef.current;
     if (!savePath) {
       const result = await commands.pickSaveFile();
       if (result.status !== "ok" || !result.data) return;
       savePath = result.data;
       setProjectPath(savePath);
     }
-    const saveResult = await commands.saveProject(savePath, workflow);
+    const saveResult = await commands.saveProject(savePath, workflowRef.current);
     if (saveResult.status !== "ok") {
       pushLog(`Failed to save: ${saveResult.error}`);
       return;
     }
-    pushLog(projectPath ? "Saved" : `Saved to: ${savePath}`);
-  }, [projectPath, workflow, pushLog]);
+
+    // Save conversation alongside the project
+    if (savePath) {
+      try {
+        const conv = conversationRef.current;
+        const convDto: ConversationData = {
+          messages: conv.messages.map(localEntryToDto),
+          summary: conv.summary,
+          summary_cutoff: conv.summaryCutoff,
+        };
+        await commands.saveConversation(savePath, convDto);
+      } catch (e) {
+        console.error("Failed to save conversation:", e);
+      }
+    }
+
+    pushLog(projectPathRef.current ? "Saved" : `Saved to: ${savePath}`);
+  }, [pushLog]);
 
   const newProject = useCallback(() => {
     setWorkflow(makeDefaultWorkflow());
     setProjectPath(null);
     setSelectedNode(null);
     setIsNewWorkflow(true);
-    setPendingWorkflow(null);
-    setPlannerError(null);
+    setConversation(makeEmptyConversation());
+    setPendingPatch(null);
+    setPendingPatchWarnings([]);
+    setAssistantError(null);
     pushLog("New project created");
   }, [pushLog]);
 
@@ -143,113 +234,106 @@ export function useAppStore(): [AppState, AppActions] {
 
   const toggleSidebar = useCallback(() => setSidebarCollapsed((p) => !p), []);
   const toggleLogsDrawer = useCallback(() => setLogsDrawerOpen((p) => !p), []);
+  const toggleAssistant = useCallback(() => setAssistantOpen((p) => !p), []);
 
-  // ── Planner actions ─────────────────────────────────────────
+  // ── Assistant actions ──────────────────────────────────────
 
-  const plannerRef = useRef({ plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand });
-  plannerRef.current = { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand };
-
-  const planWorkflowAction = useCallback(async (intent: string) => {
-    const { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand } = plannerRef.current;
-    setPlannerLoading(true);
-    setPlannerError(null);
-    setPendingWorkflow(null);
-    setPlannerWarnings([]);
-    try {
-      const request: PlanRequest = {
-        intent,
-        planner: toEndpoint(plannerConfig),
-        allow_ai_transforms: allowAiTransforms,
-        allow_agent_steps: allowAgentSteps,
-        mcp_command: mcpCommand,
-      };
-      const result = await commands.planWorkflow(request);
-      if (result.status === "ok") {
-        setPendingWorkflow(result.data.workflow);
-        setPlannerWarnings(result.data.warnings);
-        pushLog(`Planner generated workflow with ${result.data.workflow.nodes.length} nodes`);
-      } else {
-        setPlannerError(result.error);
-        pushLog(`Planning failed: ${result.error}`);
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setPlannerError(msg);
-      pushLog(`Planning error: ${msg}`);
-    } finally {
-      setPlannerLoading(false);
-    }
-  }, [pushLog]);
-
-  const applyPlannedWorkflow = useCallback(() => {
-    if (!pendingWorkflow) return;
-    setWorkflow(pendingWorkflow);
-    setPendingWorkflow(null);
-    setPlannerWarnings([]);
-    setPlannerError(null);
-    setIsNewWorkflow(false);
-    setShowPlannerModal(false);
-    pushLog("Applied planned workflow");
-  }, [pendingWorkflow, pushLog]);
-
-  const discardPlannedWorkflow = useCallback(() => {
-    setPendingWorkflow(null);
-    setPlannerWarnings([]);
-    setPlannerError(null);
-    setShowPlannerModal(false);
-  }, []);
-
-  // ── Assistant/patcher actions ───────────────────────────────
-
-  const workflowRef = useRef(workflow);
-  workflowRef.current = workflow;
-
-  const patchWorkflowAction = useCallback(async (userPrompt: string) => {
+  const sendAssistantMessage = useCallback(async (message: string) => {
     const { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand } = plannerRef.current;
     setAssistantLoading(true);
     setAssistantError(null);
-    setAssistantPatch(null);
+
+    // Add user message to conversation immediately
+    const userEntry: ChatEntryLocal = {
+      role: "user",
+      content: message,
+      timestamp: Date.now(),
+    };
+    setConversation(prev => ({
+      ...prev,
+      messages: [...prev.messages, userEntry],
+    }));
+
     try {
-      const request: PatchRequest = {
+      // History does NOT include the current user message — the backend receives
+      // it separately as `user_message` and appends it when building the LLM prompt.
+      const conv = conversationRef.current;
+      const historyDto = conv.messages.map(localEntryToDto);
+
+      const request: AssistantChatRequest = {
         workflow: workflowRef.current,
-        user_prompt: userPrompt,
+        user_message: message,
+        history: historyDto,
+        summary: conv.summary,
+        summary_cutoff: conv.summaryCutoff,
+        run_context: null,
         planner: toEndpoint(plannerConfig),
         allow_ai_transforms: allowAiTransforms,
         allow_agent_steps: allowAgentSteps,
         mcp_command: mcpCommand,
       };
-      const result = await commands.patchWorkflow(request);
+
+      const result = await commands.assistantChat(request);
       if (result.status === "ok") {
-        setAssistantPatch(result.data);
-        const total = result.data.added_nodes.length + result.data.removed_node_ids.length + result.data.updated_nodes.length;
-        pushLog(`Assistant generated ${total} changes`);
+        const data = result.data;
+
+        // Build patch summary if there's a patch
+        let patchSummary: ChatEntryLocal["patchSummary"] | undefined;
+        if (data.patch) {
+          patchSummary = {
+            added: data.patch.added_nodes.length,
+            removed: data.patch.removed_node_ids.length,
+            updated: data.patch.updated_nodes.length,
+          };
+        }
+
+        // Add assistant message to conversation
+        const assistantEntry: ChatEntryLocal = {
+          role: "assistant",
+          content: data.assistant_message,
+          timestamp: Date.now(),
+          patchSummary,
+        };
+
+        setConversation(prev => ({
+          messages: [...prev.messages, assistantEntry],
+          summary: data.new_summary ?? prev.summary,
+          summaryCutoff: data.summary_cutoff,
+        }));
+
+        if (data.patch) {
+          setPendingPatch(data.patch);
+          setPendingPatchWarnings(data.warnings);
+        }
+
+        pushLog(`Assistant: ${data.patch ? "generated changes" : "responded"}`);
       } else {
         setAssistantError(result.error);
-        pushLog(`Patch failed: ${result.error}`);
+        pushLog(`Assistant error: ${result.error}`);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setAssistantError(msg);
-      pushLog(`Patch error: ${msg}`);
+      pushLog(`Assistant error: ${msg}`);
     } finally {
       setAssistantLoading(false);
     }
   }, [pushLog]);
 
-  const applyPatch = useCallback(async () => {
-    if (!assistantPatch) return;
+  const applyPendingPatch = useCallback(async () => {
+    if (!pendingPatch) return;
     const removedEdgeKeys = new Set(
-      assistantPatch.removed_edges.map((e) => `${e.from}-${e.to}`),
+      pendingPatch.removed_edges.map((e) => `${e.from}-${e.to}`),
     );
     const nodes = [
       ...workflow.nodes
-        .filter((n) => !assistantPatch.removed_node_ids.includes(n.id))
-        .map((n) => assistantPatch.updated_nodes.find((u) => u.id === n.id) ?? n),
-      ...assistantPatch.added_nodes,
+        .filter((n) => !pendingPatch.removed_node_ids.includes(n.id))
+        .map((n) => pendingPatch.updated_nodes.find((u) => u.id === n.id) ?? n),
+      ...pendingPatch.added_nodes,
     ];
     const edges = [
       ...workflow.edges.filter((e) => !removedEdgeKeys.has(`${e.from}-${e.to}`)),
-      ...assistantPatch.added_edges,
+      ...pendingPatch.added_edges,
     ];
     const patched: Workflow = { ...workflow, nodes, edges };
     try {
@@ -263,16 +347,24 @@ export function useAppStore(): [AppState, AppActions] {
       return;
     }
     setWorkflow(patched);
-    setAssistantPatch(null);
+    setPendingPatch(null);
+    setPendingPatchWarnings([]);
     setAssistantError(null);
-    setShowAssistant(false);
+    setIsNewWorkflow(false);
     pushLog("Applied assistant changes");
-  }, [assistantPatch, workflow, pushLog]);
+  }, [pendingPatch, workflow, pushLog]);
 
-  const discardPatch = useCallback(() => {
-    setAssistantPatch(null);
+  const discardPendingPatch = useCallback(() => {
+    setPendingPatch(null);
+    setPendingPatchWarnings([]);
     setAssistantError(null);
-    setShowAssistant(false);
+  }, []);
+
+  const clearConversation = useCallback(() => {
+    setConversation(makeEmptyConversation());
+    setPendingPatch(null);
+    setPendingPatchWarnings([]);
+    setAssistantError(null);
   }, []);
 
   // ── Executor actions ────────────────────────────────────────
@@ -307,9 +399,9 @@ export function useAppStore(): [AppState, AppActions] {
   const state: AppState = {
     workflow, projectPath, nodeTypes, selectedNode, activeNode, executorState,
     detailTab, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings,
-    isNewWorkflow, showPlannerModal, plannerLoading, plannerError,
-    pendingWorkflow, plannerWarnings, allowAiTransforms, allowAgentSteps,
-    showAssistant, assistantLoading, assistantError, assistantPatch,
+    isNewWorkflow, allowAiTransforms, allowAgentSteps,
+    assistantOpen, assistantLoading, assistantError,
+    conversation, pendingPatch, pendingPatchWarnings,
     logs, plannerConfig, agentConfig, vlmConfig, vlmEnabled, mcpCommand,
   };
 
@@ -343,15 +435,13 @@ export function useAppStore(): [AppState, AppActions] {
     stopWorkflow,
     setAllowAiTransforms,
     setAllowAgentSteps,
-    planWorkflow: planWorkflowAction,
-    applyPlannedWorkflow,
-    discardPlannedWorkflow,
-    setShowPlannerModal,
     skipIntentEntry: () => setIsNewWorkflow(false),
-    setShowAssistant,
-    patchWorkflow: patchWorkflowAction,
-    applyPatch,
-    discardPatch,
+    setAssistantOpen,
+    toggleAssistant,
+    sendAssistantMessage,
+    applyPendingPatch,
+    discardPendingPatch,
+    clearConversation,
   };
 
   return [state, actions];

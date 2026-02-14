@@ -8,6 +8,24 @@ export interface EndpointConfig {
   model: string;
 }
 
+export interface ChatEntryLocal {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+  patchSummary?: { added: number; removed: number; updated: number; description?: string };
+  runContext?: { executionDir: string; nodeResults: Array<{ nodeName: string; status: string; error?: string }> };
+}
+
+export interface ConversationSession {
+  messages: ChatEntryLocal[];
+  summary: string | null;
+  summaryCutoff: number;
+}
+
+export function makeEmptyConversation(): ConversationSession {
+  return { messages: [], summary: null, summaryCutoff: 0 };
+}
+
 export interface AppState {
   workflow: Workflow;
   projectPath: string | null;
@@ -21,17 +39,14 @@ export interface AppState {
   nodeSearch: string;
   showSettings: boolean;
   isNewWorkflow: boolean;
-  showPlannerModal: boolean;
-  plannerLoading: boolean;
-  plannerError: string | null;
-  pendingWorkflow: Workflow | null;
-  plannerWarnings: string[];
   allowAiTransforms: boolean;
   allowAgentSteps: boolean;
-  showAssistant: boolean;
+  assistantOpen: boolean;
   assistantLoading: boolean;
   assistantError: string | null;
-  assistantPatch: WorkflowPatch | null;
+  conversation: ConversationSession;
+  pendingPatch: WorkflowPatch | null;
+  pendingPatchWarnings: string[];
   logs: string[];
   plannerConfig: EndpointConfig;
   agentConfig: EndpointConfig;
@@ -70,15 +85,13 @@ export interface AppActions {
   stopWorkflow: () => Promise<void>;
   setAllowAiTransforms: (allow: boolean) => void;
   setAllowAgentSteps: (allow: boolean) => void;
-  planWorkflow: (intent: string) => Promise<void>;
-  applyPlannedWorkflow: () => void;
-  discardPlannedWorkflow: () => void;
-  setShowPlannerModal: (show: boolean) => void;
   skipIntentEntry: () => void;
-  setShowAssistant: (show: boolean) => void;
-  patchWorkflow: (prompt: string) => Promise<void>;
-  applyPatch: () => void;
-  discardPatch: () => void;
+  setAssistantOpen: (open: boolean) => void;
+  toggleAssistant: () => void;
+  sendAssistantMessage: (message: string) => Promise<void>;
+  applyPendingPatch: () => void;
+  discardPendingPatch: () => void;
+  clearConversation: () => void;
 }
 
 export const DEFAULT_ENDPOINT: EndpointConfig = {

@@ -7,8 +7,7 @@ import { FloatingToolbar } from "./components/FloatingToolbar";
 import { SettingsModal } from "./components/SettingsModal";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { NodeDetailModal } from "./components/node-detail/NodeDetailModal";
-import { PlannerModal } from "./components/PlannerModal";
-import { AssistantModal } from "./components/AssistantModal";
+import { AssistantPanel } from "./components/AssistantPanel";
 import { IntentEmptyState } from "./components/IntentEmptyState";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -63,8 +62,7 @@ function App() {
       listen("menu://toggle-logs", () => actions.toggleLogsDrawer()),
       listen("menu://run-workflow", () => actions.runWorkflow()),
       listen("menu://stop-workflow", () => actions.stopWorkflow()),
-      listen("menu://generate-intent", () => actions.setShowPlannerModal(true)),
-      listen("menu://patch-assistant", () => actions.setShowAssistant(true)),
+      listen("menu://toggle-assistant", () => actions.toggleAssistant()),
     ]);
 
     return () => {
@@ -97,11 +95,12 @@ function App() {
           {state.isNewWorkflow && state.workflow.nodes.length === 0 ? (
             <IntentEmptyState
               onGenerate={(intent) => {
-                actions.setShowPlannerModal(true);
-                actions.planWorkflow(intent);
+                actions.setAssistantOpen(true);
+                actions.skipIntentEntry();
+                actions.sendAssistantMessage(intent);
               }}
               onSkip={actions.skipIntentEntry}
-              loading={state.plannerLoading}
+              loading={state.assistantLoading}
             />
           ) : (
             <>
@@ -129,9 +128,23 @@ function App() {
                       ? actions.stopWorkflow
                       : actions.runWorkflow
                   }
-                  onAssistant={() => actions.setShowAssistant(true)}
+                  onAssistant={actions.toggleAssistant}
                 />
               </div>
+
+              <AssistantPanel
+                open={state.assistantOpen}
+                loading={state.assistantLoading}
+                error={state.assistantError}
+                conversation={state.conversation}
+                pendingPatch={state.pendingPatch}
+                pendingPatchWarnings={state.pendingPatchWarnings}
+                onSendMessage={actions.sendAssistantMessage}
+                onApplyPatch={actions.applyPendingPatch}
+                onDiscardPatch={actions.discardPendingPatch}
+                onClearConversation={actions.clearConversation}
+                onClose={() => actions.setAssistantOpen(false)}
+              />
 
               <NodePalette
                 nodeTypes={state.nodeTypes}
@@ -175,31 +188,6 @@ function App() {
         onVlmConfigChange={actions.setVlmConfig}
         onVlmEnabledChange={actions.setVlmEnabled}
         onMcpCommandChange={actions.setMcpCommand}
-      />
-
-      <AssistantModal
-        open={state.showAssistant}
-        loading={state.assistantLoading}
-        error={state.assistantError}
-        patch={state.assistantPatch}
-        onSubmit={actions.patchWorkflow}
-        onApply={actions.applyPatch}
-        onDiscard={actions.discardPatch}
-      />
-
-      <PlannerModal
-        open={state.showPlannerModal}
-        loading={state.plannerLoading}
-        error={state.plannerError}
-        pendingWorkflow={state.pendingWorkflow}
-        warnings={state.plannerWarnings}
-        allowAiTransforms={state.allowAiTransforms}
-        allowAgentSteps={state.allowAgentSteps}
-        onGenerate={actions.planWorkflow}
-        onApply={actions.applyPlannedWorkflow}
-        onDiscard={actions.discardPlannedWorkflow}
-        onAllowAiTransformsChange={actions.setAllowAiTransforms}
-        onAllowAgentStepsChange={actions.setAllowAgentSteps}
       />
     </div>
   );
