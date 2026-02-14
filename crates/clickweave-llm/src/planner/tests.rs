@@ -667,3 +667,75 @@ async fn test_patch_repair_pass_fails_after_max_attempts() {
     assert!(result.is_err());
     assert_eq!(mock.call_count(), 2);
 }
+
+// ── Conversation tests ─────────────────────────────────────────
+
+#[test]
+fn test_conversation_recent_window_small() {
+    use super::conversation::*;
+    let mut session = ConversationSession::new();
+    session.push_user("hello".into(), None);
+    session.push_assistant("hi".into(), None);
+    assert_eq!(session.recent_window(None).len(), 2);
+    assert!(!session.needs_summarization(None));
+}
+
+#[test]
+fn test_conversation_recent_window_overflow() {
+    use super::conversation::*;
+    let mut session = ConversationSession::new();
+    for i in 0..8 {
+        session.push_user(format!("q{}", i), None);
+        session.push_assistant(format!("a{}", i), None);
+    }
+    let window = session.recent_window(Some(3));
+    assert_eq!(window.len(), 6);
+    assert_eq!(window[0].content, "q5");
+    assert!(session.needs_summarization(Some(3)));
+    assert_eq!(session.unsummarized_overflow(Some(3)).len(), 10);
+}
+
+#[test]
+fn test_conversation_set_summary_updates_cutoff() {
+    use super::conversation::*;
+    let mut session = ConversationSession::new();
+    for i in 0..8 {
+        session.push_user(format!("q{}", i), None);
+        session.push_assistant(format!("a{}", i), None);
+    }
+    session.set_summary("summary of q0-q4".into(), Some(3));
+    assert_eq!(session.summary_cutoff, 10);
+    assert!(!session.needs_summarization(Some(3)));
+}
+
+#[tokio::test]
+async fn test_summarize_overflow_produces_summary() {
+    use super::conversation::*;
+    use super::summarize::summarize_overflow;
+
+    let mut session = ConversationSession::new();
+    for i in 0..8 {
+        session.push_user(format!("add step {}", i), None);
+        session.push_assistant(format!("added step {}", i), None);
+    }
+
+    let mock = MockBackend::single("User added 8 steps to the workflow iteratively.");
+    let summary = summarize_overflow(&mock, &session, Some(3)).await.unwrap();
+    assert!(!summary.is_empty());
+    assert_eq!(mock.call_count(), 1);
+}
+
+#[tokio::test]
+async fn test_summarize_overflow_noop_when_no_overflow() {
+    use super::conversation::*;
+    use super::summarize::summarize_overflow;
+
+    let mut session = ConversationSession::new();
+    session.push_user("hello".into(), None);
+    session.push_assistant("hi".into(), None);
+
+    let mock = MockBackend::single("should not be called");
+    let summary = summarize_overflow(&mock, &session, None).await.unwrap();
+    assert!(summary.is_empty());
+    assert_eq!(mock.call_count(), 0);
+}
