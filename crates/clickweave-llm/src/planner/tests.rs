@@ -739,3 +739,107 @@ async fn test_summarize_overflow_noop_when_no_overflow() {
     assert!(summary.is_empty());
     assert_eq!(mock.call_count(), 0);
 }
+
+// ── Assistant chat tests ───────────────────────────────────────
+
+#[tokio::test]
+async fn test_assistant_chat_plans_empty_workflow() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    let response = r#"{"steps": [
+        {"step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}},
+        {"step_type": "Tool", "tool_name": "click", "arguments": {"x": 100, "y": 200}}
+    ]}"#;
+    let mock = MockBackend::single(response);
+    let workflow = Workflow::new("Test");
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Open calculator and click a button",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.patch.is_some());
+    let patch = result.patch.unwrap();
+    assert_eq!(patch.added_nodes.len(), 2);
+    assert!(result.warnings.is_empty());
+}
+
+#[tokio::test]
+async fn test_assistant_chat_patches_existing_workflow() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    let (_id, workflow) = single_node_workflow(
+        NodeType::TakeScreenshot(TakeScreenshotParams {
+            mode: ScreenshotMode::Window,
+            target: None,
+            include_ocr: true,
+        }),
+        "Screenshot",
+    );
+
+    let response = r#"{"add": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 50, "y": 50}}]}"#;
+    let mock = MockBackend::single(response);
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Add a click after the screenshot",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.patch.is_some());
+    assert_eq!(result.patch.unwrap().added_nodes.len(), 1);
+}
+
+#[tokio::test]
+async fn test_assistant_chat_conversational_response() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    let (_id, workflow) = single_node_workflow(
+        NodeType::TakeScreenshot(TakeScreenshotParams {
+            mode: ScreenshotMode::Window,
+            target: None,
+            include_ocr: true,
+        }),
+        "Screenshot",
+    );
+
+    let response = "The workflow currently has one step that takes a screenshot. Would you like me to add more steps?";
+    let mock = MockBackend::single(response);
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "What does my workflow do?",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.patch.is_none());
+    assert!(result.message.contains("screenshot"));
+}

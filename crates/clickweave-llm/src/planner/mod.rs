@@ -5,6 +5,7 @@ mod plan;
 mod prompt;
 mod repair;
 
+pub mod assistant;
 pub mod conversation;
 pub mod summarize;
 
@@ -66,7 +67,7 @@ pub struct PlanResult {
 
 /// Output from the patcher LLM.
 #[derive(Debug, Deserialize)]
-struct PatcherOutput {
+pub(crate) struct PatcherOutput {
     #[serde(default)]
     pub add: Vec<PlanStep>,
     #[serde(default)]
@@ -77,7 +78,7 @@ struct PatcherOutput {
 
 /// A node update from the patcher (only changed fields).
 #[derive(Debug, Deserialize)]
-struct PatchNodeUpdate {
+pub(crate) struct PatchNodeUpdate {
     pub node_id: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -102,5 +103,6 @@ pub struct PatchResult {
 
 // ── Re-exports ──────────────────────────────────────────────────
 
+pub use assistant::{AssistantResult, assistant_chat, assistant_chat_with_backend};
 pub use patch::{patch_workflow, patch_workflow_with_backend};
 pub use plan::{plan_workflow, plan_workflow_with_backend};

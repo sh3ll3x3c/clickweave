@@ -150,3 +150,42 @@ Rules:
 - Keep the workflow functional — don't remove nodes that break the flow without replacement."#,
     )
 }
+
+/// Build the unified assistant system prompt.
+///
+/// Handles both planning (empty workflow) and patching (existing workflow).
+pub(crate) fn assistant_system_prompt(
+    workflow: &Workflow,
+    tools_json: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+    run_context: Option<&str>,
+) -> String {
+    if workflow.nodes.is_empty() {
+        let base = planner_system_prompt(tools_json, allow_ai_transforms, allow_agent_steps);
+        let mut prompt = format!(
+            "You are a conversational workflow assistant for UI automation. \
+             You help users create and modify workflows through natural dialogue.\n\n\
+             The workflow is currently empty. When the user describes what they want to automate, \
+             generate a workflow plan.\n\n{base}"
+        );
+        if let Some(ctx) = run_context {
+            prompt.push_str(&format!("\n\nLatest execution results:\n{ctx}"));
+        }
+        prompt
+    } else {
+        let base =
+            patcher_system_prompt(workflow, tools_json, allow_ai_transforms, allow_agent_steps);
+        let mut prompt = format!(
+            "You are a conversational workflow assistant for UI automation. \
+             You help users modify their existing workflow through natural dialogue.\n\n\
+             When the user asks to modify the workflow, output the JSON patch as specified below. \
+             When the user asks a question or makes a comment that doesn't require workflow changes, \
+             respond conversationally WITHOUT any JSON output.\n\n{base}"
+        );
+        if let Some(ctx) = run_context {
+            prompt.push_str(&format!("\n\nLatest execution results:\n{ctx}"));
+        }
+        prompt
+    }
+}
