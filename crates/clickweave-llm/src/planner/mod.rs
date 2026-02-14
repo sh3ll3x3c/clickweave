@@ -5,6 +5,8 @@ mod plan;
 mod prompt;
 mod repair;
 
+pub mod conversation;
+
 #[cfg(test)]
 mod tests;
 
