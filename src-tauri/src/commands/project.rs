@@ -133,3 +133,37 @@ pub async fn import_asset(
         absolute_path,
     }))
 }
+
+#[tauri::command]
+#[specta::specta]
+pub fn save_conversation(path: String, conversation: ConversationData) -> Result<(), String> {
+    let dir = project_dir(&path);
+    let conv_path = dir.join("conversation.json");
+
+    let content = serde_json::to_string_pretty(&conversation)
+        .map_err(|e| format!("Failed to serialize conversation: {}", e))?;
+
+    std::fs::write(&conv_path, content)
+        .map_err(|e| format!("Failed to write conversation: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn load_conversation(path: String) -> Result<Option<ConversationData>, String> {
+    let dir = project_dir(&path);
+    let conv_path = dir.join("conversation.json");
+
+    if !conv_path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&conv_path)
+        .map_err(|e| format!("Failed to read conversation: {}", e))?;
+
+    let conversation: ConversationData = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse conversation: {}", e))?;
+
+    Ok(Some(conversation))
+}

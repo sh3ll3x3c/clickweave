@@ -1,7 +1,9 @@
 use super::types::*;
 use clickweave_mcp::McpClient;
 
-async fn fetch_mcp_tool_schemas(mcp_command: &str) -> Result<Vec<serde_json::Value>, String> {
+pub(crate) async fn fetch_mcp_tool_schemas(
+    mcp_command: &str,
+) -> Result<Vec<serde_json::Value>, String> {
     let mcp_command = mcp_command.to_string();
     tokio::task::spawn_blocking(move || {
         let mut mcp = if mcp_command == "npx" {

@@ -167,3 +167,63 @@ pub struct NodeErrorPayload {
     pub node_id: String,
     pub error: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct AssistantChatRequest {
+    pub workflow: Workflow,
+    pub user_message: String,
+    pub history: Vec<ChatEntryDto>,
+    pub summary: Option<String>,
+    pub summary_cutoff: usize,
+    pub run_context: Option<RunContextDto>,
+    pub planner: EndpointConfig,
+    pub allow_ai_transforms: bool,
+    pub allow_agent_steps: bool,
+    pub mcp_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ChatEntryDto {
+    pub role: String,
+    pub content: String,
+    pub timestamp: u64,
+    pub patch_summary: Option<PatchSummaryDto>,
+    pub run_context: Option<RunContextDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PatchSummaryDto {
+    pub added: u32,
+    pub removed: u32,
+    pub updated: u32,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct RunContextDto {
+    pub execution_dir: String,
+    pub node_results: Vec<NodeResultDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct NodeResultDto {
+    pub node_name: String,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct AssistantChatResponse {
+    pub assistant_message: String,
+    pub patch: Option<WorkflowPatch>,
+    pub new_summary: Option<String>,
+    pub summary_cutoff: usize,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ConversationData {
+    pub messages: Vec<ChatEntryDto>,
+    pub summary: Option<String>,
+    pub summary_cutoff: usize,
+}
