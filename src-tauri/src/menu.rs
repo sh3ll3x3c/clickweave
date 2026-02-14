@@ -18,19 +18,12 @@ pub fn build_menu(app: &AppHandle<Wry>) -> tauri::Result<Menu<Wry>> {
         MenuItem::with_id(app, "toggle-logs", "Toggle Logs", true, Some("CmdOrCtrl+J"))?;
     let run_item = MenuItem::with_id(app, "run-workflow", "Run", true, Some("CmdOrCtrl+R"))?;
     let stop_item = MenuItem::with_id(app, "stop-workflow", "Stop", true, Some("CmdOrCtrl+."))?;
-    let generate_item = MenuItem::with_id(
+    let toggle_assistant = MenuItem::with_id(
         app,
-        "generate-intent",
-        "Generate from Intent\u{2026}",
+        "toggle-assistant",
+        "Toggle Assistant",
         true,
-        None::<&str>,
-    )?;
-    let patch_item = MenuItem::with_id(
-        app,
-        "patch-assistant",
-        "Patch with Assistant\u{2026}",
-        true,
-        None::<&str>,
+        Some("CmdOrCtrl+Shift+A"),
     )?;
 
     let file_menu = SubmenuBuilder::new(app, "File")
@@ -60,8 +53,7 @@ pub fn build_menu(app: &AppHandle<Wry>) -> tauri::Result<Menu<Wry>> {
         .item(&run_item)
         .item(&stop_item)
         .separator()
-        .item(&generate_item)
-        .item(&patch_item)
+        .item(&toggle_assistant)
         .build()?;
 
     let window_menu = SubmenuBuilder::new(app, "Window")
