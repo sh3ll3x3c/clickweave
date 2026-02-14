@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { ConversationSession } from "../store/state";
 import type { WorkflowPatch } from "../bindings";
 import { ChatMessage } from "./ChatMessage";
@@ -31,8 +31,31 @@ export function AssistantPanel({
   onClose,
 }: AssistantPanelProps) {
   const [input, setInput] = useState("");
+  const [width, setWidth] = useState(380);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const widthRef = useRef(width);
+  widthRef.current = width;
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = widthRef.current;
+    document.body.style.userSelect = "none";
+
+    const onMove = (e: MouseEvent) => {
+      e.preventDefault();
+      setWidth(Math.min(600, Math.max(280, startWidth + (startX - e.clientX))));
+    };
+    const onUp = () => {
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -73,7 +96,12 @@ export function AssistantPanel({
   const hasMessages = conversation.messages.length > 0;
 
   return (
-    <div className="flex h-full w-[380px] min-w-[380px] flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]">
+    <div className="relative flex h-full flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]" style={{ width, minWidth: width }}>
+      {/* Resize handle */}
+      <div
+        onMouseDown={handleResizeStart}
+        className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-[var(--accent-coral)]/30 active:bg-[var(--accent-coral)]/40"
+      />
       {/* Header */}
       <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
         <h2 className="text-sm font-medium text-[var(--text-primary)]">
