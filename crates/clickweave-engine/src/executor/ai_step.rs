@@ -18,7 +18,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         timeout_ms: Option<u64>,
         command_rx: &mut Receiver<ExecutorCommand>,
         mut node_run: Option<&mut NodeRun>,
-    ) -> Result<(), String> {
+    ) -> Result<Value, String> {
         let mut messages = vec![
             Message::system(workflow_system_prompt()),
             Message::user(build_step_prompt(
@@ -51,6 +51,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let max_tool_calls = params.max_tool_calls.unwrap_or(10) as usize;
         let step_start = Instant::now();
         let mut tool_call_count = 0;
+        let mut last_assistant_text = String::new();
 
         loop {
             if tool_call_count >= max_tool_calls {
@@ -83,22 +84,26 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let msg = &choice.message;
 
             let Some(tool_calls) = &msg.tool_calls else {
-                let completed = msg
-                    .content_text()
-                    .is_some_and(|c| self.check_step_complete(c));
-                self.log(if completed {
-                    "Step completed"
+                if let Some(content) = msg.content_text() {
+                    last_assistant_text = content.to_string();
+                    let completed = self.check_step_complete(content);
+                    self.log(if completed {
+                        "Step completed"
+                    } else {
+                        "Step finished (no tool calls)"
+                    });
                 } else {
-                    "Step finished (no tool calls)"
-                });
+                    self.log("Step finished (no tool calls)");
+                }
                 break;
             };
 
             if tool_calls.is_empty() {
-                if let Some(content) = msg.content_text()
-                    && self.check_step_complete(content)
-                {
-                    self.log("Step completed");
+                if let Some(content) = msg.content_text() {
+                    last_assistant_text = content.to_string();
+                    if self.check_step_complete(content) {
+                        self.log("Step completed");
+                    }
                 }
                 break;
             }
@@ -213,6 +218,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        Ok(())
+        Ok(Value::String(last_assistant_text))
     }
 }

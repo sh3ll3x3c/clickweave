@@ -229,14 +229,30 @@ impl RunStorage {
 
     pub fn append_event(&self, run: &NodeRun, event: &TraceEvent) -> Result<()> {
         let events_path = self.run_dir(run).join("events.jsonl");
+        Self::write_event_line(&events_path, event)
+    }
 
+    /// Append a trace event to the execution-level `events.jsonl`.
+    ///
+    /// Used for events that aren't scoped to a specific node run (e.g.,
+    /// control flow evaluations like `branch_evaluated`, `loop_iteration`).
+    pub fn append_execution_event(&self, event: &TraceEvent) -> Result<()> {
+        let execution_dir = self
+            .execution_dir
+            .as_ref()
+            .context("begin_execution() must be called before append_execution_event()")?;
+        let events_path = self.base_path.join(execution_dir).join("events.jsonl");
+        Self::write_event_line(&events_path, event)
+    }
+
+    fn write_event_line(path: &Path, event: &TraceEvent) -> Result<()> {
         let mut line = serde_json::to_string(event).context("Failed to serialize event")?;
         line.push('\n');
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&events_path)
+            .open(path)
             .context("Failed to open events.jsonl")?;
         file.write_all(line.as_bytes())
             .context("Failed to write event")?;
@@ -523,6 +539,28 @@ mod tests {
             .find_run_dir("Find Me", run.run_id, None)
             .expect("find run dir (slow)");
         assert_eq!(found_slow, storage.run_dir(&run));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_append_execution_event() {
+        let (mut storage, dir) = temp_storage();
+        let exec_dir = storage.begin_execution().expect("begin execution");
+
+        let event = TraceEvent {
+            timestamp: RunStorage::now_millis(),
+            event_type: "branch_evaluated".to_string(),
+            payload: serde_json::json!({"node_name": "Check Result", "result": true}),
+        };
+        storage
+            .append_execution_event(&event)
+            .expect("append execution event");
+
+        let events_path = storage.base_path.join(&exec_dir).join("events.jsonl");
+        let content = std::fs::read_to_string(&events_path).expect("read events");
+        assert!(content.contains("branch_evaluated"));
+        assert!(content.contains("Check Result"));
 
         cleanup(&dir);
     }

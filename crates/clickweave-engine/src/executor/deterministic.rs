@@ -13,13 +13,41 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_type: &NodeType,
         mcp: &McpClient,
         mut node_run: Option<&mut NodeRun>,
-    ) -> Result<(), String> {
+    ) -> Result<Value, String> {
         if let NodeType::AppDebugKitOp(p) = node_type {
-            self.log(format!(
-                "AppDebugKit operation: {} (not yet fully implemented)",
-                p.operation_name
-            ));
-            return Ok(());
+            self.log(format!("AppDebugKit operation: {}", p.operation_name));
+            let args = if p.parameters.is_null() {
+                None
+            } else {
+                Some(p.parameters.clone())
+            };
+            self.record_event(
+                node_run.as_deref(),
+                "tool_call",
+                serde_json::json!({"name": p.operation_name, "args": args}),
+            );
+            let result = mcp
+                .call_tool(&p.operation_name, args)
+                .map_err(|e| format!("AppDebugKit op {} failed: {}", p.operation_name, e))?;
+            Self::check_tool_error(&result, &p.operation_name)?;
+            let result_text = Self::extract_result_text(&result);
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({
+                    "name": p.operation_name,
+                    "text": Self::truncate_for_trace(&result_text, 8192),
+                    "text_len": result_text.len(),
+                }),
+            );
+            let parsed: Value = serde_json::from_str(&result_text).unwrap_or(
+                if result_text.is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(result_text)
+                },
+            );
+            return Ok(parsed);
         }
 
         if let NodeType::McpToolCall(p) = node_type
@@ -115,7 +143,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             result_text.len(),
             images.len()
         ));
-        Ok(())
+
+        // Return parsed result for variable extraction
+        let parsed: Value = serde_json::from_str(&result_text).unwrap_or(if result_text.is_empty()
+        {
+            Value::Null
+        } else {
+            Value::String(result_text)
+        });
+        Ok(parsed)
     }
 
     fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> Result<(), String> {

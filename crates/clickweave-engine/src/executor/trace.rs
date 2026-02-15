@@ -74,13 +74,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     pub(crate) fn record_event(&self, run: Option<&NodeRun>, event_type: &str, payload: Value) {
-        let Some(run) = run else { return };
         let event = TraceEvent {
             timestamp: Self::now_millis(),
             event_type: event_type.to_string(),
             payload,
         };
-        if let Err(e) = self.storage.append_event(run, &event) {
+        let result = match run {
+            Some(run) => self.storage.append_event(run, &event),
+            None => self.storage.append_execution_event(&event),
+        };
+        if let Err(e) = result {
             tracing::warn!("Failed to append trace event: {}", e);
         }
     }

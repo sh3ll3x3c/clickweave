@@ -13,6 +13,11 @@ pub enum ValidationError {
     #[error("No entry point found (all nodes have incoming edges)")]
     NoEntryPoint,
 
+    #[error(
+        "Multiple entry points found ({0} nodes with no incoming edges). Only one is supported."
+    )]
+    MultipleEntryPoints(usize),
+
     #[error("Node {0} has multiple outgoing edges (only single path allowed)")]
     MultipleOutgoingEdges(String),
 
@@ -39,6 +44,21 @@ pub enum ValidationError {
 
     #[error("Loop node '{0}' has multiple EndLoop nodes (expected exactly one)")]
     MultipleEndLoops(String),
+
+    #[error("If node '{0}' has extra outgoing edges beyond IfTrue and IfFalse")]
+    ExtraIfEdges(String),
+
+    #[error("Loop node '{0}' has extra outgoing edges beyond LoopBody and LoopDone")]
+    ExtraLoopEdges(String),
+
+    #[error("Switch node '{0}' has duplicate edge for case '{1}'")]
+    DuplicateSwitchCase(String, String),
+
+    #[error("Switch node '{0}' has unknown output edge '{1}'")]
+    UnknownSwitchOutput(String, String),
+
+    #[error("Switch node '{0}' has duplicate case name '{1}'")]
+    DuplicateSwitchCaseName(String, String),
 }
 
 pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
@@ -64,12 +84,16 @@ pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
         .map(|e| e.to)
         .collect();
 
-    let has_entry_point = workflow
+    let entry_count = workflow
         .nodes
         .iter()
-        .any(|n| !targets_excluding_endloop_back.contains(&n.id));
-    if !has_entry_point {
+        .filter(|n| !targets_excluding_endloop_back.contains(&n.id))
+        .count();
+    if entry_count == 0 {
         return Err(ValidationError::NoEntryPoint);
+    }
+    if entry_count > 1 {
+        return Err(ValidationError::MultipleEntryPoints(entry_count));
     }
 
     // Validate outgoing edges per node based on node type
@@ -105,23 +129,69 @@ fn validate_outgoing_edges(workflow: &Workflow) -> Result<(), ValidationError> {
                 if !has_true || !has_false {
                     return Err(ValidationError::MissingIfBranch(node.name.clone()));
                 }
+                if outgoing.len() != 2 {
+                    return Err(ValidationError::ExtraIfEdges(node.name.clone()));
+                }
             }
             NodeType::Switch(params) => {
+                let mut declared_names: HashSet<&str> = HashSet::new();
                 for case in &params.cases {
-                    let has_case = outgoing.iter().any(|e| {
-                        e.output.as_ref()
-                            == Some(&EdgeOutput::SwitchCase {
-                                name: case.name.clone(),
-                            })
-                    });
-                    if !has_case {
-                        return Err(ValidationError::MissingSwitchCase(
+                    if !declared_names.insert(case.name.as_str()) {
+                        return Err(ValidationError::DuplicateSwitchCaseName(
                             node.name.clone(),
                             case.name.clone(),
                         ));
                     }
                 }
-                // SwitchDefault is optional — no validation required for it
+
+                for case in &params.cases {
+                    let count = outgoing
+                        .iter()
+                        .filter(|e| {
+                            e.output.as_ref()
+                                == Some(&EdgeOutput::SwitchCase {
+                                    name: case.name.clone(),
+                                })
+                        })
+                        .count();
+                    if count == 0 {
+                        return Err(ValidationError::MissingSwitchCase(
+                            node.name.clone(),
+                            case.name.clone(),
+                        ));
+                    }
+                    if count > 1 {
+                        return Err(ValidationError::DuplicateSwitchCase(
+                            node.name.clone(),
+                            case.name.clone(),
+                        ));
+                    }
+                }
+
+                // Reject unknown outputs (not a declared case and not SwitchDefault)
+                for edge in &outgoing {
+                    match &edge.output {
+                        Some(EdgeOutput::SwitchCase { name })
+                            if !declared_names.contains(name.as_str()) =>
+                        {
+                            return Err(ValidationError::UnknownSwitchOutput(
+                                node.name.clone(),
+                                name.clone(),
+                            ));
+                        }
+                        Some(EdgeOutput::SwitchDefault) | Some(EdgeOutput::SwitchCase { .. }) => {}
+                        other => {
+                            let label = match other {
+                                Some(o) => format!("{:?}", o),
+                                None => "unlabeled".to_string(),
+                            };
+                            return Err(ValidationError::UnknownSwitchOutput(
+                                node.name.clone(),
+                                label,
+                            ));
+                        }
+                    }
+                }
             }
             NodeType::Loop(_) => {
                 let has_body = outgoing
@@ -132,6 +202,9 @@ fn validate_outgoing_edges(workflow: &Workflow) -> Result<(), ValidationError> {
                     .any(|e| e.output.as_ref() == Some(&EdgeOutput::LoopDone));
                 if !has_body || !has_done {
                     return Err(ValidationError::MissingLoopEdge(node.name.clone()));
+                }
+                if outgoing.len() != 2 {
+                    return Err(ValidationError::ExtraLoopEdges(node.name.clone()));
                 }
             }
             NodeType::EndLoop(_) => {
@@ -327,6 +400,20 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_multiple_entry_points() {
+        let mut wf = Workflow::default();
+        // Two disconnected nodes = two entry points
+        wf.add_node(NodeType::Click(ClickParams::default()), pos(0.0, 0.0));
+        wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            pos(100.0, 0.0),
+        );
+
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::MultipleEntryPoints(2)));
+    }
+
+    #[test]
     fn test_validate_multiple_outgoing_edges() {
         let mut wf = Workflow::default();
         let a = wf.add_node(NodeType::Click(ClickParams::default()), pos(0.0, 0.0));
@@ -467,6 +554,8 @@ mod tests {
             NodeType::EndLoop(EndLoopParams { loop_id: regular }),
             pos(100.0, 0.0),
         );
+        // regular → end_loop → regular (back-edge excluded), single entry point
+        wf.add_edge(regular, end_loop);
         wf.add_edge(end_loop, regular);
 
         let err = validate_workflow(&wf).unwrap_err();
@@ -671,9 +760,173 @@ mod tests {
         wf.add_edge_with_output(loop_node, done, EdgeOutput::LoopDone);
         wf.add_edge(body, end_loop_1);
         wf.add_edge(end_loop_1, loop_node);
+        // Connect done → end_loop_2 so it has an incoming edge (single entry point)
+        wf.add_edge(done, end_loop_2);
         wf.add_edge(end_loop_2, loop_node);
 
         let err = validate_workflow(&wf).unwrap_err();
         assert!(matches!(err, ValidationError::MultipleEndLoops(_)));
+    }
+
+    // --- Strict cardinality tests ---
+
+    #[test]
+    fn test_validate_if_extra_edges() {
+        let mut wf = Workflow::default();
+        let if_node = wf.add_node(
+            NodeType::If(IfParams {
+                condition: dummy_condition(),
+            }),
+            pos(0.0, 0.0),
+        );
+        let a = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 0.0));
+        let b = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 100.0));
+        let c = wf.add_node(NodeType::Click(ClickParams::default()), pos(200.0, 0.0));
+
+        wf.add_edge_with_output(if_node, a, EdgeOutput::IfTrue);
+        wf.add_edge_with_output(if_node, b, EdgeOutput::IfFalse);
+        // Extra unlabeled edge
+        wf.add_edge(if_node, c);
+
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::ExtraIfEdges(_)));
+    }
+
+    #[test]
+    fn test_validate_loop_extra_edges() {
+        let mut wf = Workflow::default();
+        let loop_node = wf.add_node(
+            NodeType::Loop(LoopParams {
+                exit_condition: dummy_condition(),
+                max_iterations: 10,
+            }),
+            pos(0.0, 0.0),
+        );
+        let body = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 0.0));
+        let done = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 100.0));
+        let extra = wf.add_node(NodeType::Click(ClickParams::default()), pos(200.0, 0.0));
+        let end_loop = wf.add_node(
+            NodeType::EndLoop(EndLoopParams { loop_id: loop_node }),
+            pos(200.0, 100.0),
+        );
+
+        wf.add_edge_with_output(loop_node, body, EdgeOutput::LoopBody);
+        wf.add_edge_with_output(loop_node, done, EdgeOutput::LoopDone);
+        wf.add_edge(loop_node, extra); // extra unlabeled edge
+        wf.add_edge(body, end_loop);
+        wf.add_edge(end_loop, loop_node);
+
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::ExtraLoopEdges(_)));
+    }
+
+    #[test]
+    fn test_validate_switch_duplicate_case() {
+        let mut wf = Workflow::default();
+        let switch_node = wf.add_node(
+            NodeType::Switch(SwitchParams {
+                cases: vec![SwitchCase {
+                    name: "case_a".to_string(),
+                    condition: dummy_condition(),
+                }],
+            }),
+            pos(0.0, 0.0),
+        );
+        let a = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 0.0));
+        let b = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 100.0));
+
+        // Two edges for the same case
+        wf.add_edge_with_output(
+            switch_node,
+            a,
+            EdgeOutput::SwitchCase {
+                name: "case_a".to_string(),
+            },
+        );
+        wf.add_edge_with_output(
+            switch_node,
+            b,
+            EdgeOutput::SwitchCase {
+                name: "case_a".to_string(),
+            },
+        );
+
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::DuplicateSwitchCase(_, _)));
+    }
+
+    #[test]
+    fn test_validate_switch_unknown_output() {
+        let mut wf = Workflow::default();
+        let switch_node = wf.add_node(
+            NodeType::Switch(SwitchParams {
+                cases: vec![SwitchCase {
+                    name: "case_a".to_string(),
+                    condition: dummy_condition(),
+                }],
+            }),
+            pos(0.0, 0.0),
+        );
+        let a = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 0.0));
+        let b = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 100.0));
+
+        wf.add_edge_with_output(
+            switch_node,
+            a,
+            EdgeOutput::SwitchCase {
+                name: "case_a".to_string(),
+            },
+        );
+        // Edge with undeclared case name
+        wf.add_edge_with_output(
+            switch_node,
+            b,
+            EdgeOutput::SwitchCase {
+                name: "case_unknown".to_string(),
+            },
+        );
+
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::UnknownSwitchOutput(_, _)));
+    }
+
+    #[test]
+    fn test_validate_switch_duplicate_case_name() {
+        let mut wf = Workflow::default();
+        let switch_node = wf.add_node(
+            NodeType::Switch(SwitchParams {
+                cases: vec![
+                    SwitchCase {
+                        name: "same".to_string(),
+                        condition: dummy_condition(),
+                    },
+                    SwitchCase {
+                        name: "same".to_string(),
+                        condition: dummy_condition(),
+                    },
+                ],
+            }),
+            pos(0.0, 0.0),
+        );
+        let a = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 0.0));
+        let b = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 100.0));
+
+        wf.add_edge_with_output(
+            switch_node,
+            a,
+            EdgeOutput::SwitchCase {
+                name: "same".to_string(),
+            },
+        );
+        wf.add_edge_with_output(
+            switch_node,
+            b,
+            EdgeOutput::SwitchCase {
+                name: "same".to_string(),
+            },
+        );
+
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::DuplicateSwitchCaseName(_, _)));
     }
 }

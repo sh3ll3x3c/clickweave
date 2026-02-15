@@ -129,7 +129,7 @@ export function GraphCanvas({
   const rfEdges: RFEdge[] = useMemo(
     () =>
       workflow.edges.map((edge) => ({
-        id: `${edge.from}-${edge.to}-${edge.output?.type ?? "default"}`,
+        id: `${edge.from}-${edge.to}-${edgeOutputToHandle(edge.output) ?? "default"}`,
         source: edge.from,
         target: edge.to,
         sourceHandle: edgeOutputToHandle(edge.output),
@@ -165,8 +165,12 @@ export function GraphCanvas({
     (changes) => {
       const updated = applyEdgeChanges(changes, rfEdges);
       const newEdges: Edge[] = updated.map((rfe) => {
+        const handle = rfe.sourceHandle ?? undefined;
         const original = workflow.edges.find(
-          (e) => e.from === rfe.source && e.to === rfe.target,
+          (e) =>
+            e.from === rfe.source &&
+            e.to === rfe.target &&
+            edgeOutputToHandle(e.output) === handle,
         );
         return { from: rfe.source, to: rfe.target, output: original?.output ?? null };
       });

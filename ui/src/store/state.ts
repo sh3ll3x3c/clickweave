@@ -70,7 +70,7 @@ export interface AppActions {
   updateNodePositions: (updates: Map<string, { x: number; y: number }>) => void;
   updateNode: (id: string, updates: Partial<import("../bindings").Node>) => void;
   addEdge: (from: string, to: string, sourceHandle?: string) => void;
-  removeEdge: (from: string, to: string) => void;
+  removeEdge: (from: string, to: string, output?: import("../bindings").EdgeOutput | null) => void;
   openProject: () => Promise<void>;
   saveProject: () => Promise<void>;
   newProject: () => void;

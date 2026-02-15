@@ -96,10 +96,16 @@ export function useWorkflowMutations(
   );
 
   const removeEdge = useCallback(
-    (from: string, to: string) => {
+    (from: string, to: string, output?: EdgeOutput | null) => {
       setWorkflow((prev) => ({
         ...prev,
-        edges: prev.edges.filter((e) => !(e.from === from && e.to === to)),
+        edges: prev.edges.filter((e) => {
+          if (e.from !== from || e.to !== to) return true;
+          if (output !== undefined) {
+            return JSON.stringify(e.output) !== JSON.stringify(output ?? null);
+          }
+          return false;
+        }),
       }));
     },
     [setWorkflow],
