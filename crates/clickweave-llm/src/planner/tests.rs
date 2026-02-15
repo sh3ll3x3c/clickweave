@@ -252,6 +252,37 @@ fn test_truncate_intent_multibyte_utf8() {
     assert!(!truncated.contains('\u{FFFD}')); // no replacement chars
 }
 
+#[test]
+fn test_planner_prompt_includes_control_flow() {
+    let prompt = planner_system_prompt(&[], false, false);
+    assert!(
+        prompt.contains("Loop"),
+        "Prompt should mention Loop step type"
+    );
+    assert!(
+        prompt.contains("EndLoop"),
+        "Prompt should mention EndLoop step type"
+    );
+    assert!(prompt.contains("If"), "Prompt should mention If step type");
+    assert!(
+        prompt.contains("exit_condition"),
+        "Prompt should describe exit_condition"
+    );
+    assert!(prompt.contains("loop_id"), "Prompt should describe loop_id");
+    assert!(
+        prompt.contains("\"nodes\""),
+        "Prompt should describe graph output format"
+    );
+    assert!(
+        prompt.contains("\"edges\""),
+        "Prompt should describe graph output format"
+    );
+    assert!(
+        prompt.contains(".found"),
+        "Prompt should include variable examples"
+    );
+}
+
 // ── Planning integration tests ──────────────────────────────────
 
 #[tokio::test]

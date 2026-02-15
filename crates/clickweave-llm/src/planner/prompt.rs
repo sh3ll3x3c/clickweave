@@ -40,6 +40,43 @@ pub(crate) fn planner_system_prompt(
         );
     }
 
+    step_types.push_str(r#"
+
+4. **Loop** — repeat steps until an exit condition is met (do-while: body runs at least once):
+   ```json
+   {"id": "<id>", "step_type": "Loop", "exit_condition": <Condition>, "max_iterations": 20, "name": "optional label"}
+   ```
+
+5. **EndLoop** — marks the end of a loop body (execution jumps back to the paired Loop node):
+   ```json
+   {"id": "<id>", "step_type": "EndLoop", "loop_id": "<loop_node_id>", "name": "optional label"}
+   ```
+
+6. **If** — conditional branch with exactly 2 outgoing edges (IfTrue, IfFalse):
+   ```json
+   {"id": "<id>", "step_type": "If", "condition": <Condition>, "name": "optional label"}
+   ```
+
+**Condition** objects compare a runtime variable to a value:
+```json
+{
+  "left": {"type": "Variable", "name": "<node_name>.<field>"},
+  "operator": "<op>",
+  "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+}
+```
+Operators: Equals, NotEquals, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, NotContains, IsEmpty, IsNotEmpty.
+
+Literal types: `{"type": "String", "value": "text"}`, `{"type": "Number", "value": 42}`, `{"type": "Bool", "value": true}`.
+
+**Variable names** follow `<sanitized_node_name>.<field>` (lowercase, spaces→underscores). Fields per tool:
+- find_text: `.found` (bool), `.text`, `.x`, `.y`, `.count`, `.matches`
+- find_image: `.found` (bool), `.x`, `.y`, `.score`, `.count`, `.matches`
+- list_windows: `.found` (bool), `.count`, `.windows`
+- click, type_text, press_key, scroll, focus_window: `.success` (bool)
+- take_screenshot: `.result`
+- Any tool: `.result` (raw JSON response)"#);
+
     format!(
         r#"You are a workflow planner for UI automation. Given a user's intent, produce a sequence of steps that accomplish the goal.
 
@@ -50,7 +87,15 @@ You have access to these MCP tools:
 {step_types}
 
 Rules:
-- Output ONLY a JSON object: {{"steps": [...]}}
+- For **simple linear workflows** (no loops or branches), output: {{"steps": [...]}}
+- For **workflows with control flow** (loops, branches), output a graph: {{"nodes": [...], "edges": [...]}}
+  - Each node must have an `"id"` field (e.g. "n1", "n2").
+  - Each edge has `"from"`, `"to"`, and optional `"output"` ({{"type": "LoopBody"}}, {{"type": "LoopDone"}}, {{"type": "IfTrue"}}, {{"type": "IfFalse"}}).
+  - Regular edges (no control flow) omit `"output"`.
+  - EndLoop edges back to their Loop node are regular edges.
+  - Loop nodes must have exactly 2 outgoing edges: LoopBody and LoopDone.
+  - If nodes must have exactly 2 outgoing edges: IfTrue and IfFalse.
+- Use Loop/EndLoop when the user's intent involves repetition ("until", "while", "keep", "repeat", "N times"). Prefer loops over unrolling steps.
 - Each Tool step must use exactly one tool from the list above with schema-valid arguments.
 - Steps execute in sequence (output of one step is available to the next).
 - Be precise: use find_text to locate UI elements before clicking them.
