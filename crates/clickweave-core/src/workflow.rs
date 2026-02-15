@@ -45,11 +45,29 @@ pub struct Position {
     pub y: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "type")]
+pub enum EdgeOutput {
+    IfTrue,
+    IfFalse,
+    SwitchCase {
+        name: String,
+    },
+    SwitchDefault,
+    /// Edge from Loop node into the loop body.
+    LoopBody,
+    /// Edge from Loop node when exit condition is met (or max iterations hit).
+    LoopDone,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Edge {
     pub from: Uuid,
     pub to: Uuid,
+    /// Which output port this edge connects from. None for regular single-output edges.
+    pub output: Option<EdgeOutput>,
 }
 
 impl Node {
@@ -87,7 +105,19 @@ impl Workflow {
     }
 
     pub fn add_edge(&mut self, from: Uuid, to: Uuid) {
-        self.edges.push(Edge { from, to });
+        self.edges.push(Edge {
+            from,
+            to,
+            output: None,
+        });
+    }
+
+    pub fn add_edge_with_output(&mut self, from: Uuid, to: Uuid, output: EdgeOutput) {
+        self.edges.push(Edge {
+            from,
+            to,
+            output: Some(output),
+        });
     }
 
     pub fn find_node(&self, id: Uuid) -> Option<&Node> {
@@ -152,6 +182,7 @@ pub enum NodeCategory {
     Input,
     Window,
     AppDebugKit,
+    ControlFlow,
 }
 
 impl NodeCategory {
@@ -162,6 +193,7 @@ impl NodeCategory {
             NodeCategory::Input => "Input",
             NodeCategory::Window => "Window",
             NodeCategory::AppDebugKit => "AppDebugKit",
+            NodeCategory::ControlFlow => "Control Flow",
         }
     }
 
@@ -172,6 +204,7 @@ impl NodeCategory {
             NodeCategory::Input => "🖱",
             NodeCategory::Window => "🪟",
             NodeCategory::AppDebugKit => "🔧",
+            NodeCategory::ControlFlow => "🔀",
         }
     }
 }
@@ -192,6 +225,10 @@ pub enum NodeType {
     FocusWindow(FocusWindowParams),
     McpToolCall(McpToolCallParams),
     AppDebugKitOp(AppDebugKitParams),
+    If(IfParams),
+    Switch(SwitchParams),
+    Loop(LoopParams),
+    EndLoop(EndLoopParams),
 }
 
 impl NodeType {
@@ -207,6 +244,9 @@ impl NodeType {
             | NodeType::Scroll(_) => NodeCategory::Input,
             NodeType::ListWindows(_) | NodeType::FocusWindow(_) => NodeCategory::Window,
             NodeType::McpToolCall(_) | NodeType::AppDebugKitOp(_) => NodeCategory::AppDebugKit,
+            NodeType::If(_) | NodeType::Switch(_) | NodeType::Loop(_) | NodeType::EndLoop(_) => {
+                NodeCategory::ControlFlow
+            }
         }
     }
 
@@ -224,6 +264,10 @@ impl NodeType {
             NodeType::FocusWindow(_) => "Focus Window",
             NodeType::McpToolCall(_) => "MCP Tool Call",
             NodeType::AppDebugKitOp(_) => "AppDebugKit Op",
+            NodeType::If(_) => "If",
+            NodeType::Switch(_) => "Switch",
+            NodeType::Loop(_) => "Loop",
+            NodeType::EndLoop(_) => "End Loop",
         }
     }
 
@@ -241,6 +285,8 @@ impl NodeType {
             NodeType::FocusWindow(_) => "🪟",
             NodeType::McpToolCall(_) => "🔧",
             NodeType::AppDebugKitOp(_) => "🔧",
+            NodeType::If(_) | NodeType::Switch(_) => "\u{2442}",
+            NodeType::Loop(_) | NodeType::EndLoop(_) => "\u{21BB}",
         }
     }
 
@@ -263,6 +309,33 @@ impl NodeType {
             NodeType::FocusWindow(FocusWindowParams::default()),
             NodeType::McpToolCall(McpToolCallParams::default()),
             NodeType::AppDebugKitOp(AppDebugKitParams::default()),
+            NodeType::If(IfParams {
+                condition: Condition {
+                    left: ValueRef::Variable {
+                        name: String::new(),
+                    },
+                    operator: Operator::Equals,
+                    right: ValueRef::Literal {
+                        value: LiteralValue::Bool { value: true },
+                    },
+                },
+            }),
+            NodeType::Switch(SwitchParams { cases: vec![] }),
+            NodeType::Loop(LoopParams {
+                exit_condition: Condition {
+                    left: ValueRef::Variable {
+                        name: String::new(),
+                    },
+                    operator: Operator::Equals,
+                    right: ValueRef::Literal {
+                        value: LiteralValue::Bool { value: true },
+                    },
+                },
+                max_iterations: 100,
+            }),
+            NodeType::EndLoop(EndLoopParams {
+                loop_id: Uuid::nil(),
+            }),
         ]
     }
 }
@@ -449,6 +522,55 @@ pub struct AppDebugKitParams {
     pub parameters: Value,
 }
 
+// --- Control flow parameter structs ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct IfParams {
+    pub condition: Condition,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct SwitchParams {
+    /// Evaluated in order; first matching case wins.
+    pub cases: Vec<SwitchCase>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct SwitchCase {
+    /// Label shown on the edge, e.g. "Has error".
+    pub name: String,
+    pub condition: Condition,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct LoopParams {
+    /// Loop exits when this condition becomes true.
+    /// NOTE: Uses do-while semantics — the exit condition is NOT checked on the
+    /// first iteration (iteration 0). The loop body always runs at least once.
+    /// This is intentional for UI automation where the common pattern is
+    /// "try action, check if it worked, loop if not."
+    pub exit_condition: Condition,
+    /// Safety cap to prevent infinite loops. Default: 100.
+    /// If max_iterations is hit, the loop exits with a warning trace event
+    /// (loop_exited with reason "max_iterations"), which likely indicates
+    /// something unexpected happened.
+    pub max_iterations: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct EndLoopParams {
+    /// Explicit pairing with the Loop node. Stored as UUID rather than inferred
+    /// from graph structure for safety and simpler validation.
+    /// When EndLoop is reached during execution, the walker jumps directly to
+    /// this Loop node, which then re-evaluates its exit condition.
+    pub loop_id: Uuid,
+}
+
 // --- Trace & check types ---
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -484,6 +606,50 @@ pub struct Check {
     pub check_type: CheckType,
     pub params: Value,
     pub on_fail: OnCheckFail,
+}
+
+// --- Condition system ---
+// Used by If, Switch, and Loop nodes to evaluate simple comparisons.
+// Conditions reference runtime variables produced by upstream nodes.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct Condition {
+    pub left: ValueRef,
+    pub operator: Operator,
+    pub right: ValueRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "type")]
+pub enum ValueRef {
+    Variable { name: String },
+    Literal { value: LiteralValue },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "type")]
+pub enum LiteralValue {
+    String { value: String },
+    Number { value: f64 },
+    Bool { value: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum Operator {
+    Equals,
+    NotEquals,
+    GreaterThan,
+    LessThan,
+    GreaterThanOrEqual,
+    LessThanOrEqual,
+    Contains,
+    NotContains,
+    IsEmpty,
+    IsNotEmpty,
 }
 
 // --- Run types ---
@@ -613,12 +779,42 @@ mod tests {
         assert!(NodeType::ListWindows(ListWindowsParams::default()).is_deterministic());
         assert!(NodeType::FocusWindow(FocusWindowParams::default()).is_deterministic());
         assert!(NodeType::AppDebugKitOp(AppDebugKitParams::default()).is_deterministic());
+
+        let dummy_condition = Condition {
+            left: ValueRef::Variable {
+                name: String::new(),
+            },
+            operator: Operator::Equals,
+            right: ValueRef::Literal {
+                value: LiteralValue::Bool { value: true },
+            },
+        };
+        assert!(
+            NodeType::If(IfParams {
+                condition: dummy_condition.clone()
+            })
+            .is_deterministic()
+        );
+        assert!(NodeType::Switch(SwitchParams { cases: vec![] }).is_deterministic());
+        assert!(
+            NodeType::Loop(LoopParams {
+                exit_condition: dummy_condition,
+                max_iterations: 100
+            })
+            .is_deterministic()
+        );
+        assert!(
+            NodeType::EndLoop(EndLoopParams {
+                loop_id: Uuid::nil()
+            })
+            .is_deterministic()
+        );
     }
 
     #[test]
     fn test_all_defaults_covers_all_categories() {
         let defaults = NodeType::all_defaults();
-        assert_eq!(defaults.len(), 12);
+        assert_eq!(defaults.len(), 16);
 
         let categories: std::collections::HashSet<NodeCategory> =
             defaults.iter().map(|nt| nt.category()).collect();
@@ -627,6 +823,7 @@ mod tests {
         assert!(categories.contains(&NodeCategory::Input));
         assert!(categories.contains(&NodeCategory::Window));
         assert!(categories.contains(&NodeCategory::AppDebugKit));
+        assert!(categories.contains(&NodeCategory::ControlFlow));
     }
 
     #[test]
@@ -734,5 +931,68 @@ mod tests {
         wf.remove_node(a);
         assert_eq!(wf.nodes.len(), 1);
         assert_eq!(wf.edges.len(), 0);
+    }
+
+    #[test]
+    fn test_edge_output_serialization_roundtrip() {
+        let variants = vec![
+            EdgeOutput::IfTrue,
+            EdgeOutput::IfFalse,
+            EdgeOutput::SwitchCase {
+                name: "Has error".to_string(),
+            },
+            EdgeOutput::SwitchDefault,
+            EdgeOutput::LoopBody,
+            EdgeOutput::LoopDone,
+        ];
+        for variant in &variants {
+            let json = serde_json::to_string(variant).expect("serialize EdgeOutput");
+            let deserialized: EdgeOutput =
+                serde_json::from_str(&json).expect("deserialize EdgeOutput");
+            assert_eq!(*variant, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_condition_serialization_roundtrip() {
+        let conditions = vec![
+            Condition {
+                left: ValueRef::Variable {
+                    name: "result".to_string(),
+                },
+                operator: Operator::Equals,
+                right: ValueRef::Literal {
+                    value: LiteralValue::String {
+                        value: "success".to_string(),
+                    },
+                },
+            },
+            Condition {
+                left: ValueRef::Variable {
+                    name: "count".to_string(),
+                },
+                operator: Operator::GreaterThan,
+                right: ValueRef::Literal {
+                    value: LiteralValue::Number { value: 5.0 },
+                },
+            },
+            Condition {
+                left: ValueRef::Variable {
+                    name: "done".to_string(),
+                },
+                operator: Operator::Equals,
+                right: ValueRef::Literal {
+                    value: LiteralValue::Bool { value: true },
+                },
+            },
+        ];
+        for condition in &conditions {
+            let json = serde_json::to_string(condition).expect("serialize Condition");
+            let deserialized: Condition =
+                serde_json::from_str(&json).expect("deserialize Condition");
+            // Verify round-trip by re-serializing
+            let json2 = serde_json::to_string(&deserialized).expect("re-serialize Condition");
+            assert_eq!(json, json2);
+        }
     }
 }

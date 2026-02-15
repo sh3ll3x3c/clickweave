@@ -160,7 +160,12 @@ pub fn node_type_to_tool_invocation(
             };
             (&*p.tool_name, args)
         }
-        NodeType::AiStep(_) | NodeType::AppDebugKitOp(_) => {
+        NodeType::AiStep(_)
+        | NodeType::AppDebugKitOp(_)
+        | NodeType::If(_)
+        | NodeType::Switch(_)
+        | NodeType::Loop(_)
+        | NodeType::EndLoop(_) => {
             return Err(ToolMappingError::NotAToolNode);
         }
     };
