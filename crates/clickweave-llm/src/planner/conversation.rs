@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// A single entry in the assistant conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ChatEntry {
     pub role: ChatRole,
     pub content: String,
@@ -14,6 +15,7 @@ pub struct ChatEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum ChatRole {
     User,
     Assistant,
@@ -21,22 +23,31 @@ pub enum ChatRole {
 
 /// Compact summary of what a patch did (for conversation context, not the full patch).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct PatchSummary {
-    pub added: usize,
-    pub removed: usize,
-    pub updated: usize,
+    pub added: u32,
+    pub removed: u32,
+    pub updated: u32,
+    #[serde(default)]
+    pub added_names: Vec<String>,
+    #[serde(default)]
+    pub removed_names: Vec<String>,
+    #[serde(default)]
+    pub updated_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
 /// Execution results available at the time of a message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct RunContext {
     pub execution_dir: String,
     pub node_results: Vec<NodeResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct NodeResult {
     pub node_name: String,
     pub status: String,
@@ -46,6 +57,7 @@ pub struct NodeResult {
 
 /// Persistent conversation session for a workflow.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ConversationSession {
     pub messages: Vec<ChatEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

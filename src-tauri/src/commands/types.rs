@@ -1,6 +1,7 @@
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{NodeType, Workflow};
 use clickweave_llm::LlmConfig;
+use clickweave_llm::planner::conversation::{ChatEntry, RunContext};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
@@ -172,50 +173,14 @@ pub struct NodeErrorPayload {
 pub struct AssistantChatRequest {
     pub workflow: Workflow,
     pub user_message: String,
-    pub history: Vec<ChatEntryDto>,
+    pub history: Vec<ChatEntry>,
     pub summary: Option<String>,
     pub summary_cutoff: usize,
-    pub run_context: Option<RunContextDto>,
+    pub run_context: Option<RunContext>,
     pub planner: EndpointConfig,
     pub allow_ai_transforms: bool,
     pub allow_agent_steps: bool,
     pub mcp_command: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct ChatEntryDto {
-    pub role: String,
-    pub content: String,
-    pub timestamp: u64,
-    pub patch_summary: Option<PatchSummaryDto>,
-    pub run_context: Option<RunContextDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct PatchSummaryDto {
-    pub added: u32,
-    pub removed: u32,
-    pub updated: u32,
-    #[serde(default)]
-    pub added_names: Vec<String>,
-    #[serde(default)]
-    pub removed_names: Vec<String>,
-    #[serde(default)]
-    pub updated_names: Vec<String>,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct RunContextDto {
-    pub execution_dir: String,
-    pub node_results: Vec<NodeResultDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct NodeResultDto {
-    pub node_name: String,
-    pub status: String,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -225,11 +190,4 @@ pub struct AssistantChatResponse {
     pub new_summary: Option<String>,
     pub summary_cutoff: usize,
     pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct ConversationData {
-    pub messages: Vec<ChatEntryDto>,
-    pub summary: Option<String>,
-    pub summary_cutoff: usize,
 }

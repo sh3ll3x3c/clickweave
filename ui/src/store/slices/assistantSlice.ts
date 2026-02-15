@@ -1,10 +1,8 @@
 import type { StateCreator } from "zustand";
-import type { Workflow, AssistantChatRequest, WorkflowPatch } from "../../bindings";
+import type { Workflow, AssistantChatRequest, WorkflowPatch, ConversationSession, ChatEntry, PatchSummary } from "../../bindings";
 import { commands } from "../../bindings";
-import type { ConversationSession, ChatEntryLocal } from "../state";
 import { makeEmptyConversation } from "../state";
 import { toEndpoint } from "../settings";
-import { localEntryToDto } from "./conversationMappers";
 import type { StoreState } from "./types";
 
 export interface AssistantSlice {
@@ -42,10 +40,12 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
     // receives the new message separately as `user_message`.
     const conv = get().conversation;
 
-    const userEntry: ChatEntryLocal = {
+    const userEntry: ChatEntry = {
       role: "user",
       content: message,
       timestamp: Date.now(),
+      patch_summary: null,
+      run_context: null,
     };
     set((s) => ({
       conversation: {
@@ -55,14 +55,12 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
     }));
 
     try {
-      const historyDto = conv.messages.map(localEntryToDto);
-
       const request: AssistantChatRequest = {
         workflow: get().workflow,
         user_message: message,
-        history: historyDto,
+        history: conv.messages,
         summary: conv.summary,
-        summary_cutoff: conv.summaryCutoff,
+        summary_cutoff: conv.summary_cutoff,
         run_context: null,
         planner: toEndpoint(plannerConfig),
         allow_ai_transforms: allowAiTransforms,
@@ -75,7 +73,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
         const data = result.data;
 
         // Build patch summary if there's a patch
-        let patchSummary: ChatEntryLocal["patchSummary"] | undefined;
+        let patchSummary: PatchSummary | null = null;
         if (data.patch) {
           const currentNodes = get().workflow.nodes;
           const removedNames = data.patch.removed_node_ids.map((id) => {
@@ -86,25 +84,27 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
             added: data.patch.added_nodes.length,
             removed: data.patch.removed_node_ids.length,
             updated: data.patch.updated_nodes.length,
-            addedNames: data.patch.added_nodes.map((n) => n.name),
-            removedNames,
-            updatedNames: data.patch.updated_nodes.map((n) => n.name),
+            added_names: data.patch.added_nodes.map((n) => n.name),
+            removed_names: removedNames,
+            updated_names: data.patch.updated_nodes.map((n) => n.name),
+            description: null,
           };
         }
 
         // Add assistant message to conversation
-        const assistantEntry: ChatEntryLocal = {
+        const assistantEntry: ChatEntry = {
           role: "assistant",
           content: data.assistant_message,
           timestamp: Date.now(),
-          patchSummary,
+          patch_summary: patchSummary,
+          run_context: null,
         };
 
         set((s) => ({
           conversation: {
             messages: [...s.conversation.messages, assistantEntry],
             summary: data.new_summary ?? s.conversation.summary,
-            summaryCutoff: data.summary_cutoff,
+            summary_cutoff: data.summary_cutoff,
           },
           pendingPatch: data.patch ?? s.pendingPatch,
           pendingPatchWarnings: data.patch ? data.warnings : s.pendingPatchWarnings,

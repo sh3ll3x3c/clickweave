@@ -136,7 +136,10 @@ pub async fn import_asset(
 
 #[tauri::command]
 #[specta::specta]
-pub fn save_conversation(path: String, conversation: ConversationData) -> Result<(), String> {
+pub fn save_conversation(
+    path: String,
+    conversation: clickweave_llm::planner::conversation::ConversationSession,
+) -> Result<(), String> {
     let dir = project_dir(&path);
     let conv_path = dir.join("conversation.json");
 
@@ -151,7 +154,9 @@ pub fn save_conversation(path: String, conversation: ConversationData) -> Result
 
 #[tauri::command]
 #[specta::specta]
-pub fn load_conversation(path: String) -> Result<Option<ConversationData>, String> {
+pub fn load_conversation(
+    path: String,
+) -> Result<Option<clickweave_llm::planner::conversation::ConversationSession>, String> {
     let dir = project_dir(&path);
     let conv_path = dir.join("conversation.json");
 
@@ -162,8 +167,9 @@ pub fn load_conversation(path: String) -> Result<Option<ConversationData>, Strin
     let content = std::fs::read_to_string(&conv_path)
         .map_err(|e| format!("Failed to read conversation: {}", e))?;
 
-    let conversation: ConversationData = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse conversation: {}", e))?;
+    let conversation: clickweave_llm::planner::conversation::ConversationSession =
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse conversation: {}", e))?;
 
     Ok(Some(conversation))
 }

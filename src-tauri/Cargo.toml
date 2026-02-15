@@ -26,5 +26,5 @@ tracing-subscriber.workspace = true
 
 clickweave-core = { workspace = true, features = ["specta"] }
 clickweave-engine.workspace = true
-clickweave-llm.workspace = true
+clickweave-llm = { workspace = true, features = ["specta"] }
 clickweave-mcp.workspace = true

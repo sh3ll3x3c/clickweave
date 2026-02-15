@@ -70,7 +70,7 @@ async assistantChat(request: AssistantChatRequest) : Promise<Result<AssistantCha
     else return { status: "error", error: e  as any };
 }
 },
-async saveConversation(path: string, conversation: ConversationData) : Promise<Result<null, string>> {
+async saveConversation(path: string, conversation: ConversationSession) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_conversation", { path, conversation }) };
 } catch (e) {
@@ -78,7 +78,7 @@ async saveConversation(path: string, conversation: ConversationData) : Promise<R
     else return { status: "error", error: e  as any };
 }
 },
-async loadConversation(path: string) : Promise<Result<ConversationData | null, string>> {
+async loadConversation(path: string) : Promise<Result<ConversationSession | null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("load_conversation", { path }) };
 } catch (e) {
@@ -150,14 +150,15 @@ export type AiStepParams = { prompt: string; button_text: string | null; templat
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
-export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntryDto[]; summary: string | null; summary_cutoff: number; run_context: RunContextDto | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
+export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
 export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[] }
-export type ChatEntryDto = { role: string; content: string; timestamp: number; patch_summary: PatchSummaryDto | null; run_context: RunContextDto | null }
+export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary: PatchSummary | null; run_context: RunContext | null }
+export type ChatRole = "user" | "assistant"
 export type Check = { name: string; check_type: CheckType; params: JsonValue; on_fail: OnCheckFail }
 export type CheckType = "TextPresent" | "TextAbsent" | "TemplateFound" | "WindowTitleMatches"
 export type ClickParams = { target: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
 export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
-export type ConversationData = { messages: ChatEntryDto[]; summary: string | null; summary_cutoff: number }
+export type ConversationSession = { messages: ChatEntry[]; summary: string | null; summary_cutoff: number }
 export type Edge = { from: string; to: string; 
 /**
  * Which output port this edge connects from. None for regular single-output edges.
@@ -210,20 +211,20 @@ export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
 export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; trace_level: TraceLevel; expected_outcome: string | null; checks: Check[] }
-export type NodeResultDto = { node_name: string; status: string; error: string | null }
+export type NodeResult = { node_name: string; status: string; error: string | null }
 export type NodeRun = { run_id: string; node_id: string; node_name?: string; execution_dir?: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
 export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | ({ type: "If" } & IfParams) | ({ type: "Switch" } & SwitchParams) | ({ type: "Loop" } & LoopParams) | ({ type: "EndLoop" } & EndLoopParams)
 export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
 export type OnCheckFail = "FailNode" | "WarnOnly"
 export type Operator = "Equals" | "NotEquals" | "GreaterThan" | "LessThan" | "GreaterThanOrEqual" | "LessThanOrEqual" | "Contains" | "NotContains" | "IsEmpty" | "IsNotEmpty"
 export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
-export type PatchSummaryDto = { added: number; removed: number; updated: number; added_names?: string[]; removed_names?: string[]; updated_names?: string[]; description: string | null }
+export type PatchSummary = { added: number; removed: number; updated: number; added_names: string[]; removed_names: string[]; updated_names: string[]; description: string | null }
 export type PlanRequest = { intent: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
 export type PlanResponse = { workflow: Workflow; warnings: string[] }
 export type Position = { x: number; y: number }
 export type PressKeyParams = { key: string; modifiers: string[] }
 export type ProjectData = { path: string; workflow: Workflow }
-export type RunContextDto = { execution_dir: string; node_results: NodeResultDto[] }
+export type RunContext = { execution_dir: string; node_results: NodeResult[] }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; vlm: EndpointConfig | null; mcp_command: string }
 export type RunStatus = "Ok" | "Failed" | "Stopped"

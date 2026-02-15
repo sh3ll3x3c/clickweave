@@ -1,5 +1,4 @@
-import type { ChatEntryLocal } from "../store/state";
-import type { WorkflowPatch } from "../bindings";
+import type { ChatEntry, WorkflowPatch } from "../bindings";
 
 function PatchBadge({ count, names, label, badgeClass, nameClass }: {
   count: number; names?: string[]; label: string; badgeClass: string; nameClass: string;
@@ -23,7 +22,7 @@ function PatchBadge({ count, names, label, badgeClass, nameClass }: {
 }
 
 interface ChatMessageProps {
-  entry: ChatEntryLocal;
+  entry: ChatEntry;
   isLastAssistant: boolean;
   pendingPatch: WorkflowPatch | null;
   pendingPatchWarnings: string[];
@@ -57,13 +56,13 @@ export function ChatMessage({
         </div>
 
         {/* Patch summary */}
-        {entry.patchSummary && (
+        {entry.patch_summary && (
           <div className="mt-2 flex flex-col gap-1.5 border-t border-[var(--border)] pt-2">
-            <PatchBadge count={entry.patchSummary.added} names={entry.patchSummary.addedNames}
+            <PatchBadge count={entry.patch_summary.added} names={entry.patch_summary.added_names}
               label="added" badgeClass="bg-[var(--accent-green)]/20 text-[var(--accent-green)]" nameClass="text-[var(--accent-green)]/70" />
-            <PatchBadge count={entry.patchSummary.removed} names={entry.patchSummary.removedNames}
+            <PatchBadge count={entry.patch_summary.removed} names={entry.patch_summary.removed_names}
               label="removed" badgeClass="bg-red-500/20 text-red-400" nameClass="text-red-400/70" />
-            <PatchBadge count={entry.patchSummary.updated} names={entry.patchSummary.updatedNames}
+            <PatchBadge count={entry.patch_summary.updated} names={entry.patch_summary.updated_names}
               label="updated" badgeClass="bg-yellow-500/20 text-yellow-400" nameClass="text-yellow-400/70" />
           </div>
         )}

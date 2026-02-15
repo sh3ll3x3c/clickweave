@@ -1,9 +1,8 @@
 import type { StateCreator } from "zustand";
-import type { Workflow, ConversationData } from "../../bindings";
+import type { Workflow } from "../../bindings";
 import { commands } from "../../bindings";
 import { makeDefaultWorkflow, makeEmptyConversation } from "../state";
 import type { StoreState } from "./types";
-import { localEntryToDto, dtoEntryToLocal } from "./conversationMappers";
 
 export interface ProjectSlice {
   workflow: Workflow;
@@ -45,13 +44,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     try {
       const convResult = await commands.loadConversation(filePath);
       if (convResult.status === "ok" && convResult.data) {
-        set({
-          conversation: {
-            messages: convResult.data.messages.map(dtoEntryToLocal),
-            summary: convResult.data.summary,
-            summaryCutoff: convResult.data.summary_cutoff,
-          },
-        });
+        set({ conversation: convResult.data });
       } else {
         set({ conversation: makeEmptyConversation() });
       }
@@ -80,12 +73,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     // Save conversation alongside the project
     if (savePath) {
       try {
-        const convDto: ConversationData = {
-          messages: conversation.messages.map(localEntryToDto),
-          summary: conversation.summary,
-          summary_cutoff: conversation.summaryCutoff,
-        };
-        await commands.saveConversation(savePath, convDto);
+        await commands.saveConversation(savePath, conversation);
       } catch (e) {
         console.error("Failed to save conversation:", e);
       }

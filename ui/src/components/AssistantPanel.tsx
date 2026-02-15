@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import type { ConversationSession } from "../store/state";
-import type { WorkflowPatch } from "../bindings";
+import type { ConversationSession, WorkflowPatch } from "../bindings";
 import { ChatMessage } from "./ChatMessage";
 
 interface AssistantPanelProps {

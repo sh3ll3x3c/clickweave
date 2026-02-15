@@ -1,4 +1,4 @@
-import type { Workflow, NodeTypeInfo, WorkflowPatch } from "../bindings";
+import type { Workflow, NodeTypeInfo, WorkflowPatch, ConversationSession } from "../bindings";
 
 export type DetailTab = "setup" | "trace" | "checks" | "runs";
 
@@ -8,22 +8,8 @@ export interface EndpointConfig {
   model: string;
 }
 
-export interface ChatEntryLocal {
-  role: "user" | "assistant";
-  content: string;
-  timestamp: number;
-  patchSummary?: { added: number; removed: number; updated: number; addedNames: string[]; removedNames: string[]; updatedNames: string[]; description?: string };
-  runContext?: { executionDir: string; nodeResults: Array<{ nodeName: string; status: string; error?: string }> };
-}
-
-export interface ConversationSession {
-  messages: ChatEntryLocal[];
-  summary: string | null;
-  summaryCutoff: number;
-}
-
 export function makeEmptyConversation(): ConversationSession {
-  return { messages: [], summary: null, summaryCutoff: 0 };
+  return { messages: [], summary: null, summary_cutoff: 0 };
 }
 
 export interface AppState {

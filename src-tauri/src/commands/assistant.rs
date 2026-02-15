@@ -1,52 +1,8 @@
 use super::planner::fetch_mcp_tool_schemas;
 use super::types::*;
-use clickweave_llm::planner::conversation::{
-    ChatEntry, ChatRole, ConversationSession, NodeResult, PatchSummary, RunContext,
-};
+use clickweave_llm::planner::conversation::{ConversationSession, RunContext};
 
-fn dto_to_session(
-    history: &[ChatEntryDto],
-    summary: Option<String>,
-    summary_cutoff: usize,
-) -> ConversationSession {
-    let messages = history
-        .iter()
-        .map(|e| ChatEntry {
-            role: match e.role.as_str() {
-                "user" => ChatRole::User,
-                _ => ChatRole::Assistant,
-            },
-            content: e.content.clone(),
-            timestamp: e.timestamp,
-            patch_summary: e.patch_summary.as_ref().map(|ps| PatchSummary {
-                added: ps.added as usize,
-                removed: ps.removed as usize,
-                updated: ps.updated as usize,
-                description: ps.description.clone(),
-            }),
-            run_context: e.run_context.as_ref().map(|rc| RunContext {
-                execution_dir: rc.execution_dir.clone(),
-                node_results: rc
-                    .node_results
-                    .iter()
-                    .map(|nr| NodeResult {
-                        node_name: nr.node_name.clone(),
-                        status: nr.status.clone(),
-                        error: nr.error.clone(),
-                    })
-                    .collect(),
-            }),
-        })
-        .collect();
-
-    ConversationSession {
-        messages,
-        summary,
-        summary_cutoff,
-    }
-}
-
-fn format_run_context(ctx: &RunContextDto) -> String {
+fn format_run_context(ctx: &RunContext) -> String {
     let mut lines = vec![format!("Execution: {}", ctx.execution_dir)];
     for nr in &ctx.node_results {
         let mut line = format!("  - {} [{}]", nr.node_name, nr.status);
@@ -65,7 +21,11 @@ pub async fn assistant_chat(
 ) -> Result<AssistantChatResponse, String> {
     let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
     let config = request.planner.into_llm_config(None);
-    let session = dto_to_session(&request.history, request.summary, request.summary_cutoff);
+    let session = ConversationSession {
+        messages: request.history,
+        summary: request.summary,
+        summary_cutoff: request.summary_cutoff,
+    };
     let run_context_text = request.run_context.as_ref().map(format_run_context);
 
     let result = clickweave_llm::planner::assistant_chat(
