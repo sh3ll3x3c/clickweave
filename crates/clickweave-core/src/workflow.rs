@@ -138,8 +138,22 @@ impl Workflow {
     }
 
     /// Find entry points: nodes with no incoming edges.
+    /// EndLoop back-edges are excluded so loops don't break entry detection.
     fn entry_points(&self) -> Vec<Uuid> {
-        let targets: std::collections::HashSet<Uuid> = self.edges.iter().map(|e| e.to).collect();
+        let endloop_ids: std::collections::HashSet<Uuid> = self
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+            .map(|n| n.id)
+            .collect();
+
+        let targets: std::collections::HashSet<Uuid> = self
+            .edges
+            .iter()
+            .filter(|e| !endloop_ids.contains(&e.from))
+            .map(|e| e.to)
+            .collect();
+
         self.nodes
             .iter()
             .filter(|n| !targets.contains(&n.id))
@@ -148,6 +162,9 @@ impl Workflow {
     }
 
     /// Get execution order by walking edges from entry points linearly.
+    ///
+    /// Note: This only handles linear workflows. For workflows with control
+    /// flow (If, Switch, Loop), use the graph walker in the engine instead.
     pub fn execution_order(&self) -> Vec<Uuid> {
         let entries = self.entry_points();
         if entries.is_empty() {

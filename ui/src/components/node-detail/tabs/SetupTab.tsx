@@ -564,8 +564,8 @@ function NodeTypeFields({
       return (
         <FieldGroup title="Loop">
           <p className="mb-2 text-[10px] text-[var(--text-muted)]">
-            Loop body runs at least once (do-while). Exit condition checked from
-            iteration 2 onward.
+            Loop body runs at least once (do-while). Exit condition is checked
+            on every subsequent pass.
           </p>
           <ConditionEditor
             condition={nt.exit_condition}

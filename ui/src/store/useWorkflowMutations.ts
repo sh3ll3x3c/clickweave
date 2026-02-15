@@ -84,9 +84,9 @@ export function useWorkflowMutations(
     (from: string, to: string, sourceHandle?: string) => {
       setWorkflow((prev) => {
         const output = sourceHandle ? sourceHandleToEdgeOutput(sourceHandle) : null;
-        // For control flow nodes, only replace edges from the same output port
+        // For control flow nodes, replace the edge from the exact same output port.
         const filtered = output
-          ? prev.edges.filter((e) => !(e.from === from && e.output?.type === output.type))
+          ? prev.edges.filter((e) => e.from !== from || JSON.stringify(e.output) !== JSON.stringify(output))
           : prev.edges.filter((e) => e.from !== from || e.output !== null);
         const edge: Edge = { from, to, output };
         return { ...prev, edges: [...filtered, edge] };

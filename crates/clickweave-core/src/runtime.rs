@@ -127,6 +127,14 @@ fn values_equal(left: &Value, right: &Value) -> bool {
             }
         }
 
+        // number <-> string coercion (consistent with compare_numbers)
+        (Value::Number(_), Value::String(_)) | (Value::String(_), Value::Number(_)) => {
+            match (value_as_f64(left), value_as_f64(right)) {
+                (Some(l), Some(r)) => (l - r).abs() < f64::EPSILON,
+                _ => false,
+            }
+        }
+
         // Everything else (arrays, objects, mismatched primitives) → not equal.
         _ => false,
     }
@@ -331,6 +339,31 @@ mod tests {
         };
 
         assert!(ctx.evaluate_condition(&cond));
+    }
+
+    #[test]
+    fn number_string_coercion() {
+        let mut ctx = RuntimeContext::new();
+        ctx.set_variable(
+            "count",
+            Value::Number(serde_json::Number::from_f64(42.0).unwrap()),
+        );
+
+        // Number(42) == String("42") → true
+        let cond = Condition {
+            left: var("count"),
+            operator: Operator::Equals,
+            right: lit_str("42"),
+        };
+        assert!(ctx.evaluate_condition(&cond));
+
+        // Number(42) == String("not_a_number") → false
+        let cond2 = Condition {
+            left: var("count"),
+            operator: Operator::Equals,
+            right: lit_str("not_a_number"),
+        };
+        assert!(!ctx.evaluate_condition(&cond2));
     }
 
     #[test]

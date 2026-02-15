@@ -55,6 +55,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .map(|e| e.to)
     }
 
+    /// Follow the "default" edge when a control flow node is disabled.
+    /// Falls through to the non-executing branch: IfFalse, LoopDone, or
+    /// the first available outgoing edge for Switch.
+    fn follow_disabled_edge(&self, node_id: Uuid, node_type: &NodeType) -> Option<Uuid> {
+        match node_type {
+            NodeType::If(_) => self.follow_edge(node_id, &EdgeOutput::IfFalse),
+            NodeType::Loop(_) => self.follow_edge(node_id, &EdgeOutput::LoopDone),
+            NodeType::Switch(_) => self
+                .follow_edge(node_id, &EdgeOutput::SwitchDefault)
+                .or_else(|| {
+                    // No default edge — pick the first case edge as fallthrough
+                    self.workflow
+                        .edges
+                        .iter()
+                        .find(|e| e.from == node_id && e.output.is_some())
+                        .map(|e| e.to)
+                }),
+            // EndLoop and regular nodes: follow_single_edge is fine
+            _ => self.follow_single_edge(node_id),
+        }
+    }
+
     pub async fn run(&mut self, mut command_rx: Receiver<ExecutorCommand>) {
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
         self.log("Starting workflow execution");
@@ -120,7 +142,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             if !node.enabled {
                 self.log(format!("Skipping disabled node: {}", node.name));
-                current = self.follow_single_edge(node_id);
+                current = self.follow_disabled_edge(node_id, &node.node_type);
                 continue;
             }
 
@@ -191,6 +213,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             "output_taken": output_taken,
                         }),
                     );
+
+                    if next.is_none() {
+                        self.log(format!(
+                            "Warning: Switch '{}' had no matching case and no default edge — workflow path ends here",
+                            node_name
+                        ));
+                    }
 
                     current = next;
                 }

@@ -36,6 +36,9 @@ pub enum ValidationError {
 
     #[error("EndLoop node '{0}' edge does not point to its paired Loop")]
     EndLoopEdgeMismatch(String),
+
+    #[error("Loop node '{0}' has multiple EndLoop nodes (expected exactly one)")]
+    MultipleEndLoops(String),
 }
 
 pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
@@ -189,6 +192,9 @@ fn validate_loop_pairing(workflow: &Workflow) -> Result<(), ValidationError> {
             let count = loop_references.get(&node.id).copied().unwrap_or(0);
             if count == 0 {
                 return Err(ValidationError::UnpairedLoop(node.name.clone()));
+            }
+            if count > 1 {
+                return Err(ValidationError::MultipleEndLoops(node.name.clone()));
             }
         }
     }
@@ -637,5 +643,37 @@ mod tests {
 
         let err = validate_workflow(&wf).unwrap_err();
         assert!(matches!(err, ValidationError::EndLoopEdgeMismatch(_)));
+    }
+
+    #[test]
+    fn test_validate_multiple_end_loops_for_same_loop() {
+        // Two EndLoop nodes both referencing the same Loop → MultipleEndLoops
+        let mut wf = Workflow::default();
+        let loop_node = wf.add_node(
+            NodeType::Loop(LoopParams {
+                exit_condition: dummy_condition(),
+                max_iterations: 10,
+            }),
+            pos(0.0, 0.0),
+        );
+        let body = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 0.0));
+        let done = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 100.0));
+        let end_loop_1 = wf.add_node(
+            NodeType::EndLoop(EndLoopParams { loop_id: loop_node }),
+            pos(200.0, 0.0),
+        );
+        let end_loop_2 = wf.add_node(
+            NodeType::EndLoop(EndLoopParams { loop_id: loop_node }),
+            pos(300.0, 0.0),
+        );
+
+        wf.add_edge_with_output(loop_node, body, EdgeOutput::LoopBody);
+        wf.add_edge_with_output(loop_node, done, EdgeOutput::LoopDone);
+        wf.add_edge(body, end_loop_1);
+        wf.add_edge(end_loop_1, loop_node);
+        wf.add_edge(end_loop_2, loop_node);
+
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::MultipleEndLoops(_)));
     }
 }
