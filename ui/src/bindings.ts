@@ -156,27 +156,68 @@ export type ChatEntryDto = { role: string; content: string; timestamp: number; p
 export type Check = { name: string; check_type: CheckType; params: JsonValue; on_fail: OnCheckFail }
 export type CheckType = "TextPresent" | "TextAbsent" | "TemplateFound" | "WindowTitleMatches"
 export type ClickParams = { target: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
+export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
 export type ConversationData = { messages: ChatEntryDto[]; summary: string | null; summary_cutoff: number }
-export type Edge = { from: string; to: string }
+export type Edge = { from: string; to: string; 
+/**
+ * Which output port this edge connects from. None for regular single-output edges.
+ */
+output: EdgeOutput | null }
+export type EdgeOutput = { type: "IfTrue" } | { type: "IfFalse" } | { type: "SwitchCase"; name: string } | { type: "SwitchDefault" } | 
+/**
+ * Edge from Loop node into the loop body.
+ */
+{ type: "LoopBody" } | 
+/**
+ * Edge from Loop node when exit condition is met (or max iterations hit).
+ */
+{ type: "LoopDone" }
+export type EndLoopParams = { 
+/**
+ * Explicit pairing with the Loop node. Stored as UUID rather than inferred
+ * from graph structure for safety and simpler validation.
+ * When EndLoop is reached during execution, the walker jumps directly to
+ * this Loop node, which then re-evaluates its exit condition.
+ */
+loop_id: string }
 export type EndpointConfig = { base_url: string; model: string; api_key: string | null }
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
 export type FocusMethod = "WindowId" | "AppName" | "Pid"
 export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean }
+export type IfParams = { condition: Condition }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type ListWindowsParams = { app_name: string | null }
+export type LiteralValue = { type: "String"; value: string } | { type: "Number"; value: number } | { type: "Bool"; value: boolean }
+export type LoopParams = { 
+/**
+ * Loop exits when this condition becomes true.
+ * NOTE: Uses do-while semantics — the exit condition is NOT checked on the
+ * first iteration (iteration 0). The loop body always runs at least once.
+ * This is intentional for UI automation where the common pattern is
+ * "try action, check if it worked, loop if not."
+ */
+exit_condition: Condition; 
+/**
+ * Safety cap to prevent infinite loops. Default: 100.
+ * If max_iterations is hit, the loop exits with a warning trace event
+ * (loop_exited with reason "max_iterations"), which likely indicates
+ * something unexpected happened.
+ */
+max_iterations: number }
 export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
 export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; trace_level: TraceLevel; expected_outcome: string | null; checks: Check[] }
 export type NodeResultDto = { node_name: string; status: string; error: string | null }
 export type NodeRun = { run_id: string; node_id: string; node_name?: string; execution_dir?: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
-export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams)
+export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | ({ type: "If" } & IfParams) | ({ type: "Switch" } & SwitchParams) | ({ type: "Loop" } & LoopParams) | ({ type: "EndLoop" } & EndLoopParams)
 export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
 export type OnCheckFail = "FailNode" | "WarnOnly"
+export type Operator = "Equals" | "NotEquals" | "GreaterThan" | "LessThan" | "GreaterThanOrEqual" | "LessThanOrEqual" | "Contains" | "NotContains" | "IsEmpty" | "IsNotEmpty"
 export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
-export type PatchSummaryDto = { added: number; removed: number; updated: number; added_names: string[]; removed_names: string[]; updated_names: string[]; description: string | null }
+export type PatchSummaryDto = { added: number; removed: number; updated: number; added_names?: string[]; removed_names?: string[]; updated_names?: string[]; description: string | null }
 export type PlanRequest = { intent: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
 export type PlanResponse = { workflow: Workflow; warnings: string[] }
 export type Position = { x: number; y: number }
@@ -189,11 +230,22 @@ export type RunStatus = "Ok" | "Failed" | "Stopped"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 export type ScreenshotMode = "Screen" | "Window" | "Region"
 export type ScrollParams = { delta_y: number; x: number | null; y: number | null }
+export type SwitchCase = { 
+/**
+ * Label shown on the edge, e.g. "Has error".
+ */
+name: string; condition: Condition }
+export type SwitchParams = { 
+/**
+ * Evaluated in order; first matching case wins.
+ */
+cases: SwitchCase[] }
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
 export type TypeTextParams = { text: string }
 export type ValidationResult = { valid: boolean; errors: string[] }
+export type ValueRef = { type: "Variable"; name: string } | { type: "Literal"; value: LiteralValue }
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }
 export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 
