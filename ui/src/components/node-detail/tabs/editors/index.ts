@@ -18,6 +18,7 @@ import { TypeTextEditor } from "./TypeTextEditor";
 import type { NodeEditorProps } from "./types";
 
 export type { NodeEditorProps } from "./types";
+export { optionalString } from "./types";
 
 export const editorRegistry: Record<string, React.FC<NodeEditorProps>> = {
   AiStep: AiStepEditor,

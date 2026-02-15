@@ -1,5 +1,6 @@
 use super::types::*;
 use clickweave_core::{NodeType, Workflow, validate_workflow};
+use clickweave_llm::planner::conversation::ConversationSession;
 use std::path::PathBuf;
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -136,10 +137,7 @@ pub async fn import_asset(
 
 #[tauri::command]
 #[specta::specta]
-pub fn save_conversation(
-    path: String,
-    conversation: clickweave_llm::planner::conversation::ConversationSession,
-) -> Result<(), String> {
+pub fn save_conversation(path: String, conversation: ConversationSession) -> Result<(), String> {
     let dir = project_dir(&path);
     let conv_path = dir.join("conversation.json");
 
@@ -154,9 +152,7 @@ pub fn save_conversation(
 
 #[tauri::command]
 #[specta::specta]
-pub fn load_conversation(
-    path: String,
-) -> Result<Option<clickweave_llm::planner::conversation::ConversationSession>, String> {
+pub fn load_conversation(path: String) -> Result<Option<ConversationSession>, String> {
     let dir = project_dir(&path);
     let conv_path = dir.join("conversation.json");
 
@@ -167,9 +163,8 @@ pub fn load_conversation(
     let content = std::fs::read_to_string(&conv_path)
         .map_err(|e| format!("Failed to read conversation: {}", e))?;
 
-    let conversation: clickweave_llm::planner::conversation::ConversationSession =
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse conversation: {}", e))?;
+    let conversation: ConversationSession = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse conversation: {}", e))?;
 
     Ok(Some(conversation))
 }

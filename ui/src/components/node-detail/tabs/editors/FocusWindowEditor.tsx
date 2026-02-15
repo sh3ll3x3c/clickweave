@@ -1,6 +1,6 @@
 import type { NodeType } from "../../../../bindings";
 import { CheckboxField, FieldGroup, SelectField, TextField } from "../../fields";
-import type { NodeEditorProps } from "./types";
+import { type NodeEditorProps, optionalString } from "./types";
 
 export function FocusWindowEditor({ nodeType, onUpdate }: NodeEditorProps) {
   const nt = nodeType;
@@ -9,8 +9,6 @@ export function FocusWindowEditor({ nodeType, onUpdate }: NodeEditorProps) {
   const updateType = (patch: Record<string, unknown>) => {
     onUpdate({ node_type: { ...nt, ...patch } as NodeType });
   };
-
-  const optionalString = (v: string) => (v === "" ? null : v);
 
   return (
     <FieldGroup title="Focus Window">

@@ -16,7 +16,7 @@ export interface AssistantSlice {
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
   sendAssistantMessage: (message: string) => Promise<void>;
-  applyPendingPatch: () => void;
+  applyPendingPatch: () => Promise<void>;
   discardPendingPatch: () => void;
   clearConversation: () => void;
 }

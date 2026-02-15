@@ -1,4 +1,9 @@
-import type { Condition, LiteralValue, Operator } from "../../../../bindings";
+import type { Condition, LiteralValue, Operator, ValueRef } from "../../../../bindings";
+
+function literalDisplayValue(ref: ValueRef): string {
+  if (ref.type !== "Literal") return "";
+  return String(ref.value.value);
+}
 
 export function ConditionEditor({
   condition,
@@ -52,19 +57,7 @@ export function ConditionEditor({
           <label className="text-[10px] text-[var(--text-muted)]">Value</label>
           <input
             type="text"
-            value={
-              condition.right.type === "Literal"
-                ? String(
-                    condition.right.value.type === "String"
-                      ? condition.right.value.value
-                      : condition.right.value.type === "Number"
-                        ? condition.right.value.value
-                        : condition.right.value.type === "Bool"
-                          ? condition.right.value.value
-                          : "",
-                  )
-                : ""
-            }
+            value={literalDisplayValue(condition.right)}
             onChange={(e) => {
               const raw = e.target.value;
               let value: LiteralValue;

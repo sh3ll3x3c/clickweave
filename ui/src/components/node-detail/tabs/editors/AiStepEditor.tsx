@@ -6,7 +6,7 @@ import {
   TextAreaField,
   TextField,
 } from "../../fields";
-import type { NodeEditorProps } from "./types";
+import { type NodeEditorProps, optionalString } from "./types";
 
 export function AiStepEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps) {
   const nt = nodeType;
@@ -15,8 +15,6 @@ export function AiStepEditor({ nodeType, onUpdate, projectPath }: NodeEditorProp
   const updateType = (patch: Record<string, unknown>) => {
     onUpdate({ node_type: { ...nt, ...patch } as NodeType });
   };
-
-  const optionalString = (v: string) => (v === "" ? null : v);
 
   return (
     <FieldGroup title="AI Step">

@@ -41,13 +41,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "text_len": result_text.len(),
                 }),
             );
-            let parsed: Value =
-                serde_json::from_str(&result_text).unwrap_or(if result_text.is_empty() {
-                    Value::Null
-                } else {
-                    Value::String(result_text)
-                });
-            return Ok(parsed);
+            return Ok(Self::parse_result_text(&result_text));
         }
 
         if let NodeType::McpToolCall(p) = node_type
@@ -145,14 +139,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             images.len()
         ));
 
-        // Return parsed result for variable extraction
-        let parsed: Value =
-            serde_json::from_str(&result_text).unwrap_or(if result_text.is_empty() {
-                Value::Null
-            } else {
-                Value::String(result_text)
-            });
-        Ok(parsed)
+        Ok(Self::parse_result_text(&result_text))
     }
 
     fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> Result<(), String> {
@@ -164,6 +151,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ));
         }
         Ok(())
+    }
+
+    /// Parse a tool result text as JSON, falling back to a string Value or Null.
+    fn parse_result_text(text: &str) -> Value {
+        serde_json::from_str(text).unwrap_or(if text.is_empty() {
+            Value::Null
+        } else {
+            Value::String(text.to_string())
+        })
     }
 
     async fn resolve_click_target(

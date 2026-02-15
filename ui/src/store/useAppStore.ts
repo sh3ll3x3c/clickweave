@@ -25,6 +25,9 @@ export const useStore = create<StoreState>()((...a) => ({
 }));
 
 // ── Adapter: React-style dispatchers for useWorkflowMutations ───
+// TODO: Remove this adapter layer once consumers migrate to direct Zustand
+// selectors (useStore(s => s.field)). The [AppState, AppActions] wrapper
+// subscribes to the entire store, negating Zustand's selective re-render benefit.
 
 const setWorkflowDispatch: React.Dispatch<React.SetStateAction<Workflow>> = (action) => {
   if (typeof action === "function") {

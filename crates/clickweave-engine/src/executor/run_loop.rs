@@ -371,7 +371,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
         let mut current: Option<Uuid> = Some(entries[0]);
 
-        self.log("Starting graph walk from entry point".to_string());
+        self.log("Starting graph walk from entry point");
 
         let tools = mcp.tools_as_openai();
 
