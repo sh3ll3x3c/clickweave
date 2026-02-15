@@ -1066,3 +1066,38 @@ fn test_step_to_node_type_if() {
     assert_eq!(name, "Check Result");
     assert!(matches!(nt, NodeType::If(_)));
 }
+
+#[test]
+fn test_control_flow_steps_never_rejected() {
+    use super::parse::step_rejected_reason;
+    use clickweave_core::{Condition, LiteralValue, Operator, ValueRef};
+
+    let condition = Condition {
+        left: ValueRef::Variable {
+            name: "x.found".into(),
+        },
+        operator: Operator::Equals,
+        right: ValueRef::Literal {
+            value: LiteralValue::Bool { value: true },
+        },
+    };
+
+    let loop_step = PlanStep::Loop {
+        name: None,
+        exit_condition: condition.clone(),
+        max_iterations: Some(10),
+    };
+    let end_loop_step = PlanStep::EndLoop {
+        name: None,
+        loop_id: "n1".into(),
+    };
+    let if_step = PlanStep::If {
+        name: None,
+        condition,
+    };
+
+    // Even with all features disabled, control flow steps pass through
+    assert!(step_rejected_reason(&loop_step, false, false).is_none());
+    assert!(step_rejected_reason(&end_loop_step, false, false).is_none());
+    assert!(step_rejected_reason(&if_step, false, false).is_none());
+}
