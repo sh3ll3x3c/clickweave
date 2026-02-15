@@ -1,20 +1,6 @@
 import { useCallback } from "react";
 import type { Edge, EdgeOutput, Node, NodeType, Workflow } from "../bindings";
-
-function sourceHandleToEdgeOutput(handle: string): EdgeOutput | null {
-  switch (handle) {
-    case "IfTrue": return { type: "IfTrue" };
-    case "IfFalse": return { type: "IfFalse" };
-    case "SwitchDefault": return { type: "SwitchDefault" };
-    case "LoopBody": return { type: "LoopBody" };
-    case "LoopDone": return { type: "LoopDone" };
-    default:
-      if (handle.startsWith("SwitchCase:")) {
-        return { type: "SwitchCase", name: handle.slice(11) };
-      }
-      return null;
-  }
-}
+import { handleToEdgeOutput, edgeOutputsEqual } from "../utils/edgeHandles";
 
 export function useWorkflowMutations(
   setWorkflow: React.Dispatch<React.SetStateAction<Workflow>>,
@@ -83,10 +69,10 @@ export function useWorkflowMutations(
   const addEdge = useCallback(
     (from: string, to: string, sourceHandle?: string) => {
       setWorkflow((prev) => {
-        const output = sourceHandle ? sourceHandleToEdgeOutput(sourceHandle) : null;
+        const output = sourceHandle ? handleToEdgeOutput(sourceHandle) : null;
         // For control flow nodes, replace the edge from the exact same output port.
         const filtered = output
-          ? prev.edges.filter((e) => e.from !== from || JSON.stringify(e.output) !== JSON.stringify(output))
+          ? prev.edges.filter((e) => e.from !== from || !edgeOutputsEqual(e.output, output))
           : prev.edges.filter((e) => e.from !== from || e.output !== null);
         const edge: Edge = { from, to, output };
         return { ...prev, edges: [...filtered, edge] };
@@ -102,7 +88,7 @@ export function useWorkflowMutations(
         edges: prev.edges.filter((e) => {
           if (e.from !== from || e.to !== to) return true;
           if (output !== undefined) {
-            return JSON.stringify(e.output) !== JSON.stringify(output ?? null);
+            return !edgeOutputsEqual(e.output, output ?? null);
           }
           return false;
         }),

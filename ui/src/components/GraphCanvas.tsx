@@ -16,6 +16,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Workflow, Edge, EdgeOutput } from "../bindings";
+import { edgeOutputToHandle } from "../utils/edgeHandles";
 import { WorkflowNode } from "./WorkflowNode";
 
 interface GraphCanvasProps {
@@ -60,11 +61,6 @@ function getEdgeLabel(output: EdgeOutput | null): string | undefined {
     case "LoopBody": return "body";
     case "LoopDone": return "done";
   }
-}
-
-function edgeOutputToHandle(output: EdgeOutput | null): string | undefined {
-  if (!output) return undefined;
-  return output.type === "SwitchCase" ? `SwitchCase:${output.name}` : output.type;
 }
 
 function toRFNode(
