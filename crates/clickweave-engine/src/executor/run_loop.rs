@@ -12,7 +12,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// EndLoop back-edges (edges where the source is an EndLoop node)
     /// are NOT counted as incoming edges — this prevents loops from breaking
     /// entry point detection.
-    fn entry_points(&self) -> Vec<Uuid> {
+    pub(crate) fn entry_points(&self) -> Vec<Uuid> {
         let endloop_nodes: HashSet<Uuid> = self
             .workflow
             .nodes
@@ -38,7 +38,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Follow the single outgoing edge from a regular node (output is None).
-    fn follow_single_edge(&self, from: Uuid) -> Option<Uuid> {
+    pub(crate) fn follow_single_edge(&self, from: Uuid) -> Option<Uuid> {
         self.workflow
             .edges
             .iter()
@@ -47,7 +47,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Follow a specific labeled edge from a control flow node.
-    fn follow_edge(&self, from: Uuid, output: &EdgeOutput) -> Option<Uuid> {
+    pub(crate) fn follow_edge(&self, from: Uuid, output: &EdgeOutput) -> Option<Uuid> {
         self.workflow
             .edges
             .iter()
