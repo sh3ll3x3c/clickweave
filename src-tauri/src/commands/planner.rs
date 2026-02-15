@@ -4,20 +4,15 @@ use clickweave_mcp::McpClient;
 pub(crate) async fn fetch_mcp_tool_schemas(
     mcp_command: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let mcp_command = mcp_command.to_string();
-    tokio::task::spawn_blocking(move || {
-        let mut mcp = if mcp_command == "npx" {
-            McpClient::spawn_npx()
-        } else {
-            McpClient::spawn(&mcp_command, &[])
-        }
-        .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
-        let tools = mcp.tools_as_openai();
-        let _ = mcp.kill();
-        Ok(tools)
-    })
-    .await
-    .map_err(|e| format!("MCP schema fetch task failed: {}", e))?
+    let mut mcp = if mcp_command == "npx" {
+        McpClient::spawn_npx().await
+    } else {
+        McpClient::spawn(mcp_command, &[]).await
+    }
+    .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
+    let tools = mcp.tools_as_openai();
+    let _ = mcp.kill();
+    Ok(tools)
 }
 
 #[tauri::command]
