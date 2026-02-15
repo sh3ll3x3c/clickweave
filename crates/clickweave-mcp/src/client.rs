@@ -1,10 +1,10 @@
 use crate::protocol::*;
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace};
 
 pub struct McpClient {
@@ -17,14 +17,14 @@ pub struct McpClient {
 
 impl McpClient {
     /// Spawn native-devtools-mcp and initialize the connection
-    pub fn spawn(command: &str, args: &[&str]) -> Result<Self> {
+    pub async fn spawn(command: &str, args: &[&str]) -> Result<Self> {
         info!("Spawning MCP server: {} {:?}", command, args);
 
-        let mut process = Command::new(command)
+        let mut process = tokio::process::Command::new(command)
             .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .context("Failed to spawn MCP server")?;
 
@@ -39,47 +39,48 @@ impl McpClient {
             tools: Vec::new(),
         };
 
-        client.initialize()?;
-        client.fetch_tools()?;
+        client.initialize().await?;
+        client.fetch_tools().await?;
 
         Ok(client)
     }
 
     /// Spawn using npx (cross-platform default)
-    pub fn spawn_npx() -> Result<Self> {
-        Self::spawn("npx", &["-y", "native-devtools-mcp"])
+    pub async fn spawn_npx() -> Result<Self> {
+        Self::spawn("npx", &["-y", "native-devtools-mcp"]).await
     }
 
     fn next_id(&self) -> u64 {
         self.request_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    fn write_message(&self, json: &str) -> Result<()> {
-        let mut stdin = self.stdin.lock().unwrap();
-        writeln!(stdin, "{}", json)?;
-        stdin.flush()?;
+    async fn write_message(&self, json: &str) -> Result<()> {
+        let mut stdin = self.stdin.lock().await;
+        stdin.write_all(json.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+        stdin.flush().await?;
         Ok(())
     }
 
-    fn read_response(&self) -> Result<JsonRpcResponse> {
-        let mut stdout = self.stdout.lock().unwrap();
+    async fn read_response(&self) -> Result<JsonRpcResponse> {
+        let mut stdout = self.stdout.lock().await;
         let mut line = String::new();
-        stdout.read_line(&mut line)?;
+        stdout.read_line(&mut line).await?;
 
         trace!("MCP response: {}", line.trim());
 
         serde_json::from_str(&line).context("Failed to parse MCP response")
     }
 
-    fn send_request(&self, method: &str, params: Option<Value>) -> Result<JsonRpcResponse> {
+    async fn send_request(&self, method: &str, params: Option<Value>) -> Result<JsonRpcResponse> {
         let id = self.next_id();
         let request = JsonRpcRequest::new(id, method, params);
         let json = serde_json::to_string(&request)?;
 
         trace!("MCP request: {}", json);
-        self.write_message(&json)?;
+        self.write_message(&json).await?;
 
-        let response = self.read_response()?;
+        let response = self.read_response().await?;
         if let Some(err) = &response.error {
             error!("MCP error: {} (code {})", err.message, err.code);
         }
@@ -87,7 +88,7 @@ impl McpClient {
         Ok(response)
     }
 
-    fn send_notification(&self, method: &str) -> Result<()> {
+    async fn send_notification(&self, method: &str) -> Result<()> {
         let notification = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method
@@ -95,10 +96,10 @@ impl McpClient {
         let json = serde_json::to_string(&notification)?;
 
         debug!("MCP notification: {}", json);
-        self.write_message(&json)
+        self.write_message(&json).await
     }
 
-    fn initialize(&mut self) -> Result<()> {
+    async fn initialize(&mut self) -> Result<()> {
         let params = InitializeParams {
             protocol_version: "2024-11-05".to_string(),
             capabilities: ClientCapabilities::default(),
@@ -108,7 +109,9 @@ impl McpClient {
             },
         };
 
-        let response = self.send_request("initialize", Some(serde_json::to_value(params)?))?;
+        let response = self
+            .send_request("initialize", Some(serde_json::to_value(params)?))
+            .await?;
 
         if let Some(result) = response.result {
             let init_result: InitializeResult = serde_json::from_value(result)?;
@@ -119,11 +122,11 @@ impl McpClient {
             );
         }
 
-        self.send_notification("notifications/initialized")
+        self.send_notification("notifications/initialized").await
     }
 
-    fn fetch_tools(&mut self) -> Result<()> {
-        let response = self.send_request("tools/list", None)?;
+    async fn fetch_tools(&mut self) -> Result<()> {
+        let response = self.send_request("tools/list", None).await?;
 
         if let Some(result) = response.result {
             let tools_result: ToolsListResult = serde_json::from_value(result)?;
@@ -143,13 +146,15 @@ impl McpClient {
     }
 
     /// Call a tool by name with arguments
-    pub fn call_tool(&self, name: &str, arguments: Option<Value>) -> Result<ToolCallResult> {
+    pub async fn call_tool(&self, name: &str, arguments: Option<Value>) -> Result<ToolCallResult> {
         let params = ToolCallParams {
             name: name.to_string(),
             arguments,
         };
 
-        let response = self.send_request("tools/call", Some(serde_json::to_value(params)?))?;
+        let response = self
+            .send_request("tools/call", Some(serde_json::to_value(params)?))
+            .await?;
 
         if let Some(err) = response.error {
             return Err(anyhow!("Tool call failed: {}", err.message));
@@ -187,7 +192,9 @@ impl McpClient {
 
     /// Kill the MCP server process
     pub fn kill(&mut self) -> Result<()> {
-        self.process.kill().context("Failed to kill MCP server")?;
+        self.process
+            .start_kill()
+            .context("Failed to kill MCP server")?;
         Ok(())
     }
 }
