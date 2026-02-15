@@ -28,6 +28,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             );
             let result = mcp
                 .call_tool(&p.operation_name, args)
+                .await
                 .map_err(|e| format!("AppDebugKit op {} failed: {}", p.operation_name, e))?;
             Self::check_tool_error(&result, &p.operation_name)?;
             let result_text = Self::extract_result_text(&result);
@@ -60,7 +61,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             && p.target.is_some()
             && p.x.is_none()
         {
-            resolved_click = self.resolve_click_target(mcp, p, &mut node_run)?;
+            resolved_click = self.resolve_click_target(mcp, p, &mut node_run).await?;
             &resolved_click
         } else {
             node_type
@@ -119,6 +120,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
         let result = mcp
             .call_tool(tool_name, args)
+            .await
             .map_err(|e| format!("MCP tool {} failed: {}", tool_name, e))?;
 
         Self::check_tool_error(&result, tool_name)?;
@@ -164,7 +166,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok(())
     }
 
-    fn resolve_click_target(
+    async fn resolve_click_target(
         &self,
         mcp: &McpClient,
         params: &ClickParams,
@@ -195,6 +197,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let find_result = mcp
             .call_tool("find_text", Some(find_args))
+            .await
             .map_err(|e| format!("find_text for '{}' failed: {}", target, e))?;
 
         Self::check_tool_error(&find_result, "find_text")?;

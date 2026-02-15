@@ -92,9 +92,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         let mcp = if self.mcp_command == "npx" {
-            McpClient::spawn_npx()
+            McpClient::spawn_npx().await
         } else {
-            McpClient::spawn(&self.mcp_command, &[])
+            McpClient::spawn(&self.mcp_command, &[]).await
         };
 
         let mcp = match mcp {

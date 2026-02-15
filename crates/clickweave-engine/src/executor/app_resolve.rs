@@ -36,9 +36,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "list_apps",
                 Some(serde_json::json!({"user_apps_only": true})),
             )
+            .await
             .map_err(|e| format!("Failed to list apps: {}", e))?;
         let windows_result = mcp
             .call_tool("list_windows", None)
+            .await
             .map_err(|e| format!("Failed to list windows: {}", e))?;
 
         let apps_text = Self::extract_result_text(&apps_result);

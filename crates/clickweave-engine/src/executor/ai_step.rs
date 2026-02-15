@@ -135,7 +135,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     }),
                 );
 
-                match mcp.call_tool(&tool_call.function.name, args) {
+                match mcp.call_tool(&tool_call.function.name, args).await {
                     Ok(result) => {
                         let prefix = format!("toolcall_{}", tool_call_count - 1);
                         let images = self.save_result_images(&result, &prefix, &mut node_run);
