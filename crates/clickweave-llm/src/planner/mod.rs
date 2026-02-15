@@ -367,6 +367,100 @@ pub(crate) fn build_plan_as_patch(
     }
 }
 
+/// Build a Workflow from graph-based planner output.
+///
+/// Assigns real UUIDs, remaps edges and EndLoop.loop_id references.
+pub(crate) fn build_workflow_from_graph(
+    output: &PlannerGraphOutput,
+    intent: &str,
+    mcp_tools: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> anyhow::Result<PlanResult> {
+    use std::collections::HashMap;
+
+    let mut warnings = Vec::new();
+    let mut id_map: HashMap<String, Uuid> = HashMap::new();
+    let mut nodes: Vec<Node> = Vec::new();
+    let positions = layout_nodes(output.nodes.len());
+
+    // First pass: create nodes and build ID map
+    for (i, plan_node) in output.nodes.iter().enumerate() {
+        if let Some(reason) =
+            step_rejected_reason(&plan_node.step, allow_ai_transforms, allow_agent_steps)
+        {
+            warnings.push(format!("Node '{}' removed: {}", plan_node.id, reason));
+            continue;
+        }
+        match step_to_node_type(&plan_node.step, mcp_tools) {
+            Ok((node_type, display_name)) => {
+                let node = Node::new(node_type, positions[i], display_name);
+                id_map.insert(plan_node.id.clone(), node.id);
+                nodes.push(node);
+            }
+            Err(e) => warnings.push(format!("Node '{}' skipped: {}", plan_node.id, e)),
+        }
+    }
+
+    if nodes.is_empty() {
+        return Err(anyhow::anyhow!("No valid nodes produced from graph output"));
+    }
+
+    // Second pass: remap EndLoop.loop_id from LLM IDs to real UUIDs
+    for node in &mut nodes {
+        if let NodeType::EndLoop(ref mut params) = node.node_type {
+            // Find the original PlanNode for this node to get the LLM loop_id
+            let plan_node = output
+                .nodes
+                .iter()
+                .find(|pn| id_map.get(&pn.id) == Some(&node.id));
+            if let Some(plan_node) = plan_node
+                && let PlanStep::EndLoop { loop_id, .. } = &plan_node.step
+            {
+                match id_map.get(loop_id) {
+                    Some(&real_id) => params.loop_id = real_id,
+                    None => warnings.push(format!(
+                        "EndLoop '{}' references unknown loop '{}'",
+                        plan_node.id, loop_id
+                    )),
+                }
+            }
+        }
+    }
+
+    // Build edges with remapped IDs
+    let mut edges = Vec::new();
+    for plan_edge in &output.edges {
+        let from = id_map.get(&plan_edge.from);
+        let to = id_map.get(&plan_edge.to);
+        match (from, to) {
+            (Some(&from_id), Some(&to_id)) => {
+                edges.push(Edge {
+                    from: from_id,
+                    to: to_id,
+                    output: plan_edge.output.clone(),
+                });
+            }
+            _ => warnings.push(format!(
+                "Edge {}->{} skipped: node not found",
+                plan_edge.from, plan_edge.to
+            )),
+        }
+    }
+
+    let workflow = Workflow {
+        id: Uuid::new_v4(),
+        name: parse::truncate_intent(intent),
+        nodes,
+        edges,
+    };
+
+    clickweave_core::validate_workflow(&workflow)
+        .map_err(|e| anyhow::anyhow!("Generated workflow failed validation: {}", e))?;
+
+    Ok(PlanResult { workflow, warnings })
+}
+
 // ── Re-exports ──────────────────────────────────────────────────
 
 pub use assistant::{AssistantResult, assistant_chat, assistant_chat_with_backend};

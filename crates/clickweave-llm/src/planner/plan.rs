@@ -66,9 +66,23 @@ fn parse_and_build_workflow(
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
 ) -> Result<PlanResult> {
-    let mut warnings = Vec::new();
-
     let json_str = extract_json(content);
+
+    // Try graph format first (has "nodes" key)
+    if let Ok(graph_output) = serde_json::from_str::<super::PlannerGraphOutput>(json_str)
+        && !graph_output.nodes.is_empty()
+    {
+        return super::build_workflow_from_graph(
+            &graph_output,
+            intent,
+            mcp_tools_openai,
+            allow_ai_transforms,
+            allow_agent_steps,
+        );
+    }
+
+    // Fall back to flat steps format
+    let mut warnings = Vec::new();
 
     let planner_output: PlannerOutput =
         serde_json::from_str(json_str).context("Failed to parse planner output as JSON")?;

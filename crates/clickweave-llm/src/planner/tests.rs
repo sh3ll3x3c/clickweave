@@ -915,6 +915,70 @@ fn test_parse_planner_graph_output() {
     );
 }
 
+#[tokio::test]
+async fn test_plan_workflow_with_loop() {
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus Calculator"},
+        {"id": "n2", "step_type": "Loop", "name": "Multiply Loop", "exit_condition": {
+            "left": {"type": "Variable", "name": "check_result.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }, "max_iterations": 20},
+        {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click Equals"},
+        {"id": "n4", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "1024"}, "name": "Check Result"},
+        {"id": "n5", "step_type": "EndLoop", "loop_id": "n2", "name": "End Multiply Loop"},
+        {"id": "n6", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Final Screenshot"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3", "output": {"type": "LoopBody"}},
+        {"from": "n2", "to": "n6", "output": {"type": "LoopDone"}},
+        {"from": "n3", "to": "n4"},
+        {"from": "n4", "to": "n5"},
+        {"from": "n5", "to": "n2"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(&mock, "Loop test", &sample_tools(), false, false)
+        .await
+        .unwrap();
+
+    let wf = &result.workflow;
+    assert_eq!(wf.nodes.len(), 6);
+    assert_eq!(wf.edges.len(), 6);
+
+    // Verify Loop node exists
+    let loop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::Loop(_)))
+        .unwrap();
+    // Verify EndLoop references the Loop node's real UUID
+    let end_loop = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+        .unwrap();
+    if let NodeType::EndLoop(p) = &end_loop.node_type {
+        assert_eq!(p.loop_id, loop_node.id);
+    } else {
+        panic!("Expected EndLoop");
+    }
+
+    // Verify LoopBody and LoopDone edges exist with correct outputs
+    let loop_edges: Vec<_> = wf.edges.iter().filter(|e| e.from == loop_node.id).collect();
+    assert_eq!(loop_edges.len(), 2);
+    assert!(
+        loop_edges
+            .iter()
+            .any(|e| e.output == Some(clickweave_core::EdgeOutput::LoopBody))
+    );
+    assert!(
+        loop_edges
+            .iter()
+            .any(|e| e.output == Some(clickweave_core::EdgeOutput::LoopDone))
+    );
+}
+
 // ── Control flow mapping tests ──────────────────────────────────
 
 #[test]
