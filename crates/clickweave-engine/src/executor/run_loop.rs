@@ -1,6 +1,6 @@
 use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
 use clickweave_core::runtime::RuntimeContext;
-use clickweave_core::{EdgeOutput, NodeType, RunStatus};
+use clickweave_core::{EdgeOutput, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpClient;
 use serde_json::Value;
@@ -79,6 +79,252 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
+    /// Evaluate a control flow node and return the next node to visit.
+    fn eval_control_flow(
+        &mut self,
+        node_id: Uuid,
+        node_name: &str,
+        node_type: &NodeType,
+    ) -> Option<Uuid> {
+        match node_type {
+            NodeType::If(params) => {
+                self.log(format!("Evaluating If: {}", node_name));
+                let result = self.context.evaluate_condition(&params.condition);
+                let resolved_left = self.context.resolve_value_ref(&params.condition.left);
+                let resolved_right = self.context.resolve_value_ref(&params.condition.right);
+                let output_taken = if result { "IfTrue" } else { "IfFalse" };
+
+                self.record_event(
+                    None,
+                    "branch_evaluated",
+                    serde_json::json!({
+                        "node_id": node_id.to_string(),
+                        "node_name": node_name,
+                        "condition": format!("{:?} {:?} {:?}",
+                            params.condition.left,
+                            params.condition.operator,
+                            params.condition.right),
+                        "resolved_left": resolved_left,
+                        "resolved_right": resolved_right,
+                        "result": result,
+                        "output_taken": output_taken,
+                    }),
+                );
+
+                if result {
+                    self.follow_edge(node_id, &EdgeOutput::IfTrue)
+                } else {
+                    self.follow_edge(node_id, &EdgeOutput::IfFalse)
+                }
+            }
+
+            NodeType::Switch(params) => {
+                self.log(format!("Evaluating Switch: {}", node_name));
+                let matched = params
+                    .cases
+                    .iter()
+                    .find(|c| self.context.evaluate_condition(&c.condition));
+
+                let (output_taken, next) = match matched {
+                    Some(case) => {
+                        let name = case.name.clone();
+                        (
+                            format!("SwitchCase({})", name),
+                            self.follow_edge(node_id, &EdgeOutput::SwitchCase { name }),
+                        )
+                    }
+                    None => (
+                        "SwitchDefault".to_string(),
+                        self.follow_edge(node_id, &EdgeOutput::SwitchDefault),
+                    ),
+                };
+
+                self.record_event(
+                    None,
+                    "branch_evaluated",
+                    serde_json::json!({
+                        "node_id": node_id.to_string(),
+                        "node_name": node_name,
+                        "output_taken": output_taken,
+                    }),
+                );
+
+                if next.is_none() {
+                    self.log(format!(
+                        "Warning: Switch '{}' had no matching case and no default edge — workflow path ends here",
+                        node_name
+                    ));
+                }
+
+                next
+            }
+
+            // Do-while semantics: exit condition is NOT checked on iteration 0.
+            // The loop body always runs at least once. This is intentional for UI
+            // automation where the common pattern is "try action, check result,
+            // retry if needed."
+            NodeType::Loop(params) => {
+                let iteration = *self.context.loop_counters.get(&node_id).unwrap_or(&0);
+
+                let should_exit = if iteration >= params.max_iterations {
+                    self.log(format!(
+                        "Loop '{}' hit max iterations ({}), exiting",
+                        node_name, params.max_iterations
+                    ));
+                    self.record_event(
+                        None,
+                        "loop_exited",
+                        serde_json::json!({
+                            "node_id": node_id.to_string(),
+                            "node_name": node_name,
+                            "reason": "max_iterations",
+                            "iterations_completed": iteration,
+                        }),
+                    );
+                    true
+                } else if iteration > 0 && self.context.evaluate_condition(&params.exit_condition) {
+                    self.log(format!(
+                        "Loop '{}' exit condition met after {} iterations",
+                        node_name, iteration
+                    ));
+                    self.record_event(
+                        None,
+                        "loop_exited",
+                        serde_json::json!({
+                            "node_id": node_id.to_string(),
+                            "node_name": node_name,
+                            "reason": "condition_met",
+                            "iterations_completed": iteration,
+                        }),
+                    );
+                    true
+                } else {
+                    false
+                };
+
+                if should_exit {
+                    self.context.loop_counters.remove(&node_id);
+                    self.follow_edge(node_id, &EdgeOutput::LoopDone)
+                } else {
+                    self.log(format!("Loop '{}' iteration {}", node_name, iteration));
+                    self.record_event(
+                        None,
+                        "loop_iteration",
+                        serde_json::json!({
+                            "node_id": node_id.to_string(),
+                            "node_name": node_name,
+                            "iteration": iteration,
+                        }),
+                    );
+                    *self.context.loop_counters.entry(node_id).or_insert(0) += 1;
+                    self.follow_edge(node_id, &EdgeOutput::LoopBody)
+                }
+            }
+
+            NodeType::EndLoop(params) => {
+                self.log(format!("EndLoop: jumping back to Loop {}", params.loop_id));
+                Some(params.loop_id)
+            }
+
+            _ => unreachable!("eval_control_flow called on non-control-flow node"),
+        }
+    }
+
+    /// Execute a regular node with retry logic. Returns the result value on success.
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_node_with_retries(
+        &self,
+        node_name: &str,
+        node_type: &NodeType,
+        tools: &[Value],
+        mcp: &McpClient,
+        timeout_ms: Option<u64>,
+        retries: u32,
+        command_rx: &mut Receiver<ExecutorCommand>,
+        node_run: &mut Option<NodeRun>,
+    ) -> Result<Value, String> {
+        let mut attempt = 0;
+
+        loop {
+            let result = match node_type {
+                NodeType::AiStep(params) => {
+                    self.execute_ai_step(
+                        params,
+                        tools,
+                        mcp,
+                        timeout_ms,
+                        command_rx,
+                        node_run.as_mut(),
+                    )
+                    .await
+                }
+                other => {
+                    self.execute_deterministic(other, mcp, node_run.as_mut())
+                        .await
+                }
+            };
+
+            match result {
+                Ok(value) => return Ok(value),
+                Err(e) if attempt < retries => {
+                    attempt += 1;
+                    self.log(format!(
+                        "Node {} failed (attempt {}/{}): {}. Retrying...",
+                        node_name,
+                        attempt,
+                        retries + 1,
+                        e
+                    ));
+                    self.evict_app_cache_for_node(node_type);
+                    self.record_event(
+                        node_run.as_ref(),
+                        "retry",
+                        serde_json::json!({
+                            "attempt": attempt,
+                            "error": e,
+                        }),
+                    );
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Store node outputs in RuntimeContext for condition evaluation.
+    fn extract_and_store_variables(
+        &mut self,
+        node_name: &str,
+        node_result: &Value,
+        node_type: &NodeType,
+        node_run: Option<&NodeRun>,
+    ) {
+        let sanitized = sanitize_node_name(node_name);
+        self.context.set_variable(
+            format!("{}.success", sanitized),
+            serde_json::Value::Bool(true),
+        );
+        self.record_event(
+            node_run,
+            "variable_set",
+            serde_json::json!({
+                "variable": format!("{}.success", sanitized),
+                "value": true,
+            }),
+        );
+        let extracted =
+            extract_result_variables(&mut self.context, &sanitized, node_result, node_type);
+        for (var_name, var_value) in &extracted {
+            self.record_event(
+                node_run,
+                "variable_set",
+                serde_json::json!({
+                    "variable": var_name,
+                    "value": var_value,
+                }),
+            );
+        }
+    }
+
     pub async fn run(&mut self, mut command_rx: Receiver<ExecutorCommand>) {
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
         self.log("Starting workflow execution");
@@ -117,7 +363,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        // Find the first entry point to start walking from
         let entries = self.entry_points();
         if entries.is_empty() {
             self.emit_error("No entry point found in workflow".to_string());
@@ -151,290 +396,88 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let node_name = node.name.clone();
             let node_type = node.node_type.clone();
 
-            match &node_type {
-                // --- Control flow: If ---
-                NodeType::If(params) => {
-                    self.log(format!("Evaluating If: {}", node_name));
-                    let result = self.context.evaluate_condition(&params.condition);
-                    let resolved_left = self.context.resolve_value_ref(&params.condition.left);
-                    let resolved_right = self.context.resolve_value_ref(&params.condition.right);
-                    let output_taken = if result { "IfTrue" } else { "IfFalse" };
+            // Control flow nodes: evaluate condition and follow edge
+            if matches!(
+                node_type,
+                NodeType::If(_) | NodeType::Switch(_) | NodeType::Loop(_) | NodeType::EndLoop(_)
+            ) {
+                current = self.eval_control_flow(node_id, &node_name, &node_type);
+                continue;
+            }
 
-                    self.record_event(
-                        None,
-                        "branch_evaluated",
-                        serde_json::json!({
-                            "node_id": node_id.to_string(),
-                            "node_name": node_name,
-                            "condition": format!("{:?} {:?} {:?}",
-                                params.condition.left,
-                                params.condition.operator,
-                                params.condition.right),
-                            "resolved_left": resolved_left,
-                            "resolved_right": resolved_right,
-                            "result": result,
-                            "output_taken": output_taken,
-                        }),
-                    );
+            // Regular execution nodes
+            self.emit(ExecutorEvent::NodeStarted(node_id));
+            self.log(format!(
+                "Executing node: {} ({})",
+                node_name,
+                node_type.display_name()
+            ));
 
-                    current = if result {
-                        self.follow_edge(node_id, &EdgeOutput::IfTrue)
-                    } else {
-                        self.follow_edge(node_id, &EdgeOutput::IfFalse)
-                    };
-                }
+            let timeout_ms = node.timeout_ms;
+            let settle_ms = node.settle_ms;
+            let retries = node.retries;
+            let trace_level = node.trace_level;
 
-                // --- Control flow: Switch ---
-                NodeType::Switch(params) => {
-                    self.log(format!("Evaluating Switch: {}", node_name));
-                    let matched = params
-                        .cases
-                        .iter()
-                        .find(|c| self.context.evaluate_condition(&c.condition));
+            let mut node_run = self
+                .storage
+                .create_run(node_id, &node_name, trace_level)
+                .ok();
 
-                    let (output_taken, next) = match matched {
-                        Some(case) => {
-                            let name = case.name.clone();
-                            (
-                                format!("SwitchCase({})", name),
-                                self.follow_edge(node_id, &EdgeOutput::SwitchCase { name }),
-                            )
-                        }
-                        None => (
-                            "SwitchDefault".to_string(),
-                            self.follow_edge(node_id, &EdgeOutput::SwitchDefault),
-                        ),
-                    };
+            if let Some(ref run) = node_run {
+                self.emit(ExecutorEvent::RunCreated(node_id, run.clone()));
+            }
+            self.record_event(
+                node_run.as_ref(),
+                "node_started",
+                serde_json::json!({
+                    "name": node_name,
+                    "type": node_type.display_name(),
+                }),
+            );
 
-                    self.record_event(
-                        None,
-                        "branch_evaluated",
-                        serde_json::json!({
-                            "node_id": node_id.to_string(),
-                            "node_name": node_name,
-                            "output_taken": output_taken,
-                        }),
-                    );
-
-                    if next.is_none() {
-                        self.log(format!(
-                            "Warning: Switch '{}' had no matching case and no default edge — workflow path ends here",
-                            node_name
-                        ));
-                    }
-
-                    current = next;
-                }
-
-                // --- Control flow: Loop ---
-                // Do-while semantics: exit condition is NOT checked on iteration 0.
-                // The loop body always runs at least once. This is intentional for UI
-                // automation where the common pattern is "try action, check result,
-                // retry if needed."
-                NodeType::Loop(params) => {
-                    let iteration = *self.context.loop_counters.get(&node_id).unwrap_or(&0);
-
-                    let should_exit = if iteration >= params.max_iterations {
-                        // Safety cap hit — this is a warning, likely something unexpected
-                        self.log(format!(
-                            "Loop '{}' hit max iterations ({}), exiting",
-                            node_name, params.max_iterations
-                        ));
-                        self.record_event(
-                            None,
-                            "loop_exited",
-                            serde_json::json!({
-                                "node_id": node_id.to_string(),
-                                "node_name": node_name,
-                                "reason": "max_iterations",
-                                "iterations_completed": iteration,
-                            }),
-                        );
-                        true
-                    } else if iteration > 0
-                        && self.context.evaluate_condition(&params.exit_condition)
-                    {
-                        // Exit condition met (checked from iteration 1 onward)
-                        self.log(format!(
-                            "Loop '{}' exit condition met after {} iterations",
-                            node_name, iteration
-                        ));
-                        self.record_event(
-                            None,
-                            "loop_exited",
-                            serde_json::json!({
-                                "node_id": node_id.to_string(),
-                                "node_name": node_name,
-                                "reason": "condition_met",
-                                "iterations_completed": iteration,
-                            }),
-                        );
-                        true
-                    } else {
-                        false
-                    };
-
-                    if should_exit {
-                        self.context.loop_counters.remove(&node_id);
-                        current = self.follow_edge(node_id, &EdgeOutput::LoopDone);
-                    } else {
-                        self.log(format!("Loop '{}' iteration {}", node_name, iteration));
-                        self.record_event(
-                            None,
-                            "loop_iteration",
-                            serde_json::json!({
-                                "node_id": node_id.to_string(),
-                                "node_name": node_name,
-                                "iteration": iteration,
-                            }),
-                        );
-                        *self.context.loop_counters.entry(node_id).or_insert(0) += 1;
-                        current = self.follow_edge(node_id, &EdgeOutput::LoopBody);
-                    }
-                }
-
-                // --- Control flow: EndLoop ---
-                // Jump back to the paired Loop node. The Loop will re-evaluate
-                // its exit condition on the next pass.
-                NodeType::EndLoop(params) => {
-                    self.log(format!("EndLoop: jumping back to Loop {}", params.loop_id));
-                    current = Some(params.loop_id);
-                }
-
-                // --- Regular execution nodes ---
-                _ => {
-                    self.emit(ExecutorEvent::NodeStarted(node_id));
-                    self.log(format!(
-                        "Executing node: {} ({})",
-                        node_name,
-                        node_type.display_name()
-                    ));
-
-                    let timeout_ms = node.timeout_ms;
-                    let settle_ms = node.settle_ms;
-                    let retries = node.retries;
-                    let trace_level = node.trace_level;
-
-                    let mut node_run = self
-                        .storage
-                        .create_run(node_id, &node_name, trace_level)
-                        .ok();
-
-                    if let Some(ref run) = node_run {
-                        self.emit(ExecutorEvent::RunCreated(node_id, run.clone()));
-                    }
-                    self.record_event(
-                        node_run.as_ref(),
-                        "node_started",
-                        serde_json::json!({
-                            "name": node_name,
-                            "type": node_type.display_name(),
-                        }),
-                    );
-
-                    let mut attempt = 0;
-                    #[allow(unused_assignments)]
-                    let mut node_result = serde_json::Value::Null;
-
-                    loop {
-                        let result = match &node_type {
-                            NodeType::AiStep(params) => {
-                                self.execute_ai_step(
-                                    params,
-                                    &tools,
-                                    &mcp,
-                                    timeout_ms,
-                                    &mut command_rx,
-                                    node_run.as_mut(),
-                                )
-                                .await
-                            }
-                            other => {
-                                self.execute_deterministic(other, &mcp, node_run.as_mut())
-                                    .await
-                            }
-                        };
-
-                        match result {
-                            Ok(value) => {
-                                node_result = value;
-                                break;
-                            }
-                            Err(e) if attempt < retries => {
-                                attempt += 1;
-                                self.log(format!(
-                                    "Node {} failed (attempt {}/{}): {}. Retrying...",
-                                    node_name,
-                                    attempt,
-                                    retries + 1,
-                                    e
-                                ));
-                                self.evict_app_cache_for_node(&node_type);
-                                self.record_event(
-                                    node_run.as_ref(),
-                                    "retry",
-                                    serde_json::json!({
-                                        "attempt": attempt,
-                                        "error": e,
-                                    }),
-                                );
-                            }
-                            Err(e) => {
-                                self.emit_error(format!("Node {} failed: {}", node_name, e));
-                                if let Some(ref mut run) = node_run {
-                                    self.finalize_run(run, RunStatus::Failed);
-                                }
-                                self.emit(ExecutorEvent::NodeFailed(node_id, e));
-                                self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
-                                return;
-                            }
-                        }
-                    }
-
-                    // Store node outputs in RuntimeContext for condition evaluation.
-                    let sanitized = sanitize_node_name(&node_name);
-                    self.context.set_variable(
-                        format!("{}.success", sanitized),
-                        serde_json::Value::Bool(true),
-                    );
-                    self.record_event(
-                        node_run.as_ref(),
-                        "variable_set",
-                        serde_json::json!({
-                            "variable": format!("{}.success", sanitized),
-                            "value": true,
-                        }),
-                    );
-                    let extracted = extract_result_variables(
-                        &mut self.context,
-                        &sanitized,
+            match self
+                .execute_node_with_retries(
+                    &node_name,
+                    &node_type,
+                    &tools,
+                    &mcp,
+                    timeout_ms,
+                    retries,
+                    &mut command_rx,
+                    &mut node_run,
+                )
+                .await
+            {
+                Ok(node_result) => {
+                    self.extract_and_store_variables(
+                        &node_name,
                         &node_result,
                         &node_type,
+                        node_run.as_ref(),
                     );
-                    for (var_name, var_value) in &extracted {
-                        self.record_event(
-                            node_run.as_ref(),
-                            "variable_set",
-                            serde_json::json!({
-                                "variable": var_name,
-                                "value": var_value,
-                            }),
-                        );
-                    }
-
-                    if let Some(ms) = settle_ms.filter(|&ms| ms > 0) {
-                        self.log(format!("Settling for {}ms", ms));
-                        tokio::time::sleep(Duration::from_millis(ms)).await;
-                    }
-
+                }
+                Err(e) => {
+                    self.emit_error(format!("Node {} failed: {}", node_name, e));
                     if let Some(ref mut run) = node_run {
-                        self.finalize_run(run, RunStatus::Ok);
+                        self.finalize_run(run, RunStatus::Failed);
                     }
-                    self.emit(ExecutorEvent::NodeCompleted(node_id));
-
-                    current = self.follow_single_edge(node_id);
+                    self.emit(ExecutorEvent::NodeFailed(node_id, e));
+                    self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
+                    return;
                 }
             }
+
+            if let Some(ms) = settle_ms.filter(|&ms| ms > 0) {
+                self.log(format!("Settling for {}ms", ms));
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+
+            if let Some(ref mut run) = node_run {
+                self.finalize_run(run, RunStatus::Ok);
+            }
+            self.emit(ExecutorEvent::NodeCompleted(node_id));
+
+            current = self.follow_single_edge(node_id);
         }
 
         self.log("Workflow execution completed");
