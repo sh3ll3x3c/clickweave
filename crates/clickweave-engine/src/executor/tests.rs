@@ -1,4 +1,5 @@
 use super::*;
+use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{
     FocusMethod, FocusWindowParams, NodeType, ScreenshotMode, TakeScreenshotParams, Workflow,
@@ -78,6 +79,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             storage,
             app_cache: RwLock::new(HashMap::new()),
             focused_app: RwLock::new(None),
+            context: RuntimeContext::new(),
         }
     }
 }

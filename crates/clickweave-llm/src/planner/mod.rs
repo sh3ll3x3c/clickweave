@@ -249,12 +249,14 @@ pub(crate) fn build_patch_from_output(
             added_edges.push(Edge {
                 from: last.id,
                 to: added_nodes[0].id,
+                output: None,
             });
         }
         for pair in added_nodes.windows(2) {
             added_edges.push(Edge {
                 from: pair[0].id,
                 to: pair[1].id,
+                output: None,
             });
         }
     }
@@ -310,6 +312,7 @@ pub(crate) fn build_plan_as_patch(
         .map(|pair| Edge {
             from: pair[0].id,
             to: pair[1].id,
+            output: None,
         })
         .collect();
 

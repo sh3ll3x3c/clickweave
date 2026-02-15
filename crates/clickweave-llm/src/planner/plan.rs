@@ -118,6 +118,7 @@ fn parse_and_build_workflow(
         .map(|pair| Edge {
             from: pair[0].id,
             to: pair[1].id,
+            output: None,
         })
         .collect();
 

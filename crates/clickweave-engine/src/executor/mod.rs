@@ -7,6 +7,7 @@ mod trace;
 #[cfg(test)]
 mod tests;
 
+use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{NodeRun, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
@@ -56,6 +57,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     storage: RunStorage,
     app_cache: RwLock<HashMap<String, ResolvedApp>>,
     focused_app: RwLock<Option<String>>,
+    context: RuntimeContext,
 }
 
 impl WorkflowExecutor {
@@ -78,6 +80,7 @@ impl WorkflowExecutor {
             storage,
             app_cache: RwLock::new(HashMap::new()),
             focused_app: RwLock::new(None),
+            context: RuntimeContext::new(),
         }
     }
 }
