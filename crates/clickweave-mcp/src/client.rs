@@ -11,6 +11,9 @@ pub struct McpClient {
     process: Child,
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<BufReader<ChildStdout>>,
+    /// Serializes the full request-write → response-read exchange so concurrent
+    /// callers cannot interleave and misattribute responses.
+    io_lock: Mutex<()>,
     request_id: AtomicU64,
     tools: Vec<Tool>,
 }
@@ -35,6 +38,7 @@ impl McpClient {
             process,
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
+            io_lock: Mutex::new(()),
             request_id: AtomicU64::new(1),
             tools: Vec::new(),
         };
@@ -73,6 +77,8 @@ impl McpClient {
     }
 
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<JsonRpcResponse> {
+        let _guard = self.io_lock.lock().await;
+
         let id = self.next_id();
         let request = JsonRpcRequest::new(id, method, params);
         let json = serde_json::to_string(&request)?;

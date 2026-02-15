@@ -1,8 +1,9 @@
 import type { StateCreator } from "zustand";
-import type { Workflow, AssistantChatRequest, WorkflowPatch, ConversationSession, ChatEntry, PatchSummary } from "../../bindings";
+import type { Workflow, AssistantChatRequest, WorkflowPatch, ConversationSession, ChatEntry, Edge, PatchSummary } from "../../bindings";
 import { commands } from "../../bindings";
 import { makeEmptyConversation } from "../state";
 import { toEndpoint } from "../settings";
+import { edgeOutputToHandle } from "../../utils/edgeHandles";
 import type { StoreState } from "./types";
 
 export interface AssistantSlice {
@@ -127,8 +128,10 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   applyPendingPatch: async () => {
     const { pendingPatch, workflow, pushLog } = get();
     if (!pendingPatch) return;
+    const edgeKey = (e: Edge) =>
+      `${e.from}-${e.to}-${edgeOutputToHandle(e.output) ?? ""}`;
     const removedEdgeKeys = new Set(
-      pendingPatch.removed_edges.map((e) => `${e.from}-${e.to}`),
+      pendingPatch.removed_edges.map(edgeKey),
     );
     const nodes = [
       ...workflow.nodes
@@ -137,7 +140,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       ...pendingPatch.added_nodes,
     ];
     const edges = [
-      ...workflow.edges.filter((e) => !removedEdgeKeys.has(`${e.from}-${e.to}`)),
+      ...workflow.edges.filter((e) => !removedEdgeKeys.has(edgeKey(e))),
       ...pendingPatch.added_edges,
     ];
     const patched: Workflow = { ...workflow, nodes, edges };
