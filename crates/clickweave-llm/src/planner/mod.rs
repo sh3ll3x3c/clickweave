@@ -268,12 +268,11 @@ pub(crate) fn build_patch_from_output(
                     .add_nodes
                     .iter()
                     .find(|pn| graph_id_map.get(&pn.id) == Some(&node.id));
-                if let Some(plan_node) = plan_node {
-                    if let PlanStep::EndLoop { loop_id, .. } = &plan_node.step {
-                        if let Some(&real_id) = graph_id_map.get(loop_id) {
-                            params.loop_id = real_id;
-                        }
-                    }
+                if let Some(plan_node) = plan_node
+                    && let PlanStep::EndLoop { loop_id, .. } = &plan_node.step
+                    && let Some(&real_id) = graph_id_map.get(loop_id)
+                {
+                    params.loop_id = real_id;
                 }
             }
         }
