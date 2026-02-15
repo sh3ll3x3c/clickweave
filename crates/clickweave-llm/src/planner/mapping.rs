@@ -1,6 +1,6 @@
 use super::PlanStep;
 use anyhow::{Result, anyhow};
-use clickweave_core::{AiStepParams, NodeType, tool_mapping};
+use clickweave_core::{AiStepParams, EndLoopParams, IfParams, LoopParams, NodeType, tool_mapping};
 use serde_json::Value;
 
 /// Map a PlanStep to a NodeType.
@@ -49,8 +49,38 @@ pub(crate) fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(Nod
                 display,
             ))
         }
-        PlanStep::If { .. } | PlanStep::Loop { .. } | PlanStep::EndLoop { .. } => Err(anyhow!(
-            "control flow steps must be built via graph output, not step_to_node_type"
-        )),
+        PlanStep::If { name, condition } => {
+            let display = name.clone().unwrap_or_else(|| "If".to_string());
+            Ok((
+                NodeType::If(IfParams {
+                    condition: condition.clone(),
+                }),
+                display,
+            ))
+        }
+        PlanStep::Loop {
+            name,
+            exit_condition,
+            max_iterations,
+        } => {
+            let display = name.clone().unwrap_or_else(|| "Loop".to_string());
+            Ok((
+                NodeType::Loop(LoopParams {
+                    exit_condition: exit_condition.clone(),
+                    max_iterations: max_iterations.unwrap_or(100),
+                }),
+                display,
+            ))
+        }
+        PlanStep::EndLoop { name, .. } => {
+            let display = name.clone().unwrap_or_else(|| "End Loop".to_string());
+            // Placeholder UUID — will be remapped by build_workflow_from_graph().
+            Ok((
+                NodeType::EndLoop(EndLoopParams {
+                    loop_id: uuid::Uuid::nil(),
+                }),
+                display,
+            ))
+        }
     }
 }

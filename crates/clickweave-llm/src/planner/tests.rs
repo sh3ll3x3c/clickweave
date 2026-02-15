@@ -914,3 +914,60 @@ fn test_parse_planner_graph_output() {
         Some(clickweave_core::EdgeOutput::LoopBody)
     );
 }
+
+// ── Control flow mapping tests ──────────────────────────────────
+
+#[test]
+fn test_step_to_node_type_loop() {
+    use clickweave_core::{Condition, LiteralValue, Operator, ValueRef};
+    let step = PlanStep::Loop {
+        name: Some("Repeat".to_string()),
+        exit_condition: Condition {
+            left: ValueRef::Variable {
+                name: "check.found".to_string(),
+            },
+            operator: Operator::Equals,
+            right: ValueRef::Literal {
+                value: LiteralValue::Bool { value: true },
+            },
+        },
+        max_iterations: Some(20),
+    };
+    let (nt, name) = step_to_node_type(&step, &[]).unwrap();
+    assert_eq!(name, "Repeat");
+    assert!(matches!(nt, NodeType::Loop(_)));
+    if let NodeType::Loop(p) = nt {
+        assert_eq!(p.max_iterations, 20);
+    }
+}
+
+#[test]
+fn test_step_to_node_type_end_loop() {
+    let step = PlanStep::EndLoop {
+        name: Some("End Loop".to_string()),
+        loop_id: "n2".to_string(),
+    };
+    let (nt, name) = step_to_node_type(&step, &[]).unwrap();
+    assert_eq!(name, "End Loop");
+    assert!(matches!(nt, NodeType::EndLoop(_)));
+}
+
+#[test]
+fn test_step_to_node_type_if() {
+    use clickweave_core::{Condition, LiteralValue, Operator, ValueRef};
+    let step = PlanStep::If {
+        name: Some("Check Result".to_string()),
+        condition: Condition {
+            left: ValueRef::Variable {
+                name: "find_text.found".to_string(),
+            },
+            operator: Operator::Equals,
+            right: ValueRef::Literal {
+                value: LiteralValue::Bool { value: true },
+            },
+        },
+    };
+    let (nt, name) = step_to_node_type(&step, &[]).unwrap();
+    assert_eq!(name, "Check Result");
+    assert!(matches!(nt, NodeType::If(_)));
+}
