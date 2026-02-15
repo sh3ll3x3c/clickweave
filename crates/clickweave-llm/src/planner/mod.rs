@@ -12,6 +12,8 @@ pub mod summarize;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
+
 use clickweave_core::{Edge, EdgeOutput, Node, NodeType, Position, Workflow, tool_mapping};
 use mapping::step_to_node_type;
 use parse::{id_str_short, layout_nodes, step_rejected_reason};
@@ -228,77 +230,31 @@ pub(crate) fn build_patch_from_output(
 
     // Graph-based additions (add_nodes + add_edges)
     if !output.add_nodes.is_empty() {
-        use std::collections::HashMap;
-
-        let mut graph_id_map: HashMap<String, Uuid> = HashMap::new();
-
+        let mut id_map: HashMap<String, Uuid> = HashMap::new();
         // Map existing workflow node UUIDs so edges can reference them
         for node in &workflow.nodes {
-            graph_id_map.insert(node.id.to_string(), node.id);
+            id_map.insert(node.id.to_string(), node.id);
         }
 
-        for (i, plan_node) in output.add_nodes.iter().enumerate() {
-            if let Some(reason) =
-                step_rejected_reason(&plan_node.step, allow_ai_transforms, allow_agent_steps)
-            {
-                warnings.push(format!("Added node '{}' removed: {}", plan_node.id, reason));
-                continue;
-            }
-            match step_to_node_type(&plan_node.step, mcp_tools) {
-                Ok((node_type, display_name)) => {
-                    let node = Node::new(
-                        node_type,
-                        Position {
-                            x: 300.0,
-                            y: last_y + 120.0 + (i as f32) * 120.0,
-                        },
-                        display_name,
-                    );
-                    graph_id_map.insert(plan_node.id.clone(), node.id);
-                    added_nodes.push(node);
-                }
-                Err(e) => warnings.push(format!("Added node '{}' skipped: {}", plan_node.id, e)),
-            }
-        }
+        let positions: Vec<Position> = (0..output.add_nodes.len())
+            .map(|i| Position {
+                x: 300.0,
+                y: last_y + 120.0 + (i as f32) * 120.0,
+            })
+            .collect();
 
-        // Remap EndLoop.loop_id
-        for node in &mut added_nodes {
-            if let NodeType::EndLoop(ref mut params) = node.node_type {
-                let plan_node = output
-                    .add_nodes
-                    .iter()
-                    .find(|pn| graph_id_map.get(&pn.id) == Some(&node.id));
-                if let Some(plan_node) = plan_node
-                    && let PlanStep::EndLoop { loop_id, .. } = &plan_node.step
-                    && let Some(&real_id) = graph_id_map.get(loop_id)
-                {
-                    params.loop_id = real_id;
-                }
-            }
-        }
-
-        // Build edges from add_edges with remapped IDs
-        for plan_edge in &output.add_edges {
-            // "DONE" is a sentinel meaning "no target" (edge goes nowhere)
-            if plan_edge.to == "DONE" {
-                continue;
-            }
-            let from = graph_id_map.get(&plan_edge.from);
-            let to = graph_id_map.get(&plan_edge.to);
-            match (from, to) {
-                (Some(&from_id), Some(&to_id)) => {
-                    added_edges.push(Edge {
-                        from: from_id,
-                        to: to_id,
-                        output: plan_edge.output.clone(),
-                    });
-                }
-                _ => warnings.push(format!(
-                    "Edge {}->{} skipped: node not found",
-                    plan_edge.from, plan_edge.to
-                )),
-            }
-        }
+        let (new_nodes, new_edges, graph_warnings) = build_nodes_and_edges_from_graph(
+            &output.add_nodes,
+            &output.add_edges,
+            &positions,
+            &mut id_map,
+            mcp_tools,
+            allow_ai_transforms,
+            allow_agent_steps,
+        );
+        added_nodes.extend(new_nodes);
+        added_edges.extend(new_edges);
+        warnings.extend(graph_warnings);
     }
 
     // Removed nodes
@@ -447,25 +403,24 @@ pub(crate) fn build_plan_as_patch(
     }
 }
 
-/// Build a Workflow from graph-based planner output.
+/// Shared helper: convert graph-based plan nodes + edges into real Nodes + Edges.
 ///
-/// Assigns real UUIDs, remaps edges and EndLoop.loop_id references.
-pub(crate) fn build_workflow_from_graph(
-    output: &PlannerGraphOutput,
-    intent: &str,
+/// Creates nodes from `plan_nodes`, populates `id_map` (LLM ID → real UUID),
+/// remaps EndLoop.loop_id references, and builds edges from `plan_edges`.
+fn build_nodes_and_edges_from_graph(
+    plan_nodes: &[PlanNode],
+    plan_edges: &[PlanEdge],
+    positions: &[Position],
+    id_map: &mut HashMap<String, Uuid>,
     mcp_tools: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
-) -> anyhow::Result<PlanResult> {
-    use std::collections::HashMap;
-
+) -> (Vec<Node>, Vec<Edge>, Vec<String>) {
     let mut warnings = Vec::new();
-    let mut id_map: HashMap<String, Uuid> = HashMap::new();
-    let mut nodes: Vec<Node> = Vec::new();
-    let positions = layout_nodes(output.nodes.len());
+    let mut nodes = Vec::new();
 
-    // First pass: create nodes and build ID map
-    for (i, plan_node) in output.nodes.iter().enumerate() {
+    // Create nodes and build ID map
+    for (i, plan_node) in plan_nodes.iter().enumerate() {
         if let Some(reason) =
             step_rejected_reason(&plan_node.step, allow_ai_transforms, allow_agent_steps)
         {
@@ -482,16 +437,10 @@ pub(crate) fn build_workflow_from_graph(
         }
     }
 
-    if nodes.is_empty() {
-        return Err(anyhow::anyhow!("No valid nodes produced from graph output"));
-    }
-
-    // Second pass: remap EndLoop.loop_id from LLM IDs to real UUIDs
+    // Remap EndLoop.loop_id from LLM IDs to real UUIDs
     for node in &mut nodes {
         if let NodeType::EndLoop(ref mut params) = node.node_type {
-            // Find the original PlanNode for this node to get the LLM loop_id
-            let plan_node = output
-                .nodes
+            let plan_node = plan_nodes
                 .iter()
                 .find(|pn| id_map.get(&pn.id) == Some(&node.id));
             if let Some(plan_node) = plan_node
@@ -510,7 +459,10 @@ pub(crate) fn build_workflow_from_graph(
 
     // Build edges with remapped IDs
     let mut edges = Vec::new();
-    for plan_edge in &output.edges {
+    for plan_edge in plan_edges {
+        if plan_edge.to == "DONE" {
+            continue;
+        }
         let from = id_map.get(&plan_edge.from);
         let to = id_map.get(&plan_edge.to);
         match (from, to) {
@@ -526,6 +478,34 @@ pub(crate) fn build_workflow_from_graph(
                 plan_edge.from, plan_edge.to
             )),
         }
+    }
+
+    (nodes, edges, warnings)
+}
+
+/// Build a Workflow from graph-based planner output.
+pub(crate) fn build_workflow_from_graph(
+    output: &PlannerGraphOutput,
+    intent: &str,
+    mcp_tools: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> anyhow::Result<PlanResult> {
+    let mut id_map = HashMap::new();
+    let positions = layout_nodes(output.nodes.len());
+
+    let (nodes, edges, warnings) = build_nodes_and_edges_from_graph(
+        &output.nodes,
+        &output.edges,
+        &positions,
+        &mut id_map,
+        mcp_tools,
+        allow_ai_transforms,
+        allow_agent_steps,
+    );
+
+    if nodes.is_empty() {
+        return Err(anyhow::anyhow!("No valid nodes produced from graph output"));
     }
 
     let workflow = Workflow {
