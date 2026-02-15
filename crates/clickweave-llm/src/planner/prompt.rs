@@ -164,6 +164,7 @@ pub(crate) fn patcher_system_prompt(
         step_types.push_str("AiStep, ");
     }
     step_types.push_str("see the tool schemas below).");
+    step_types.push_str(" For control flow nodes (Loop, EndLoop, If), use \"add_nodes\" + \"add_edges\" instead of \"add\".");
 
     format!(
         r#"You are a workflow editor for UI automation. Given an existing workflow and a user's modification request, produce a JSON patch.
@@ -182,6 +183,8 @@ Available MCP tools:
 Output ONLY a JSON object with these optional fields:
 {{
   "add": [<steps to add, same format as planning>],
+  "add_nodes": [<nodes with "id" fields, for control flow>],
+  "add_edges": [{{"from": "<id>", "to": "<id>", "output": {{"type": "LoopBody"}}}}],
   "remove_node_ids": ["<id1>", "<id2>"],
   "update": [{{"node_id": "<id>", "name": "new name", "node_type": <step as Tool/AiStep/AiTransform>}}]
 }}
@@ -192,6 +195,7 @@ Rules:
 - For "remove_node_ids", use the exact node IDs from the current workflow.
 - For "update", include "node_type" whenever tool arguments need to change (e.g. different search text, click target, key). Changing only the "name" does NOT change what the node actually does at runtime.
 - New nodes from "add" will be appended after the last existing node.
+- For "add_nodes" + "add_edges", use short IDs (e.g. "n1", "n2") for new nodes. You can reference existing workflow node UUIDs in "add_edges" to connect new nodes to existing ones.
 - Keep the workflow functional — don't remove nodes that break the flow without replacement."#,
     )
 }

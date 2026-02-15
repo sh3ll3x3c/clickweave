@@ -114,6 +114,10 @@ pub(crate) struct PatcherOutput {
     #[serde(default)]
     pub add: Vec<PlanStep>,
     #[serde(default)]
+    pub add_nodes: Vec<PlanNode>,
+    #[serde(default)]
+    pub add_edges: Vec<PlanEdge>,
+    #[serde(default)]
     pub remove_node_ids: Vec<String>,
     #[serde(default)]
     pub update: Vec<PatchNodeUpdate>,
@@ -195,6 +199,7 @@ pub(crate) fn build_patch_from_output(
 
     // Added nodes
     let mut added_nodes = Vec::new();
+    let mut added_edges = Vec::new();
     let last_y = workflow
         .nodes
         .iter()
@@ -218,6 +223,82 @@ pub(crate) fn build_patch_from_output(
                 ));
             }
             Err(e) => warnings.push(format!("Added step {} skipped: {}", i, e)),
+        }
+    }
+
+    // Graph-based additions (add_nodes + add_edges)
+    if !output.add_nodes.is_empty() {
+        use std::collections::HashMap;
+
+        let mut graph_id_map: HashMap<String, Uuid> = HashMap::new();
+
+        // Map existing workflow node UUIDs so edges can reference them
+        for node in &workflow.nodes {
+            graph_id_map.insert(node.id.to_string(), node.id);
+        }
+
+        for (i, plan_node) in output.add_nodes.iter().enumerate() {
+            if let Some(reason) =
+                step_rejected_reason(&plan_node.step, allow_ai_transforms, allow_agent_steps)
+            {
+                warnings.push(format!("Added node '{}' removed: {}", plan_node.id, reason));
+                continue;
+            }
+            match step_to_node_type(&plan_node.step, mcp_tools) {
+                Ok((node_type, display_name)) => {
+                    let node = Node::new(
+                        node_type,
+                        Position {
+                            x: 300.0,
+                            y: last_y + 120.0 + (i as f32) * 120.0,
+                        },
+                        display_name,
+                    );
+                    graph_id_map.insert(plan_node.id.clone(), node.id);
+                    added_nodes.push(node);
+                }
+                Err(e) => warnings.push(format!("Added node '{}' skipped: {}", plan_node.id, e)),
+            }
+        }
+
+        // Remap EndLoop.loop_id
+        for node in &mut added_nodes {
+            if let NodeType::EndLoop(ref mut params) = node.node_type {
+                let plan_node = output
+                    .add_nodes
+                    .iter()
+                    .find(|pn| graph_id_map.get(&pn.id) == Some(&node.id));
+                if let Some(plan_node) = plan_node {
+                    if let PlanStep::EndLoop { loop_id, .. } = &plan_node.step {
+                        if let Some(&real_id) = graph_id_map.get(loop_id) {
+                            params.loop_id = real_id;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build edges from add_edges with remapped IDs
+        for plan_edge in &output.add_edges {
+            // "DONE" is a sentinel meaning "no target" (edge goes nowhere)
+            if plan_edge.to == "DONE" {
+                continue;
+            }
+            let from = graph_id_map.get(&plan_edge.from);
+            let to = graph_id_map.get(&plan_edge.to);
+            match (from, to) {
+                (Some(&from_id), Some(&to_id)) => {
+                    added_edges.push(Edge {
+                        from: from_id,
+                        to: to_id,
+                        output: plan_edge.output.clone(),
+                    });
+                }
+                _ => warnings.push(format!(
+                    "Edge {}->{} skipped: node not found",
+                    plan_edge.from, plan_edge.to
+                )),
+            }
         }
     }
 
@@ -277,10 +358,10 @@ pub(crate) fn build_patch_from_output(
     }
 
     // Edges
-    let mut added_edges = Vec::new();
     let mut removed_edges = Vec::new();
 
-    if !added_nodes.is_empty() {
+    // Linear edges for flat 'add' (only when graph-based add_nodes was NOT used)
+    if output.add_nodes.is_empty() && !added_nodes.is_empty() {
         let last_existing = workflow
             .nodes
             .iter()

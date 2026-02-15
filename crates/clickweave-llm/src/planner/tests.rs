@@ -1010,6 +1010,60 @@ async fn test_plan_workflow_with_loop() {
     );
 }
 
+#[tokio::test]
+async fn test_patch_adds_loop() {
+    let (_id, workflow) = single_node_workflow(
+        NodeType::FocusWindow(FocusWindowParams {
+            method: FocusMethod::AppName,
+            value: Some("Calculator".into()),
+            bring_to_front: true,
+        }),
+        "Focus Calculator",
+    );
+
+    let response = format!(
+        r#"{{
+        "add_nodes": [
+            {{"id": "n1", "step_type": "Loop", "name": "Repeat", "exit_condition": {{
+                "left": {{"type": "Variable", "name": "check.found"}},
+                "operator": "Equals",
+                "right": {{"type": "Literal", "value": {{"type": "Bool", "value": true}}}}
+            }}, "max_iterations": 10}},
+            {{"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {{"target": "="}}, "name": "Click"}},
+            {{"id": "n3", "step_type": "EndLoop", "loop_id": "n1", "name": "End Loop"}}
+        ],
+        "add_edges": [
+            {{"from": "{}", "to": "n1"}},
+            {{"from": "n1", "to": "n2", "output": {{"type": "LoopBody"}}}},
+            {{"from": "n2", "to": "n3"}},
+            {{"from": "n3", "to": "n1"}}
+        ]
+    }}"#,
+        workflow.nodes[0].id
+    );
+
+    let mock = MockBackend::single(&response);
+    let result = patch_with_mock(&mock, &workflow, "Add a loop")
+        .await
+        .unwrap();
+
+    assert_eq!(result.added_nodes.len(), 3);
+    assert!(
+        result
+            .added_nodes
+            .iter()
+            .any(|n| matches!(n.node_type, NodeType::Loop(_)))
+    );
+    assert!(
+        result
+            .added_nodes
+            .iter()
+            .any(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+    );
+    // Verify edges were created (from existing node to new loop + internal edges)
+    assert!(result.added_edges.len() >= 3);
+}
+
 // ── Control flow mapping tests ──────────────────────────────────
 
 #[test]
