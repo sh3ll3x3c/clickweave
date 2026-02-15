@@ -1155,3 +1155,33 @@ fn test_control_flow_steps_never_rejected() {
     assert!(step_rejected_reason(&end_loop_step, false, false).is_none());
     assert!(step_rejected_reason(&if_step, false, false).is_none());
 }
+
+// ── Assistant prompt tests ──────────────────────────────────────
+
+#[test]
+fn test_assistant_prompt_empty_workflow_includes_control_flow() {
+    use super::prompt::assistant_system_prompt;
+
+    let wf = Workflow::new("Test");
+    let prompt = assistant_system_prompt(&wf, &[], false, false, None);
+    assert!(
+        prompt.contains("Loop"),
+        "Assistant prompt should mention Loop"
+    );
+    assert!(
+        prompt.contains("EndLoop"),
+        "Assistant prompt should mention EndLoop"
+    );
+}
+
+#[test]
+fn test_assistant_prompt_existing_workflow_includes_control_flow() {
+    use super::prompt::assistant_system_prompt;
+
+    let (_, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
+    let prompt = assistant_system_prompt(&workflow, &[], false, false, None);
+    assert!(
+        prompt.contains("add_nodes"),
+        "Patcher assistant prompt should mention add_nodes for control flow"
+    );
+}
