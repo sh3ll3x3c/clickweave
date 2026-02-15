@@ -843,3 +843,74 @@ async fn test_assistant_chat_conversational_response() {
     assert!(result.patch.is_none());
     assert!(result.message.contains("screenshot"));
 }
+
+// ── Control flow PlanStep parsing tests ─────────────────────────
+
+#[test]
+fn test_parse_loop_plan_step() {
+    let json = r#"{
+        "step_type": "Loop",
+        "name": "Multiply Loop",
+        "exit_condition": {
+            "left": {"type": "Variable", "name": "check_result.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        },
+        "max_iterations": 20
+    }"#;
+    let step: PlanStep = serde_json::from_str(json).unwrap();
+    assert!(matches!(step, PlanStep::Loop { .. }));
+}
+
+#[test]
+fn test_parse_end_loop_plan_step() {
+    let json = r#"{"step_type": "EndLoop", "loop_id": "n2", "name": "End Loop"}"#;
+    let step: PlanStep = serde_json::from_str(json).unwrap();
+    assert!(matches!(step, PlanStep::EndLoop { .. }));
+}
+
+#[test]
+fn test_parse_if_plan_step() {
+    let json = r#"{
+        "step_type": "If",
+        "name": "Check Found",
+        "condition": {
+            "left": {"type": "Variable", "name": "find_text.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }
+    }"#;
+    let step: PlanStep = serde_json::from_str(json).unwrap();
+    assert!(matches!(step, PlanStep::If { .. }));
+}
+
+#[test]
+fn test_parse_planner_graph_output() {
+    let json = r#"{
+        "nodes": [
+            {"id": "n1", "step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Launch Calculator"},
+            {"id": "n2", "step_type": "Loop", "name": "Multiply", "exit_condition": {
+                "left": {"type": "Variable", "name": "check.found"},
+                "operator": "Equals",
+                "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+            }, "max_iterations": 20},
+            {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click Equals"},
+            {"id": "n4", "step_type": "EndLoop", "loop_id": "n2", "name": "End Loop"}
+        ],
+        "edges": [
+            {"from": "n1", "to": "n2"},
+            {"from": "n2", "to": "n3", "output": {"type": "LoopBody"}},
+            {"from": "n2", "to": "n1", "output": {"type": "LoopDone"}},
+            {"from": "n3", "to": "n4"},
+            {"from": "n4", "to": "n2"}
+        ]
+    }"#;
+    let output: PlannerGraphOutput = serde_json::from_str(json).unwrap();
+    assert_eq!(output.nodes.len(), 4);
+    assert_eq!(output.edges.len(), 5);
+    assert!(matches!(output.nodes[1].step, PlanStep::Loop { .. }));
+    assert_eq!(
+        output.edges[1].output,
+        Some(clickweave_core::EdgeOutput::LoopBody)
+    );
+}

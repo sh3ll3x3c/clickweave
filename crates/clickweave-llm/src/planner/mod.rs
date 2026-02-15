@@ -12,7 +12,7 @@ pub mod summarize;
 #[cfg(test)]
 mod tests;
 
-use clickweave_core::{Edge, Node, NodeType, Position, Workflow, tool_mapping};
+use clickweave_core::{Edge, EdgeOutput, Node, NodeType, Position, Workflow, tool_mapping};
 use mapping::step_to_node_type;
 use parse::{id_str_short, layout_nodes, step_rejected_reason};
 use serde::{Deserialize, Serialize};
@@ -50,12 +50,53 @@ pub enum PlanStep {
         #[serde(default)]
         name: Option<String>,
     },
+    If {
+        #[serde(default)]
+        name: Option<String>,
+        condition: clickweave_core::Condition,
+    },
+    Loop {
+        #[serde(default)]
+        name: Option<String>,
+        exit_condition: clickweave_core::Condition,
+        #[serde(default)]
+        max_iterations: Option<u32>,
+    },
+    EndLoop {
+        #[serde(default)]
+        name: Option<String>,
+        loop_id: String,
+    },
 }
 
 /// The raw planner LLM output.
 #[derive(Debug, Deserialize)]
 pub struct PlannerOutput {
     pub steps: Vec<PlanStep>,
+}
+
+/// A node in the graph-based planner output.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlanNode {
+    pub id: String,
+    #[serde(flatten)]
+    pub step: PlanStep,
+}
+
+/// An edge in the graph-based planner output.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlanEdge {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub output: Option<EdgeOutput>,
+}
+
+/// Graph-based planner output (for control flow workflows).
+#[derive(Debug, Deserialize)]
+pub struct PlannerGraphOutput {
+    pub nodes: Vec<PlanNode>,
+    pub edges: Vec<PlanEdge>,
 }
 
 /// Result of planning a workflow.

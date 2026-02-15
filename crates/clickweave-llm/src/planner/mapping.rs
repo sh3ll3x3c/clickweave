@@ -49,5 +49,8 @@ pub(crate) fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(Nod
                 display,
             ))
         }
+        PlanStep::If { .. } | PlanStep::Loop { .. } | PlanStep::EndLoop { .. } => Err(anyhow!(
+            "control flow steps must be built via graph output, not step_to_node_type"
+        )),
     }
 }
