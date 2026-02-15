@@ -2,7 +2,7 @@ use super::conversation::{ChatRole, ConversationSession};
 use super::parse::extract_json;
 use super::prompt::assistant_system_prompt;
 use super::summarize::summarize_overflow;
-use super::{PatchResult, PatcherOutput, PlannerOutput};
+use super::{PatchResult, PatcherOutput, PlannerGraphOutput, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::Result;
 use clickweave_core::Workflow;
@@ -164,6 +164,8 @@ fn parse_assistant_response(
         if let Ok(output) = serde_json::from_str::<PatcherOutput>(json_str) {
             // If all arrays are empty, treat as conversational
             if output.add.is_empty()
+                && output.add_nodes.is_empty()
+                && output.add_edges.is_empty()
                 && output.remove_node_ids.is_empty()
                 && output.update.is_empty()
             {
@@ -183,7 +185,23 @@ fn parse_assistant_response(
         }
     }
 
-    // Try parsing as PlannerOutput (for empty workflows or if patch parsing fails)
+    // Try parsing as graph-format planner output (for control-flow plans)
+    if let Ok(graph) = serde_json::from_str::<PlannerGraphOutput>(json_str)
+        && !graph.nodes.is_empty()
+    {
+        let prose = extract_prose(content);
+        let patch = super::build_graph_plan_as_patch(
+            &graph,
+            mcp_tools,
+            allow_ai_transforms,
+            allow_agent_steps,
+        );
+        let message = prose.unwrap_or_else(|| describe_patch(&patch));
+        let warnings = patch.warnings.clone();
+        return (message, Some(patch), warnings);
+    }
+
+    // Try parsing as flat PlannerOutput (for simple linear plans)
     if let Ok(output) = serde_json::from_str::<PlannerOutput>(json_str)
         && !output.steps.is_empty()
     {

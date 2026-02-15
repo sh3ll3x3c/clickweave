@@ -40,13 +40,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "text_len": result_text.len(),
                 }),
             );
-            let parsed: Value = serde_json::from_str(&result_text).unwrap_or(
-                if result_text.is_empty() {
+            let parsed: Value =
+                serde_json::from_str(&result_text).unwrap_or(if result_text.is_empty() {
                     Value::Null
                 } else {
                     Value::String(result_text)
-                },
-            );
+                });
             return Ok(parsed);
         }
 
@@ -145,12 +144,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         ));
 
         // Return parsed result for variable extraction
-        let parsed: Value = serde_json::from_str(&result_text).unwrap_or(if result_text.is_empty()
-        {
-            Value::Null
-        } else {
-            Value::String(result_text)
-        });
+        let parsed: Value =
+            serde_json::from_str(&result_text).unwrap_or(if result_text.is_empty() {
+                Value::Null
+            } else {
+                Value::String(result_text)
+            });
         Ok(parsed)
     }
 

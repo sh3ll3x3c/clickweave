@@ -1192,3 +1192,156 @@ async fn test_plan_calculator_loop_scenario() {
 
     assert!(result.warnings.is_empty());
 }
+
+// ── R2 regression tests: assistant control-flow parsing ─────────
+
+#[tokio::test]
+async fn test_assistant_patches_with_add_nodes_and_add_edges() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    let (_id, workflow) = single_node_workflow(
+        NodeType::FocusWindow(FocusWindowParams {
+            method: FocusMethod::AppName,
+            value: Some("Calculator".to_string()),
+            bring_to_front: true,
+        }),
+        "Focus Calculator",
+    );
+
+    // Patcher output using add_nodes + add_edges (control-flow patch)
+    let response = r#"{"add_nodes": [
+        {"id": "n1", "step_type": "Loop", "name": "My Loop", "exit_condition": {
+            "left": {"type": "Variable", "name": "done"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"x": 10, "y": 20}, "name": "Click"},
+        {"id": "n3", "step_type": "EndLoop", "loop_id": "n1", "name": "End Loop"}
+    ], "add_edges": [
+        {"from": "n1", "to": "n2", "output": {"type": "LoopBody"}},
+        {"from": "n1", "to": "DONE", "output": {"type": "LoopDone"}},
+        {"from": "n2", "to": "n3"},
+        {"from": "n3", "to": "n1"}
+    ]}"#;
+    let mock = MockBackend::single(response);
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Wrap this in a loop",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        result.patch.is_some(),
+        "control-flow patch should not be dropped"
+    );
+    let patch = result.patch.unwrap();
+    assert_eq!(patch.added_nodes.len(), 3);
+    // LoopBody + 2 linear + back-edge (LoopDone to "DONE" is skipped by design)
+    assert_eq!(patch.added_edges.len(), 3);
+    assert!(
+        result.warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        result.warnings
+    );
+}
+
+#[tokio::test]
+async fn test_assistant_plans_graph_format_for_empty_workflow() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    // Graph-format planner output (control-flow plan for empty workflow)
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"id": "n2", "step_type": "Loop", "name": "Loop", "exit_condition": {
+            "left": {"type": "Variable", "name": "done"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }},
+        {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"x": 1, "y": 2}, "name": "Click"},
+        {"id": "n4", "step_type": "EndLoop", "loop_id": "n2", "name": "End Loop"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3", "output": {"type": "LoopBody"}},
+        {"from": "n2", "to": "DONE", "output": {"type": "LoopDone"}},
+        {"from": "n3", "to": "n4"},
+        {"from": "n4", "to": "n2"}
+    ]}"#;
+    let mock = MockBackend::single(response);
+    let workflow = Workflow::new("Test");
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Create a loop workflow for the calculator",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        result.patch.is_some(),
+        "graph-format plan should produce a patch"
+    );
+    let patch = result.patch.unwrap();
+    assert_eq!(patch.added_nodes.len(), 4);
+    // n1→n2, LoopBody, 2 linear (n3→n4), back-edge (n4→n2) = 4 (LoopDone to "DONE" skipped)
+    assert_eq!(patch.added_edges.len(), 4);
+    assert!(
+        result.warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn test_mixed_add_and_add_nodes_warns_and_skips_flat() {
+    let (_id, workflow) = single_node_workflow(
+        NodeType::FocusWindow(FocusWindowParams {
+            method: FocusMethod::AppName,
+            value: Some("Calculator".to_string()),
+            bring_to_front: true,
+        }),
+        "Focus Calculator",
+    );
+
+    let output: PatcherOutput = serde_json::from_str(r#"{
+        "add": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 10, "y": 20}}],
+        "add_nodes": [
+            {"id": "n1", "step_type": "Tool", "tool_name": "click", "arguments": {"x": 30, "y": 40}, "name": "Click 2"}
+        ],
+        "add_edges": []
+    }"#).unwrap();
+
+    let patch = build_patch_from_output(&output, &workflow, &sample_tools(), false, false);
+
+    // Only graph-based node should be added; flat add should be skipped
+    assert_eq!(
+        patch.added_nodes.len(),
+        1,
+        "flat add items should be skipped"
+    );
+    assert!(
+        patch
+            .warnings
+            .iter()
+            .any(|w| w.contains("flat 'add' steps")),
+        "should warn about ignored flat adds: {:?}",
+        patch.warnings,
+    );
+}

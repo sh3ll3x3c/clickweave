@@ -927,6 +927,9 @@ mod tests {
         );
 
         let err = validate_workflow(&wf).unwrap_err();
-        assert!(matches!(err, ValidationError::DuplicateSwitchCaseName(_, _)));
+        assert!(matches!(
+            err,
+            ValidationError::DuplicateSwitchCaseName(_, _)
+        ));
     }
 }

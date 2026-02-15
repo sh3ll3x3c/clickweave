@@ -208,23 +208,32 @@ pub(crate) fn build_patch_from_output(
         .map(|n| n.position.y)
         .fold(0.0_f32, f32::max);
 
-    for (i, step) in output.add.iter().enumerate() {
-        if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps) {
-            warnings.push(format!("Added step {} removed: {}", i, reason));
-            continue;
-        }
-        match step_to_node_type(step, mcp_tools) {
-            Ok((node_type, display_name)) => {
-                added_nodes.push(Node::new(
-                    node_type,
-                    Position {
-                        x: 300.0,
-                        y: last_y + 120.0 + (i as f32) * 120.0,
-                    },
-                    display_name,
-                ));
+    // Reject mixed add + add_nodes — flat items would be left unwired
+    if !output.add.is_empty() && !output.add_nodes.is_empty() {
+        warnings.push(format!(
+            "Ignored {} flat 'add' steps because 'add_nodes' is also present (mixed formats not supported)",
+            output.add.len(),
+        ));
+    } else {
+        for (i, step) in output.add.iter().enumerate() {
+            if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps)
+            {
+                warnings.push(format!("Added step {} removed: {}", i, reason));
+                continue;
             }
-            Err(e) => warnings.push(format!("Added step {} skipped: {}", i, e)),
+            match step_to_node_type(step, mcp_tools) {
+                Ok((node_type, display_name)) => {
+                    added_nodes.push(Node::new(
+                        node_type,
+                        Position {
+                            x: 300.0,
+                            y: last_y + 120.0 + (i as f32) * 120.0,
+                        },
+                        display_name,
+                    ));
+                }
+                Err(e) => warnings.push(format!("Added step {} skipped: {}", i, e)),
+            }
         }
     }
 
@@ -392,6 +401,36 @@ pub(crate) fn build_plan_as_patch(
             output: None,
         })
         .collect();
+
+    PatchResult {
+        added_nodes,
+        removed_node_ids: Vec::new(),
+        updated_nodes: Vec::new(),
+        added_edges,
+        removed_edges: Vec::new(),
+        warnings,
+    }
+}
+
+/// Build a PatchResult from graph-format planner output (for the assistant empty-workflow path).
+pub(crate) fn build_graph_plan_as_patch(
+    graph: &PlannerGraphOutput,
+    mcp_tools: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+) -> PatchResult {
+    let mut id_map = HashMap::new();
+    let positions = parse::layout_nodes(graph.nodes.len());
+
+    let (added_nodes, added_edges, warnings) = build_nodes_and_edges_from_graph(
+        &graph.nodes,
+        &graph.edges,
+        &positions,
+        &mut id_map,
+        mcp_tools,
+        allow_ai_transforms,
+        allow_agent_steps,
+    );
 
     PatchResult {
         added_nodes,
