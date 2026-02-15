@@ -13,6 +13,7 @@ const categoryColors: Record<string, string> = {
   Input: "var(--node-input)",
   Window: "var(--node-window)",
   AppDebugKit: "var(--node-debugkit)",
+  "Control Flow": "#10b981",
 };
 
 export function NodePalette({

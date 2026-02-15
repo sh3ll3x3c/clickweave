@@ -15,7 +15,7 @@ import {
   MarkerType,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { Workflow, Edge } from "../bindings";
+import type { Workflow, Edge, EdgeOutput } from "../bindings";
 import { WorkflowNode } from "./WorkflowNode";
 
 interface GraphCanvasProps {
@@ -25,7 +25,7 @@ interface GraphCanvasProps {
   onSelectNode: (id: string | null) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onEdgesChange: (edges: Edge[]) => void;
-  onConnect: (from: string, to: string) => void;
+  onConnect: (from: string, to: string, sourceHandle?: string) => void;
   onDeleteNode: (id: string) => void;
 }
 
@@ -42,9 +42,30 @@ const nodeMetadata: Record<string, { color: string; icon: string }> = {
   PressKey:       { color: "#f59e0b", icon: "PK" },
   McpToolCall:    { color: "#666",    icon: "MC" },
   AppDebugKitOp:  { color: "#ef4444", icon: "DK" },
+  If:             { color: "#10b981", icon: "IF" },
+  Switch:         { color: "#10b981", icon: "SW" },
+  Loop:           { color: "#10b981", icon: "LP" },
+  EndLoop:        { color: "#10b981", icon: "EL" },
 };
 
 const defaultMetadata = { color: "#666", icon: "??" };
+
+function getEdgeLabel(output: EdgeOutput | null): string | undefined {
+  if (!output) return undefined;
+  switch (output.type) {
+    case "IfTrue": return "true";
+    case "IfFalse": return "false";
+    case "SwitchCase": return output.name;
+    case "SwitchDefault": return "default";
+    case "LoopBody": return "body";
+    case "LoopDone": return "done";
+  }
+}
+
+function edgeOutputToHandle(output: EdgeOutput | null): string | undefined {
+  if (!output) return undefined;
+  return output.type === "SwitchCase" ? `SwitchCase:${output.name}` : output.type;
+}
 
 function toRFNode(
   node: Workflow["nodes"][number],
@@ -68,6 +89,9 @@ function toRFNode(
       isActive: node.id === activeNode,
       enabled: node.enabled,
       onDelete: () => onDeleteNode(node.id),
+      switchCases: node.node_type.type === "Switch"
+        ? (node.node_type as { type: "Switch"; cases: { name: string }[] }).cases.map((c) => c.name)
+        : [],
     },
   };
 }
@@ -105,9 +129,13 @@ export function GraphCanvas({
   const rfEdges: RFEdge[] = useMemo(
     () =>
       workflow.edges.map((edge) => ({
-        id: `${edge.from}-${edge.to}`,
+        id: `${edge.from}-${edge.to}-${edge.output?.type ?? "default"}`,
         source: edge.from,
         target: edge.to,
+        sourceHandle: edgeOutputToHandle(edge.output),
+        label: getEdgeLabel(edge.output),
+        labelStyle: { fill: "var(--text-muted)", fontSize: 10 },
+        labelBgStyle: { fill: "var(--bg-panel)", opacity: 0.8 },
       })),
     [workflow.edges],
   );
@@ -136,19 +164,21 @@ export function GraphCanvas({
   const handleEdgesChange: OnEdgesChange = useCallback(
     (changes) => {
       const updated = applyEdgeChanges(changes, rfEdges);
-      const newEdges: Edge[] = updated.map((rfe) => ({
-        from: rfe.source,
-        to: rfe.target,
-      }));
+      const newEdges: Edge[] = updated.map((rfe) => {
+        const original = workflow.edges.find(
+          (e) => e.from === rfe.source && e.to === rfe.target,
+        );
+        return { from: rfe.source, to: rfe.target, output: original?.output ?? null };
+      });
       onEdgesChange(newEdges);
     },
-    [rfEdges, onEdgesChange],
+    [rfEdges, workflow.edges, onEdgesChange],
   );
 
   const handleConnect: OnConnect = useCallback(
     (connection: Connection) => {
       if (connection.source && connection.target) {
-        onConnect(connection.source, connection.target);
+        onConnect(connection.source, connection.target, connection.sourceHandle ?? undefined);
       }
     },
     [onConnect],

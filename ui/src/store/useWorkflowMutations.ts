@@ -1,5 +1,20 @@
 import { useCallback } from "react";
-import type { Edge, Node, NodeType, Workflow } from "../bindings";
+import type { Edge, EdgeOutput, Node, NodeType, Workflow } from "../bindings";
+
+function sourceHandleToEdgeOutput(handle: string): EdgeOutput | null {
+  switch (handle) {
+    case "IfTrue": return { type: "IfTrue" };
+    case "IfFalse": return { type: "IfFalse" };
+    case "SwitchDefault": return { type: "SwitchDefault" };
+    case "LoopBody": return { type: "LoopBody" };
+    case "LoopDone": return { type: "LoopDone" };
+    default:
+      if (handle.startsWith("SwitchCase:")) {
+        return { type: "SwitchCase", name: handle.slice(11) };
+      }
+      return null;
+  }
+}
 
 export function useWorkflowMutations(
   setWorkflow: React.Dispatch<React.SetStateAction<Workflow>>,
@@ -66,10 +81,14 @@ export function useWorkflowMutations(
   );
 
   const addEdge = useCallback(
-    (from: string, to: string) => {
+    (from: string, to: string, sourceHandle?: string) => {
       setWorkflow((prev) => {
-        const filtered = prev.edges.filter((e) => e.from !== from);
-        const edge: Edge = { from, to };
+        const output = sourceHandle ? sourceHandleToEdgeOutput(sourceHandle) : null;
+        // For control flow nodes, only replace edges from the same output port
+        const filtered = output
+          ? prev.edges.filter((e) => !(e.from === from && e.output?.type === output.type))
+          : prev.edges.filter((e) => e.from !== from || e.output !== null);
+        const edge: Edge = { from, to, output };
         return { ...prev, edges: [...filtered, edge] };
       });
     },
