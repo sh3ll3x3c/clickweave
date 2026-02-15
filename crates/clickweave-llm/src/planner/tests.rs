@@ -1185,3 +1185,75 @@ fn test_assistant_prompt_existing_workflow_includes_control_flow() {
         "Patcher assistant prompt should mention add_nodes for control flow"
     );
 }
+
+// ── Full integration test ───────────────────────────────────────
+
+#[tokio::test]
+async fn test_plan_calculator_loop_scenario() {
+    // Simulates what the LLM should produce for:
+    // "Open the calculator app and keep calculating 2x2 until you get to 1024"
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus Calculator"},
+        {"id": "n2", "step_type": "Loop", "name": "Multiply Loop", "exit_condition": {
+            "left": {"type": "Variable", "name": "check_for_1024.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }, "max_iterations": 20},
+        {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
+        {"id": "n4", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "×"}, "name": "Click Multiply"},
+        {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2 Again"},
+        {"id": "n6", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click Equals"},
+        {"id": "n7", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "1024", "app_name": "Calculator"}, "name": "Check for 1024"},
+        {"id": "n8", "step_type": "EndLoop", "loop_id": "n2", "name": "End Multiply Loop"},
+        {"id": "n9", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {"app_name": "Calculator"}, "name": "Final Screenshot"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3", "output": {"type": "LoopBody"}},
+        {"from": "n2", "to": "n9", "output": {"type": "LoopDone"}},
+        {"from": "n3", "to": "n4"},
+        {"from": "n4", "to": "n5"},
+        {"from": "n5", "to": "n6"},
+        {"from": "n6", "to": "n7"},
+        {"from": "n7", "to": "n8"},
+        {"from": "n8", "to": "n2"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Open the calculator app and keep calculating 2x2 until you get to 1024",
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let wf = &result.workflow;
+    assert_eq!(wf.nodes.len(), 9);
+    assert_eq!(wf.edges.len(), 9);
+
+    // Verify structure
+    let loop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::Loop(_)))
+        .unwrap();
+    let end_loop = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+        .unwrap();
+    if let NodeType::EndLoop(p) = &end_loop.node_type {
+        assert_eq!(
+            p.loop_id, loop_node.id,
+            "EndLoop must reference Loop's UUID"
+        );
+    }
+    if let NodeType::Loop(p) = &loop_node.node_type {
+        assert_eq!(p.max_iterations, 20);
+    }
+
+    // Verify backwards compat: existing flat format still works
+    assert!(result.warnings.is_empty());
+}
