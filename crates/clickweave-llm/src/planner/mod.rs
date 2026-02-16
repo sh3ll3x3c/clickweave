@@ -69,12 +69,17 @@ pub enum PlanStep {
         name: Option<String>,
         loop_id: String,
     },
+    /// Catch-all for unrecognised step types (e.g. LLM-invented "End").
+    /// Nodes with this variant are silently filtered out during workflow construction.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The raw planner LLM output.
 #[derive(Debug, Deserialize)]
 pub struct PlannerOutput {
-    pub steps: Vec<PlanStep>,
+    #[serde(default)]
+    pub steps: Vec<Value>,
 }
 
 /// A node in the graph-based planner output.
@@ -95,10 +100,39 @@ pub struct PlanEdge {
 }
 
 /// Graph-based planner output (for control flow workflows).
+///
+/// All collections are kept as raw `Value` so that individual malformed
+/// entries (missing required fields, unknown enum variants) don't crash
+/// the entire deserialization — they are parsed one-by-one during
+/// workflow construction.
 #[derive(Debug, Deserialize)]
 pub struct PlannerGraphOutput {
-    pub nodes: Vec<PlanNode>,
-    pub edges: Vec<PlanEdge>,
+    pub nodes: Vec<Value>,
+    #[serde(default)]
+    pub edges: Vec<Value>,
+}
+
+/// Parse a slice of raw JSON values into typed items, skipping malformed
+/// entries with warnings. Uses the `"id"` field (if present) to label
+/// warnings; falls back to the array index.
+fn parse_lenient<T: serde::de::DeserializeOwned>(raw: &[Value]) -> (Vec<T>, Vec<String>) {
+    let mut items = Vec::new();
+    let mut warnings = Vec::new();
+    for (i, val) in raw.iter().enumerate() {
+        match serde_json::from_value::<T>(val.clone()) {
+            Ok(item) => items.push(item),
+            Err(e) => {
+                let label = val
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| val.get("from").and_then(|v| v.as_str()))
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("#{}", i));
+                warnings.push(format!("'{}' skipped (malformed): {}", label, e));
+            }
+        }
+    }
+    (items, warnings)
 }
 
 /// Result of planning a workflow.
@@ -114,15 +148,15 @@ pub struct PlanResult {
 #[derive(Debug, Deserialize)]
 pub(crate) struct PatcherOutput {
     #[serde(default)]
-    pub add: Vec<PlanStep>,
+    pub add: Vec<Value>,
     #[serde(default)]
-    pub add_nodes: Vec<PlanNode>,
+    pub add_nodes: Vec<Value>,
     #[serde(default)]
-    pub add_edges: Vec<PlanEdge>,
+    pub add_edges: Vec<Value>,
     #[serde(default)]
     pub remove_node_ids: Vec<String>,
     #[serde(default)]
-    pub update: Vec<PatchNodeUpdate>,
+    pub update: Vec<Value>,
 }
 
 /// A node update from the patcher (only changed fields).
@@ -215,7 +249,9 @@ pub(crate) fn build_patch_from_output(
             output.add.len(),
         ));
     } else {
-        for (i, step) in output.add.iter().enumerate() {
+        let (add_steps, add_warnings) = parse_lenient::<PlanStep>(&output.add);
+        warnings.extend(add_warnings);
+        for (i, step) in add_steps.iter().enumerate() {
             if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps)
             {
                 warnings.push(format!("Added step {} removed: {}", i, reason));
@@ -284,8 +320,10 @@ pub(crate) fn build_patch_from_output(
     }
 
     // Updated nodes
+    let (updates, update_warnings) = parse_lenient::<PatchNodeUpdate>(&output.update);
+    warnings.extend(update_warnings);
     let mut updated_nodes = Vec::new();
-    for update in &output.update {
+    for update in &updates {
         let id = match update.node_id.parse::<Uuid>() {
             Ok(id) => id,
             Err(_) => {
@@ -365,12 +403,16 @@ pub(crate) fn build_patch_from_output(
 
 /// Build a `PatchResult` from planner steps (all adds, no removes/updates).
 pub(crate) fn build_plan_as_patch(
-    steps: &[PlanStep],
+    raw_steps: &[Value],
     mcp_tools: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
 ) -> PatchResult {
     let mut warnings = Vec::new();
+
+    let (steps, step_warnings) = parse_lenient::<PlanStep>(raw_steps);
+    warnings.extend(step_warnings);
+
     let mut valid_steps = Vec::new();
 
     for (i, step) in steps.iter().enumerate() {
@@ -444,11 +486,13 @@ pub(crate) fn build_graph_plan_as_patch(
 
 /// Shared helper: convert graph-based plan nodes + edges into real Nodes + Edges.
 ///
-/// Creates nodes from `plan_nodes`, populates `id_map` (LLM ID → real UUID),
-/// remaps EndLoop.loop_id references, and builds edges from `plan_edges`.
+/// Each raw `Value` in `raw_nodes` is deserialized individually so that one
+/// malformed node (missing fields, unknown shape) doesn't crash the entire parse.
+/// Creates nodes from successfully parsed entries, populates `id_map` (LLM ID →
+/// real UUID), remaps EndLoop.loop_id references, and builds edges from `plan_edges`.
 fn build_nodes_and_edges_from_graph(
-    plan_nodes: &[PlanNode],
-    plan_edges: &[PlanEdge],
+    raw_nodes: &[Value],
+    raw_edges: &[Value],
     positions: &[Position],
     id_map: &mut HashMap<String, Uuid>,
     mcp_tools: &[Value],
@@ -458,8 +502,16 @@ fn build_nodes_and_edges_from_graph(
     let mut warnings = Vec::new();
     let mut nodes = Vec::new();
 
+    // Parse each node individually — skip malformed ones with a warning.
+    let (plan_nodes, node_warnings) = parse_lenient::<PlanNode>(raw_nodes);
+    warnings.extend(node_warnings);
+
     // Create nodes and build ID map
     for (i, plan_node) in plan_nodes.iter().enumerate() {
+        let pos = positions.get(i).copied().unwrap_or(Position {
+            x: 300.0,
+            y: 100.0 + (i as f32) * 120.0,
+        });
         if let Some(reason) =
             step_rejected_reason(&plan_node.step, allow_ai_transforms, allow_agent_steps)
         {
@@ -468,7 +520,7 @@ fn build_nodes_and_edges_from_graph(
         }
         match step_to_node_type(&plan_node.step, mcp_tools) {
             Ok((node_type, display_name)) => {
-                let node = Node::new(node_type, positions[i], display_name);
+                let node = Node::new(node_type, pos, display_name);
                 id_map.insert(plan_node.id.clone(), node.id);
                 nodes.push(node);
             }
@@ -496,9 +548,13 @@ fn build_nodes_and_edges_from_graph(
         }
     }
 
+    // Parse edges leniently — skip malformed ones with a warning.
+    let (plan_edges, edge_warnings) = parse_lenient::<PlanEdge>(raw_edges);
+    warnings.extend(edge_warnings);
+
     // Build edges with remapped IDs
     let mut edges = Vec::new();
-    for plan_edge in plan_edges {
+    for plan_edge in &plan_edges {
         if plan_edge.to == "DONE" {
             continue;
         }

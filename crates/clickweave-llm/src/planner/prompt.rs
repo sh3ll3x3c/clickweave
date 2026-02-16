@@ -103,7 +103,8 @@ Rules:
 - Always focus the target window before interacting with it.
 - If the user's intent implies opening or using an app that may not already be running, emit a launch_app step before focus_window. For example, "open Calculator and calculate 5×6" should start with launch_app(app_name="Calculator").
 - Prefer deterministic Tool steps over AiStep whenever possible.
-- Do not add unnecessary steps. Be efficient."#,
+- Do not add unnecessary steps. Be efficient.
+- Use ONLY the step types listed above. Workflows end implicitly after the last node — do not add "End" or "Start" nodes."#,
     )
 }
 

@@ -91,9 +91,18 @@ fn parse_and_build_workflow(
         return Err(anyhow!("Planner returned no steps"));
     }
 
+    // Parse steps leniently — skip malformed ones with warnings
+    let (parsed_steps, step_warnings) =
+        super::parse_lenient::<super::PlanStep>(&planner_output.steps);
+    warnings.extend(step_warnings);
+
+    if parsed_steps.is_empty() {
+        return Err(anyhow!("No valid steps (all were malformed)"));
+    }
+
     // Filter out rejected steps and collect warnings in a single pass
     let mut steps = Vec::new();
-    for step in &planner_output.steps {
+    for step in &parsed_steps {
         if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps) {
             warnings.push(format!("Planner step removed: {}", reason));
             continue;

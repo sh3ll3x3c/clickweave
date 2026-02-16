@@ -82,5 +82,6 @@ pub(crate) fn step_to_node_type(step: &PlanStep, tools: &[Value]) -> Result<(Nod
                 display,
             ))
         }
+        PlanStep::Unknown => Err(anyhow!("Unknown step type")),
     }
 }

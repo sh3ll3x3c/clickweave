@@ -952,11 +952,10 @@ fn test_parse_planner_graph_output() {
     let output: PlannerGraphOutput = serde_json::from_str(json).unwrap();
     assert_eq!(output.nodes.len(), 4);
     assert_eq!(output.edges.len(), 5);
-    assert!(matches!(output.nodes[1].step, PlanStep::Loop { .. }));
-    assert_eq!(
-        output.edges[1].output,
-        Some(clickweave_core::EdgeOutput::LoopBody)
-    );
+    let node1: PlanNode = serde_json::from_value(output.nodes[1].clone()).unwrap();
+    assert!(matches!(node1.step, PlanStep::Loop { .. }));
+    let edge1: PlanEdge = serde_json::from_value(output.edges[1].clone()).unwrap();
+    assert_eq!(edge1.output, Some(clickweave_core::EdgeOutput::LoopBody));
 }
 
 #[tokio::test]
@@ -1662,4 +1661,185 @@ async fn test_infer_loop_reroutes_body_back_edge_when_endloop_edge_already_exist
 
     // Workflow should pass validation (no cycle error)
     clickweave_core::validate_workflow(wf).expect("Workflow with both back-edges should validate");
+}
+
+#[test]
+fn test_unknown_step_type_deserializes() {
+    // Verify that an unknown step_type like "End" deserializes as PlanStep::Unknown
+    // via #[serde(other)], allowing the rest of the graph to parse.
+    let json = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Launch"},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "5"}, "name": "Click 5"},
+        {"id": "n3", "step_type": "End"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3"}
+    ]}"#;
+
+    let parsed: Result<PlannerGraphOutput, _> = serde_json::from_str(json);
+    assert!(
+        parsed.is_ok(),
+        "PlannerGraphOutput should parse with unknown step type: {:?}",
+        parsed.err()
+    );
+    let graph = parsed.unwrap();
+    assert_eq!(graph.nodes.len(), 3);
+    // The third node ("End") parses as PlanStep::Unknown via #[serde(other)]
+    let node2: PlanNode = serde_json::from_value(graph.nodes[2].clone()).unwrap();
+    assert!(matches!(node2.step, PlanStep::Unknown));
+}
+
+#[tokio::test]
+async fn test_unknown_step_type_skipped_not_fatal() {
+    // LLM invents "End" step type — should be skipped, not crash the parse.
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "5"}, "name": "Click 5"},
+        {"id": "n3", "step_type": "End"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Calculator click with End node",
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    // n3 (End) should be skipped; workflow should have 2 valid nodes
+    assert_eq!(result.workflow.nodes.len(), 2);
+    assert!(result.warnings.iter().any(|w| w.contains("skipped")));
+}
+
+#[tokio::test]
+async fn test_malformed_node_missing_fields_skipped() {
+    // EndLoop without loop_id — should be skipped during node parse, not crash the graph.
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "5"}, "name": "Click 5"},
+        {"id": "n3", "step_type": "EndLoop"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "EndLoop without loop_id",
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    // n3 (EndLoop without loop_id) should be skipped; workflow has 2 valid nodes
+    assert_eq!(result.workflow.nodes.len(), 2);
+    assert!(
+        result.warnings.iter().any(|w| w.contains("malformed")),
+        "Expected malformed warning, got: {:?}",
+        result.warnings
+    );
+}
+
+#[tokio::test]
+async fn test_malformed_edge_unknown_output_type_skipped() {
+    // LLM invents "LoopCondition" edge output type — should be skipped, not crash.
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "5"}, "name": "Click 5"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n1", "output": {"type": "LoopCondition"}}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Calculator click with malformed edge",
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    // Workflow should have 2 nodes; the malformed edge is skipped
+    assert_eq!(result.workflow.nodes.len(), 2);
+    assert_eq!(result.workflow.edges.len(), 1);
+    assert!(
+        result.warnings.iter().any(|w| w.contains("malformed")),
+        "Expected malformed edge warning, got: {:?}",
+        result.warnings
+    );
+}
+
+#[tokio::test]
+async fn test_malformed_flat_step_skipped() {
+    // One valid step and one missing required fields — malformed step skipped.
+    let response = r#"{"steps": [
+        {"step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}},
+        {"step_type": "Tool"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Mixed valid and malformed steps",
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.workflow.nodes.len(), 1);
+    assert!(
+        result.warnings.iter().any(|w| w.contains("malformed")),
+        "Expected malformed step warning, got: {:?}",
+        result.warnings
+    );
+}
+
+#[tokio::test]
+async fn test_malformed_patcher_update_skipped() {
+    // Patcher returns a malformed update entry — should be skipped, not crash.
+    let (node_id, workflow) = single_node_workflow(
+        NodeType::FindText(FindTextParams {
+            search_text: "test".into(),
+            ..Default::default()
+        }),
+        "Find test",
+    );
+
+    let response = format!(
+        r#"{{
+        "update": [
+            {{"node_id": "{}", "name": "Find Updated", "arguments": {{"text": "updated"}}}},
+            {{"completely": "invalid", "garbage": true}}
+        ]
+    }}"#,
+        node_id
+    );
+    let mock = MockBackend::single(&response);
+
+    let result = patch_with_mock(&mock, &workflow, "Update and garbage")
+        .await
+        .unwrap();
+
+    // Valid update should apply, malformed entry skipped
+    assert_eq!(result.updated_nodes.len(), 1);
+    assert_eq!(result.updated_nodes[0].name, "Find Updated");
+    assert!(
+        result.warnings.iter().any(|w| w.contains("malformed")),
+        "Expected malformed update warning, got: {:?}",
+        result.warnings
+    );
 }
