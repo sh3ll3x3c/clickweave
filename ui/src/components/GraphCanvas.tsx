@@ -3,6 +3,7 @@ import {
   ReactFlow,
   Background,
   Controls,
+  SelectionMode,
   type Node as RFNode,
   type Edge as RFEdge,
   type NodeTypes,
@@ -495,6 +496,9 @@ export function GraphCanvas({
         onConnect={handleConnect}
         onPaneClick={handlePaneClick}
         deleteKeyCode="Delete"
+        selectionOnDrag
+        selectionMode={SelectionMode.Partial}
+        panOnDrag={[1]}
         fitView
         fitViewOptions={{ maxZoom: 1 }}
         snapToGrid
