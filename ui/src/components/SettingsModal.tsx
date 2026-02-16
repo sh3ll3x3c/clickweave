@@ -7,12 +7,14 @@ interface SettingsModalProps {
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
   mcpCommand: string;
+  maxRepairAttempts: number;
   onClose: () => void;
   onPlannerConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
   onVlmConfigChange: (config: EndpointConfig) => void;
   onVlmEnabledChange: (enabled: boolean) => void;
   onMcpCommandChange: (cmd: string) => void;
+  onMaxRepairAttemptsChange: (n: number) => void;
 }
 
 const inputClass =
@@ -85,12 +87,14 @@ export function SettingsModal({
   vlmConfig,
   vlmEnabled,
   mcpCommand,
+  maxRepairAttempts,
   onClose,
   onPlannerConfigChange,
   onAgentConfigChange,
   onVlmConfigChange,
   onVlmEnabledChange,
   onMcpCommandChange,
+  onMaxRepairAttemptsChange,
 }: SettingsModalProps) {
   if (!open) return null;
 
@@ -154,6 +158,34 @@ export function SettingsModal({
                 Using agent model for vision. Enable to use a separate vision model.
               </p>
             )}
+          </div>
+
+          <div>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Assistant
+            </h3>
+            <p className="mb-2 text-[10px] text-[var(--text-muted)]">
+              Controls how the assistant validates and retries generated patches.
+            </p>
+            <div>
+              <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+                Max repair attempts
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={maxRepairAttempts}
+                onChange={(e) => {
+                  const clamped = Math.max(0, Math.min(10, Math.floor(Number(e.target.value) || 0)));
+                  onMaxRepairAttemptsChange(clamped);
+                }}
+                className={inputClass}
+              />
+              <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+                Validate patches and retry on failure. 0 = skip validation, 1 = validate only, 2+ = validate and retry.
+              </p>
+            </div>
           </div>
 
           <div>

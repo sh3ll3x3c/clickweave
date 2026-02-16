@@ -8,6 +8,7 @@ export interface PersistedSettings {
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
   mcpCommand: string;
+  maxRepairAttempts: number;
 }
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
@@ -16,6 +17,7 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   vlmConfig: DEFAULT_ENDPOINT,
   vlmEnabled: DEFAULT_VLM_ENABLED,
   mcpCommand: DEFAULT_MCP_COMMAND,
+  maxRepairAttempts: 3,
 };
 
 export async function loadSettings(): Promise<PersistedSettings> {
@@ -30,12 +32,14 @@ export async function loadSettings(): Promise<PersistedSettings> {
   const vlmConfig = await store.get<EndpointConfig>("vlmConfig");
   const vlmEnabled = await store.get<boolean>("vlmEnabled");
   const mcpCommand = await store.get<string>("mcpCommand");
+  const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
   return {
     plannerConfig: plannerConfig ?? fallback,
     agentConfig: agentConfig ?? fallback,
     vlmConfig: vlmConfig ?? SETTINGS_DEFAULTS.vlmConfig,
     vlmEnabled: vlmEnabled ?? SETTINGS_DEFAULTS.vlmEnabled,
     mcpCommand: mcpCommand ?? SETTINGS_DEFAULTS.mcpCommand,
+    maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
   };
 }
 

@@ -89,6 +89,7 @@ export function useAppStore(): [AppState, AppActions] {
     vlmConfig: store.vlmConfig,
     vlmEnabled: store.vlmEnabled,
     mcpCommand: store.mcpCommand,
+    maxRepairAttempts: store.maxRepairAttempts,
   };
 
   // Stable action references — Zustand actions don't change identity
@@ -117,6 +118,7 @@ export function useAppStore(): [AppState, AppActions] {
     setVlmConfig: store.setVlmConfig,
     setVlmEnabled: store.setVlmEnabled,
     setMcpCommand: store.setMcpCommand,
+    setMaxRepairAttempts: store.setMaxRepairAttempts,
     setActiveNode: store.setActiveNode,
     setExecutorState: store.setExecutorState,
     runWorkflow: store.runWorkflow,

@@ -11,6 +11,7 @@ export interface SettingsSlice {
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
   mcpCommand: string;
+  maxRepairAttempts: number;
   _settingsLoaded: boolean;
 
   loadSettingsFromDisk: () => void;
@@ -19,6 +20,7 @@ export interface SettingsSlice {
   setVlmConfig: (config: EndpointConfig) => void;
   setVlmEnabled: (enabled: boolean) => void;
   setMcpCommand: (cmd: string) => void;
+  setMaxRepairAttempts: (n: number) => void;
 }
 
 function persistSetting<K extends keyof PersistedSettings>(
@@ -32,12 +34,19 @@ function persistSetting<K extends keyof PersistedSettings>(
   );
 }
 
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
 export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice> = (set, get) => ({
   plannerConfig: DEFAULT_ENDPOINT,
   agentConfig: DEFAULT_ENDPOINT,
   vlmConfig: DEFAULT_ENDPOINT,
   vlmEnabled: DEFAULT_VLM_ENABLED,
   mcpCommand: DEFAULT_MCP_COMMAND,
+  maxRepairAttempts: 3,
   _settingsLoaded: false,
 
   loadSettingsFromDisk: () => {
@@ -51,6 +60,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           vlmConfig: s.vlmConfig,
           vlmEnabled: s.vlmEnabled,
           mcpCommand: s.mcpCommand,
+          maxRepairAttempts: clampInt(s.maxRepairAttempts, 0, 10, 3),
         });
       })
       .catch((e) => console.error("Failed to load settings:", e));
@@ -61,4 +71,5 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   setVlmConfig: (config) => persistSetting("vlmConfig", config, set),
   setVlmEnabled: (enabled) => persistSetting("vlmEnabled", enabled, set),
   setMcpCommand: (cmd) => persistSetting("mcpCommand", cmd, set),
+  setMaxRepairAttempts: (n) => persistSetting("maxRepairAttempts", clampInt(n, 0, 10, 3), set),
 });

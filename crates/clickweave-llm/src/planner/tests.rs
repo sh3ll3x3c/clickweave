@@ -808,6 +808,7 @@ async fn test_assistant_chat_plans_empty_workflow() {
         &sample_tools(),
         false,
         false,
+        0,
     )
     .await
     .unwrap();
@@ -845,6 +846,7 @@ async fn test_assistant_chat_patches_existing_workflow() {
         &sample_tools(),
         false,
         false,
+        0,
     )
     .await
     .unwrap();
@@ -880,6 +882,7 @@ async fn test_assistant_chat_conversational_response() {
         &sample_tools(),
         false,
         false,
+        0,
     )
     .await
     .unwrap();
@@ -1235,6 +1238,7 @@ async fn test_assistant_patches_with_add_nodes_and_add_edges() {
         &sample_tools(),
         false,
         false,
+        0,
     )
     .await
     .unwrap();
@@ -1289,6 +1293,7 @@ async fn test_assistant_plans_graph_format_for_empty_workflow() {
         &sample_tools(),
         false,
         false,
+        0,
     )
     .await
     .unwrap();
@@ -2025,4 +2030,209 @@ async fn test_malformed_patcher_update_skipped() {
         "Expected malformed update warning, got: {:?}",
         result.warnings
     );
+}
+
+// ── Validation retry tests ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_assistant_retry_succeeds_on_second_attempt() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    let (_id, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
+
+    // First response: If node with only IfTrue edge (missing IfFalse → validation fails)
+    let invalid_response = r#"{"add_nodes": [
+        {"id": "n1", "step_type": "If", "name": "Check", "condition": {
+            "left": {"type": "Variable", "name": "x"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"x": 1, "y": 2}, "name": "A"}
+    ], "add_edges": [
+        {"from": "n1", "to": "n2", "output": {"type": "IfTrue"}}
+    ]}"#;
+
+    // Second response: simple valid patch (just adds a click node)
+    let valid_response =
+        r#"{"add": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 5, "y": 5}}]}"#;
+
+    let mock = MockBackend::new(vec![invalid_response, valid_response]);
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Add an if check",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+        3,
+    )
+    .await
+    .unwrap();
+
+    // Should have called LLM twice (initial + 1 retry)
+    assert_eq!(mock.call_count(), 2);
+    assert!(result.patch.is_some());
+}
+
+#[tokio::test]
+async fn test_assistant_retry_exhausted_returns_last_patch() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    let (_id, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
+
+    // Always returns invalid patch (If with missing IfFalse)
+    let invalid_response = r#"{"add_nodes": [
+        {"id": "n1", "step_type": "If", "name": "Check", "condition": {
+            "left": {"type": "Variable", "name": "x"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"x": 1, "y": 2}, "name": "A"}
+    ], "add_edges": [
+        {"from": "n1", "to": "n2", "output": {"type": "IfTrue"}}
+    ]}"#;
+
+    // 3 identical responses: initial + 2 retries (max_repair_attempts=3 → 2 retries)
+    let mock = MockBackend::new(vec![invalid_response, invalid_response, invalid_response]);
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Add an if check",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+        3, // value 3 → validate + 2 retries = 3 LLM calls max
+    )
+    .await
+    .unwrap();
+
+    // Should have called LLM 3 times (initial + 2 retries)
+    assert_eq!(mock.call_count(), 3);
+    // Should still return the patch (let frontend handle rejection)
+    assert!(result.patch.is_some());
+}
+
+#[tokio::test]
+async fn test_assistant_no_validation_when_max_is_zero() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    let (_id, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
+
+    // Invalid patch, but max_repair_attempts = 0 skips validation entirely
+    let invalid_response = r#"{"add_nodes": [
+        {"id": "n1", "step_type": "If", "name": "Check", "condition": {
+            "left": {"type": "Variable", "name": "x"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"x": 1, "y": 2}, "name": "A"}
+    ], "add_edges": [
+        {"from": "n1", "to": "n2", "output": {"type": "IfTrue"}}
+    ]}"#;
+
+    let mock = MockBackend::single(invalid_response);
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Add an if check",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+        0, // 0 = skip validation entirely
+    )
+    .await
+    .unwrap();
+
+    // Only 1 LLM call, validation skipped
+    assert_eq!(mock.call_count(), 1);
+    assert!(result.patch.is_some());
+}
+
+#[tokio::test]
+async fn test_assistant_validate_only_no_retry_when_max_is_one() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    let (_id, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
+
+    // Invalid patch — max_repair_attempts = 1 means validate but no retry
+    let invalid_response = r#"{"add_nodes": [
+        {"id": "n1", "step_type": "If", "name": "Check", "condition": {
+            "left": {"type": "Variable", "name": "x"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"x": 1, "y": 2}, "name": "A"}
+    ], "add_edges": [
+        {"from": "n1", "to": "n2", "output": {"type": "IfTrue"}}
+    ]}"#;
+
+    let mock = MockBackend::single(invalid_response);
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Add an if check",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+        1, // 1 = validate only, no retry
+    )
+    .await
+    .unwrap();
+
+    // Only 1 LLM call — validated but no retry
+    assert_eq!(mock.call_count(), 1);
+    assert!(result.patch.is_some());
+}
+
+#[tokio::test]
+async fn test_assistant_valid_patch_no_retry_needed() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+
+    let (_id, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
+
+    let valid_response =
+        r#"{"add": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 5, "y": 5}}]}"#;
+
+    let mock = MockBackend::single(valid_response);
+    let session = ConversationSession::new();
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Add another click",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+        3, // retries enabled, but not needed
+    )
+    .await
+    .unwrap();
+
+    // Only 1 LLM call, validation passed first time
+    assert_eq!(mock.call_count(), 1);
+    assert!(result.patch.is_some());
+    assert_eq!(result.patch.unwrap().added_nodes.len(), 1);
 }

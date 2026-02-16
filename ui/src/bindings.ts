@@ -150,7 +150,7 @@ export type AiStepParams = { prompt: string; button_text: string | null; templat
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
-export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
+export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string; max_repair_attempts: number }
 export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[] }
 /**
  * A single entry in the assistant conversation.

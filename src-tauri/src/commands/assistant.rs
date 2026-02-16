@@ -37,6 +37,7 @@ pub async fn assistant_chat(
         &tools,
         request.allow_ai_transforms,
         request.allow_agent_steps,
+        (request.max_repair_attempts as usize).min(10),
     )
     .await
     .map_err(|e| format!("Assistant chat failed: {}", e))?;

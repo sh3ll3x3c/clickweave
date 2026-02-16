@@ -39,6 +39,7 @@ export interface AppState {
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
   mcpCommand: string;
+  maxRepairAttempts: number;
 }
 
 export interface AppActions {
@@ -66,6 +67,7 @@ export interface AppActions {
   setVlmConfig: (config: EndpointConfig) => void;
   setVlmEnabled: (enabled: boolean) => void;
   setMcpCommand: (cmd: string) => void;
+  setMaxRepairAttempts: (n: number) => void;
   setActiveNode: (id: string | null) => void;
   setExecutorState: (state: "idle" | "running") => void;
   runWorkflow: () => Promise<void>;

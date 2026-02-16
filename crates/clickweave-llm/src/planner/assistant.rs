@@ -5,8 +5,9 @@ use super::summarize::summarize_overflow;
 use super::{PatchResult, PatcherOutput, PlannerGraphOutput, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::Result;
-use clickweave_core::Workflow;
+use clickweave_core::{Edge, Node, Workflow, validate_workflow};
 use serde_json::Value;
+use std::collections::HashSet;
 use tracing::{info, warn};
 
 /// Result of an assistant chat turn.
@@ -32,6 +33,7 @@ pub async fn assistant_chat(
     mcp_tools: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
+    max_repair_attempts: usize,
 ) -> Result<AssistantResult> {
     let client = LlmClient::new(config);
     assistant_chat_with_backend(
@@ -43,6 +45,7 @@ pub async fn assistant_chat(
         mcp_tools,
         allow_ai_transforms,
         allow_agent_steps,
+        max_repair_attempts,
     )
     .await
 }
@@ -58,6 +61,7 @@ pub async fn assistant_chat_with_backend(
     mcp_tools: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
+    max_repair_attempts: usize,
 ) -> Result<AssistantResult> {
     // 1. Optionally summarize overflow (non-fatal on error)
     let new_summary = if session.needs_summarization(None) {
@@ -112,37 +116,68 @@ pub async fn assistant_chat_with_backend(
     // Add the new user message
     messages.push(Message::user(user_message));
 
-    // 4. Call the LLM (single call, no repair)
-    let response = backend.chat(messages, None).await?;
+    // 4. Call the LLM with validation retry loop
+    let mut attempt = 0;
+    loop {
+        let response = backend.chat(messages.clone(), None).await?;
 
-    let content = response
-        .choices
-        .first()
-        .and_then(|c| c.message.content_text())
-        .unwrap_or("")
-        .to_string();
+        let content = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content_text())
+            .unwrap_or("")
+            .to_string();
 
-    // 5. Try to parse the response
-    let (message, patch, warnings) = parse_assistant_response(
-        &content,
-        workflow,
-        mcp_tools,
-        allow_ai_transforms,
-        allow_agent_steps,
-    );
+        let (message, patch, warnings) = parse_assistant_response(
+            &content,
+            workflow,
+            mcp_tools,
+            allow_ai_transforms,
+            allow_agent_steps,
+        );
 
-    info!(
-        has_patch = patch.is_some(),
-        warnings = warnings.len(),
-        "Assistant response processed"
-    );
+        // Validate the patch and retry if attempts remain (0 = skip validation entirely)
+        if let Some(ref p) = patch && max_repair_attempts > 0 {
+            let candidate = merge_patch_into_workflow(workflow, p);
+            if let Err(validation_err) = validate_workflow(&candidate) {
+                if attempt + 1 < max_repair_attempts {
+                    attempt += 1;
+                    info!(
+                        attempt,
+                        max = max_repair_attempts,
+                        error = %validation_err,
+                        "Patch failed validation, retrying"
+                    );
+                    messages.push(Message::assistant(&content));
+                    messages.push(Message::user(format!(
+                        "Your previous output produced a patch that fails validation: {}\n\n\
+                         Please fix the JSON output so the resulting workflow is valid.",
+                        validation_err
+                    )));
+                    continue;
+                }
+                warn!(
+                    error = %validation_err,
+                    "Patch failed validation after {} attempts, returning as-is",
+                    max_repair_attempts
+                );
+            }
+        }
 
-    Ok(AssistantResult {
-        message,
-        patch,
-        new_summary,
-        warnings,
-    })
+        info!(
+            has_patch = patch.is_some(),
+            warnings = warnings.len(),
+            repair_attempts = attempt,
+            "Assistant response processed"
+        );
+
+        return Ok(AssistantResult {
+            message,
+            patch,
+            new_summary,
+            warnings,
+        });
+    }
 }
 
 /// Try to parse the LLM response as a patch, plan, or conversational text.
@@ -240,6 +275,49 @@ fn extract_prose(content: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Simulate merging a patch into a workflow to produce a candidate for validation.
+///
+/// Mirrors the frontend's `applyPendingPatch` logic: remove nodes, apply updates,
+/// add new nodes, remove edges, add new edges.
+fn merge_patch_into_workflow(workflow: &Workflow, patch: &PatchResult) -> Workflow {
+    let removed_ids: HashSet<_> = patch.removed_node_ids.iter().collect();
+
+    let nodes: Vec<Node> = workflow
+        .nodes
+        .iter()
+        .filter(|n| !removed_ids.contains(&n.id))
+        .map(|n| {
+            patch
+                .updated_nodes
+                .iter()
+                .find(|u| u.id == n.id)
+                .cloned()
+                .unwrap_or_else(|| n.clone())
+        })
+        .chain(patch.added_nodes.iter().cloned())
+        .collect();
+
+    let edges: Vec<Edge> = workflow
+        .edges
+        .iter()
+        .filter(|e| {
+            !patch
+                .removed_edges
+                .iter()
+                .any(|r| e.from == r.from && e.to == r.to && e.output == r.output)
+        })
+        .cloned()
+        .chain(patch.added_edges.iter().cloned())
+        .collect();
+
+    Workflow {
+        id: workflow.id,
+        name: workflow.name.clone(),
+        nodes,
+        edges,
+    }
 }
 
 /// Generate a default description of what a patch does.

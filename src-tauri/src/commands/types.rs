@@ -181,6 +181,7 @@ pub struct AssistantChatRequest {
     pub allow_ai_transforms: bool,
     pub allow_agent_steps: bool,
     pub mcp_command: String,
+    pub max_repair_attempts: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
