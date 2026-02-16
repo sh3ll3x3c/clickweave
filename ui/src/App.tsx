@@ -115,7 +115,6 @@ function App() {
                     actions.setWorkflow({ ...state.workflow, edges })
                   }
                   onConnect={actions.addEdge}
-                  onDeleteNode={actions.removeNode}
                   onDeleteNodes={actions.removeNodes}
                 />
 

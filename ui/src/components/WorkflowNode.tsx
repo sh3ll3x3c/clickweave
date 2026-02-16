@@ -10,7 +10,6 @@ interface WorkflowNodeData {
   enabled: boolean;
   onDelete: () => void;
   switchCases: string[];
-  isCollapsedLoop?: boolean;
   bodyCount?: number;
   onToggleCollapse?: () => void;
   [key: string]: unknown;
@@ -54,48 +53,16 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
     );
   }
 
+  // Collapsed loops render here; expanded loops use LoopGroupNode
   if (nodeType === "Loop") {
-    if (data.isCollapsedLoop) {
-      // Collapsed loop: single LoopDone handle centered vertically
-      return (
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="LoopDone"
-          className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-          style={{ borderColor: "#f59e0b" }}
-        />
-      );
-    }
     return (
-      <>
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="LoopBody"
-          className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-          style={{ borderColor: "#10b981", top: "30%" }}
-        />
-        <span
-          className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-          style={{ top: "26%" }}
-        >
-          body
-        </span>
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="LoopDone"
-          className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-          style={{ borderColor: "#f59e0b", top: "70%" }}
-        />
-        <span
-          className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-          style={{ top: "66%" }}
-        >
-          done
-        </span>
-      </>
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="LoopDone"
+        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
+        style={{ borderColor: "#f59e0b" }}
+      />
     );
   }
 
@@ -172,12 +139,12 @@ export const WorkflowNode = memo(function WorkflowNode({
     enabled,
     onDelete,
     nodeType,
-    isCollapsedLoop,
     bodyCount,
     onToggleCollapse,
   } = d;
+  const isCollapsedLoop = nodeType === "Loop";
   const isControlFlow = CONTROL_FLOW_TYPES.has(nodeType);
-  const needsTallNode = nodeType === "If" || nodeType === "Loop";
+  const needsTallNode = nodeType === "If";
   const needsExtraTallNode = nodeType === "Switch" && d.switchCases.length > 1;
 
   return (

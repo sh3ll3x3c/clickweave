@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -29,7 +29,6 @@ interface GraphCanvasProps {
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onEdgesChange: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
-  onDeleteNode: (id: string) => void;
   onDeleteNodes: (ids: string[]) => void;
 }
 
@@ -55,8 +54,8 @@ const nodeMetadata: Record<string, { color: string; icon: string }> = {
 const defaultMetadata = { color: "#666", icon: "??" };
 
 // Layout constants for loop group positioning
-const LOOP_HEADER_HEIGHT = 40; // height of the group header bar
-const LOOP_PADDING = 20; // padding inside the group
+const LOOP_HEADER_HEIGHT = 40;
+const LOOP_PADDING = 20;
 const APPROX_NODE_WIDTH = 160;
 const APPROX_NODE_HEIGHT = 50;
 const MIN_GROUP_WIDTH = 300;
@@ -78,7 +77,7 @@ function toRFNode(
   node: Workflow["nodes"][number],
   selectedNode: string | null,
   activeNode: string | null,
-  onDeleteNode: (id: string) => void,
+  onDelete: () => void,
   existing?: RFNode,
 ): RFNode {
   const meta = nodeMetadata[node.node_type.type] ?? defaultMetadata;
@@ -95,7 +94,7 @@ function toRFNode(
       color: meta.color,
       isActive: node.id === activeNode,
       enabled: node.enabled,
-      onDelete: () => onDeleteNode(node.id),
+      onDelete,
       switchCases: node.node_type.type === "Switch"
         ? (node.node_type as { type: "Switch"; cases: { name: string }[] }).cases.map((c) => c.name)
         : [],
@@ -111,7 +110,6 @@ export function GraphCanvas({
   onNodePositionsChange,
   onEdgesChange,
   onConnect,
-  onDeleteNode,
   onDeleteNodes,
 }: GraphCanvasProps) {
   const nodeTypes: NodeTypes = useMemo(
@@ -152,6 +150,17 @@ export function GraphCanvas({
     return ids;
   }, [workflow.nodes]);
 
+  // Map from loop ID to its EndLoop node ID (for cascade delete)
+  const endLoopForLoop = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const n of workflow.nodes) {
+      if (n.node_type.type === "EndLoop") {
+        map.set(n.node_type.loop_id, n.id);
+      }
+    }
+    return map;
+  }, [workflow.nodes]);
+
   const toggleLoopCollapse = useCallback((loopId: string) => {
     setCollapsedLoops((prev) => {
       const next = new Set(prev);
@@ -164,28 +173,33 @@ export function GraphCanvas({
     });
   }, []);
 
-  // Default new loops to collapsed — only add loops we haven't seen before.
-  // Track known loops so we don't re-collapse loops the user has expanded.
-  const [knownLoops, setKnownLoops] = useState<Set<string>>(new Set());
+  // Default new loops to collapsed. Use a ref to track known loops
+  // (not state — it doesn't drive rendering, only prevents re-collapsing).
+  const knownLoopsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const currentLoopIds = new Set(loopMembers.keys());
     const newLoops: string[] = [];
     for (const loopId of currentLoopIds) {
-      if (!knownLoops.has(loopId)) {
+      if (!knownLoopsRef.current.has(loopId)) {
         newLoops.push(loopId);
       }
     }
-    if (newLoops.length > 0) {
-      setCollapsedLoops((prev) => {
-        const next = new Set(prev);
-        for (const loopId of newLoops) {
-          next.add(loopId);
+    setCollapsedLoops((prev) => {
+      const next = new Set(prev);
+      // Add newly discovered loops
+      for (const loopId of newLoops) {
+        next.add(loopId);
+      }
+      // Clean up loops that no longer exist
+      for (const id of next) {
+        if (!currentLoopIds.has(id)) {
+          next.delete(id);
         }
-        return next;
-      });
-    }
-    setKnownLoops(currentLoopIds);
-  }, [loopMembers]); // eslint-disable-line react-hooks/exhaustive-deps
+      }
+      return next;
+    });
+    knownLoopsRef.current = currentLoopIds;
+  }, [loopMembers]);
 
   // Internal RF node state — React Flow fully controls this (including dimensions).
   // We sync workflow data INTO it, preserving RF-internal props like measured/width/height.
@@ -194,56 +208,52 @@ export function GraphCanvas({
   useEffect(() => {
     setRfNodes((prev) => {
       const prevMap = new Map(prev.map((n) => [n.id, n]));
-
-      // Quick lookup for workflow nodes by ID (for position conversion)
       const wfNodeMap = new Map(workflow.nodes.map((n) => [n.id, n]));
 
-      // Parent nodes must appear before their children in the array for React Flow.
-      // Build the base nodes first, then sort so loop group parents come first.
       const nodes: RFNode[] = [];
-
-      // Track which body nodes belong to each expanded loop (for sizing the group)
+      // Track expanded loop group nodes by ID for sizing after all children are processed
+      const groupNodeIndices = new Map<string, number>();
       const expandedLoopChildren = new Map<string, RFNode[]>();
 
       for (const node of workflow.nodes) {
         const existing = prevMap.get(node.id);
-        const base = toRFNode(node, selectedNode, activeNode, onDeleteNode, existing);
 
         // EndLoop nodes are always hidden
         if (endLoopIds.has(node.id)) {
+          const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), existing);
           nodes.push({ ...base, hidden: true });
           continue;
         }
 
         // Loop nodes: collapsed vs expanded
         if (node.node_type.type === "Loop") {
-          const bodyCount = loopMembers.get(node.id)?.length ?? 0;
+          const bodyIds = loopMembers.get(node.id) ?? [];
+          const bodyCount = bodyIds.length;
+
           if (collapsedLoops.has(node.id)) {
             // Collapsed: render as regular workflow node with collapse badge
-            const bodyIds = loopMembers.get(node.id) ?? [];
-            const endLoopId = workflow.nodes.find(
-              (n) => n.node_type.type === "EndLoop" && n.node_type.loop_id === node.id,
-            )?.id;
+            const endLoopId = endLoopForLoop.get(node.id);
+            const base = toRFNode(node, selectedNode, activeNode, () => {
+              // Cascade delete: Loop node + all body nodes + EndLoop
+              const ids = [...bodyIds];
+              if (endLoopId) ids.push(endLoopId);
+              ids.push(node.id);
+              onDeleteNodes(ids);
+            }, existing);
             nodes.push({
               ...base,
               type: "workflow",
               data: {
                 ...base.data,
-                isCollapsedLoop: true,
                 bodyCount,
                 onToggleCollapse: () => toggleLoopCollapse(node.id),
-                onDelete: () => {
-                  // Cascade delete: Loop node + all body nodes + EndLoop
-                  const ids = [...bodyIds];
-                  if (endLoopId) ids.push(endLoopId);
-                  ids.push(node.id);
-                  onDeleteNodes(ids);
-                },
               },
             });
           } else {
             // Expanded: render as loopGroup (dimensions set below after body nodes are processed)
+            const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), existing);
             expandedLoopChildren.set(node.id, []);
+            const idx = nodes.length;
             nodes.push({
               ...base,
               type: "loopGroup",
@@ -255,6 +265,7 @@ export function GraphCanvas({
                 onToggleCollapse: () => toggleLoopCollapse(node.id),
               },
             });
+            groupNodeIndices.set(node.id, idx);
           }
           continue;
         }
@@ -262,6 +273,8 @@ export function GraphCanvas({
         // Body nodes of a loop
         const parentLoops = nodeToLoops.get(node.id);
         if (parentLoops && parentLoops.length > 0) {
+          const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), existing);
+
           // If ANY parent loop is collapsed, hide this body node
           const anyCollapsed = parentLoops.some((lid) => collapsedLoops.has(lid));
           if (anyCollapsed) {
@@ -271,16 +284,12 @@ export function GraphCanvas({
             const parentId = parentLoops[parentLoops.length - 1];
             const loopWfNode = wfNodeMap.get(parentId);
 
-            // Convert absolute position to parent-relative position.
-            // If the node already had this same parentId in the previous render
-            // (user may have dragged it within the group), keep the existing position.
-            // Otherwise compute it fresh from workflow absolute positions.
+            // Convert absolute position to parent-relative.
+            // If already parented to this loop, keep user-dragged position.
             let relativePosition = base.position;
             if (existing?.parentId === parentId) {
-              // Same parent as before — keep existing RF position (user may have dragged)
               relativePosition = existing.position;
             } else if (loopWfNode) {
-              // Transitioning into this parent — compute relative from absolute
               relativePosition = {
                 x: node.position.x - loopWfNode.position.x + LOOP_PADDING,
                 y: node.position.y - loopWfNode.position.y + LOOP_HEADER_HEIGHT + LOOP_PADDING,
@@ -298,21 +307,21 @@ export function GraphCanvas({
               },
             };
             nodes.push(childNode);
-
-            // Track for group sizing
             expandedLoopChildren.get(parentId)?.push(childNode);
           }
           continue;
         }
 
-        // Regular node — no special handling
+        // Regular node
+        const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), existing);
         nodes.push(base);
       }
 
       // Size each expanded loop group node to contain all its children
       for (const [loopId, children] of expandedLoopChildren) {
-        const groupNode = nodes.find((n) => n.id === loopId);
-        if (!groupNode) continue;
+        const idx = groupNodeIndices.get(loopId);
+        if (idx === undefined) continue;
+        const groupNode = nodes[idx];
 
         let maxX = 0;
         let maxY = 0;
@@ -329,7 +338,6 @@ export function GraphCanvas({
       }
 
       // React Flow requires parent nodes before children in the array.
-      // Sort: nodes without parentId first, then nodes with parentId.
       nodes.sort((a, b) => {
         const aHasParent = a.parentId ? 1 : 0;
         const bHasParent = b.parentId ? 1 : 0;
@@ -342,19 +350,18 @@ export function GraphCanvas({
     workflow.nodes,
     selectedNode,
     activeNode,
-    onDeleteNode,
     onDeleteNodes,
     collapsedLoops,
     loopMembers,
     nodeToLoops,
     endLoopIds,
+    endLoopForLoop,
     toggleLoopCollapse,
   ]);
 
   // Build set of hidden node IDs for edge filtering
   const hiddenNodeIds = useMemo(() => {
     const ids = new Set<string>(endLoopIds);
-    // Body nodes of collapsed loops
     for (const [nodeId, parentLoops] of nodeToLoops) {
       if (parentLoops.some((lid) => collapsedLoops.has(lid))) {
         ids.add(nodeId);
@@ -367,13 +374,8 @@ export function GraphCanvas({
     () =>
       workflow.edges
         .filter((edge) => {
-          // Hide edges connected to hidden nodes (EndLoop or collapsed body nodes)
           if (hiddenNodeIds.has(edge.from) || hiddenNodeIds.has(edge.to)) return false;
-          // Hide LoopBody edges from collapsed loops (the handle doesn't exist)
-          if (
-            edge.output?.type === "LoopBody" &&
-            collapsedLoops.has(edge.from)
-          ) return false;
+          if (edge.output?.type === "LoopBody" && collapsedLoops.has(edge.from)) return false;
           return true;
         })
         .map((edge) => ({
@@ -388,41 +390,39 @@ export function GraphCanvas({
     [workflow.edges, hiddenNodeIds, collapsedLoops],
   );
 
-  // Apply ALL changes to internal state so React Flow can track dimensions.
-  // Propagate position changes back to workflow state.
+  // Apply changes to internal state and propagate position changes back to workflow.
   const handleNodesChange: OnNodesChange = useCallback(
     (changes) => {
-      // Apply changes first so we have the latest RF node state
-      let updatedNodes: RFNode[] = [];
       setRfNodes((prev) => {
-        updatedNodes = applyNodeChanges(changes, prev);
+        const updatedNodes = applyNodeChanges(changes, prev);
+
+        // Compute position updates inside the updater where state is fresh
+        const nodeMap = new Map(updatedNodes.map((n) => [n.id, n]));
+        const posUpdates = new Map<string, { x: number; y: number }>();
+        for (const change of changes) {
+          if (change.type === "position" && change.position) {
+            const rfNode = nodeMap.get(change.id);
+            if (rfNode?.parentId) {
+              const parentRfNode = nodeMap.get(rfNode.parentId);
+              if (parentRfNode) {
+                posUpdates.set(change.id, {
+                  x: change.position.x + parentRfNode.position.x - LOOP_PADDING,
+                  y: change.position.y + parentRfNode.position.y - LOOP_HEADER_HEIGHT - LOOP_PADDING,
+                });
+              }
+            } else {
+              posUpdates.set(change.id, change.position);
+            }
+          } else if (change.type === "select" && change.selected) {
+            onSelectNode(change.id);
+          }
+        }
+        if (posUpdates.size > 0) {
+          onNodePositionsChange(posUpdates);
+        }
+
         return updatedNodes;
       });
-
-      const posUpdates = new Map<string, { x: number; y: number }>();
-      for (const change of changes) {
-        if (change.type === "position" && change.position) {
-          const rfNode = updatedNodes.find((n) => n.id === change.id);
-          if (rfNode?.parentId) {
-            // Body node inside a group: position is relative to parent.
-            // Convert back to absolute for workflow storage.
-            const parentRfNode = updatedNodes.find((n) => n.id === rfNode.parentId);
-            if (parentRfNode) {
-              posUpdates.set(change.id, {
-                x: change.position.x + parentRfNode.position.x - LOOP_PADDING,
-                y: change.position.y + parentRfNode.position.y - LOOP_HEADER_HEIGHT - LOOP_PADDING,
-              });
-            }
-          } else {
-            posUpdates.set(change.id, change.position);
-          }
-        } else if (change.type === "select" && change.selected) {
-          onSelectNode(change.id);
-        }
-      }
-      if (posUpdates.size > 0) {
-        onNodePositionsChange(posUpdates);
-      }
     },
     [onNodePositionsChange, onSelectNode],
   );

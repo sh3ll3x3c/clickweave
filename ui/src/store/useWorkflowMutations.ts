@@ -31,18 +31,6 @@ export function useWorkflowMutations(
     [nodesLength, setWorkflow, setSelectedNode],
   );
 
-  const removeNode = useCallback(
-    (id: string) => {
-      setWorkflow((prev) => ({
-        ...prev,
-        nodes: prev.nodes.filter((n) => n.id !== id),
-        edges: prev.edges.filter((e) => e.from !== id && e.to !== id),
-      }));
-      setSelectedNode((prev) => (prev === id ? null : prev));
-    },
-    [setWorkflow, setSelectedNode],
-  );
-
   const removeNodes = useCallback(
     (ids: string[]) => {
       const idSet = new Set(ids);
@@ -108,6 +96,11 @@ export function useWorkflowMutations(
       }));
     },
     [setWorkflow],
+  );
+
+  const removeNode = useCallback(
+    (id: string) => removeNodes([id]),
+    [removeNodes],
   );
 
   return { addNode, removeNode, removeNodes, updateNodePositions, updateNode, addEdge, removeEdge };
