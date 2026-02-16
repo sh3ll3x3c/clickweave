@@ -10,7 +10,7 @@ mod tests;
 
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{NodeRun, Workflow};
+use clickweave_core::{NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -39,6 +39,7 @@ pub enum ExecutorEvent {
     NodeFailed(Uuid, String),
     RunCreated(Uuid, NodeRun),
     WorkflowCompleted,
+    ChecksCompleted(Vec<NodeVerdict>),
     Error(String),
 }
 

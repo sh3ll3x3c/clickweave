@@ -97,6 +97,9 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                 ExecutorEvent::WorkflowCompleted => {
                     emit_handle.emit("executor://workflow_completed", ())
                 }
+                ExecutorEvent::ChecksCompleted(verdicts) => {
+                    emit_handle.emit("executor://checks_completed", verdicts)
+                }
                 ExecutorEvent::RunCreated(_, _) => Ok(()),
             };
             if let Err(e) = emit_result {
