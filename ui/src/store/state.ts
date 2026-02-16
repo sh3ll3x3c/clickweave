@@ -81,6 +81,7 @@ export interface AppActions {
   resendMessage: (index: number) => Promise<void>;
   applyPendingPatch: () => Promise<void>;
   discardPendingPatch: () => void;
+  cancelAssistantChat: () => Promise<void>;
   clearConversation: () => void;
   setVerdicts: (verdicts: import("./slices/verdictSlice").NodeVerdict[]) => void;
   clearVerdicts: () => void;

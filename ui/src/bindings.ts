@@ -70,6 +70,14 @@ async assistantChat(request: AssistantChatRequest) : Promise<Result<AssistantCha
     else return { status: "error", error: e  as any };
 }
 },
+async cancelAssistantChat() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_assistant_chat") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async saveConversation(path: string, conversation: ConversationSession) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_conversation", { path, conversation }) };

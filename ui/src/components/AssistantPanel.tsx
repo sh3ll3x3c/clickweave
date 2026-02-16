@@ -11,6 +11,7 @@ interface AssistantPanelProps {
   pendingPatchWarnings: string[];
   onSendMessage: (message: string) => void;
   onResendMessage: (index: number) => Promise<void>;
+  onCancel: () => void;
   onApplyPatch: () => void;
   onDiscardPatch: () => void;
   onClearConversation: () => void;
@@ -26,6 +27,7 @@ export function AssistantPanel({
   pendingPatchWarnings,
   onSendMessage,
   onResendMessage,
+  onCancel,
   onApplyPatch,
   onDiscardPatch,
   onClearConversation,
@@ -188,13 +190,23 @@ export function AssistantPanel({
             disabled={loading}
             className="flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent-coral)]"
           />
-          <button
-            onClick={handleSend}
-            disabled={loading || !input.trim()}
-            className="self-end rounded-lg bg-[var(--accent-coral)] px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
-          >
-            Send
-          </button>
+          {loading ? (
+            <button
+              onClick={onCancel}
+              className="self-end rounded-lg border border-[var(--text-muted)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:border-[var(--text-primary)] hover:text-[var(--text-primary)]"
+              title="Stop request"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!input.trim()}
+              className="self-end rounded-lg bg-[var(--accent-coral)] px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+            >
+              Send
+            </button>
+          )}
         </div>
         <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
           Enter to send, Shift+Enter for new line

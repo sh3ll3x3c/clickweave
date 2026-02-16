@@ -150,6 +150,7 @@ function App() {
                 pendingPatchWarnings={state.pendingPatchWarnings}
                 onSendMessage={actions.sendAssistantMessage}
                 onResendMessage={actions.resendMessage}
+                onCancel={actions.cancelAssistantChat}
                 onApplyPatch={actions.applyPendingPatch}
                 onDiscardPatch={actions.discardPendingPatch}
                 onClearConversation={actions.clearConversation}

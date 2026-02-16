@@ -132,6 +132,7 @@ export function useAppStore(): [AppState, AppActions] {
     resendMessage: store.resendMessage,
     applyPendingPatch: store.applyPendingPatch,
     discardPendingPatch: store.discardPendingPatch,
+    cancelAssistantChat: store.cancelAssistantChat,
     clearConversation: store.clearConversation,
     setVerdicts: store.setVerdicts,
     clearVerdicts: store.clearVerdicts,

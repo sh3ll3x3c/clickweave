@@ -5,7 +5,7 @@ mod project;
 mod runs;
 mod types;
 
-pub use assistant::*;
+pub use assistant::{AssistantHandle, assistant_chat, cancel_assistant_chat};
 pub use executor::{ExecutorHandle, run_workflow, stop_workflow};
 pub use planner::{patch_workflow, plan_workflow};
 pub use project::{

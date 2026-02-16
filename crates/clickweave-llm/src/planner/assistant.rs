@@ -137,7 +137,9 @@ pub async fn assistant_chat_with_backend(
         );
 
         // Validate the patch and retry if attempts remain (0 = skip validation entirely)
-        if let Some(ref p) = patch && max_repair_attempts > 0 {
+        if let Some(ref p) = patch
+            && max_repair_attempts > 0
+        {
             let candidate = merge_patch_into_workflow(workflow, p);
             if let Err(validation_err) = validate_workflow(&candidate) {
                 if attempt + 1 < max_repair_attempts {

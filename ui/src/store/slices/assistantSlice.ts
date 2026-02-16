@@ -20,6 +20,7 @@ export interface AssistantSlice {
   resendMessage: (index: number) => Promise<void>;
   applyPendingPatch: () => Promise<void>;
   discardPendingPatch: () => void;
+  cancelAssistantChat: () => Promise<void>;
   clearConversation: () => void;
 }
 
@@ -115,8 +116,10 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
 
         pushLog(`Assistant: ${data.patch ? "generated changes" : "responded"}`);
       } else {
-        set({ assistantError: result.error });
-        pushLog(`Assistant error: ${result.error}`);
+        if (result.error !== "cancelled") {
+          set({ assistantError: result.error });
+          pushLog(`Assistant error: ${result.error}`);
+        }
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -194,6 +197,11 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       pendingPatchWarnings: [],
       assistantError: null,
     });
+  },
+
+  cancelAssistantChat: async () => {
+    await commands.cancelAssistantChat();
+    set({ assistantLoading: false, assistantError: null });
   },
 
   clearConversation: () => {

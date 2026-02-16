@@ -63,6 +63,7 @@ fn main() {
         plan_workflow,
         patch_workflow,
         assistant_chat,
+        cancel_assistant_chat,
         save_conversation,
         load_conversation,
         run_workflow,
@@ -93,6 +94,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(Mutex::new(ExecutorHandle::default()))
+        .manage(Mutex::new(AssistantHandle::default()))
         .invoke_handler(builder.invoke_handler())
         .menu(menu::build_menu)
         .setup(move |app| {
