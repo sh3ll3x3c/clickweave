@@ -12,7 +12,7 @@ pub mod summarize;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use clickweave_core::{Edge, EdgeOutput, Node, NodeType, Position, Workflow, tool_mapping};
 use mapping::step_to_node_type;
@@ -519,7 +519,165 @@ fn build_nodes_and_edges_from_graph(
         }
     }
 
+    // Infer missing edge labels for control flow nodes (Loop, If)
+    infer_control_flow_edges(&nodes, &mut edges, &mut warnings);
+
     (nodes, edges, warnings)
+}
+
+/// Post-process edges to infer control flow labels that LLMs typically omit.
+///
+/// LLMs generate graph structures that are semantically correct but often miss
+/// the `output` labels required for Loop (LoopBody/LoopDone) and If (IfTrue/IfFalse)
+/// edges. This pass also fixes common structural issues like back-edges bypassing
+/// EndLoop nodes.
+fn infer_control_flow_edges(nodes: &[Node], edges: &mut Vec<Edge>, warnings: &mut Vec<String>) {
+    // Collect EndLoop→Loop pairs: loop_id → endloop_node_id
+    let endloop_for_loop: HashMap<Uuid, Uuid> = nodes
+        .iter()
+        .filter_map(|n| match &n.node_type {
+            NodeType::EndLoop(p) => Some((p.loop_id, n.id)),
+            _ => None,
+        })
+        .collect();
+
+    let endloop_ids: HashSet<Uuid> = endloop_for_loop.values().copied().collect();
+
+    // ── Phase 1: Label Loop outgoing edges ────────────────────────
+    for node in nodes {
+        if !matches!(node.node_type, NodeType::Loop(_)) {
+            continue;
+        }
+        let loop_id = node.id;
+        let endloop_id = endloop_for_loop.get(&loop_id).copied();
+
+        let unlabeled: Vec<usize> = edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.from == loop_id && e.output.is_none())
+            .map(|(i, _)| i)
+            .collect();
+
+        match unlabeled.len() {
+            2 => {
+                let done_is_first = endloop_id.is_some_and(|el_id| edges[unlabeled[0]].to == el_id);
+                let done_is_second =
+                    endloop_id.is_some_and(|el_id| edges[unlabeled[1]].to == el_id);
+                let (body_idx, done_idx) = if done_is_first {
+                    (unlabeled[1], unlabeled[0])
+                } else {
+                    if !done_is_second {
+                        // Neither edge targets EndLoop — falling back to edge order
+                        warnings.push(format!(
+                            "Loop '{}': could not determine LoopBody/LoopDone from structure, using edge order",
+                            node.name
+                        ));
+                    }
+                    (unlabeled[0], unlabeled[1])
+                };
+                edges[body_idx].output = Some(EdgeOutput::LoopBody);
+                edges[done_idx].output = Some(EdgeOutput::LoopDone);
+            }
+            1 => {
+                edges[unlabeled[0]].output = Some(EdgeOutput::LoopBody);
+            }
+            _ => {} // 0 (already labeled) or 3+ (malformed) — leave alone
+        }
+    }
+
+    // ── Phase 2: Fix EndLoop back-edges ──────────────────────────
+    //
+    // LLMs often route the last body node directly back to the Loop,
+    // bypassing EndLoop. We detect this pattern and reroute through EndLoop.
+    for node in nodes {
+        let NodeType::EndLoop(params) = &node.node_type else {
+            continue;
+        };
+        let endloop_id = node.id;
+        let loop_id = params.loop_id;
+
+        // Skip if EndLoop already has the correct back-edge
+        if edges
+            .iter()
+            .any(|e| e.from == endloop_id && e.to == loop_id)
+        {
+            continue;
+        }
+
+        // Find body nodes via DFS from the LoopBody target
+        let body_start = edges
+            .iter()
+            .find(|e| e.from == loop_id && e.output == Some(EdgeOutput::LoopBody))
+            .map(|e| e.to);
+
+        if let Some(start) = body_start {
+            let adj: HashMap<Uuid, Vec<Uuid>> = {
+                let mut m: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+                for e in edges.iter() {
+                    m.entry(e.from).or_default().push(e.to);
+                }
+                m
+            };
+
+            // Collect body nodes via DFS (stop at Loop and EndLoop boundaries)
+            let mut body_set = HashSet::new();
+            let mut stack = vec![start];
+            while let Some(n) = stack.pop() {
+                if n == loop_id || n == endloop_id || !body_set.insert(n) {
+                    continue;
+                }
+                if let Some(nexts) = adj.get(&n) {
+                    stack.extend(nexts);
+                }
+            }
+
+            // Reroute body→Loop edges through EndLoop
+            for edge in edges.iter_mut() {
+                if edge.to == loop_id
+                    && edge.from != endloop_id
+                    && edge.output.is_none()
+                    && body_set.contains(&edge.from)
+                {
+                    edge.to = endloop_id;
+                }
+            }
+        }
+
+        // Add EndLoop → Loop back-edge
+        edges.push(Edge {
+            from: endloop_id,
+            to: loop_id,
+            output: None,
+        });
+    }
+
+    // ── Phase 3: Remove LoopDone→EndLoop edges ──────────────────
+    //
+    // If LoopDone targets an EndLoop, following it would loop back
+    // (EndLoop→Loop), creating an infinite loop. Remove such edges.
+    let before = edges.len();
+    edges.retain(|e| !(e.output == Some(EdgeOutput::LoopDone) && endloop_ids.contains(&e.to)));
+    if edges.len() < before {
+        warnings.push("Removed LoopDone edge targeting EndLoop (would cause infinite loop)".into());
+    }
+
+    // ── Phase 4: Label If outgoing edges ─────────────────────────
+    for node in nodes {
+        if !matches!(node.node_type, NodeType::If(_)) {
+            continue;
+        }
+        let unlabeled: Vec<usize> = edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.from == node.id && e.output.is_none())
+            .map(|(i, _)| i)
+            .collect();
+
+        if unlabeled.len() == 2 {
+            edges[unlabeled[0]].output = Some(EdgeOutput::IfTrue);
+            edges[unlabeled[1]].output = Some(EdgeOutput::IfFalse);
+        }
+    }
 }
 
 /// Build a Workflow from graph-based planner output.

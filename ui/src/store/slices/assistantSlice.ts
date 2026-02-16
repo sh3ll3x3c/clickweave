@@ -147,11 +147,15 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
     try {
       const validation = await commands.validate(patched);
       if (!validation.valid) {
-        pushLog(`Patch rejected: ${validation.errors.join(", ")}`);
+        const msg = `Patch rejected: ${validation.errors.join(", ")}`;
+        pushLog(msg);
+        set({ assistantError: msg });
         return;
       }
     } catch (e) {
-      pushLog(`Patch validation failed: ${e instanceof Error ? e.message : String(e)}`);
+      const msg = `Patch validation failed: ${e instanceof Error ? e.message : String(e)}`;
+      pushLog(msg);
+      set({ assistantError: msg });
       return;
     }
     set({

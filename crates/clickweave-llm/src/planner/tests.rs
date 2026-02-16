@@ -1345,3 +1345,244 @@ fn test_mixed_add_and_add_nodes_warns_and_skips_flat() {
         patch.warnings,
     );
 }
+
+// ── Edge inference tests ────────────────────────────────────────
+
+#[tokio::test]
+async fn test_infer_loop_edges_from_unlabeled() {
+    // LLM produces unlabeled Loop edges — inference should label them.
+    // Pattern: Loop→body (unlabeled), Loop→EndLoop (unlabeled)
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"id": "n2", "step_type": "Loop", "name": "My Loop", "exit_condition": {
+            "left": {"type": "Variable", "name": "done"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }, "max_iterations": 10},
+        {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click Equals"},
+        {"id": "n4", "step_type": "EndLoop", "loop_id": "n2", "name": "End Loop"},
+        {"id": "n5", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Done Screenshot"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3"},
+        {"from": "n2", "to": "n5"},
+        {"from": "n3", "to": "n4"},
+        {"from": "n4", "to": "n2"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(&mock, "Loop test", &sample_tools(), false, false)
+        .await
+        .unwrap();
+
+    let wf = &result.workflow;
+    let loop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::Loop(_)))
+        .unwrap();
+
+    let loop_edges: Vec<_> = wf.edges.iter().filter(|e| e.from == loop_node.id).collect();
+    assert_eq!(loop_edges.len(), 2);
+    assert!(
+        loop_edges
+            .iter()
+            .any(|e| e.output == Some(EdgeOutput::LoopBody)),
+        "Should infer LoopBody edge"
+    );
+    assert!(
+        loop_edges
+            .iter()
+            .any(|e| e.output == Some(EdgeOutput::LoopDone)),
+        "Should infer LoopDone edge"
+    );
+}
+
+#[tokio::test]
+async fn test_infer_loop_reroutes_back_edge_through_endloop() {
+    // LLM produces: body_end→Loop (bypassing EndLoop), Loop→EndLoop (as exit).
+    // This is the exact pattern from the calculator bug.
+    // Expected fix: body_end→EndLoop, EndLoop→Loop, LoopDone removed (terminal).
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"id": "n2", "step_type": "Loop", "name": "Multiply", "exit_condition": {
+            "left": {"type": "Variable", "name": "result.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }, "max_iterations": 20},
+        {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
+        {"id": "n4", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click Equals"},
+        {"id": "n5", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "1024"}, "name": "Check Result"},
+        {"id": "n6", "step_type": "EndLoop", "loop_id": "n2", "name": "End Loop"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3"},
+        {"from": "n3", "to": "n4"},
+        {"from": "n4", "to": "n5"},
+        {"from": "n5", "to": "n2"},
+        {"from": "n2", "to": "n6"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Calculator multiply loop",
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let wf = &result.workflow;
+    let loop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::Loop(_)))
+        .unwrap();
+    let endloop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+        .unwrap();
+
+    // Loop should have LoopBody edge (to Click 2) but no LoopDone (removed: targeted EndLoop)
+    let loop_edges: Vec<_> = wf.edges.iter().filter(|e| e.from == loop_node.id).collect();
+    assert_eq!(loop_edges.len(), 1, "Terminal loop: only LoopBody edge");
+    assert_eq!(
+        loop_edges[0].output,
+        Some(EdgeOutput::LoopBody),
+        "The single Loop edge should be LoopBody"
+    );
+
+    // EndLoop should have back-edge to Loop
+    let endloop_edges: Vec<_> = wf
+        .edges
+        .iter()
+        .filter(|e| e.from == endloop_node.id)
+        .collect();
+    assert_eq!(
+        endloop_edges.len(),
+        1,
+        "EndLoop should have one outgoing edge"
+    );
+    assert_eq!(
+        endloop_edges[0].to, loop_node.id,
+        "EndLoop should point back to Loop"
+    );
+
+    // Check Result (n5) should connect to EndLoop, not directly to Loop
+    let check_node = wf.nodes.iter().find(|n| n.name == "Check Result").unwrap();
+    let check_edges: Vec<_> = wf
+        .edges
+        .iter()
+        .filter(|e| e.from == check_node.id)
+        .collect();
+    assert_eq!(check_edges.len(), 1);
+    assert_eq!(
+        check_edges[0].to, endloop_node.id,
+        "Back-edge should be rerouted through EndLoop"
+    );
+}
+
+#[tokio::test]
+async fn test_infer_if_edges_from_unlabeled() {
+    // LLM produces If node with two unlabeled edges — first should be IfTrue, second IfFalse.
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "If", "name": "Check Found", "condition": {
+            "left": {"type": "Variable", "name": "find_text.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "OK"}, "name": "Click OK"},
+        {"id": "n3", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Screenshot"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n1", "to": "n3"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(&mock, "If check", &sample_tools(), false, false)
+        .await
+        .unwrap();
+
+    let wf = &result.workflow;
+    let if_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::If(_)))
+        .unwrap();
+
+    let if_edges: Vec<_> = wf.edges.iter().filter(|e| e.from == if_node.id).collect();
+    assert_eq!(if_edges.len(), 2);
+    assert!(
+        if_edges
+            .iter()
+            .any(|e| e.output == Some(EdgeOutput::IfTrue)),
+        "Should infer IfTrue edge"
+    );
+    assert!(
+        if_edges
+            .iter()
+            .any(|e| e.output == Some(EdgeOutput::IfFalse)),
+        "Should infer IfFalse edge"
+    );
+}
+
+#[test]
+fn test_infer_noop_for_already_labeled_edges() {
+    // Edges that already have labels should not be modified.
+    use super::infer_control_flow_edges;
+    use clickweave_core::{EndLoopParams, LoopParams, Node, NodeType, Position};
+
+    let pos = |y| Position { x: 0.0, y };
+    let loop_node = Node::new(
+        NodeType::Loop(LoopParams {
+            exit_condition: bool_condition("x"),
+            max_iterations: 10,
+        }),
+        pos(0.0),
+        "Loop",
+    );
+    let body_node = Node::new(NodeType::Click(ClickParams::default()), pos(100.0), "Body");
+    let endloop_node = Node::new(
+        NodeType::EndLoop(EndLoopParams {
+            loop_id: loop_node.id,
+        }),
+        pos(200.0),
+        "EndLoop",
+    );
+    let done_node = Node::new(NodeType::Click(ClickParams::default()), pos(300.0), "Done");
+
+    let mut edges = vec![
+        Edge {
+            from: loop_node.id,
+            to: body_node.id,
+            output: Some(EdgeOutput::LoopBody),
+        },
+        Edge {
+            from: loop_node.id,
+            to: done_node.id,
+            output: Some(EdgeOutput::LoopDone),
+        },
+        Edge {
+            from: body_node.id,
+            to: endloop_node.id,
+            output: None,
+        },
+        Edge {
+            from: endloop_node.id,
+            to: loop_node.id,
+            output: None,
+        },
+    ];
+    let nodes = vec![loop_node, body_node, endloop_node, done_node];
+    let mut warnings = Vec::new();
+
+    infer_control_flow_edges(&nodes, &mut edges, &mut warnings);
+
+    assert_eq!(edges.len(), 4);
+    assert_eq!(edges[0].output, Some(EdgeOutput::LoopBody));
+    assert_eq!(edges[1].output, Some(EdgeOutput::LoopDone));
+    assert!(warnings.is_empty());
+}

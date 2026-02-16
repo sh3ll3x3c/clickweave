@@ -197,13 +197,14 @@ fn validate_outgoing_edges(workflow: &Workflow) -> Result<(), ValidationError> {
                 let has_body = outgoing
                     .iter()
                     .any(|e| e.output.as_ref() == Some(&EdgeOutput::LoopBody));
+                if !has_body {
+                    return Err(ValidationError::MissingLoopEdge(node.name.clone()));
+                }
+                // LoopDone is optional — terminal loops may have only a LoopBody edge.
                 let has_done = outgoing
                     .iter()
                     .any(|e| e.output.as_ref() == Some(&EdgeOutput::LoopDone));
-                if !has_body || !has_done {
-                    return Err(ValidationError::MissingLoopEdge(node.name.clone()));
-                }
-                if outgoing.len() != 2 {
+                if outgoing.len() != if has_done { 2 } else { 1 } {
                     return Err(ValidationError::ExtraLoopEdges(node.name.clone()));
                 }
             }
@@ -518,6 +519,30 @@ mod tests {
 
         wf.add_edge_with_output(loop_node, body, EdgeOutput::LoopBody);
         wf.add_edge_with_output(loop_node, done, EdgeOutput::LoopDone);
+        wf.add_edge(body, end_loop);
+        wf.add_edge(end_loop, loop_node); // back-edge
+
+        assert!(validate_workflow(&wf).is_ok());
+    }
+
+    #[test]
+    fn test_validate_terminal_loop() {
+        // Loop with LoopBody only (no LoopDone) — workflow ends after loop
+        let mut wf = Workflow::default();
+        let loop_node = wf.add_node(
+            NodeType::Loop(LoopParams {
+                exit_condition: dummy_condition(),
+                max_iterations: 10,
+            }),
+            pos(0.0, 0.0),
+        );
+        let body = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 0.0));
+        let end_loop = wf.add_node(
+            NodeType::EndLoop(EndLoopParams { loop_id: loop_node }),
+            pos(200.0, 0.0),
+        );
+
+        wf.add_edge_with_output(loop_node, body, EdgeOutput::LoopBody);
         wf.add_edge(body, end_loop);
         wf.add_edge(end_loop, loop_node); // back-edge
 
