@@ -136,7 +136,7 @@ fn parse_and_build_workflow(
     }
 
     // Build linear edges
-    let edges: Vec<Edge> = nodes
+    let mut edges: Vec<Edge> = nodes
         .windows(2)
         .map(|pair| Edge {
             from: pair[0].id,
@@ -144,6 +144,11 @@ fn parse_and_build_workflow(
             output: None,
         })
         .collect();
+
+    // Flat plans don't carry explicit Loop→EndLoop ID links — pair them
+    // by nesting order, then infer control flow edge labels and back-edges.
+    super::pair_endloop_with_loop(&mut nodes, &mut warnings);
+    super::infer_control_flow_edges(&nodes, &mut edges, &mut warnings);
 
     let workflow = Workflow {
         id: Uuid::new_v4(),

@@ -435,7 +435,7 @@ pub(crate) fn build_plan_as_patch(
         }
     }
 
-    let added_edges: Vec<Edge> = added_nodes
+    let mut added_edges: Vec<Edge> = added_nodes
         .windows(2)
         .map(|pair| Edge {
             from: pair[0].id,
@@ -443,6 +443,11 @@ pub(crate) fn build_plan_as_patch(
             output: None,
         })
         .collect();
+
+    // Flat plans don't carry explicit Loop→EndLoop ID links — pair them
+    // by nesting order, then infer control flow edge labels and back-edges.
+    pair_endloop_with_loop(&mut added_nodes, &mut warnings);
+    infer_control_flow_edges(&added_nodes, &mut added_edges, &mut warnings);
 
     PatchResult {
         added_nodes,
@@ -581,13 +586,46 @@ fn build_nodes_and_edges_from_graph(
     (nodes, edges, warnings)
 }
 
+/// Pair EndLoop nodes with Loop nodes by nesting order (like matching parentheses).
+///
+/// Flat plans don't carry explicit Loop→EndLoop ID links. Walk through nodes
+/// sequentially, push Loop IDs onto a stack, and pop when we see EndLoop.
+pub(crate) fn pair_endloop_with_loop(nodes: &mut [Node], warnings: &mut Vec<String>) {
+    let mut loop_stack: Vec<Uuid> = Vec::new();
+    for node in nodes.iter_mut() {
+        match &mut node.node_type {
+            NodeType::Loop(_) => {
+                loop_stack.push(node.id);
+            }
+            NodeType::EndLoop(params) if params.loop_id == uuid::Uuid::nil() => {
+                match loop_stack.pop() {
+                    Some(loop_id) => params.loop_id = loop_id,
+                    None => {
+                        warnings.push(format!("EndLoop '{}' has no matching Loop node", node.name))
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for leftover_id in &loop_stack {
+        if let Some(node) = nodes.iter().find(|n| n.id == *leftover_id) {
+            warnings.push(format!("Loop '{}' has no matching EndLoop node", node.name));
+        }
+    }
+}
+
 /// Post-process edges to infer control flow labels that LLMs typically omit.
 ///
 /// LLMs generate graph structures that are semantically correct but often miss
 /// the `output` labels required for Loop (LoopBody/LoopDone) and If (IfTrue/IfFalse)
 /// edges. This pass also fixes common structural issues like back-edges bypassing
 /// EndLoop nodes.
-fn infer_control_flow_edges(nodes: &[Node], edges: &mut Vec<Edge>, warnings: &mut Vec<String>) {
+pub(crate) fn infer_control_flow_edges(
+    nodes: &[Node],
+    edges: &mut Vec<Edge>,
+    warnings: &mut Vec<String>,
+) {
     // Collect EndLoop→Loop pairs: loop_id → endloop_node_id
     let endloop_for_loop: HashMap<Uuid, Uuid> = nodes
         .iter()
@@ -685,13 +723,11 @@ fn infer_control_flow_edges(nodes: &[Node], edges: &mut Vec<Edge>, warnings: &mu
                 }
             }
 
-            // Reroute body→Loop edges through EndLoop
+            // Reroute body→Loop edges through EndLoop.
+            // Any edge from a body node back to the Loop should go through
+            // EndLoop, regardless of its output label (e.g. IfFalse).
             for edge in edges.iter_mut() {
-                if edge.to == loop_id
-                    && edge.from != endloop_id
-                    && edge.output.is_none()
-                    && body_set.contains(&edge.from)
-                {
+                if edge.to == loop_id && edge.from != endloop_id && body_set.contains(&edge.from) {
                     edge.to = endloop_id;
                 }
             }
@@ -704,6 +740,25 @@ fn infer_control_flow_edges(nodes: &[Node], edges: &mut Vec<Edge>, warnings: &mu
                 to: loop_id,
                 output: None,
             });
+        }
+
+        // Convert EndLoop→NextNode forward-edges to Loop→NextNode (LoopDone).
+        // In flat plans, sequential layout creates EndLoop→NextNode edges that
+        // should instead be the Loop's "done" path.
+        let has_loop_done = edges
+            .iter()
+            .any(|e| e.from == loop_id && e.output == Some(EdgeOutput::LoopDone));
+        if !has_loop_done
+            && let Some(idx) = edges
+                .iter()
+                .position(|e| e.from == endloop_id && e.to != loop_id)
+        {
+            let target = edges[idx].to;
+            edges[idx] = Edge {
+                from: loop_id,
+                to: target,
+                output: Some(EdgeOutput::LoopDone),
+            };
         }
     }
 

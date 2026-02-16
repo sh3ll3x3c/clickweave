@@ -1345,6 +1345,124 @@ fn test_mixed_add_and_add_nodes_warns_and_skips_flat() {
     );
 }
 
+// ── Flat plan loop tests ────────────────────────────────────────
+
+#[test]
+fn test_flat_plan_with_loop_gets_control_flow_edges() {
+    // Flat plans (sequential steps) with Loop/EndLoop need
+    // infer_control_flow_edges to add LoopBody/LoopDone labels
+    // and EndLoop→Loop back-edges.
+    let raw_steps: Vec<serde_json::Value> = serde_json::from_str(r#"[
+        {"step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"step_type": "Loop", "name": "Repeat", "exit_condition": {
+            "left": {"type": "Variable", "name": "result.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }, "max_iterations": 10},
+        {"step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
+        {"step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click Equals"},
+        {"step_type": "EndLoop", "loop_id": "n2", "name": "End Loop"}
+    ]"#)
+    .unwrap();
+
+    let patch = super::build_plan_as_patch(&raw_steps, &sample_tools(), false, false);
+    assert!(
+        patch.warnings.is_empty(),
+        "Unexpected warnings: {:?}",
+        patch.warnings
+    );
+
+    // Build a workflow from the patch
+    let mut wf = clickweave_core::Workflow::new("test");
+    wf.nodes = patch.added_nodes;
+    wf.edges = patch.added_edges;
+
+    let loop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::Loop(_)))
+        .unwrap();
+    let endloop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+        .unwrap();
+
+    // Loop should have LoopBody edge
+    let loop_body = wf
+        .edges
+        .iter()
+        .find(|e| e.from == loop_node.id && e.output == Some(EdgeOutput::LoopBody));
+    assert!(loop_body.is_some(), "Loop should have a LoopBody edge");
+
+    // LoopDone is optional for terminal loops (no steps after EndLoop)
+
+    // EndLoop should have back-edge to Loop
+    let back_edge = wf
+        .edges
+        .iter()
+        .find(|e| e.from == endloop_node.id && e.to == loop_node.id);
+    assert!(back_edge.is_some(), "EndLoop should have back-edge to Loop");
+
+    // Workflow should pass validation
+    clickweave_core::validate_workflow(&wf).expect("Flat plan with loop should pass validation");
+}
+
+#[test]
+fn test_flat_plan_with_post_loop_node_gets_loop_done() {
+    // Flat plan: [Focus, Loop, Click, EndLoop, Screenshot]
+    // EndLoop→Screenshot should be converted to Loop→Screenshot (LoopDone).
+    let raw_steps: Vec<serde_json::Value> = serde_json::from_str(r#"[
+        {"step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"step_type": "Loop", "name": "Repeat", "exit_condition": {
+            "left": {"type": "Variable", "name": "result.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }, "max_iterations": 10},
+        {"step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
+        {"step_type": "EndLoop", "loop_id": "n2", "name": "End Loop"},
+        {"step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Final Screenshot"}
+    ]"#)
+    .unwrap();
+
+    let patch = super::build_plan_as_patch(&raw_steps, &sample_tools(), false, false);
+    assert!(
+        patch.warnings.is_empty(),
+        "Unexpected warnings: {:?}",
+        patch.warnings
+    );
+
+    let mut wf = clickweave_core::Workflow::new("test");
+    wf.nodes = patch.added_nodes;
+    wf.edges = patch.added_edges;
+
+    let loop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::Loop(_)))
+        .unwrap();
+    let screenshot_node = wf
+        .nodes
+        .iter()
+        .find(|n| n.name == "Final Screenshot")
+        .unwrap();
+
+    // Loop should have LoopDone edge pointing to Screenshot
+    let loop_done = wf
+        .edges
+        .iter()
+        .find(|e| e.from == loop_node.id && e.output == Some(EdgeOutput::LoopDone));
+    assert!(loop_done.is_some(), "Loop should have a LoopDone edge");
+    assert_eq!(
+        loop_done.unwrap().to,
+        screenshot_node.id,
+        "LoopDone should target the post-loop node"
+    );
+
+    clickweave_core::validate_workflow(&wf)
+        .expect("Flat plan with post-loop node should pass validation");
+}
+
 // ── Edge inference tests ────────────────────────────────────────
 
 #[tokio::test]
@@ -1661,6 +1779,71 @@ async fn test_infer_loop_reroutes_body_back_edge_when_endloop_edge_already_exist
 
     // Workflow should pass validation (no cycle error)
     clickweave_core::validate_workflow(wf).expect("Workflow with both back-edges should validate");
+}
+
+#[tokio::test]
+async fn test_infer_loop_reroutes_if_false_back_edge_to_loop() {
+    // LLM produces If(IfFalse)→Loop edge inside a loop body. This should be
+    // rerouted through EndLoop, otherwise cycle detection rejects it.
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus Calculator"},
+        {"id": "n2", "step_type": "Loop", "name": "Repeat Multiply", "exit_condition": {
+            "left": {"type": "Variable", "name": "result.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }, "max_iterations": 10},
+        {"id": "n3", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "1024"}, "name": "Check Result"},
+        {"id": "n4", "step_type": "If", "condition": {
+            "left": {"type": "Variable", "name": "n3.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }, "name": "Is 1024?"},
+        {"id": "n5", "step_type": "Tool", "tool_name": "press_key", "arguments": {"key": "escape"}, "name": "Done"},
+        {"id": "n6", "step_type": "EndLoop", "loop_id": "n2", "name": "End Loop"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3"},
+        {"from": "n3", "to": "n4"},
+        {"from": "n4", "to": "n5", "output": {"type": "IfTrue"}},
+        {"from": "n4", "to": "n2", "output": {"type": "IfFalse"}},
+        {"from": "n5", "to": "n6"},
+        {"from": "n6", "to": "n2"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Calculator multiply with If→Loop back-edge",
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let wf = &result.workflow;
+    let endloop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+        .unwrap();
+    let if_node = wf.nodes.iter().find(|n| n.name == "Is 1024?").unwrap();
+
+    // The IfFalse edge from n4 should now target EndLoop, not Loop
+    let if_false_edges: Vec<_> = wf
+        .edges
+        .iter()
+        .filter(|e| e.from == if_node.id && e.output == Some(EdgeOutput::IfFalse))
+        .collect();
+    assert_eq!(if_false_edges.len(), 1);
+    assert_eq!(
+        if_false_edges[0].to, endloop_node.id,
+        "IfFalse→Loop should be rerouted through EndLoop"
+    );
+
+    // Workflow should pass validation (no cycle error)
+    clickweave_core::validate_workflow(wf)
+        .expect("Workflow with IfFalse rerouted through EndLoop should validate");
 }
 
 #[test]
