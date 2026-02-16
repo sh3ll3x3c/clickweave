@@ -25,6 +25,8 @@ export const LoopGroupNode = memo(function LoopGroupNode({
       style={{
         borderColor: selected ? "#10b981" : "#10b98166",
         backgroundColor: "rgba(16, 185, 129, 0.03)",
+        width: "100%",
+        height: "100%",
         minWidth: 300,
         minHeight: 150,
         boxShadow: selected ? "0 0 12px #10b98133" : "none",

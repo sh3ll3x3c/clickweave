@@ -445,10 +445,12 @@ export function GraphCanvas({
         // Compute position updates inside the updater where state is fresh
         const nodeMap = new Map(updatedNodes.map((n) => [n.id, n]));
         const posUpdates = new Map<string, { x: number; y: number }>();
+        const affectedGroups = new Set<string>();
         for (const change of changes) {
           if (change.type === "position" && change.position) {
             const rfNode = nodeMap.get(change.id);
             if (rfNode?.parentId) {
+              affectedGroups.add(rfNode.parentId);
               // Child node dragged within parent — convert to absolute
               const parentRfNode = nodeMap.get(rfNode.parentId);
               if (parentRfNode) {
@@ -473,10 +475,40 @@ export function GraphCanvas({
           } else if (change.type === "select" && change.selected) {
             selectionFromCanvasRef.current = true;
             onSelectNode(change.id);
+          } else if (change.type === "dimensions") {
+            const rfNode = nodeMap.get(change.id);
+            if (rfNode?.parentId) {
+              affectedGroups.add(rfNode.parentId);
+            }
           }
         }
         if (posUpdates.size > 0) {
           onNodePositionsChange(posUpdates);
+        }
+
+        // Resize loop groups when child dimensions or positions change
+        if (affectedGroups.size > 0) {
+          for (const groupId of affectedGroups) {
+            const groupIdx = updatedNodes.findIndex((n) => n.id === groupId);
+            if (groupIdx === -1) continue;
+            const children = updatedNodes.filter((n) => n.parentId === groupId);
+            let maxX = 0;
+            let maxY = 0;
+            for (const child of children) {
+              const childW = child.measured?.width ?? APPROX_NODE_WIDTH;
+              const childH = child.measured?.height ?? APPROX_NODE_HEIGHT;
+              maxX = Math.max(maxX, child.position.x + childW);
+              maxY = Math.max(maxY, child.position.y + childH);
+            }
+            updatedNodes[groupIdx] = {
+              ...updatedNodes[groupIdx],
+              style: {
+                ...updatedNodes[groupIdx].style,
+                width: Math.max(MIN_GROUP_WIDTH, maxX + LOOP_PADDING),
+                height: Math.max(MIN_GROUP_HEIGHT, maxY + LOOP_PADDING),
+              },
+            };
+          }
         }
 
         return updatedNodes;
