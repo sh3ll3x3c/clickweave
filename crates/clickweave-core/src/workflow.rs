@@ -625,6 +625,32 @@ pub struct Check {
     pub on_fail: OnCheckFail,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum CheckVerdict {
+    Pass,
+    Fail,
+    Warn,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CheckResult {
+    pub check_name: String,
+    pub check_type: CheckType,
+    pub verdict: CheckVerdict,
+    pub reasoning: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct NodeVerdict {
+    pub node_id: Uuid,
+    pub node_name: String,
+    pub check_results: Vec<CheckResult>,
+    pub expected_outcome_verdict: Option<CheckResult>,
+}
+
 // --- Condition system ---
 // Used by If, Switch, and Loop nodes to evaluate simple comparisons.
 // Conditions reference runtime variables produced by upstream nodes.
