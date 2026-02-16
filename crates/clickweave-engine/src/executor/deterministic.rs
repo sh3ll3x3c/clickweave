@@ -107,12 +107,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         self.log(format!("Calling MCP tool: {}", tool_name));
         let args = self.resolve_image_paths(Some(invocation.arguments));
 
-        // Save search text for find_text retry fallback (args will be moved into call_tool)
-        let find_text_search = if tool_name == "find_text" {
-            args.as_ref()
-                .and_then(|a| a.get("text"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+        // Save original args for find_text retry fallback (args will be moved into call_tool)
+        let find_text_original_args = if tool_name == "find_text" {
+            args.clone()
         } else {
             None
         };
@@ -132,58 +129,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let images = self.save_result_images(&result, "result", &mut node_run);
         let result_text = Self::extract_result_text(&result);
 
-        // For find_text calls: if empty matches + available_elements, resolve via LLM and retry
-        let result_text = if tool_name == "find_text" {
-            let parsed_matches: Vec<Value> = serde_json::from_str(&result_text).unwrap_or_default();
-            if parsed_matches.is_empty() {
-                if let Some(available) = super::parse_available_elements(&result_text) {
-                    let scoped_app = self
-                        .focused_app
-                        .read()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clone();
-
-                    if let Some(ref target) = find_text_search {
-                        if let Ok(resolved_name) = self
-                            .resolve_element_name(
-                                target,
-                                &available,
-                                scoped_app.as_deref(),
-                                node_run.as_deref(),
-                            )
-                            .await
-                        {
-                            self.log(format!(
-                                "Retrying find_text with resolved name '{}' for '{}'",
-                                resolved_name, target
-                            ));
-                            let mut retry_args = serde_json::json!({"text": resolved_name});
-                            if let Some(ref app_name) = scoped_app {
-                                retry_args["app_name"] = Value::String(app_name.clone());
-                            }
-                            if let Ok(retry_result) =
-                                mcp.call_tool("find_text", Some(retry_args)).await
-                            {
-                                if retry_result.is_error != Some(true) {
-                                    Self::extract_result_text(&retry_result)
-                                } else {
-                                    result_text
-                                }
-                            } else {
-                                result_text
-                            }
-                        } else {
-                            result_text
-                        }
-                    } else {
-                        result_text
-                    }
-                } else {
-                    result_text
-                }
-            } else {
-                result_text
-            }
+        // For find_text: if empty matches + available_elements, resolve element name via LLM and retry
+        let result_text = if tool_name == "find_text"
+            && let Some(ref original_args) = find_text_original_args
+            && serde_json::from_str::<Vec<Value>>(&result_text)
+                .unwrap_or_default()
+                .is_empty()
+        {
+            self.try_resolve_find_text(original_args, &result_text, mcp, node_run.as_deref())
+                .await
+                .unwrap_or(result_text)
         } else {
             result_text
         };
@@ -228,6 +183,70 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         })
     }
 
+    /// Try to resolve a failed find_text query by asking the LLM to match
+    /// against available accessibility element names, then retry.
+    /// Returns the retry result text on success, or None if resolution wasn't
+    /// possible or the retry also failed.
+    ///
+    /// Preserves the original call arguments (e.g. `app_name`, `match_mode`)
+    /// and only replaces the `text` field with the resolved name.
+    async fn try_resolve_find_text(
+        &self,
+        original_args: &Value,
+        original_result_text: &str,
+        mcp: &McpClient,
+        node_run: Option<&NodeRun>,
+    ) -> Option<String> {
+        let retry_args = self
+            .prepare_find_text_retry(original_args, original_result_text, node_run)
+            .await?;
+        let retry_result = mcp.call_tool("find_text", Some(retry_args)).await.ok()?;
+        if retry_result.is_error == Some(true) {
+            return None;
+        }
+        Some(Self::extract_result_text(&retry_result))
+    }
+
+    /// Parse available_elements from a failed find_text response, resolve the
+    /// element name via LLM, and build retry arguments.
+    ///
+    /// Returns `Some(retry_args)` with the resolved name swapped in, or `None`
+    /// if resolution wasn't possible. This is the pure-logic core of the
+    /// find_text fallback path, separated from the MCP I/O for testability.
+    pub(crate) async fn prepare_find_text_retry(
+        &self,
+        original_args: &Value,
+        original_result_text: &str,
+        node_run: Option<&NodeRun>,
+    ) -> Option<Value> {
+        let target = original_args.get("text")?.as_str()?;
+        let available = super::element_resolve::parse_available_elements(original_result_text)?;
+        // Prefer explicit app_name from call args; fall back to focused_app.
+        let scoped_app = original_args
+            .get("app_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                self.focused_app
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+            });
+        let resolved_name = self
+            .resolve_element_name(target, &available, scoped_app.as_deref(), node_run)
+            .await
+            .ok()?;
+
+        self.log(format!(
+            "Retrying find_text with resolved name '{}' for '{}'",
+            resolved_name, target
+        ));
+
+        let mut retry_args = original_args.clone();
+        retry_args["text"] = Value::String(resolved_name);
+        Some(retry_args)
+    }
+
     async fn resolve_click_target(
         &self,
         mcp: &McpClient,
@@ -258,7 +277,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         let find_result = mcp
-            .call_tool("find_text", Some(find_args))
+            .call_tool("find_text", Some(find_args.clone()))
             .await
             .map_err(|e| format!("find_text for '{}' failed: {}", target, e))?;
 
@@ -268,38 +287,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let mut matches: Vec<Value> = serde_json::from_str(&result_text).unwrap_or_default();
 
         // Fallback: if no matches but available_elements present, ask LLM to resolve
-        if matches.is_empty() {
-            if let Some(available) = super::parse_available_elements(&result_text) {
-                let resolved_name = self
-                    .resolve_element_name(
-                        target,
-                        &available,
-                        scoped_app.as_deref(),
-                        node_run.as_deref(),
-                    )
-                    .await?;
-
-                self.log(format!(
-                    "Retrying find_text with resolved name '{}' for '{}'",
-                    resolved_name, target
-                ));
-
-                let mut retry_args = serde_json::json!({"text": resolved_name});
-                if let Some(ref app_name) = scoped_app {
-                    retry_args["app_name"] = Value::String(app_name.clone());
-                }
-
-                let retry_result =
-                    mcp.call_tool("find_text", Some(retry_args))
-                        .await
-                        .map_err(|e| {
-                            format!("find_text retry for '{}' failed: {}", resolved_name, e)
-                        })?;
-                Self::check_tool_error(&retry_result, "find_text")?;
-
-                let retry_text = Self::extract_result_text(&retry_result);
-                matches = serde_json::from_str(&retry_text).unwrap_or_default();
-            }
+        if matches.is_empty()
+            && let Some(retry_text) = self
+                .try_resolve_find_text(&find_args, &result_text, mcp, node_run.as_deref())
+                .await
+        {
+            matches = serde_json::from_str(&retry_text).unwrap_or_default();
         }
 
         let best = matches.first().ok_or_else(|| {

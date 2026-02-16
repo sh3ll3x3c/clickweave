@@ -8,20 +8,33 @@ use tracing::debug;
 ///
 /// When find_text returns no matches, the response is two content blocks
 /// joined by `\n`: `[]\n{"available_elements": ["Multiply", "Divide", ...]}`.
+///
+/// Scans for JSON objects in the text and checks each for an
+/// `available_elements` key, so it works regardless of whitespace,
+/// key ordering, or additional fields in the object.
 pub(crate) fn parse_available_elements(result_text: &str) -> Option<Vec<String>> {
-    let obj_start = result_text.find("{\"available_elements\"")?;
-    let json_str = &result_text[obj_start..];
-    let parsed: Value = serde_json::from_str(json_str).ok()?;
-    let arr = parsed.get("available_elements")?.as_array()?;
-    let elements: Vec<String> = arr
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
-    if elements.is_empty() {
-        None
-    } else {
-        Some(elements)
+    let mut remaining = result_text;
+    while let Some(json_str) = super::app_resolve::extract_json_object(remaining) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(json_str)
+            && let Some(arr) = parsed.get("available_elements").and_then(|v| v.as_array())
+        {
+            let elements: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            if !elements.is_empty() {
+                return Some(elements);
+            }
+        }
+        // Advance past this object to look for the next one
+        let start_in_remaining = json_str.as_ptr() as usize - remaining.as_ptr() as usize;
+        let advance = start_in_remaining + json_str.len();
+        if advance >= remaining.len() {
+            break;
+        }
+        remaining = &remaining[advance..];
     }
+    None
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -192,5 +205,34 @@ mod tests {
     #[test]
     fn parse_available_elements_just_empty_array() {
         assert_eq!(parse_available_elements("[]"), None);
+    }
+
+    #[test]
+    fn parse_available_elements_pretty_printed() {
+        let input =
+            "[]\n{\n  \"available_elements\": [\n    \"Calculator\",\n    \"Multiply\"\n  ]\n}";
+        assert_eq!(
+            parse_available_elements(input),
+            Some(vec!["Calculator".to_string(), "Multiply".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_available_elements_extra_fields() {
+        let input =
+            "[]\n{\"count\":0,\"available_elements\":[\"Add\",\"Subtract\"],\"source\":\"a11y\"}";
+        assert_eq!(
+            parse_available_elements(input),
+            Some(vec!["Add".to_string(), "Subtract".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_available_elements_whitespace_around_key() {
+        let input = "[]\n{ \"available_elements\" : [\"Divide\"] }";
+        assert_eq!(
+            parse_available_elements(input),
+            Some(vec!["Divide".to_string()])
+        );
     }
 }

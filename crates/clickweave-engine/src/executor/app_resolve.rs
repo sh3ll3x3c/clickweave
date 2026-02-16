@@ -178,23 +178,31 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if let Some(key) = key {
             self.evict_app_cache(key);
         }
-        if matches!(node_type, NodeType::FocusWindow(_)) {
-            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = None;
-        }
 
-        // Evict element cache for nodes that use find_text with LLM fallback
-        let element_target = match node_type {
-            NodeType::Click(p) => p.target.as_deref(),
-            NodeType::FindText(p) => Some(p.search_text.as_str()),
-            _ => None,
+        // Evict element cache before clearing focused_app, so the cache key
+        // still contains the correct app name.
+        let (element_target, explicit_app) = match node_type {
+            NodeType::Click(p) => (p.target.as_deref(), None),
+            NodeType::FindText(p) => (Some(p.search_text.as_str()), None),
+            NodeType::McpToolCall(p) if p.tool_name == "find_text" => (
+                p.arguments.get("text").and_then(|v| v.as_str()),
+                p.arguments.get("app_name").and_then(|v| v.as_str()),
+            ),
+            _ => (None, None),
         };
         if let Some(target) = element_target {
-            let app_name = self
-                .focused_app
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
+            // Prefer explicit app_name from call args; fall back to focused_app.
+            let app_name = explicit_app.map(|s| s.to_string()).or_else(|| {
+                self.focused_app
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+            });
             self.evict_element_cache(target, app_name.as_deref());
+        }
+
+        if matches!(node_type, NodeType::FocusWindow(_)) {
+            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
 }

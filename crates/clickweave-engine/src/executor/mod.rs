@@ -5,8 +5,6 @@ mod element_resolve;
 mod run_loop;
 mod trace;
 
-pub(crate) use element_resolve::parse_available_elements;
-
 #[cfg(test)]
 mod tests;
 
