@@ -10,6 +10,9 @@ interface WorkflowNodeData {
   enabled: boolean;
   onDelete: () => void;
   switchCases: string[];
+  isCollapsedLoop?: boolean;
+  bodyCount?: number;
+  onToggleCollapse?: () => void;
   [key: string]: unknown;
 }
 
@@ -52,6 +55,18 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
   }
 
   if (nodeType === "Loop") {
+    if (data.isCollapsedLoop) {
+      // Collapsed loop: single LoopDone handle centered vertically
+      return (
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="LoopDone"
+          className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
+          style={{ borderColor: "#f59e0b" }}
+        />
+      );
+    }
     return (
       <>
         <Handle
@@ -149,7 +164,18 @@ export const WorkflowNode = memo(function WorkflowNode({
   selected,
 }: NodeProps) {
   const d = data as unknown as WorkflowNodeData;
-  const { label, icon, color, isActive, enabled, onDelete, nodeType } = d;
+  const {
+    label,
+    icon,
+    color,
+    isActive,
+    enabled,
+    onDelete,
+    nodeType,
+    isCollapsedLoop,
+    bodyCount,
+    onToggleCollapse,
+  } = d;
   const isControlFlow = CONTROL_FLOW_TYPES.has(nodeType);
   const needsTallNode = nodeType === "If" || nodeType === "Loop";
   const needsExtraTallNode = nodeType === "Switch" && d.switchCases.length > 1;
@@ -195,6 +221,23 @@ export const WorkflowNode = memo(function WorkflowNode({
         <span className="text-xs font-medium text-[var(--text-primary)]">
           {label}
         </span>
+        {isCollapsedLoop && bodyCount != null && (
+          <span className="text-[10px] text-[var(--text-muted)]">
+            {bodyCount} {bodyCount === 1 ? "step" : "steps"}
+          </span>
+        )}
+        {isCollapsedLoop && onToggleCollapse && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleCollapse();
+            }}
+            className="ml-auto flex h-5 w-5 items-center justify-center rounded text-[10px] text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+            title="Expand loop"
+          >
+            &#x25B6;
+          </button>
+        )}
       </div>
 
       <SourceHandles data={d} />
