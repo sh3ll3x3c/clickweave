@@ -94,7 +94,7 @@ function toRFNode(
     id: node.id,
     type: "workflow",
     position: existing?.position ?? { x: node.position.x, y: node.position.y },
-    selected: node.id === selectedNode,
+    selected: existing?.selected ?? (node.id === selectedNode),
     data: {
       label: node.name,
       nodeType: node.node_type.type,
@@ -212,6 +212,8 @@ export function GraphCanvas({
   // Internal RF node state — React Flow fully controls this (including dimensions).
   // We sync workflow data INTO it, preserving RF-internal props like measured/width/height.
   const [rfNodes, setRfNodes] = useState<RFNode[]>([]);
+  // When true, the next selectedNode change came from canvas interaction — skip external sync.
+  const selectionFromCanvasRef = useRef(false);
 
   useEffect(() => {
     setRfNodes((prev) => {
@@ -359,7 +361,6 @@ export function GraphCanvas({
     });
   }, [
     workflow.nodes,
-    selectedNode,
     activeNode,
     onDeleteNodes,
     collapsedLoops,
@@ -369,6 +370,22 @@ export function GraphCanvas({
     endLoopForLoop,
     toggleLoopCollapse,
   ]);
+
+  // Sync external selectedNode changes (e.g. panel clicks) into RF selection state.
+  // Skip when the change originated from the canvas to preserve multi-select.
+  useEffect(() => {
+    if (selectionFromCanvasRef.current) {
+      selectionFromCanvasRef.current = false;
+      return;
+    }
+    setRfNodes((prev) =>
+      prev.map((n) => {
+        const shouldBeSelected = n.id === selectedNode;
+        if (n.selected === shouldBeSelected) return n;
+        return { ...n, selected: shouldBeSelected };
+      }),
+    );
+  }, [selectedNode]);
 
   // Build set of hidden node IDs for edge filtering
   const hiddenNodeIds = useMemo(() => {
@@ -401,9 +418,21 @@ export function GraphCanvas({
     [workflow.edges, hiddenNodeIds, collapsedLoops],
   );
 
-  // Apply changes to internal state and propagate position changes back to workflow.
+  // Apply changes to internal state and propagate position/remove changes back to workflow.
   const handleNodesChange: OnNodesChange = useCallback(
     (changes) => {
+      // Collect node removals to propagate to workflow store outside the state updater.
+      const removeIds: string[] = [];
+      for (const change of changes) {
+        if (change.type === "remove") {
+          removeIds.push(change.id);
+        }
+      }
+      if (removeIds.length > 0) {
+        onDeleteNodes(removeIds);
+        return; // Workflow store update will trigger RF node rebuild
+      }
+
       setRfNodes((prev) => {
         const updatedNodes = applyNodeChanges(changes, prev);
 
@@ -436,6 +465,7 @@ export function GraphCanvas({
               }
             }
           } else if (change.type === "select" && change.selected) {
+            selectionFromCanvasRef.current = true;
             onSelectNode(change.id);
           }
         }
@@ -446,7 +476,7 @@ export function GraphCanvas({
         return updatedNodes;
       });
     },
-    [onNodePositionsChange, onSelectNode],
+    [onNodePositionsChange, onSelectNode, onDeleteNodes],
   );
 
   const handleEdgesChange: OnEdgesChange = useCallback(
