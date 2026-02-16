@@ -10,7 +10,7 @@ mod tests;
 
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{NodeRun, NodeVerdict, Workflow};
+use clickweave_core::{Check, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -61,6 +61,8 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     focused_app: RwLock<Option<String>>,
     element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
+    /// Nodes that completed successfully and have checks, in execution order.
+    completed_checks: Vec<(Uuid, Vec<Check>, Option<String>)>,
 }
 
 impl WorkflowExecutor {
@@ -85,6 +87,7 @@ impl WorkflowExecutor {
             focused_app: RwLock::new(None),
             element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
+            completed_checks: Vec::new(),
         }
     }
 }

@@ -290,6 +290,35 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
+    /// Capture a screenshot of the focused app (or full screen) and save as artifact.
+    async fn capture_check_screenshot(&self, mcp: &McpClient, node_run: &mut NodeRun) {
+        let app_name = self.focused_app.read().ok().and_then(|g| g.clone());
+
+        let mut args = serde_json::json!({ "format": "png" });
+        if let Some(ref name) = app_name {
+            args["app_name"] = serde_json::Value::String(name.clone());
+        }
+
+        self.log(format!(
+            "Capturing check screenshot{}",
+            app_name
+                .as_deref()
+                .map_or(String::new(), |n| format!(" (app: {})", n))
+        ));
+
+        match mcp.call_tool("take_screenshot", Some(args)).await {
+            Ok(result) => {
+                self.save_result_images(&result, "check_screenshot", &mut Some(node_run));
+            }
+            Err(e) => {
+                self.log(format!(
+                    "Warning: failed to capture check screenshot: {}",
+                    e
+                ));
+            }
+        }
+    }
+
     /// Store node outputs in RuntimeContext for condition evaluation.
     fn extract_and_store_variables(
         &mut self,
@@ -395,6 +424,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             let node_name = node.name.clone();
             let node_type = node.node_type.clone();
+            let checks = node.checks.clone();
+            let expected_outcome = node.expected_outcome.clone();
 
             // Control flow nodes: evaluate condition and follow edge
             if matches!(
@@ -455,6 +486,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         &node_type,
                         node_run.as_ref(),
                     );
+
+                    // Capture post-node screenshot and track checked nodes
+                    let has_checks = !checks.is_empty() || expected_outcome.is_some();
+                    if has_checks {
+                        if let Some(ref mut run) = node_run {
+                            self.capture_check_screenshot(&mcp, run).await;
+                        }
+                        self.completed_checks
+                            .push((node_id, checks, expected_outcome));
+                    }
                 }
                 Err(e) => {
                     self.emit_error(format!("Node {} failed: {}", node_name, e));
