@@ -149,6 +149,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             focused_app: RwLock::new(None),
             element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
+            completed_checks: Vec::new(),
         }
     }
 }

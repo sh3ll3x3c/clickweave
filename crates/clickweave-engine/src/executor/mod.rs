@@ -1,5 +1,6 @@
 mod ai_step;
 mod app_resolve;
+mod check_eval;
 mod deterministic;
 mod element_resolve;
 mod run_loop;
