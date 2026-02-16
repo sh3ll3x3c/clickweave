@@ -1,8 +1,11 @@
 mod ai_step;
 mod app_resolve;
 mod deterministic;
+mod element_resolve;
 mod run_loop;
 mod trace;
+
+pub(crate) use element_resolve::parse_available_elements;
 
 #[cfg(test)]
 mod tests;
@@ -57,6 +60,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     storage: RunStorage,
     app_cache: RwLock<HashMap<String, ResolvedApp>>,
     focused_app: RwLock<Option<String>>,
+    element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
 }
 
@@ -80,6 +84,7 @@ impl WorkflowExecutor {
             storage,
             app_cache: RwLock::new(HashMap::new()),
             focused_app: RwLock::new(None),
+            element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
         }
     }

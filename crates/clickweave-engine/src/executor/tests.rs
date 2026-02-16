@@ -2,9 +2,9 @@ use super::*;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{
-    ClickParams, Condition, EdgeOutput, EndLoopParams, FocusMethod, FocusWindowParams, IfParams,
-    LiteralValue, LoopParams, NodeType, Operator, Position, ScreenshotMode, TakeScreenshotParams,
-    TypeTextParams, ValueRef, Workflow,
+    ClickParams, Condition, EdgeOutput, EndLoopParams, FindTextParams, FocusMethod,
+    FocusWindowParams, IfParams, LiteralValue, LoopParams, NodeType, Operator, Position,
+    ScreenshotMode, TakeScreenshotParams, TypeTextParams, ValueRef, Workflow,
 };
 use clickweave_llm::{ChatBackend, ChatResponse, Content, ContentPart, Message};
 use serde_json::Value;
@@ -81,6 +81,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             storage,
             app_cache: RwLock::new(HashMap::new()),
             focused_app: RwLock::new(None),
+            element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
         }
     }
@@ -219,7 +220,7 @@ fn evict_app_cache_for_focus_window_node() {
         value: Some("chrome".to_string()),
         bring_to_front: true,
     });
-    exec.evict_app_cache_for_node(&node);
+    exec.evict_caches_for_node(&node);
     assert!(!exec.app_cache.read().unwrap().contains_key("chrome"));
 }
 
@@ -239,7 +240,7 @@ fn evict_app_cache_for_screenshot_node() {
         target: Some("safari".to_string()),
         include_ocr: true,
     });
-    exec.evict_app_cache_for_node(&node);
+    exec.evict_caches_for_node(&node);
     assert!(!exec.app_cache.read().unwrap().contains_key("safari"));
 }
 
@@ -255,8 +256,74 @@ fn evict_app_cache_for_unrelated_node_is_noop() {
     );
 
     let node = NodeType::Click(clickweave_core::ClickParams::default());
-    exec.evict_app_cache_for_node(&node);
+    exec.evict_caches_for_node(&node);
     assert!(exec.app_cache.read().unwrap().contains_key("chrome"));
+}
+
+// ---------------------------------------------------------------------------
+// Element cache eviction tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn evict_element_cache_for_click_node() {
+    let exec = make_test_executor();
+    let cache_key = ("×".to_string(), Some("Calculator".to_string()));
+    exec.element_cache
+        .write()
+        .unwrap()
+        .insert(cache_key.clone(), "Multiply".to_string());
+
+    // Set focused_app so eviction uses the right cache key
+    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+
+    let node = NodeType::Click(ClickParams {
+        target: Some("×".to_string()),
+        ..ClickParams::default()
+    });
+    exec.evict_caches_for_node(&node);
+    assert!(
+        !exec.element_cache.read().unwrap().contains_key(&cache_key),
+        "element cache entry should be evicted for Click node"
+    );
+}
+
+#[test]
+fn evict_element_cache_for_find_text_node() {
+    let exec = make_test_executor();
+    let cache_key = ("÷".to_string(), None);
+    exec.element_cache
+        .write()
+        .unwrap()
+        .insert(cache_key.clone(), "Divide".to_string());
+
+    let node = NodeType::FindText(FindTextParams {
+        search_text: "÷".to_string(),
+        ..FindTextParams::default()
+    });
+    exec.evict_caches_for_node(&node);
+    assert!(
+        !exec.element_cache.read().unwrap().contains_key(&cache_key),
+        "element cache entry should be evicted for FindText node"
+    );
+}
+
+#[test]
+fn evict_element_cache_noop_for_unrelated_node() {
+    let exec = make_test_executor();
+    let cache_key = ("×".to_string(), Some("Calculator".to_string()));
+    exec.element_cache
+        .write()
+        .unwrap()
+        .insert(cache_key.clone(), "Multiply".to_string());
+
+    let node = NodeType::TypeText(TypeTextParams {
+        text: "hello".to_string(),
+    });
+    exec.evict_caches_for_node(&node);
+    assert!(
+        exec.element_cache.read().unwrap().contains_key(&cache_key),
+        "element cache should not be evicted for unrelated node type"
+    );
 }
 
 // ---------------------------------------------------------------------------

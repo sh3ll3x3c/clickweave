@@ -275,7 +275,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         retries + 1,
                         e
                     ));
-                    self.evict_app_cache_for_node(node_type);
+                    self.evict_caches_for_node(node_type);
                     self.record_event(
                         node_run.as_ref(),
                         "retry",

@@ -167,9 +167,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    /// Evict any app-name cache entry associated with a node type, so that
-    /// retries re-resolve the app via LLM.
-    pub(crate) fn evict_app_cache_for_node(&self, node_type: &NodeType) {
+    /// Evict any app-name and element-name cache entries associated with a
+    /// node type, so that retries re-resolve via LLM.
+    pub(crate) fn evict_caches_for_node(&self, node_type: &NodeType) {
         let key = match node_type {
             NodeType::FocusWindow(p) if p.method == FocusMethod::AppName => p.value.as_deref(),
             NodeType::TakeScreenshot(p) => p.target.as_deref(),
@@ -181,12 +181,27 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if matches!(node_type, NodeType::FocusWindow(_)) {
             *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = None;
         }
+
+        // Evict element cache for nodes that use find_text with LLM fallback
+        let element_target = match node_type {
+            NodeType::Click(p) => p.target.as_deref(),
+            NodeType::FindText(p) => Some(p.search_text.as_str()),
+            _ => None,
+        };
+        if let Some(target) = element_target {
+            let app_name = self
+                .focused_app
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            self.evict_element_cache(target, app_name.as_deref());
+        }
     }
 }
 
 /// Extract the first top-level `{…}` JSON object from `text`, ignoring any
 /// leading or trailing prose the LLM may have added around it.
-fn extract_json_object(text: &str) -> Option<&str> {
+pub(crate) fn extract_json_object(text: &str) -> Option<&str> {
     let start = text.find('{')?;
     let mut depth = 0i32;
     let mut in_string = false;
@@ -221,7 +236,7 @@ fn extract_json_object(text: &str) -> Option<&str> {
 
 /// Strip optional markdown code fences (```` ```json ... ``` ```` or ```` ``` ... ``` ````)
 /// so we can parse the inner JSON.
-fn strip_code_block(text: &str) -> &str {
+pub(crate) fn strip_code_block(text: &str) -> &str {
     let trimmed = text.trim();
     let Some(rest) = trimmed.strip_prefix("```") else {
         return trimmed;
