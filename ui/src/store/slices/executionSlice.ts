@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import type { RunRequest } from "../../bindings";
 import { commands } from "../../bindings";
+import { validateSingleGraph } from "../../utils/graphValidation";
 import { toEndpoint } from "../settings";
 import type { StoreState } from "./types";
 
@@ -19,6 +20,15 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
 
   runWorkflow: async () => {
     const { workflow, projectPath, agentConfig, vlmConfig, vlmEnabled, mcpCommand, pushLog } = get();
+
+    const graphErrors = validateSingleGraph(workflow.nodes, workflow.edges);
+    if (graphErrors.length > 0) {
+      for (const err of graphErrors) {
+        pushLog(`Validation error: ${err}`);
+      }
+      return;
+    }
+
     const request: RunRequest = {
       workflow,
       project_path: projectPath,
