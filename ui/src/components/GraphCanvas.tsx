@@ -334,8 +334,11 @@ export function GraphCanvas({
         let maxX = 0;
         let maxY = 0;
         for (const child of children) {
-          maxX = Math.max(maxX, child.position.x + APPROX_NODE_WIDTH);
-          maxY = Math.max(maxY, child.position.y + APPROX_NODE_HEIGHT);
+          const measured = prevMap.get(child.id)?.measured;
+          const childW = measured?.width ?? APPROX_NODE_WIDTH;
+          const childH = measured?.height ?? APPROX_NODE_HEIGHT;
+          maxX = Math.max(maxX, child.position.x + childW);
+          maxY = Math.max(maxY, child.position.y + childH);
         }
 
         groupNode.style = {
