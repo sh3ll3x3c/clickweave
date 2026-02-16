@@ -9,6 +9,7 @@ import { GraphCanvas } from "./components/GraphCanvas";
 import { NodeDetailModal } from "./components/node-detail/NodeDetailModal";
 import { AssistantPanel } from "./components/AssistantPanel";
 import { IntentEmptyState } from "./components/IntentEmptyState";
+import { VerdictBar } from "./components/VerdictBar";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 
@@ -97,6 +98,7 @@ function App() {
             actions.setWorkflow({ ...state.workflow, name })
           }
         />
+        <VerdictBar />
 
         <div className="flex flex-1 overflow-hidden">
           {state.isNewWorkflow && state.workflow.nodes.length === 0 ? (
