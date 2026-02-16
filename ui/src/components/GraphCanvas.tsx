@@ -17,6 +17,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { Workflow, Edge, EdgeOutput } from "../bindings";
 import { edgeOutputToHandle } from "../utils/edgeHandles";
+import { LoopGroupNode } from "./LoopGroupNode";
 import { WorkflowNode } from "./WorkflowNode";
 
 interface GraphCanvasProps {
@@ -105,6 +106,7 @@ export function GraphCanvas({
   const nodeTypes: NodeTypes = useMemo(
     () => ({
       workflow: WorkflowNode,
+      loopGroup: LoopGroupNode,
     }),
     [],
   );
