@@ -53,6 +53,14 @@ const nodeMetadata: Record<string, { color: string; icon: string }> = {
 
 const defaultMetadata = { color: "#666", icon: "??" };
 
+// Layout constants for loop group positioning
+const LOOP_HEADER_HEIGHT = 40; // height of the group header bar
+const LOOP_PADDING = 20; // padding inside the group
+const APPROX_NODE_WIDTH = 160;
+const APPROX_NODE_HEIGHT = 50;
+const MIN_GROUP_WIDTH = 300;
+const MIN_GROUP_HEIGHT = 150;
+
 function getEdgeLabel(output: EdgeOutput | null): string | undefined {
   if (!output) return undefined;
   switch (output.type) {
@@ -185,9 +193,15 @@ export function GraphCanvas({
     setRfNodes((prev) => {
       const prevMap = new Map(prev.map((n) => [n.id, n]));
 
+      // Quick lookup for workflow nodes by ID (for position conversion)
+      const wfNodeMap = new Map(workflow.nodes.map((n) => [n.id, n]));
+
       // Parent nodes must appear before their children in the array for React Flow.
       // Build the base nodes first, then sort so loop group parents come first.
       const nodes: RFNode[] = [];
+
+      // Track which body nodes belong to each expanded loop (for sizing the group)
+      const expandedLoopChildren = new Map<string, RFNode[]>();
 
       for (const node of workflow.nodes) {
         const existing = prevMap.get(node.id);
@@ -215,7 +229,8 @@ export function GraphCanvas({
               },
             });
           } else {
-            // Expanded: render as loopGroup
+            // Expanded: render as loopGroup (dimensions set below after body nodes are processed)
+            expandedLoopChildren.set(node.id, []);
             nodes.push({
               ...base,
               type: "loopGroup",
@@ -240,19 +255,60 @@ export function GraphCanvas({
             nodes.push({ ...base, hidden: true });
           } else {
             // Expanded: set parentId to the innermost loop (last in the list)
-            // Position conversion is deferred to Task 5
             const parentId = parentLoops[parentLoops.length - 1];
-            nodes.push({
+            const loopWfNode = wfNodeMap.get(parentId);
+
+            // Convert absolute position to parent-relative position.
+            // If the node already had this same parentId in the previous render
+            // (user may have dragged it within the group), keep the existing position.
+            // Otherwise compute it fresh from workflow absolute positions.
+            let relativePosition = base.position;
+            if (existing?.parentId === parentId) {
+              // Same parent as before — keep existing RF position (user may have dragged)
+              relativePosition = existing.position;
+            } else if (loopWfNode) {
+              // Transitioning into this parent — compute relative from absolute
+              relativePosition = {
+                x: node.position.x - loopWfNode.position.x + LOOP_PADDING,
+                y: node.position.y - loopWfNode.position.y + LOOP_HEADER_HEIGHT + LOOP_PADDING,
+              };
+            }
+
+            const childNode: RFNode = {
               ...base,
               parentId,
               extent: "parent" as const,
-            });
+              position: relativePosition,
+            };
+            nodes.push(childNode);
+
+            // Track for group sizing
+            expandedLoopChildren.get(parentId)?.push(childNode);
           }
           continue;
         }
 
         // Regular node — no special handling
         nodes.push(base);
+      }
+
+      // Size each expanded loop group node to contain all its children
+      for (const [loopId, children] of expandedLoopChildren) {
+        const groupNode = nodes.find((n) => n.id === loopId);
+        if (!groupNode) continue;
+
+        let maxX = 0;
+        let maxY = 0;
+        for (const child of children) {
+          maxX = Math.max(maxX, child.position.x + APPROX_NODE_WIDTH);
+          maxY = Math.max(maxY, child.position.y + APPROX_NODE_HEIGHT);
+        }
+
+        groupNode.style = {
+          ...groupNode.style,
+          width: Math.max(MIN_GROUP_WIDTH, maxX + LOOP_PADDING),
+          height: Math.max(MIN_GROUP_HEIGHT, maxY + LOOP_PADDING),
+        };
       }
 
       // React Flow requires parent nodes before children in the array.
@@ -318,12 +374,30 @@ export function GraphCanvas({
   // Propagate position changes back to workflow state.
   const handleNodesChange: OnNodesChange = useCallback(
     (changes) => {
-      setRfNodes((prev) => applyNodeChanges(changes, prev));
+      // Apply changes first so we have the latest RF node state
+      let updatedNodes: RFNode[] = [];
+      setRfNodes((prev) => {
+        updatedNodes = applyNodeChanges(changes, prev);
+        return updatedNodes;
+      });
 
       const posUpdates = new Map<string, { x: number; y: number }>();
       for (const change of changes) {
         if (change.type === "position" && change.position) {
-          posUpdates.set(change.id, change.position);
+          const rfNode = updatedNodes.find((n) => n.id === change.id);
+          if (rfNode?.parentId) {
+            // Body node inside a group: position is relative to parent.
+            // Convert back to absolute for workflow storage.
+            const parentRfNode = updatedNodes.find((n) => n.id === rfNode.parentId);
+            if (parentRfNode) {
+              posUpdates.set(change.id, {
+                x: change.position.x + parentRfNode.position.x - LOOP_PADDING,
+                y: change.position.y + parentRfNode.position.y - LOOP_HEADER_HEIGHT - LOOP_PADDING,
+              });
+            }
+          } else {
+            posUpdates.set(change.id, change.position);
+          }
         } else if (change.type === "select" && change.selected) {
           onSelectNode(change.id);
         }
