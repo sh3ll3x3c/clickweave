@@ -31,6 +31,12 @@ body {
   -webkit-user-select: none;
 }
 
+/* Hide the bounding box that remains around selected nodes after drag-select */
+.react-flow__nodesselection-rect {
+  border: none !important;
+  background: transparent !important;
+}
+
 /* Selected edge highlight */
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: var(--accent-blue) !important;
