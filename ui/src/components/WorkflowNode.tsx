@@ -222,7 +222,7 @@ export const WorkflowNode = memo(function WorkflowNode({
           {label}
         </span>
         {isCollapsedLoop && bodyCount != null && (
-          <span className="text-[10px] text-[var(--text-muted)]">
+          <span className="text-[10px] text-[var(--text-muted)] transition-opacity duration-150">
             {bodyCount} {bodyCount === 1 ? "step" : "steps"}
           </span>
         )}
@@ -232,7 +232,7 @@ export const WorkflowNode = memo(function WorkflowNode({
               e.stopPropagation();
               onToggleCollapse();
             }}
-            className="ml-auto flex h-5 w-5 items-center justify-center rounded text-[10px] text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+            className="ml-auto flex h-5 w-5 items-center justify-center rounded text-[10px] text-[var(--text-muted)] transition-opacity duration-150 hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
             title="Expand loop"
           >
             &#x25B6;

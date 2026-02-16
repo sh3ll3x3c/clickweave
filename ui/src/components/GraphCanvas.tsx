@@ -279,6 +279,10 @@ export function GraphCanvas({
               parentId,
               extent: "parent" as const,
               position: relativePosition,
+              style: {
+                ...base.style,
+                transition: "opacity 150ms ease 50ms",
+              },
             };
             nodes.push(childNode);
 
