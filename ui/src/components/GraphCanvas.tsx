@@ -418,6 +418,12 @@ export function GraphCanvas({
     [workflow.edges, hiddenNodeIds, collapsedLoops],
   );
 
+  // Internal RF edge state — preserves selection state across renders.
+  const [rfEdgeState, setRfEdgeState] = useState<RFEdge[]>([]);
+  useEffect(() => {
+    setRfEdgeState(rfEdges);
+  }, [rfEdges]);
+
   // Apply changes to internal state and propagate position/remove changes back to workflow.
   const handleNodesChange: OnNodesChange = useCallback(
     (changes) => {
@@ -481,28 +487,32 @@ export function GraphCanvas({
 
   const handleEdgesChange: OnEdgesChange = useCallback(
     (changes) => {
-      const updated = applyEdgeChanges(changes, rfEdges);
-      // Rebuild visible edges from the RF update
-      const visibleEdges: Edge[] = updated.map((rfe) => {
-        const handle = rfe.sourceHandle ?? undefined;
-        const original = workflow.edges.find(
-          (e) =>
-            e.from === rfe.source &&
-            e.to === rfe.target &&
-            edgeOutputToHandle(e.output) === handle,
-        );
-        return { from: rfe.source, to: rfe.target, output: original?.output ?? null };
-      });
-      // Preserve hidden edges (touching hidden nodes or collapsed LoopBody edges)
-      // that rfEdges intentionally filtered out — they must not be dropped.
-      const hiddenEdges = workflow.edges.filter((edge) => {
-        if (hiddenNodeIds.has(edge.from) || hiddenNodeIds.has(edge.to)) return true;
-        if (edge.output?.type === "LoopBody" && collapsedLoops.has(edge.from)) return true;
-        return false;
-      });
-      onEdgesChange([...visibleEdges, ...hiddenEdges]);
+      // Only propagate removals to the workflow store.
+      // Selection changes are handled internally by React Flow via rfEdgeState.
+      const removals = changes.filter((c) => c.type === "remove");
+      if (removals.length > 0) {
+        const updated = applyEdgeChanges(removals, rfEdgeState);
+        const visibleEdges: Edge[] = updated.map((rfe) => {
+          const handle = rfe.sourceHandle ?? undefined;
+          const original = workflow.edges.find(
+            (e) =>
+              e.from === rfe.source &&
+              e.to === rfe.target &&
+              edgeOutputToHandle(e.output) === handle,
+          );
+          return { from: rfe.source, to: rfe.target, output: original?.output ?? null };
+        });
+        const hiddenEdges = workflow.edges.filter((edge) => {
+          if (hiddenNodeIds.has(edge.from) || hiddenNodeIds.has(edge.to)) return true;
+          if (edge.output?.type === "LoopBody" && collapsedLoops.has(edge.from)) return true;
+          return false;
+        });
+        onEdgesChange([...visibleEdges, ...hiddenEdges]);
+      }
+      // Apply all changes (including select) to local RF edge state.
+      setRfEdgeState((prev) => applyEdgeChanges(changes, prev));
     },
-    [rfEdges, workflow.edges, onEdgesChange, hiddenNodeIds, collapsedLoops],
+    [workflow.edges, onEdgesChange, hiddenNodeIds, collapsedLoops, rfEdgeState],
   );
 
   const handleConnect: OnConnect = useCallback(
@@ -522,7 +532,7 @@ export function GraphCanvas({
     <div className="h-full w-full">
       <ReactFlow
         nodes={rfNodes}
-        edges={rfEdges}
+        edges={rfEdgeState}
         nodeTypes={nodeTypes}
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
