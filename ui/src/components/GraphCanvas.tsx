@@ -498,10 +498,11 @@ export function GraphCanvas({
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
         onPaneClick={handlePaneClick}
-        deleteKeyCode="Delete"
+        deleteKeyCode={["Backspace", "Delete"]}
         selectionOnDrag
         selectionMode={SelectionMode.Partial}
         panOnDrag={[1]}
+        panOnScroll
         fitView
         fitViewOptions={{ maxZoom: 1 }}
         snapToGrid

@@ -53,7 +53,8 @@ describe("ChecksTab", () => {
       ],
     });
     render(<ChecksTab node={node} onUpdate={vi.fn()} />);
-    expect(screen.getByText("My Check (TextAbsent)")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("My Check")).toBeInTheDocument();
+    expect(screen.getByText("Type: TextAbsent")).toBeInTheDocument();
   });
 
   it("calls onUpdate to remove a check when delete is clicked", () => {

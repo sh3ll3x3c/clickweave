@@ -8,18 +8,25 @@ const CHECK_PARAM_CONFIG: Record<CheckType, { key: string; label: string }> = {
   WindowTitleMatches: { key: "title", label: "Window title" },
 };
 
+const ON_FAIL_OPTIONS: OnCheckFail[] = ["FailNode", "WarnOnly"];
+
+const inputClasses =
+  "rounded bg-[var(--bg-dark)] px-2 py-1 text-xs text-[var(--text-primary)] border border-[var(--border)] focus:outline-none";
+
+function isJsonObject(v: JsonValue): v is Record<string, JsonValue> {
+  return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
 function getParamValue(params: JsonValue, key: string): string {
-  if (params && typeof params === "object" && !Array.isArray(params)) {
-    const val = (params as Record<string, JsonValue>)[key];
+  if (isJsonObject(params)) {
+    const val = params[key];
     return typeof val === "string" ? val : "";
   }
   return "";
 }
 
 function setParamValue(params: JsonValue, key: string, value: string): JsonValue {
-  const obj = params && typeof params === "object" && !Array.isArray(params)
-    ? { ...(params as Record<string, JsonValue>) }
-    : {};
+  const obj = isJsonObject(params) ? { ...params } : {};
   obj[key] = value;
   return obj;
 }
@@ -69,7 +76,7 @@ export function ChecksTab({
                 type="text"
                 value={check.name}
                 onChange={(e) => updateCheck(i, { name: e.target.value })}
-                className="flex-1 rounded bg-[var(--bg-dark)] px-2 py-1 text-xs text-[var(--text-primary)] border border-[var(--border)] focus:border-[var(--accent-blue)] focus:outline-none"
+                className={`flex-1 ${inputClasses} focus:border-[var(--accent-blue)]`}
               />
               <button
                 onClick={() => removeCheck(i)}
@@ -97,7 +104,7 @@ export function ChecksTab({
                     })
                   }
                   placeholder={paramConfig.label}
-                  className="rounded bg-[var(--bg-dark)] px-2 py-1 text-xs text-[var(--text-primary)] border border-[var(--border)] focus:border-[var(--accent-blue)] focus:outline-none"
+                  className={`${inputClasses} focus:border-[var(--accent-blue)]`}
                 />
               </label>
             )}
@@ -110,10 +117,11 @@ export function ChecksTab({
                 onChange={(e) =>
                   updateCheck(i, { on_fail: e.target.value as OnCheckFail })
                 }
-                className="rounded bg-[var(--bg-dark)] px-2 py-1 text-xs text-[var(--text-primary)] border border-[var(--border)] focus:outline-none"
+                className={inputClasses}
               >
-                <option value="FailNode">FailNode</option>
-                <option value="WarnOnly">WarnOnly</option>
+                {ON_FAIL_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
               </select>
             </label>
           </div>
@@ -125,14 +133,7 @@ export function ChecksTab({
           Add Check
         </h4>
         <div className="flex flex-wrap gap-1">
-          {(
-            [
-              "TextPresent",
-              "TextAbsent",
-              "TemplateFound",
-              "WindowTitleMatches",
-            ] as CheckType[]
-          ).map((ct) => (
+          {(Object.keys(CHECK_PARAM_CONFIG) as CheckType[]).map((ct) => (
             <button
               key={ct}
               onClick={() => addCheck(ct)}
