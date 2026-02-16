@@ -494,12 +494,14 @@ export function GraphCanvas({
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
         onPaneClick={handlePaneClick}
+        deleteKeyCode="Delete"
         fitView
         fitViewOptions={{ maxZoom: 1 }}
         snapToGrid
         snapGrid={[20, 20]}
         defaultEdgeOptions={{
           type: "default",
+          selectable: true,
           markerEnd: { type: MarkerType.ArrowClosed, color: "#666" },
           style: { stroke: "#555", strokeWidth: 2 },
         }}

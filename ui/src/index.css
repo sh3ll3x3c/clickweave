@@ -30,3 +30,9 @@ body {
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* Selected edge highlight */
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--accent-blue) !important;
+  stroke-width: 3 !important;
+}
