@@ -83,6 +83,13 @@ function toRFNode(
   const meta = nodeMetadata[node.node_type.type] ?? defaultMetadata;
   return {
     ...(existing ?? {}),
+    // Reset fields that vary by node role (body child vs regular vs group).
+    // Callers override these as needed; without this reset, stale values
+    // from a previous role leak through the existing spread.
+    parentId: undefined,
+    extent: undefined,
+    hidden: undefined,
+    style: undefined,
     id: node.id,
     type: "workflow",
     position: existing?.position ?? { x: node.position.x, y: node.position.y },
@@ -403,6 +410,7 @@ export function GraphCanvas({
           if (change.type === "position" && change.position) {
             const rfNode = nodeMap.get(change.id);
             if (rfNode?.parentId) {
+              // Child node dragged within parent — convert to absolute
               const parentRfNode = nodeMap.get(rfNode.parentId);
               if (parentRfNode) {
                 posUpdates.set(change.id, {
@@ -412,6 +420,16 @@ export function GraphCanvas({
               }
             } else {
               posUpdates.set(change.id, change.position);
+              // If this is a group node being dragged, propagate to children
+              // so their absolute positions in workflow data stay in sync.
+              for (const child of updatedNodes) {
+                if (child.parentId === change.id) {
+                  posUpdates.set(child.id, {
+                    x: child.position.x + change.position.x - LOOP_PADDING,
+                    y: child.position.y + change.position.y - LOOP_HEADER_HEIGHT - LOOP_PADDING,
+                  });
+                }
+              }
             }
           } else if (change.type === "select" && change.selected) {
             onSelectNode(change.id);
@@ -430,7 +448,8 @@ export function GraphCanvas({
   const handleEdgesChange: OnEdgesChange = useCallback(
     (changes) => {
       const updated = applyEdgeChanges(changes, rfEdges);
-      const newEdges: Edge[] = updated.map((rfe) => {
+      // Rebuild visible edges from the RF update
+      const visibleEdges: Edge[] = updated.map((rfe) => {
         const handle = rfe.sourceHandle ?? undefined;
         const original = workflow.edges.find(
           (e) =>
@@ -440,9 +459,16 @@ export function GraphCanvas({
         );
         return { from: rfe.source, to: rfe.target, output: original?.output ?? null };
       });
-      onEdgesChange(newEdges);
+      // Preserve hidden edges (touching hidden nodes or collapsed LoopBody edges)
+      // that rfEdges intentionally filtered out — they must not be dropped.
+      const hiddenEdges = workflow.edges.filter((edge) => {
+        if (hiddenNodeIds.has(edge.from) || hiddenNodeIds.has(edge.to)) return true;
+        if (edge.output?.type === "LoopBody" && collapsedLoops.has(edge.from)) return true;
+        return false;
+      });
+      onEdgesChange([...visibleEdges, ...hiddenEdges]);
     },
-    [rfEdges, workflow.edges, onEdgesChange],
+    [rfEdges, workflow.edges, onEdgesChange, hiddenNodeIds, collapsedLoops],
   );
 
   const handleConnect: OnConnect = useCallback(
