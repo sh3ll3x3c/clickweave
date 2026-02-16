@@ -2,12 +2,13 @@ import { useEffect } from "react";
 import { create } from "zustand";
 import type { Workflow } from "../bindings";
 import type { AppState, AppActions } from "./state";
-import { createSettingsSlice } from "./slices/settingsSlice";
-import { createProjectSlice } from "./slices/projectSlice";
 import { createAssistantSlice } from "./slices/assistantSlice";
 import { createExecutionSlice } from "./slices/executionSlice";
 import { createLogSlice } from "./slices/logSlice";
+import { createProjectSlice } from "./slices/projectSlice";
+import { createSettingsSlice } from "./slices/settingsSlice";
 import { createUiSlice } from "./slices/uiSlice";
+import { createVerdictSlice } from "./slices/verdictSlice";
 import type { StoreState } from "./slices/types";
 import { useWorkflowMutations } from "./useWorkflowMutations";
 
@@ -22,6 +23,7 @@ export const useStore = create<StoreState>()((...a) => ({
   ...createExecutionSlice(...a),
   ...createLogSlice(...a),
   ...createUiSlice(...a),
+  ...createVerdictSlice(...a),
 }));
 
 // ── Adapter: React-style dispatchers for useWorkflowMutations ───
