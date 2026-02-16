@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{Artifact, ArtifactKind, NodeRun, RunStatus, TraceEvent, TraceLevel};
+use crate::{Artifact, ArtifactKind, NodeRun, NodeVerdict, RunStatus, TraceEvent, TraceLevel};
 
 /// Sanitizes a name for use as a directory component.
 ///
@@ -196,14 +196,20 @@ impl RunStorage {
         let sanitized = sanitize_name(node_name);
         let dir = self.base_path.join(&execution_dir).join(&sanitized);
 
-        // Guard against node name collisions within the same execution
-        if dir.join("run.json").exists() {
-            anyhow::bail!(
-                "Node directory '{}' already exists in execution '{}' — \
-                 two nodes may have names that sanitize identically",
-                sanitized,
-                execution_dir
-            );
+        // Guard against node name collisions within the same execution.
+        // Allow re-creation for the same node_id (loop re-execution) but
+        // reject collisions from different nodes whose names sanitize identically.
+        let run_json_path = dir.join("run.json");
+        if run_json_path.exists() {
+            let existing: NodeRun = Self::read_run_json(&run_json_path)?;
+            if existing.node_id != node_id {
+                anyhow::bail!(
+                    "Node directory '{}' already exists in execution '{}' — \
+                     two nodes may have names that sanitize identically",
+                    sanitized,
+                    execution_dir
+                );
+            }
         }
 
         std::fs::create_dir_all(dir.join("artifacts")).context("Failed to create run directory")?;
@@ -289,6 +295,24 @@ impl RunStorage {
         };
 
         Ok(artifact)
+    }
+
+    /// Save a check verdict to the node's run directory as `verdict.json`.
+    pub fn save_node_verdict(&self, verdict: &NodeVerdict) -> Result<()> {
+        let execution_dir = self
+            .execution_dir
+            .as_ref()
+            .context("begin_execution() must be called before save_node_verdict()")?;
+
+        let sanitized = sanitize_name(&verdict.node_name);
+        let path = self
+            .base_path
+            .join(execution_dir)
+            .join(sanitized)
+            .join("verdict.json");
+        let json = serde_json::to_string_pretty(verdict).context("Failed to serialize verdict")?;
+        std::fs::write(&path, json).context("Failed to write verdict.json")?;
+        Ok(())
     }
 
     /// Load all runs for a node by scanning execution directories.

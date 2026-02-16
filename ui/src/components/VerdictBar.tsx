@@ -55,8 +55,8 @@ export function VerdictBar() {
       </div>
       {expanded && (
         <div className="space-y-3 border-t border-white/10 px-4 py-3">
-          {verdicts.map((v) => (
-            <VerdictNodeRow key={v.node_id} verdict={v} />
+          {verdicts.map((v, i) => (
+            <VerdictNodeRow key={`${v.node_id}-${i}`} verdict={v} />
           ))}
         </div>
       )}

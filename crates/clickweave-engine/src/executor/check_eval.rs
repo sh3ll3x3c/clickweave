@@ -11,14 +11,13 @@ struct LlmCheckResult {
     reasoning: String,
 }
 
-fn system_prompt() -> String {
+fn system_prompt() -> &'static str {
     "You are evaluating whether a UI automation step produced the expected results. \
      You will receive check criteria, trace events from the step's execution, and optionally \
      a screenshot taken after the step completed.\n\n\
      For each check, respond with ONLY a JSON array (no markdown fences):\n\
      [{\"check_name\": \"...\", \"verdict\": \"pass\" or \"fail\", \"reasoning\": \"...\"}]\n\n\
      Be precise: only mark 'pass' if the evidence clearly supports it."
-        .to_string()
 }
 
 fn format_check_type(ct: &CheckType) -> &'static str {
@@ -78,6 +77,28 @@ fn build_user_message(
     }
 }
 
+/// Resolve a single LLM result into a verdict, applying on_fail demotion.
+fn resolve_verdict(
+    llm_match: Option<&LlmCheckResult>,
+    on_fail: OnCheckFail,
+    fallback_reason: &str,
+) -> (CheckVerdict, String) {
+    match llm_match {
+        Some(r) => {
+            let v = match r.verdict.to_lowercase().as_str() {
+                "pass" => CheckVerdict::Pass,
+                "fail" => match on_fail {
+                    OnCheckFail::FailNode => CheckVerdict::Fail,
+                    OnCheckFail::WarnOnly => CheckVerdict::Warn,
+                },
+                _ => CheckVerdict::Fail,
+            };
+            (v, r.reasoning.clone())
+        }
+        None => (CheckVerdict::Fail, fallback_reason.to_string()),
+    }
+}
+
 /// Parse LLM response into CheckResults, matching against the original checks.
 fn parse_verdicts(
     response_text: &str,
@@ -93,57 +114,39 @@ fn parse_verdicts(
 
     let llm_results: Vec<LlmCheckResult> = serde_json::from_str(cleaned).unwrap_or_default();
 
-    let mut check_results = Vec::new();
-    for check in checks {
-        let llm_match = llm_results.iter().find(|r| r.check_name == check.name);
-
-        let (verdict, reasoning) = match llm_match {
-            Some(r) => {
-                let v = match r.verdict.to_lowercase().as_str() {
-                    "pass" => CheckVerdict::Pass,
-                    "fail" => match check.on_fail {
-                        OnCheckFail::FailNode => CheckVerdict::Fail,
-                        OnCheckFail::WarnOnly => CheckVerdict::Warn,
-                    },
-                    _ => CheckVerdict::Fail,
-                };
-                (v, r.reasoning.clone())
+    let check_results = checks
+        .iter()
+        .map(|check| {
+            let llm_match = llm_results
+                .iter()
+                .find(|r| r.check_name.trim().eq_ignore_ascii_case(check.name.trim()));
+            let (verdict, reasoning) = resolve_verdict(
+                llm_match,
+                check.on_fail,
+                "LLM did not return a verdict for this check",
+            );
+            CheckResult {
+                check_name: check.name.clone(),
+                check_type: check.check_type,
+                verdict,
+                reasoning,
             }
-            None => (
-                CheckVerdict::Fail,
-                "LLM did not return a verdict for this check".to_string(),
-            ),
-        };
-
-        check_results.push(CheckResult {
-            check_name: check.name.clone(),
-            check_type: check.check_type,
-            verdict,
-            reasoning,
-        });
-    }
+        })
+        .collect();
 
     let expected_verdict = expected_outcome.as_ref().map(|_| {
         let llm_match = llm_results
             .iter()
-            .find(|r| r.check_name == "Expected outcome");
-
-        let (verdict, reasoning) = match llm_match {
-            Some(r) => {
-                let v = match r.verdict.to_lowercase().as_str() {
-                    "pass" => CheckVerdict::Pass,
-                    _ => CheckVerdict::Fail,
-                };
-                (v, r.reasoning.clone())
-            }
-            None => (
-                CheckVerdict::Fail,
-                "LLM did not return a verdict for expected outcome".to_string(),
-            ),
-        };
-
+            .find(|r| r.check_name.trim().eq_ignore_ascii_case("Expected outcome"));
+        let (verdict, reasoning) = resolve_verdict(
+            llm_match,
+            OnCheckFail::FailNode,
+            "LLM did not return a verdict for expected outcome",
+        );
         CheckResult {
             check_name: "Expected outcome".to_string(),
+            // TODO: add a dedicated CheckType::ExpectedOutcome variant
+            // instead of reusing TextPresent as a placeholder.
             check_type: CheckType::TextPresent,
             verdict,
             reasoning,
@@ -162,6 +165,31 @@ fn has_hard_failure(verdict: &NodeVerdict) -> bool {
             .expected_outcome_verdict
             .as_ref()
             .is_some_and(|r| r.verdict == CheckVerdict::Fail)
+}
+
+/// Create fail results for all checks (used when LLM call itself fails).
+fn fail_all(
+    checks: &[Check],
+    expected_outcome: &Option<String>,
+    reason: &str,
+) -> (Vec<CheckResult>, Option<CheckResult>) {
+    let check_results = checks
+        .iter()
+        .map(|c| CheckResult {
+            check_name: c.name.clone(),
+            check_type: c.check_type,
+            verdict: CheckVerdict::Fail,
+            reasoning: reason.to_string(),
+        })
+        .collect();
+    let expected = expected_outcome.as_ref().map(|_| CheckResult {
+        check_name: "Expected outcome".to_string(),
+        // TODO: add a dedicated CheckType::ExpectedOutcome variant
+        check_type: CheckType::TextPresent,
+        verdict: CheckVerdict::Fail,
+        reasoning: reason.to_string(),
+    });
+    (check_results, expected)
 }
 
 /// Run the check evaluation pass for all completed checked nodes.
@@ -222,22 +250,8 @@ pub(crate) async fn run_check_pass<C: ChatBackend>(
                     "LLM check evaluation failed for {}: {}",
                     node_name, e
                 ));
-                let fail_results: Vec<CheckResult> = checks
-                    .iter()
-                    .map(|c| CheckResult {
-                        check_name: c.name.clone(),
-                        check_type: c.check_type,
-                        verdict: CheckVerdict::Fail,
-                        reasoning: format!("Check evaluation failed: {}", e),
-                    })
-                    .collect();
-                let fail_expected = expected_outcome.as_ref().map(|_| CheckResult {
-                    check_name: "Expected outcome".to_string(),
-                    check_type: CheckType::TextPresent,
-                    verdict: CheckVerdict::Fail,
-                    reasoning: format!("Check evaluation failed: {}", e),
-                });
-                (fail_results, fail_expected)
+                let reason = format!("Check evaluation failed: {}", e);
+                fail_all(checks, expected_outcome, &reason)
             }
         };
 

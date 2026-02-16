@@ -291,7 +291,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Capture a screenshot of the focused app (or full screen) and save as artifact.
+    /// Saves directly via `storage.save_artifact`, bypassing trace-level gating —
+    /// check screenshots are evaluation evidence, not trace data.
     async fn capture_check_screenshot(&self, mcp: &McpClient, node_run: &mut NodeRun) {
+        use base64::Engine;
+        use clickweave_core::ArtifactKind;
+        use clickweave_mcp::ToolContent;
+
         let app_name = self.focused_app.read().ok().and_then(|g| g.clone());
 
         let mut args = serde_json::json!({ "format": "png" });
@@ -308,7 +314,31 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         match mcp.call_tool("take_screenshot", Some(args)).await {
             Ok(result) => {
-                self.save_result_images(&result, "check_screenshot", &mut Some(node_run));
+                for (idx, content) in result.content.iter().enumerate() {
+                    if let ToolContent::Image { data, mime_type } = content {
+                        let ext = if mime_type.contains("png") {
+                            "png"
+                        } else {
+                            "jpg"
+                        };
+                        let filename = format!("check_screenshot_{}.{}", idx, ext);
+                        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data)
+                        {
+                            match self.storage.save_artifact(
+                                node_run,
+                                ArtifactKind::Screenshot,
+                                &filename,
+                                &decoded,
+                                serde_json::Value::Null,
+                            ) {
+                                Ok(artifact) => node_run.artifacts.push(artifact),
+                                Err(e) => {
+                                    tracing::warn!("Failed to save check screenshot: {}", e)
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 self.log(format!(
@@ -404,11 +434,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let tools = mcp.tools_as_openai();
 
+        let mut completed_normally = true;
+
         while let Some(node_id) = current {
             if self.stop_requested(&mut command_rx) {
                 self.log("Workflow stopped by user");
-                self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
-                return;
+                completed_normally = false;
+                break;
             }
 
             let Some(node) = self.workflow.find_node(node_id) else {
@@ -503,8 +535,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         self.finalize_run(run, RunStatus::Failed);
                     }
                     self.emit(ExecutorEvent::NodeFailed(node_id, e));
-                    self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
-                    return;
+                    completed_normally = false;
+                    break;
                 }
             }
 
@@ -521,70 +553,67 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             current = self.follow_single_edge(node_id);
         }
 
-        // --- Check evaluation pass ---
+        // --- Check evaluation pass (runs for all completed checked nodes) ---
         if !self.completed_checks.is_empty() {
             self.log("Running post-workflow check evaluation...".to_string());
 
-            let node_names: HashMap<Uuid, String> = self
+            // Deduplicate: keep only the last entry per node_id (loop iterations
+            // overwrite trace/screenshot on disk, so only the last is meaningful).
+            let mut seen = HashSet::new();
+            let deduped: Vec<_> = self
                 .completed_checks
                 .iter()
-                .map(|(id, _, _)| {
-                    let name = self
-                        .workflow
-                        .find_node(*id)
-                        .map(|n| n.name.clone())
-                        .unwrap_or_default();
-                    (*id, name)
-                })
+                .rev()
+                .filter(|(id, _, _)| seen.insert(*id))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
                 .collect();
 
-            let trace_summaries: HashMap<Uuid, String> = self
-                .completed_checks
-                .iter()
-                .filter_map(|(id, _, _)| {
-                    let node_name = node_names.get(id)?;
-                    self.read_trace_summary(node_name).map(|s| (*id, s))
-                })
-                .collect();
+            let mut node_names = HashMap::new();
+            let mut trace_summaries = HashMap::new();
+            let mut screenshots = HashMap::new();
+            for (id, _, _) in &deduped {
+                let name = self
+                    .workflow
+                    .find_node(*id)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_default();
+                if let Some(trace) = self.read_trace_summary(&name) {
+                    trace_summaries.insert(*id, trace);
+                }
+                if let Some(img) = self.read_check_screenshot(&name) {
+                    screenshots.insert(*id, img);
+                }
+                node_names.insert(*id, name);
+            }
 
-            let screenshots: HashMap<Uuid, String> = self
-                .completed_checks
-                .iter()
-                .filter_map(|(id, _, _)| {
-                    let node_name = node_names.get(id)?;
-                    self.read_check_screenshot(node_name).map(|s| (*id, s))
-                })
-                .collect();
-
-            let verdicts = if let Some(ref vlm) = self.vlm {
-                check_eval::run_check_pass(
-                    vlm,
-                    &self.completed_checks,
-                    &node_names,
-                    &trace_summaries,
-                    &screenshots,
-                    |msg| self.log(msg),
-                )
-                .await
-            } else {
-                check_eval::run_check_pass(
-                    &self.agent,
-                    &self.completed_checks,
-                    &node_names,
-                    &trace_summaries,
-                    &screenshots,
-                    |msg| self.log(msg),
-                )
-                .await
-            };
+            let backend = self.vlm.as_ref().unwrap_or(&self.agent);
+            let verdicts = check_eval::run_check_pass(
+                backend,
+                &deduped,
+                &node_names,
+                &trace_summaries,
+                &screenshots,
+                |msg| self.log(msg),
+            )
+            .await;
 
             if !verdicts.is_empty() {
+                for v in &verdicts {
+                    if let Err(e) = self.storage.save_node_verdict(v) {
+                        tracing::warn!("Failed to persist verdict for '{}': {}", v.node_name, e);
+                    }
+                }
                 self.emit(ExecutorEvent::ChecksCompleted(verdicts));
             }
         }
 
-        self.log("Workflow execution completed");
-        self.emit(ExecutorEvent::WorkflowCompleted);
+        if completed_normally {
+            self.log("Workflow execution completed");
+            self.emit(ExecutorEvent::WorkflowCompleted);
+        }
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
     }
 
@@ -600,10 +629,24 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .join("events.jsonl");
 
         let content = std::fs::read_to_string(&events_path).ok()?;
-        let summary: Vec<&str> = content
+        // Take the last 20 tool events so loop re-executions use the
+        // latest iteration's evidence, not the earliest.
+        let all_tool_lines: Vec<&str> = content
             .lines()
-            .filter(|line| line.contains("tool_call") || line.contains("tool_result"))
+            .filter(|line| {
+                serde_json::from_str::<Value>(line)
+                    .ok()
+                    .and_then(|v| v.get("event_type")?.as_str().map(String::from))
+                    .is_some_and(|et| et == "tool_call" || et == "tool_result")
+            })
+            .collect();
+        let summary: Vec<&str> = all_tool_lines
+            .into_iter()
+            .rev()
             .take(20)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
             .collect();
 
         if summary.is_empty() {
@@ -618,22 +661,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         use base64::Engine;
         let sanitized = clickweave_core::storage::sanitize_name(node_name);
         let exec_dir = self.storage.execution_dir_name()?;
-        let artifacts_dir = self
+        let screenshot_path = self
             .storage
             .base_path()
             .join(exec_dir)
             .join(&sanitized)
-            .join("artifacts");
+            .join("artifacts")
+            .join("check_screenshot_0.png");
 
-        let entries = std::fs::read_dir(&artifacts_dir).ok()?;
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("check_screenshot") && name.ends_with(".png") {
-                let data = std::fs::read(entry.path()).ok()?;
-                return Some(base64::engine::general_purpose::STANDARD.encode(&data));
-            }
-        }
-        None
+        let data = std::fs::read(&screenshot_path).ok()?;
+        Some(base64::engine::general_purpose::STANDARD.encode(&data))
     }
 }
 

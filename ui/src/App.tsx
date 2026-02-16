@@ -1,4 +1,4 @@
-import { useAppStore, useStore } from "./store/useAppStore";
+import { useAppStore } from "./store/useAppStore";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { NodePalette } from "./components/NodePalette";
@@ -38,7 +38,7 @@ function App() {
         const s = e.payload.state as "idle" | "running";
         actions.setExecutorState(s);
         if (s === "idle") actions.setActiveNode(null);
-        if (s === "running") useStore.getState().clearVerdicts();
+        if (s === "running") actions.clearVerdicts();
       }),
       listen<{ node_id: string }>("executor://node_started", (e) => {
         actions.setActiveNode(e.payload.node_id);
@@ -55,7 +55,7 @@ function App() {
       listen<import("./store/slices/verdictSlice").NodeVerdict[]>(
         "executor://checks_completed",
         (e) => {
-          useStore.getState().setVerdicts(e.payload);
+          actions.setVerdicts(e.payload);
         },
       ),
       listen("executor://workflow_completed", () => {

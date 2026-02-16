@@ -130,6 +130,8 @@ export function useAppStore(): [AppState, AppActions] {
     applyPendingPatch: store.applyPendingPatch,
     discardPendingPatch: store.discardPendingPatch,
     clearConversation: store.clearConversation,
+    setVerdicts: store.setVerdicts,
+    clearVerdicts: store.clearVerdicts,
   };
 
   return [state, actions];

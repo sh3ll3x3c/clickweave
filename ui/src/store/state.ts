@@ -79,6 +79,8 @@ export interface AppActions {
   applyPendingPatch: () => Promise<void>;
   discardPendingPatch: () => void;
   clearConversation: () => void;
+  setVerdicts: (verdicts: import("./slices/verdictSlice").NodeVerdict[]) => void;
+  clearVerdicts: () => void;
 }
 
 export const DEFAULT_ENDPOINT: EndpointConfig = {
