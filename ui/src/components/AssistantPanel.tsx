@@ -10,6 +10,7 @@ interface AssistantPanelProps {
   pendingPatch: WorkflowPatch | null;
   pendingPatchWarnings: string[];
   onSendMessage: (message: string) => void;
+  onResendMessage: (index: number) => Promise<void>;
   onApplyPatch: () => void;
   onDiscardPatch: () => void;
   onClearConversation: () => void;
@@ -24,6 +25,7 @@ export function AssistantPanel({
   pendingPatch,
   pendingPatchWarnings,
   onSendMessage,
+  onResendMessage,
   onApplyPatch,
   onDiscardPatch,
   onClearConversation,
@@ -146,6 +148,7 @@ export function AssistantPanel({
               pendingPatchWarnings={pendingPatchWarnings}
               onApplyPatch={onApplyPatch}
               onDiscardPatch={onDiscardPatch}
+              onResend={entry.role === "user" && !loading ? () => onResendMessage(idx) : undefined}
             />
           ))}
 

@@ -28,6 +28,7 @@ interface ChatMessageProps {
   pendingPatchWarnings: string[];
   onApplyPatch: () => void;
   onDiscardPatch: () => void;
+  onResend?: () => void;
 }
 
 export function ChatMessage({
@@ -37,12 +38,13 @@ export function ChatMessage({
   pendingPatchWarnings,
   onApplyPatch,
   onDiscardPatch,
+  onResend,
 }: ChatMessageProps) {
   const isUser = entry.role === "user";
   const showPatchActions = isLastAssistant && pendingPatch !== null;
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`group flex flex-col ${isUser ? "items-end" : "items-start"}`}>
       <div
         className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
           isUser
@@ -51,7 +53,7 @@ export function ChatMessage({
         }`}
       >
         {/* Message content */}
-        <div className="whitespace-pre-wrap break-words leading-relaxed">
+        <div className="whitespace-pre-wrap break-words leading-relaxed select-text">
           {entry.content}
         </div>
 
@@ -94,6 +96,20 @@ export function ChatMessage({
           </div>
         )}
       </div>
+
+      {/* Resend button for user messages */}
+      {onResend && (
+        <button
+          onClick={onResend}
+          className="mt-0.5 rounded p-1 text-[var(--text-muted)] opacity-0 transition-opacity hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)] group-hover:opacity-100"
+          title="Resend message"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="1 4 1 10 7 10" />
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }

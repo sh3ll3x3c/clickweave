@@ -78,6 +78,7 @@ export interface AppActions {
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
   sendAssistantMessage: (message: string) => Promise<void>;
+  resendMessage: (index: number) => Promise<void>;
   applyPendingPatch: () => Promise<void>;
   discardPendingPatch: () => void;
   clearConversation: () => void;

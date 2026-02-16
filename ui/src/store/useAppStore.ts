@@ -129,6 +129,7 @@ export function useAppStore(): [AppState, AppActions] {
     setAssistantOpen: store.setAssistantOpen,
     toggleAssistant: store.toggleAssistant,
     sendAssistantMessage: store.sendAssistantMessage,
+    resendMessage: store.resendMessage,
     applyPendingPatch: store.applyPendingPatch,
     discardPendingPatch: store.discardPendingPatch,
     clearConversation: store.clearConversation,

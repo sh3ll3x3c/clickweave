@@ -17,6 +17,7 @@ export interface AssistantSlice {
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
   sendAssistantMessage: (message: string) => Promise<void>;
+  resendMessage: (index: number) => Promise<void>;
   applyPendingPatch: () => Promise<void>;
   discardPendingPatch: () => void;
   clearConversation: () => void;
@@ -60,8 +61,8 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
         workflow: get().workflow,
         user_message: message,
         history: conv.messages,
-        summary: conv.summary,
-        summary_cutoff: conv.summary_cutoff,
+        summary: conv.summary ?? null,
+        summary_cutoff: conv.summary_cutoff ?? 0,
         run_context: null,
         planner: toEndpoint(plannerConfig),
         allow_ai_transforms: allowAiTransforms,
@@ -124,6 +125,24 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
     } finally {
       set({ assistantLoading: false });
     }
+  },
+
+  resendMessage: async (index) => {
+    const conv = get().conversation;
+    const entry = conv.messages[index];
+    if (!entry || entry.role !== "user") return;
+    const content = entry.content;
+    // Truncate to just before this user message, discarding it and everything after
+    set((s) => ({
+      conversation: {
+        ...s.conversation,
+        messages: s.conversation.messages.slice(0, index),
+      },
+      pendingPatch: null,
+      pendingPatchWarnings: [],
+      assistantError: null,
+    }));
+    await get().sendAssistantMessage(content);
   },
 
   applyPendingPatch: async () => {
