@@ -57,7 +57,7 @@ export function useAppStore(): [AppState, AppActions] {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Workflow mutations (keeps useWorkflowMutations as-is)
-  const { addNode, removeNode, updateNodePositions, updateNode, addEdge, removeEdge } =
+  const { addNode, removeNode, removeNodes, updateNodePositions, updateNode, addEdge, removeEdge } =
     useWorkflowMutations(setWorkflowDispatch, setSelectedNodeDispatch, store.workflow.nodes.length);
 
   const state: AppState = {
@@ -102,6 +102,7 @@ export function useAppStore(): [AppState, AppActions] {
     clearLogs: store.clearLogs,
     addNode,
     removeNode,
+    removeNodes,
     updateNodePositions,
     updateNode,
     addEdge,

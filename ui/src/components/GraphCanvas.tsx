@@ -30,6 +30,7 @@ interface GraphCanvasProps {
   onEdgesChange: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
   onDeleteNode: (id: string) => void;
+  onDeleteNodes: (ids: string[]) => void;
 }
 
 const nodeMetadata: Record<string, { color: string; icon: string }> = {
@@ -111,6 +112,7 @@ export function GraphCanvas({
   onEdgesChange,
   onConnect,
   onDeleteNode,
+  onDeleteNodes,
 }: GraphCanvasProps) {
   const nodeTypes: NodeTypes = useMemo(
     () => ({
@@ -218,6 +220,10 @@ export function GraphCanvas({
           const bodyCount = loopMembers.get(node.id)?.length ?? 0;
           if (collapsedLoops.has(node.id)) {
             // Collapsed: render as regular workflow node with collapse badge
+            const bodyIds = loopMembers.get(node.id) ?? [];
+            const endLoopId = workflow.nodes.find(
+              (n) => n.node_type.type === "EndLoop" && n.node_type.loop_id === node.id,
+            )?.id;
             nodes.push({
               ...base,
               type: "workflow",
@@ -226,6 +232,13 @@ export function GraphCanvas({
                 isCollapsedLoop: true,
                 bodyCount,
                 onToggleCollapse: () => toggleLoopCollapse(node.id),
+                onDelete: () => {
+                  // Cascade delete: Loop node + all body nodes + EndLoop
+                  const ids = [...bodyIds];
+                  if (endLoopId) ids.push(endLoopId);
+                  ids.push(node.id);
+                  onDeleteNodes(ids);
+                },
               },
             });
           } else {
@@ -330,6 +343,7 @@ export function GraphCanvas({
     selectedNode,
     activeNode,
     onDeleteNode,
+    onDeleteNodes,
     collapsedLoops,
     loopMembers,
     nodeToLoops,

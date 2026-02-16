@@ -116,6 +116,7 @@ function App() {
                   }
                   onConnect={actions.addEdge}
                   onDeleteNode={actions.removeNode}
+                  onDeleteNodes={actions.removeNodes}
                 />
 
                 <FloatingToolbar

@@ -43,6 +43,19 @@ export function useWorkflowMutations(
     [setWorkflow, setSelectedNode],
   );
 
+  const removeNodes = useCallback(
+    (ids: string[]) => {
+      const idSet = new Set(ids);
+      setWorkflow((prev) => ({
+        ...prev,
+        nodes: prev.nodes.filter((n) => !idSet.has(n.id)),
+        edges: prev.edges.filter((e) => !idSet.has(e.from) && !idSet.has(e.to)),
+      }));
+      setSelectedNode((prev) => (prev !== null && idSet.has(prev) ? null : prev));
+    },
+    [setWorkflow, setSelectedNode],
+  );
+
   const updateNodePositions = useCallback(
     (updates: Map<string, { x: number; y: number }>) => {
       setWorkflow((prev) => ({
@@ -97,5 +110,5 @@ export function useWorkflowMutations(
     [setWorkflow],
   );
 
-  return { addNode, removeNode, updateNodePositions, updateNode, addEdge, removeEdge };
+  return { addNode, removeNode, removeNodes, updateNodePositions, updateNode, addEdge, removeEdge };
 }
