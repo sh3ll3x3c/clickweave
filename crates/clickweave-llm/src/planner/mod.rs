@@ -596,15 +596,13 @@ fn infer_control_flow_edges(nodes: &[Node], edges: &mut Vec<Edge>, warnings: &mu
         let endloop_id = node.id;
         let loop_id = params.loop_id;
 
-        // Skip if EndLoop already has the correct back-edge
-        if edges
+        let has_back_edge = edges
             .iter()
-            .any(|e| e.from == endloop_id && e.to == loop_id)
-        {
-            continue;
-        }
+            .any(|e| e.from == endloop_id && e.to == loop_id);
 
-        // Find body nodes via DFS from the LoopBody target
+        // Always reroute body→Loop edges through EndLoop, even when the
+        // back-edge already exists. LLMs often emit both EndLoop→Loop AND
+        // direct body→Loop edges; skipping rerouting leaves a cycle.
         let body_start = edges
             .iter()
             .find(|e| e.from == loop_id && e.output == Some(EdgeOutput::LoopBody))
@@ -643,12 +641,14 @@ fn infer_control_flow_edges(nodes: &[Node], edges: &mut Vec<Edge>, warnings: &mu
             }
         }
 
-        // Add EndLoop → Loop back-edge
-        edges.push(Edge {
-            from: endloop_id,
-            to: loop_id,
-            output: None,
-        });
+        // Add EndLoop → Loop back-edge if not already present
+        if !has_back_edge {
+            edges.push(Edge {
+                from: endloop_id,
+                to: loop_id,
+                output: None,
+            });
+        }
     }
 
     // ── Phase 3: Remove LoopDone→EndLoop edges ──────────────────

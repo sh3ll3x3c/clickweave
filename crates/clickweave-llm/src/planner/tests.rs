@@ -1586,3 +1586,80 @@ fn test_infer_noop_for_already_labeled_edges() {
     assert_eq!(edges[1].output, Some(EdgeOutput::LoopDone));
     assert!(warnings.is_empty());
 }
+
+#[tokio::test]
+async fn test_infer_loop_reroutes_body_back_edge_when_endloop_edge_already_exists() {
+    // LLM produces both EndLoop→Loop AND body→Loop edges. Previously the
+    // `continue` in Phase 2 skipped rerouting when the back-edge existed,
+    // leaving a body→Loop cycle that validation rejected.
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"id": "n2", "step_type": "Loop", "name": "Multiply", "exit_condition": {
+            "left": {"type": "Variable", "name": "result.found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }, "max_iterations": 20},
+        {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
+        {"id": "n4", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "1024"}, "name": "Check Result"},
+        {"id": "n5", "step_type": "EndLoop", "loop_id": "n2", "name": "End Loop"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3"},
+        {"from": "n3", "to": "n4"},
+        {"from": "n4", "to": "n2"},
+        {"from": "n5", "to": "n2"},
+        {"from": "n2", "to": "n5"}
+    ]}"#;
+    // Both n4→n2 (body→Loop) and n5→n2 (EndLoop→Loop) are present.
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Calculator multiply with both back-edges",
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let wf = &result.workflow;
+    let loop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::Loop(_)))
+        .unwrap();
+    let endloop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+        .unwrap();
+
+    // n4 (Check Result) should be rerouted to EndLoop, not Loop
+    let check_node = wf.nodes.iter().find(|n| n.name == "Check Result").unwrap();
+    let check_edges: Vec<_> = wf
+        .edges
+        .iter()
+        .filter(|e| e.from == check_node.id)
+        .collect();
+    assert_eq!(check_edges.len(), 1);
+    assert_eq!(
+        check_edges[0].to, endloop_node.id,
+        "body→Loop should be rerouted through EndLoop even when EndLoop→Loop already exists"
+    );
+
+    // EndLoop should have exactly one back-edge (no duplicates)
+    let endloop_edges: Vec<_> = wf
+        .edges
+        .iter()
+        .filter(|e| e.from == endloop_node.id && e.to == loop_node.id)
+        .collect();
+    assert_eq!(
+        endloop_edges.len(),
+        1,
+        "Should not duplicate EndLoop→Loop back-edge"
+    );
+
+    // Workflow should pass validation (no cycle error)
+    clickweave_core::validate_workflow(wf).expect("Workflow with both back-edges should validate");
+}
