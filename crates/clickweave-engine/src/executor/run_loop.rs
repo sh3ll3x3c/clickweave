@@ -1,10 +1,10 @@
-use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
+use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor, check_eval};
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::{EdgeOutput, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpClient;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
@@ -521,9 +521,119 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             current = self.follow_single_edge(node_id);
         }
 
+        // --- Check evaluation pass ---
+        if !self.completed_checks.is_empty() {
+            self.log("Running post-workflow check evaluation...".to_string());
+
+            let node_names: HashMap<Uuid, String> = self
+                .completed_checks
+                .iter()
+                .map(|(id, _, _)| {
+                    let name = self
+                        .workflow
+                        .find_node(*id)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_default();
+                    (*id, name)
+                })
+                .collect();
+
+            let trace_summaries: HashMap<Uuid, String> = self
+                .completed_checks
+                .iter()
+                .filter_map(|(id, _, _)| {
+                    let node_name = node_names.get(id)?;
+                    self.read_trace_summary(node_name).map(|s| (*id, s))
+                })
+                .collect();
+
+            let screenshots: HashMap<Uuid, String> = self
+                .completed_checks
+                .iter()
+                .filter_map(|(id, _, _)| {
+                    let node_name = node_names.get(id)?;
+                    self.read_check_screenshot(node_name).map(|s| (*id, s))
+                })
+                .collect();
+
+            let verdicts = if let Some(ref vlm) = self.vlm {
+                check_eval::run_check_pass(
+                    vlm,
+                    &self.completed_checks,
+                    &node_names,
+                    &trace_summaries,
+                    &screenshots,
+                    |msg| self.log(msg),
+                )
+                .await
+            } else {
+                check_eval::run_check_pass(
+                    &self.agent,
+                    &self.completed_checks,
+                    &node_names,
+                    &trace_summaries,
+                    &screenshots,
+                    |msg| self.log(msg),
+                )
+                .await
+            };
+
+            if !verdicts.is_empty() {
+                self.emit(ExecutorEvent::ChecksCompleted(verdicts));
+            }
+        }
+
         self.log("Workflow execution completed");
         self.emit(ExecutorEvent::WorkflowCompleted);
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
+    }
+
+    /// Read trace events for a node and produce a text summary for the LLM.
+    fn read_trace_summary(&self, node_name: &str) -> Option<String> {
+        let sanitized = clickweave_core::storage::sanitize_name(node_name);
+        let exec_dir = self.storage.execution_dir_name()?;
+        let events_path = self
+            .storage
+            .base_path()
+            .join(exec_dir)
+            .join(&sanitized)
+            .join("events.jsonl");
+
+        let content = std::fs::read_to_string(&events_path).ok()?;
+        let summary: Vec<&str> = content
+            .lines()
+            .filter(|line| line.contains("tool_call") || line.contains("tool_result"))
+            .take(20)
+            .collect();
+
+        if summary.is_empty() {
+            None
+        } else {
+            Some(summary.join("\n"))
+        }
+    }
+
+    /// Read the check screenshot for a node and return as base64.
+    fn read_check_screenshot(&self, node_name: &str) -> Option<String> {
+        use base64::Engine;
+        let sanitized = clickweave_core::storage::sanitize_name(node_name);
+        let exec_dir = self.storage.execution_dir_name()?;
+        let artifacts_dir = self
+            .storage
+            .base_path()
+            .join(exec_dir)
+            .join(&sanitized)
+            .join("artifacts");
+
+        let entries = std::fs::read_dir(&artifacts_dir).ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("check_screenshot") && name.ends_with(".png") {
+                let data = std::fs::read(entry.path()).ok()?;
+                return Some(base64::engine::general_purpose::STANDARD.encode(&data));
+            }
+        }
+        None
     }
 }
 

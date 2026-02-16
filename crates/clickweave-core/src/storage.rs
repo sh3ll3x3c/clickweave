@@ -62,6 +62,14 @@ pub struct RunStorage {
 }
 
 impl RunStorage {
+    pub fn execution_dir_name(&self) -> Option<&str> {
+        self.execution_dir.as_deref()
+    }
+
+    pub fn base_path(&self) -> &Path {
+        &self.base_path
+    }
+
     /// Create storage for a saved project.
     ///
     /// Path: `<project>/.clickweave/runs/<sanitized_workflow_name>/`
