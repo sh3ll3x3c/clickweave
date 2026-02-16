@@ -3,12 +3,13 @@ use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{
     ClickParams, Condition, EdgeOutput, EndLoopParams, FindTextParams, FocusMethod,
-    FocusWindowParams, IfParams, LiteralValue, LoopParams, NodeType, Operator, Position,
-    ScreenshotMode, TakeScreenshotParams, TypeTextParams, ValueRef, Workflow,
+    FocusWindowParams, IfParams, LiteralValue, LoopParams, McpToolCallParams, NodeType, Operator,
+    Position, ScreenshotMode, TakeScreenshotParams, TypeTextParams, ValueRef, Workflow,
 };
-use clickweave_llm::{ChatBackend, ChatResponse, Content, ContentPart, Message};
+use clickweave_llm::{ChatBackend, ChatResponse, Choice, Content, ContentPart, Message};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 /// A stub ChatBackend that never expects to be called.
 /// Useful for tests that only exercise cache mechanics without LLM interaction.
@@ -43,6 +44,71 @@ fn make_test_executor() -> WorkflowExecutor<StubBackend> {
         tx,
         storage,
     )
+}
+
+/// A ChatBackend that returns a queue of scripted responses.
+/// Used to test flows that call the LLM (e.g. resolve_element_name).
+struct ScriptedBackend {
+    responses: Mutex<Vec<String>>,
+}
+
+impl ScriptedBackend {
+    fn new(responses: Vec<&str>) -> Self {
+        // Reverse so pop() returns responses in FIFO order.
+        let mut v: Vec<String> = responses.into_iter().map(String::from).collect();
+        v.reverse();
+        Self {
+            responses: Mutex::new(v),
+        }
+    }
+}
+
+impl ChatBackend for ScriptedBackend {
+    fn model_name(&self) -> &str {
+        "scripted"
+    }
+
+    async fn chat(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Option<Vec<Value>>,
+    ) -> anyhow::Result<ChatResponse> {
+        let text = self
+            .responses
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("ScriptedBackend exhausted — no more responses");
+        Ok(ChatResponse {
+            id: "scripted".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message::assistant(&text),
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: None,
+        })
+    }
+}
+
+fn make_scripted_executor(responses: Vec<&str>) -> WorkflowExecutor<ScriptedBackend> {
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let workflow = Workflow::default();
+    let temp_dir = std::env::temp_dir().join("clickweave_test_scripted");
+    let storage = RunStorage::new_app_data(&temp_dir, &workflow.name, workflow.id);
+    WorkflowExecutor::with_backends(
+        workflow,
+        ScriptedBackend::new(responses),
+        None,
+        "stub-mcp".to_string(),
+        None,
+        tx,
+        storage,
+    )
+}
+
+fn strs(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| s.to_string()).collect()
 }
 
 /// Check that a list of messages contains no image content parts.
@@ -323,6 +389,217 @@ fn evict_element_cache_noop_for_unrelated_node() {
     assert!(
         exec.element_cache.read().unwrap().contains_key(&cache_key),
         "element cache should not be evicted for unrelated node type"
+    );
+}
+
+#[test]
+fn evict_element_cache_for_mcp_find_text_node() {
+    let exec = make_test_executor();
+    let cache_key = ("×".to_string(), Some("Calculator".to_string()));
+    exec.element_cache
+        .write()
+        .unwrap()
+        .insert(cache_key.clone(), "Multiply".to_string());
+
+    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+
+    let node = NodeType::McpToolCall(McpToolCallParams {
+        tool_name: "find_text".to_string(),
+        arguments: serde_json::json!({"text": "×"}),
+    });
+    exec.evict_caches_for_node(&node);
+    assert!(
+        !exec.element_cache.read().unwrap().contains_key(&cache_key),
+        "element cache entry should be evicted for McpToolCall(find_text) node"
+    );
+}
+
+#[test]
+fn evict_element_cache_for_mcp_find_text_with_explicit_app_name() {
+    let exec = make_test_executor();
+    // Cache keyed to explicit app_name "Safari", not focused_app "Calculator"
+    let cache_key = ("link".to_string(), Some("Safari".to_string()));
+    exec.element_cache
+        .write()
+        .unwrap()
+        .insert(cache_key.clone(), "AXLink".to_string());
+
+    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+
+    let node = NodeType::McpToolCall(McpToolCallParams {
+        tool_name: "find_text".to_string(),
+        arguments: serde_json::json!({"text": "link", "app_name": "Safari"}),
+    });
+    exec.evict_caches_for_node(&node);
+    assert!(
+        !exec.element_cache.read().unwrap().contains_key(&cache_key),
+        "element cache should use explicit app_name from arguments, not focused_app"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// resolve_element_name integration tests (scripted LLM backend)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_element_name_successful_match() {
+    let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
+    let available = strs(&["Calculator", "Multiply", "Divide"]);
+    assert_eq!(
+        exec.resolve_element_name("×", &available, Some("Calculator"), None)
+            .await
+            .unwrap(),
+        "Multiply"
+    );
+}
+
+#[tokio::test]
+async fn resolve_element_name_caches_result() {
+    // Only one scripted response — second call must hit cache.
+    let exec = make_scripted_executor(vec![r#"{"name": "Subtract"}"#]);
+    let available = strs(&["Subtract", "Add"]);
+    let first = exec
+        .resolve_element_name("−", &available, None, None)
+        .await
+        .unwrap();
+    let second = exec
+        .resolve_element_name("−", &available, None, None)
+        .await
+        .unwrap();
+    assert_eq!(first, "Subtract");
+    assert_eq!(second, "Subtract");
+}
+
+#[tokio::test]
+async fn resolve_element_name_null_match_returns_error() {
+    let exec = make_scripted_executor(vec![r#"{"name": null}"#]);
+    let err = exec
+        .resolve_element_name("nonexistent", &strs(&["Multiply"]), None, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("not found"));
+}
+
+#[tokio::test]
+async fn resolve_element_name_rejects_hallucinated_name() {
+    let exec = make_scripted_executor(vec![r#"{"name": "Hallucinated"}"#]);
+    let err = exec
+        .resolve_element_name("×", &strs(&["Multiply", "Divide"]), None, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("not in available elements list"));
+}
+
+#[tokio::test]
+async fn resolve_element_name_handles_code_block_wrapped_response() {
+    let exec = make_scripted_executor(vec!["```json\n{\"name\": \"All Clear\"}\n```"]);
+    assert_eq!(
+        exec.resolve_element_name(
+            "AC",
+            &strs(&["All Clear", "Equals"]),
+            Some("Calculator"),
+            None
+        )
+        .await
+        .unwrap(),
+        "All Clear"
+    );
+}
+
+#[tokio::test]
+async fn resolve_element_name_handles_prose_wrapped_response() {
+    let exec = make_scripted_executor(vec![
+        "The matching element is:\n{\"name\": \"Divide\"}\nThis maps the ÷ symbol.",
+    ]);
+    assert_eq!(
+        exec.resolve_element_name("÷", &strs(&["Multiply", "Divide"]), None, None)
+            .await
+            .unwrap(),
+        "Divide"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// prepare_find_text_retry end-to-end tests (parse → LLM resolve → retry args)
+// ---------------------------------------------------------------------------
+
+const AVAILABLE_ELEMENTS_RESPONSE: &str =
+    "[]\n{\"available_elements\":[\"Multiply\",\"Divide\",\"Subtract\"]}";
+
+#[tokio::test]
+async fn prepare_find_text_retry_full_flow() {
+    let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
+    let args = exec
+        .prepare_find_text_retry(
+            &serde_json::json!({"text": "×", "app_name": "Calculator"}),
+            AVAILABLE_ELEMENTS_RESPONSE,
+            None,
+        )
+        .await
+        .expect("should produce retry args");
+    assert_eq!(args["text"], "Multiply");
+    assert_eq!(args["app_name"], "Calculator");
+}
+
+#[tokio::test]
+async fn prepare_find_text_retry_preserves_extra_fields() {
+    let exec = make_scripted_executor(vec![r#"{"name": "Subtract"}"#]);
+    let args = exec
+        .prepare_find_text_retry(
+            &serde_json::json!({"text": "−", "app_name": "Calculator", "match_mode": "exact"}),
+            "[]\n{\"available_elements\":[\"Add\",\"Subtract\"]}",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(args["text"], "Subtract");
+    assert_eq!(args["app_name"], "Calculator");
+    assert_eq!(args["match_mode"], "exact");
+}
+
+#[tokio::test]
+async fn prepare_find_text_retry_falls_back_to_focused_app() {
+    let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
+    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+
+    let args = exec
+        .prepare_find_text_retry(
+            &serde_json::json!({"text": "×"}),
+            AVAILABLE_ELEMENTS_RESPONSE,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(args["text"], "Multiply");
+    let cache_key = ("×".to_string(), Some("Calculator".to_string()));
+    assert!(exec.element_cache.read().unwrap().contains_key(&cache_key));
+}
+
+#[tokio::test]
+async fn prepare_find_text_retry_none_when_no_available_elements() {
+    let exec = make_scripted_executor(vec![]);
+    assert!(
+        exec.prepare_find_text_retry(
+            &serde_json::json!({"text": "×"}),
+            "[{\"text\":\"×\",\"x\":100,\"y\":200}]",
+            None,
+        )
+        .await
+        .is_none()
+    );
+}
+
+#[tokio::test]
+async fn prepare_find_text_retry_none_when_llm_finds_no_match() {
+    let exec = make_scripted_executor(vec![r#"{"name": null}"#]);
+    assert!(
+        exec.prepare_find_text_retry(
+            &serde_json::json!({"text": "zzz"}),
+            AVAILABLE_ELEMENTS_RESPONSE,
+            None,
+        )
+        .await
+        .is_none()
     );
 }
 
