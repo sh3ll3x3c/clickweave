@@ -85,6 +85,9 @@ export interface AppActions {
   clearConversation: () => void;
   setVerdicts: (verdicts: import("./slices/verdictSlice").NodeVerdict[]) => void;
   clearVerdicts: () => void;
+  pushHistory: (label: string) => void;
+  undo: () => void;
+  redo: () => void;
 }
 
 export const DEFAULT_ENDPOINT: EndpointConfig = {

@@ -4,6 +4,7 @@ import type { Workflow } from "../bindings";
 import type { AppState, AppActions } from "./state";
 import { createAssistantSlice } from "./slices/assistantSlice";
 import { createExecutionSlice } from "./slices/executionSlice";
+import { createHistorySlice } from "./slices/historySlice";
 import { createLogSlice } from "./slices/logSlice";
 import { createProjectSlice } from "./slices/projectSlice";
 import { createSettingsSlice } from "./slices/settingsSlice";
@@ -21,6 +22,7 @@ export const useStore = create<StoreState>()((...a) => ({
   ...createProjectSlice(...a),
   ...createAssistantSlice(...a),
   ...createExecutionSlice(...a),
+  ...createHistorySlice(...a),
   ...createLogSlice(...a),
   ...createUiSlice(...a),
   ...createVerdictSlice(...a),
@@ -60,7 +62,7 @@ export function useAppStore(): [AppState, AppActions] {
 
   // Workflow mutations (keeps useWorkflowMutations as-is)
   const { addNode, removeNode, removeNodes, updateNodePositions, updateNode, addEdge, removeEdge } =
-    useWorkflowMutations(setWorkflowDispatch, setSelectedNodeDispatch, store.workflow.nodes.length);
+    useWorkflowMutations(setWorkflowDispatch, setSelectedNodeDispatch, store.workflow.nodes.length, store.pushHistory);
 
   const state: AppState = {
     workflow: store.workflow,
@@ -136,6 +138,9 @@ export function useAppStore(): [AppState, AppActions] {
     clearConversation: store.clearConversation,
     setVerdicts: store.setVerdicts,
     clearVerdicts: store.clearVerdicts,
+    pushHistory: store.pushHistory,
+    undo: store.undo,
+    redo: store.redo,
   };
 
   return [state, actions];

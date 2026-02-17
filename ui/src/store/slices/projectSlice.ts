@@ -39,6 +39,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       selectedNode: null,
       isNewWorkflow: false,
     });
+    get().clearHistory();
 
     // Load conversation
     try {
@@ -94,6 +95,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       pendingPatchWarnings: [],
       assistantError: null,
     });
+    get().clearHistory();
     pushLog("New project created");
   },
 

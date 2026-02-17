@@ -12,6 +12,7 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 
 function App() {
   const [state, actions] = useAppStore();
@@ -23,6 +24,8 @@ function App() {
         : null,
     [state.selectedNode, state.workflow.nodes],
   );
+
+  useUndoRedoKeyboard(actions.undo, actions.redo);
 
   const hasAiNodes = useMemo(
     () => state.workflow.nodes.some((n) => n.node_type.type === "AiStep"),
@@ -94,9 +97,10 @@ function App() {
           onOpen={actions.openProject}
           onNew={actions.newProject}
           onSettings={() => actions.setShowSettings(true)}
-          onNameChange={(name) =>
-            actions.setWorkflow({ ...state.workflow, name })
-          }
+          onNameChange={(name) => {
+            actions.pushHistory("Rename Workflow");
+            actions.setWorkflow({ ...state.workflow, name });
+          }}
         />
         <VerdictBar />
 
@@ -120,11 +124,13 @@ function App() {
                   activeNode={state.activeNode}
                   onSelectNode={actions.selectNode}
                   onNodePositionsChange={actions.updateNodePositions}
-                  onEdgesChange={(edges) =>
-                    actions.setWorkflow({ ...state.workflow, edges })
-                  }
+                  onEdgesChange={(edges) => {
+                    actions.pushHistory("Remove Edge");
+                    actions.setWorkflow({ ...state.workflow, edges });
+                  }}
                   onConnect={actions.addEdge}
                   onDeleteNodes={actions.removeNodes}
+                  onBeforeNodeDrag={() => actions.pushHistory("Move Nodes")}
                 />
 
                 <FloatingToolbar

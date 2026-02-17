@@ -181,6 +181,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       set({ assistantError: msg });
       return;
     }
+    get().pushHistory("Apply AI Changes");
     set({
       workflow: patched,
       pendingPatch: null,

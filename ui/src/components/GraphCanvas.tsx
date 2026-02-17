@@ -31,6 +31,7 @@ interface GraphCanvasProps {
   onEdgesChange: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
   onDeleteNodes: (ids: string[]) => void;
+  onBeforeNodeDrag?: () => void;
 }
 
 const nodeMetadata: Record<string, { color: string; icon: string }> = {
@@ -119,6 +120,7 @@ export function GraphCanvas({
   onEdgesChange,
   onConnect,
   onDeleteNodes,
+  onBeforeNodeDrag,
 }: GraphCanvasProps) {
   const nodeTypes: NodeTypes = useMemo(
     () => ({
@@ -556,6 +558,10 @@ export function GraphCanvas({
     [onConnect],
   );
 
+  const handleNodeDragStart = useCallback(() => {
+    onBeforeNodeDrag?.();
+  }, [onBeforeNodeDrag]);
+
   const handlePaneClick = useCallback(() => {
     onSelectNode(null);
   }, [onSelectNode]);
@@ -569,6 +575,7 @@ export function GraphCanvas({
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
+        onNodeDragStart={handleNodeDragStart}
         onPaneClick={handlePaneClick}
         deleteKeyCode={["Backspace", "Delete"]}
         selectionOnDrag

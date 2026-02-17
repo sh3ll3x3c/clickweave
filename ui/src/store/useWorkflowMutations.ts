@@ -6,9 +6,11 @@ export function useWorkflowMutations(
   setWorkflow: React.Dispatch<React.SetStateAction<Workflow>>,
   setSelectedNode: React.Dispatch<React.SetStateAction<string | null>>,
   nodesLength: number,
+  pushHistory: (label: string) => void,
 ) {
   const addNode = useCallback(
     (nodeType: NodeType) => {
+      pushHistory("Add Node");
       const id = crypto.randomUUID();
       const offsetX = (nodesLength % 4) * 250;
       const offsetY = Math.floor(nodesLength / 4) * 150;
@@ -28,11 +30,12 @@ export function useWorkflowMutations(
       setWorkflow((prev) => ({ ...prev, nodes: [...prev.nodes, node] }));
       setSelectedNode(id);
     },
-    [nodesLength, setWorkflow, setSelectedNode],
+    [nodesLength, setWorkflow, setSelectedNode, pushHistory],
   );
 
   const removeNodes = useCallback(
     (ids: string[]) => {
+      pushHistory(ids.length === 1 ? "Delete Node" : "Delete Nodes");
       const idSet = new Set(ids);
       setWorkflow((prev) => ({
         ...prev,
@@ -41,7 +44,7 @@ export function useWorkflowMutations(
       }));
       setSelectedNode((prev) => (prev !== null && idSet.has(prev) ? null : prev));
     },
-    [setWorkflow, setSelectedNode],
+    [setWorkflow, setSelectedNode, pushHistory],
   );
 
   const updateNodePositions = useCallback(
@@ -59,16 +62,18 @@ export function useWorkflowMutations(
 
   const updateNode = useCallback(
     (id: string, updates: Partial<Node>) => {
+      pushHistory("Edit Node");
       setWorkflow((prev) => ({
         ...prev,
         nodes: prev.nodes.map((n) => (n.id === id ? { ...n, ...updates } : n)),
       }));
     },
-    [setWorkflow],
+    [setWorkflow, pushHistory],
   );
 
   const addEdge = useCallback(
     (from: string, to: string, sourceHandle?: string) => {
+      pushHistory("Add Edge");
       setWorkflow((prev) => {
         const output = sourceHandle ? handleToEdgeOutput(sourceHandle) : null;
         // For control flow nodes, replace the edge from the exact same output port.
@@ -79,11 +84,12 @@ export function useWorkflowMutations(
         return { ...prev, edges: [...filtered, edge] };
       });
     },
-    [setWorkflow],
+    [setWorkflow, pushHistory],
   );
 
   const removeEdge = useCallback(
     (from: string, to: string, output?: EdgeOutput | null) => {
+      pushHistory("Remove Edge");
       setWorkflow((prev) => ({
         ...prev,
         edges: prev.edges.filter((e) => {
@@ -95,7 +101,7 @@ export function useWorkflowMutations(
         }),
       }));
     },
-    [setWorkflow],
+    [setWorkflow, pushHistory],
   );
 
   const removeNode = useCallback(
