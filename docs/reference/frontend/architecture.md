@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `0e907fc`
+Verified at commit: `0fe361e`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -43,14 +43,18 @@ ui/src/
 │           ├── TraceTab.tsx
 │           ├── ChecksTab.tsx
 │           └── RunsTab.tsx
+├── hooks/
+│   └── useUndoRedoKeyboard.ts
 ├── store/
 │   ├── useAppStore.ts
+│   ├── useWorkflowMutations.ts
 │   ├── state.ts
 │   ├── settings.ts
 │   └── slices/
 │       ├── projectSlice.ts
 │       ├── executionSlice.ts
 │       ├── assistantSlice.ts
+│       ├── historySlice.ts
 │       ├── settingsSlice.ts
 │       ├── logSlice.ts
 │       ├── verdictSlice.ts
@@ -61,11 +65,12 @@ ui/src/
 
 ## State Model
 
-`StoreState` is the intersection of 7 slices:
+`StoreState` is the intersection of 8 slices:
 
 - `ProjectSlice`
 - `ExecutionSlice`
 - `AssistantSlice`
+- `HistorySlice`
 - `SettingsSlice`
 - `LogSlice`
 - `VerdictSlice`
@@ -101,6 +106,12 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 - selection/panel state (`selectedNode`, `detailTab`, drawer/modal flags)
 - feature toggles: `allowAiTransforms`, `allowAgentSteps`
 - node type metadata (`nodeTypes`) loaded from backend
+
+**HistorySlice** (`historySlice.ts`)
+
+- `past: HistoryEntry[]`, `future: HistoryEntry[]` — undo/redo stacks (max 50 entries)
+- actions: `pushHistory`, `undo`, `redo`, `clearHistory`
+- Workflow mutations push snapshots via `useWorkflowMutations` before each change
 
 **LogSlice / VerdictSlice**
 
@@ -188,5 +199,8 @@ Do not edit manually.
 | `ui/src/components/node-detail/NodeDetailModal.tsx` | node detail shell |
 | `ui/src/components/node-detail/tabs/TraceTab.tsx` | trace + artifact viewer |
 | `ui/src/store/useAppStore.ts` | composed Zustand store hook |
+| `ui/src/store/useWorkflowMutations.ts` | node/edge mutation helpers with history push |
 | `ui/src/store/slices/types.ts` | `StoreState` composition |
+| `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
 | `ui/src/store/settings.ts` | persisted settings I/O |
+| `ui/src/hooks/useUndoRedoKeyboard.ts` | Ctrl+Z / Ctrl+Shift+Z keyboard binding |
