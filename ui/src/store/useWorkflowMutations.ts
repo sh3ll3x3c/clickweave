@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import type { Edge, EdgeOutput, Node, NodeType, Workflow } from "../bindings";
-import { handleToEdgeOutput, edgeOutputsEqual } from "../utils/edgeHandles";
+import { edgeOutputsEqual, handleToEdgeOutput } from "../utils/edgeHandles";
 
 export function useWorkflowMutations(
   setWorkflow: React.Dispatch<React.SetStateAction<Workflow>>,
@@ -45,6 +45,24 @@ export function useWorkflowMutations(
       setSelectedNode((prev) => (prev !== null && idSet.has(prev) ? null : prev));
     },
     [setWorkflow, setSelectedNode, pushHistory],
+  );
+
+  /** Remove edges without pushing a separate history entry.
+   *  Used when extra edges are deleted as part of a node-delete operation
+   *  whose snapshot was already captured by removeNodes. */
+  const removeEdgesOnly = useCallback(
+    (edges: Edge[]) => {
+      setWorkflow((prev) => ({
+        ...prev,
+        edges: prev.edges.filter(
+          (e) =>
+            !edges.some(
+              (r) => e.from === r.from && e.to === r.to && edgeOutputsEqual(e.output, r.output),
+            ),
+        ),
+      }));
+    },
+    [setWorkflow],
   );
 
   const updateNodePositions = useCallback(
@@ -109,5 +127,5 @@ export function useWorkflowMutations(
     [removeNodes],
   );
 
-  return { addNode, removeNode, removeNodes, updateNodePositions, updateNode, addEdge, removeEdge };
+  return { addNode, removeNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge, removeEdge };
 }

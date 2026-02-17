@@ -55,6 +55,7 @@ export interface AppActions {
   addNode: (nodeType: import("../bindings").NodeType) => void;
   removeNode: (id: string) => void;
   removeNodes: (ids: string[]) => void;
+  removeEdgesOnly: (edges: import("../bindings").Edge[]) => void;
   updateNodePositions: (updates: Map<string, { x: number; y: number }>) => void;
   updateNode: (id: string, updates: Partial<import("../bindings").Node>) => void;
   addEdge: (from: string, to: string, sourceHandle?: string) => void;

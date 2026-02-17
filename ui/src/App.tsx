@@ -130,6 +130,7 @@ function App() {
                   }}
                   onConnect={actions.addEdge}
                   onDeleteNodes={actions.removeNodes}
+                  onRemoveExtraEdges={actions.removeEdgesOnly}
                   onBeforeNodeDrag={() => actions.pushHistory("Move Nodes")}
                 />
 

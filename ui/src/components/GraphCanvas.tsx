@@ -31,6 +31,7 @@ interface GraphCanvasProps {
   onEdgesChange: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
   onDeleteNodes: (ids: string[]) => void;
+  onRemoveExtraEdges: (edges: Edge[]) => void;
   onBeforeNodeDrag?: () => void;
 }
 
@@ -120,6 +121,7 @@ export function GraphCanvas({
   onEdgesChange,
   onConnect,
   onDeleteNodes,
+  onRemoveExtraEdges,
   onBeforeNodeDrag,
 }: GraphCanvasProps) {
   const nodeTypes: NodeTypes = useMemo(
@@ -216,6 +218,10 @@ export function GraphCanvas({
   const [rfNodes, setRfNodes] = useState<RFNode[]>([]);
   // When true, the next selectedNode change came from canvas interaction — skip external sync.
   const selectionFromCanvasRef = useRef(false);
+  // Tracks an in-progress node deletion so handleEdgesChange can distinguish
+  // connected-edge removals (already handled by removeNodes) from independently
+  // selected edges that need a separate silent removal.
+  const deletedNodeIdsRef = useRef<Set<string> | null>(null);
 
   useEffect(() => {
     setRfNodes((prev) => {
@@ -437,7 +443,13 @@ export function GraphCanvas({
         }
       }
       if (removeIds.length > 0) {
+        // Record which nodes are being deleted so handleEdgesChange can tell
+        // connected-edge removals (already handled) from extra selected edges.
+        deletedNodeIdsRef.current = new Set(removeIds);
         onDeleteNodes(removeIds);
+        // Safety: clear the ref on the next microtask in case handleEdgesChange
+        // is never called (e.g., nodes with no connected edges).
+        queueMicrotask(() => { deletedNodeIdsRef.current = null; });
         return; // Workflow store update will trigger RF node rebuild
       }
 
@@ -521,9 +533,47 @@ export function GraphCanvas({
 
   const handleEdgesChange: OnEdgesChange = useCallback(
     (changes) => {
-      // Only propagate removals to the workflow store.
-      // Selection changes are handled internally by React Flow via rfEdgeState.
       const removals = changes.filter((c) => c.type === "remove");
+
+      // If a node deletion just happened, React Flow fires edge removals for
+      // connected edges (already handled by removeNodes) and any independently
+      // selected edges.  Identify the extras and remove them silently — the
+      // history snapshot was already captured by removeNodes.
+      if (deletedNodeIdsRef.current) {
+        const deletedIds = deletedNodeIdsRef.current;
+        deletedNodeIdsRef.current = null;
+
+        if (removals.length > 0) {
+          const extraEdges: Edge[] = [];
+          for (const removal of removals) {
+            const rfEdge = rfEdgeState.find((e) => e.id === removal.id);
+            if (rfEdge && !deletedIds.has(rfEdge.source) && !deletedIds.has(rfEdge.target)) {
+              const handle = rfEdge.sourceHandle ?? undefined;
+              // workflow.edges still has pre-deletion state here because
+              // removeNodes' setWorkflow hasn't triggered a re-render yet.
+              // This is correct — we need the old edges to identify extras.
+              const original = workflow.edges.find(
+                (e) =>
+                  e.from === rfEdge.source &&
+                  e.to === rfEdge.target &&
+                  edgeOutputToHandle(e.output) === handle,
+              );
+              if (original) {
+                extraEdges.push(original);
+              }
+            }
+          }
+          if (extraEdges.length > 0) {
+            onRemoveExtraEdges(extraEdges);
+          }
+        }
+        // Apply all changes to local RF edge state.
+        setRfEdgeState((prev) => applyEdgeChanges(changes, prev));
+        return;
+      }
+
+      // Normal path — propagate removals to the workflow store.
+      // Selection changes are handled internally by React Flow via rfEdgeState.
       if (removals.length > 0) {
         const updated = applyEdgeChanges(removals, rfEdgeState);
         const visibleEdges: Edge[] = updated.map((rfe) => {
@@ -546,7 +596,7 @@ export function GraphCanvas({
       // Apply all changes (including select) to local RF edge state.
       setRfEdgeState((prev) => applyEdgeChanges(changes, prev));
     },
-    [workflow.edges, onEdgesChange, hiddenNodeIds, collapsedLoops, rfEdgeState],
+    [workflow.edges, onEdgesChange, onRemoveExtraEdges, hiddenNodeIds, collapsedLoops, rfEdgeState],
   );
 
   const handleConnect: OnConnect = useCallback(
