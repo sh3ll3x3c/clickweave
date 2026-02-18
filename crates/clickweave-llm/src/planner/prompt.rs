@@ -42,7 +42,7 @@ pub(crate) fn planner_system_prompt(
 
     step_types.push_str(r#"
 
-4. **Loop** — repeat steps until an exit condition is met (do-while: body runs at least once):
+4. **Loop** — repeat a body of steps until an exit condition is met (do-while: body runs at least once). Define the body steps ONCE — the runtime repeats them each iteration, just like a `while` loop in code:
    ```json
    {"id": "<id>", "step_type": "Loop", "exit_condition": <Condition>, "max_iterations": 20, "name": "optional label"}
    ```
@@ -96,6 +96,11 @@ Rules:
   - Loop nodes must have exactly 2 outgoing edges: LoopBody and LoopDone.
   - If nodes must have exactly 2 outgoing edges: IfTrue and IfFalse.
 - Use Loop/EndLoop when the user's intent involves repetition ("until", "while", "keep", "repeat", "N times"). Prefer loops over unrolling steps.
+- **Loop structure — think like code.** A loop has three parts:
+  1. **Before the loop** (setup, runs once): e.g. launch app, type initial value
+  2. **Loop body** (between Loop→LoopBody and EndLoop): ONLY the steps that repeat each iteration
+  3. **After the loop** (via LoopDone edge, runs once): e.g. verify final result, take screenshot
+  Example: "multiply by 2 until > 128" → setup: click "2" | body: click "×", click "2", click "=" | after: verify result. The body has 3 steps, NOT 10. Do NOT put setup or verification inside the loop body.
 - Each Tool step must use exactly one tool from the list above with schema-valid arguments.
 - Steps execute in sequence (output of one step is available to the next).
 - Be precise: use find_text to locate UI elements before clicking them.
@@ -197,7 +202,8 @@ Rules:
 - For "update", include "node_type" whenever tool arguments need to change (e.g. different search text, click target, key). Changing only the "name" does NOT change what the node actually does at runtime.
 - New nodes from "add" will be appended after the last existing node.
 - For "add_nodes" + "add_edges", use short IDs (e.g. "n1", "n2") for new nodes. You can reference existing workflow node UUIDs in "add_edges" to connect new nodes to existing ones.
-- Keep the workflow functional — don't remove nodes that break the flow without replacement."#,
+- Keep the workflow functional — don't remove nodes that break the flow without replacement.
+- **Loop structure — think like code.** Setup steps go BEFORE the loop. Only repeating steps go in the body. Verification/cleanup goes AFTER (LoopDone). Example: "multiply by 2 until > 128" → setup: click "2" | body: click "×", click "2", click "=" | after: verify result."#,
     )
 }
 
