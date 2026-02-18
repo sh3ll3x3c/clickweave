@@ -29,6 +29,7 @@ export interface AppState {
   allowAgentSteps: boolean;
   assistantOpen: boolean;
   assistantLoading: boolean;
+  assistantRetrying: boolean;
   assistantError: string | null;
   conversation: ConversationSession;
   pendingPatch: WorkflowPatch | null;

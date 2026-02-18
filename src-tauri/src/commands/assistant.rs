@@ -2,7 +2,7 @@ use super::planner::fetch_mcp_tool_schemas;
 use super::types::*;
 use clickweave_llm::planner::conversation::{ConversationSession, RunContext};
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::task::AbortHandle;
 
 #[derive(Default)]
@@ -34,6 +34,7 @@ pub async fn assistant_chat(
         handle.lock().unwrap().abort = None;
     }
 
+    let emit_handle = app.clone();
     let join_handle = tokio::task::spawn(async move {
         let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
         let config = request.planner.into_llm_config(None);
@@ -43,6 +44,10 @@ pub async fn assistant_chat(
             summary_cutoff: request.summary_cutoff,
         };
         let run_context_text = request.run_context.as_ref().map(format_run_context);
+
+        let on_repair = move |attempt: usize, max: usize| {
+            let _ = emit_handle.emit("assistant://repairing", (attempt, max));
+        };
 
         let result = clickweave_llm::planner::assistant_chat(
             &request.workflow,
@@ -54,6 +59,7 @@ pub async fn assistant_chat(
             request.allow_ai_transforms,
             request.allow_agent_steps,
             (request.max_repair_attempts as usize).min(10),
+            Some(&on_repair),
         )
         .await
         .map_err(|e| format!("Assistant chat failed: {}", e))?;

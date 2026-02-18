@@ -34,6 +34,7 @@ pub async fn assistant_chat(
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
     max_repair_attempts: usize,
+    on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
 ) -> Result<AssistantResult> {
     let client = LlmClient::new(config);
     assistant_chat_with_backend(
@@ -46,6 +47,7 @@ pub async fn assistant_chat(
         allow_ai_transforms,
         allow_agent_steps,
         max_repair_attempts,
+        on_repair_attempt,
     )
     .await
 }
@@ -62,6 +64,7 @@ pub async fn assistant_chat_with_backend(
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
     max_repair_attempts: usize,
+    on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
 ) -> Result<AssistantResult> {
     // 1. Optionally summarize overflow (non-fatal on error)
     let new_summary = if session.needs_summarization(None) {
@@ -150,6 +153,9 @@ pub async fn assistant_chat_with_backend(
                         error = %validation_err,
                         "Patch failed validation, retrying"
                     );
+                    if let Some(cb) = &on_repair_attempt {
+                        cb(attempt, max_repair_attempts);
+                    }
                     messages.push(Message::assistant(&content));
                     messages.push(Message::user(format!(
                         "Your previous output produced a patch that fails validation: {}\n\n\

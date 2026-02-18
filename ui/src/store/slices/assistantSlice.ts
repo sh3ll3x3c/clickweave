@@ -10,6 +10,7 @@ export interface AssistantSlice {
   conversation: ConversationSession;
   assistantOpen: boolean;
   assistantLoading: boolean;
+  assistantRetrying: boolean;
   assistantError: string | null;
   pendingPatch: WorkflowPatch | null;
   pendingPatchWarnings: string[];
@@ -28,6 +29,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   conversation: makeEmptyConversation(),
   assistantOpen: false,
   assistantLoading: false,
+  assistantRetrying: false,
   assistantError: null,
   pendingPatch: null,
   pendingPatchWarnings: [],
@@ -37,7 +39,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
 
   sendAssistantMessage: async (message) => {
     const { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand, maxRepairAttempts, pushLog } = get();
-    set({ assistantLoading: true, assistantError: null });
+    set({ assistantLoading: true, assistantError: null, assistantRetrying: false });
 
     // Capture conversation state BEFORE adding the user message -- the backend
     // receives the new message separately as `user_message`.
@@ -126,7 +128,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       set({ assistantError: msg });
       pushLog(`Assistant error: ${msg}`);
     } finally {
-      set({ assistantLoading: false });
+      set({ assistantLoading: false, assistantRetrying: false });
     }
   },
 
@@ -202,7 +204,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
 
   cancelAssistantChat: async () => {
     await commands.cancelAssistantChat();
-    set({ assistantLoading: false, assistantError: null });
+    set({ assistantLoading: false, assistantError: null, assistantRetrying: false });
   },
 
   clearConversation: () => {

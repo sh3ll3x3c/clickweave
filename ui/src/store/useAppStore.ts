@@ -81,6 +81,7 @@ export function useAppStore(): [AppState, AppActions] {
     allowAgentSteps: store.allowAgentSteps,
     assistantOpen: store.assistantOpen,
     assistantLoading: store.assistantLoading,
+    assistantRetrying: store.assistantRetrying,
     assistantError: store.assistantError,
     conversation: store.conversation,
     pendingPatch: store.pendingPatch,

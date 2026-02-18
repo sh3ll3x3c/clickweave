@@ -809,6 +809,7 @@ async fn test_assistant_chat_plans_empty_workflow() {
         false,
         false,
         0,
+        None,
     )
     .await
     .unwrap();
@@ -847,6 +848,7 @@ async fn test_assistant_chat_patches_existing_workflow() {
         false,
         false,
         0,
+        None,
     )
     .await
     .unwrap();
@@ -883,6 +885,7 @@ async fn test_assistant_chat_conversational_response() {
         false,
         false,
         0,
+        None,
     )
     .await
     .unwrap();
@@ -1239,6 +1242,7 @@ async fn test_assistant_patches_with_add_nodes_and_add_edges() {
         false,
         false,
         0,
+        None,
     )
     .await
     .unwrap();
@@ -1294,6 +1298,7 @@ async fn test_assistant_plans_graph_format_for_empty_workflow() {
         false,
         false,
         0,
+        None,
     )
     .await
     .unwrap();
@@ -2070,11 +2075,65 @@ async fn test_assistant_retry_succeeds_on_second_attempt() {
         false,
         false,
         3,
+        None,
     )
     .await
     .unwrap();
 
     // Should have called LLM twice (initial + 1 retry)
+    assert_eq!(mock.call_count(), 2);
+    assert!(result.patch.is_some());
+}
+
+#[tokio::test]
+async fn test_assistant_repair_callback_is_invoked() {
+    use super::assistant::assistant_chat_with_backend;
+    use super::conversation::ConversationSession;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let (_id, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
+
+    let invalid_response = r#"{"add_nodes": [
+        {"id": "n1", "step_type": "If", "name": "Check", "condition": {
+            "left": {"type": "Variable", "name": "x"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }},
+        {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"x": 1, "y": 2}, "name": "A"}
+    ], "add_edges": [
+        {"from": "n1", "to": "n2", "output": {"type": "IfTrue"}}
+    ]}"#;
+
+    let valid_response =
+        r#"{"add": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 5, "y": 5}}]}"#;
+
+    let mock = MockBackend::new(vec![invalid_response, valid_response]);
+    let session = ConversationSession::new();
+
+    let repair_count = Arc::new(AtomicUsize::new(0));
+    let repair_count_clone = repair_count.clone();
+    let on_repair = move |attempt: usize, _max: usize| {
+        repair_count_clone.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(attempt, 1);
+    };
+
+    let result = assistant_chat_with_backend(
+        &mock,
+        &workflow,
+        "Add an if check",
+        &session,
+        None,
+        &sample_tools(),
+        false,
+        false,
+        3,
+        Some(&on_repair),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(repair_count.load(Ordering::SeqCst), 1);
     assert_eq!(mock.call_count(), 2);
     assert!(result.patch.is_some());
 }
@@ -2112,6 +2171,7 @@ async fn test_assistant_retry_exhausted_returns_last_patch() {
         false,
         false,
         3, // value 3 → validate + 2 retries = 3 LLM calls max
+        None,
     )
     .await
     .unwrap();
@@ -2154,6 +2214,7 @@ async fn test_assistant_no_validation_when_max_is_zero() {
         false,
         false,
         0, // 0 = skip validation entirely
+        None,
     )
     .await
     .unwrap();
@@ -2195,6 +2256,7 @@ async fn test_assistant_validate_only_no_retry_when_max_is_one() {
         false,
         false,
         1, // 1 = validate only, no retry
+        None,
     )
     .await
     .unwrap();
@@ -2227,6 +2289,7 @@ async fn test_assistant_valid_patch_no_retry_needed() {
         false,
         false,
         3, // retries enabled, but not needed
+        None,
     )
     .await
     .unwrap();

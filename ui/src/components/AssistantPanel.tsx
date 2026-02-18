@@ -5,6 +5,7 @@ import { ChatMessage } from "./ChatMessage";
 interface AssistantPanelProps {
   open: boolean;
   loading: boolean;
+  retrying: boolean;
   error: string | null;
   conversation: ConversationSession;
   pendingPatch: WorkflowPatch | null;
@@ -21,6 +22,7 @@ interface AssistantPanelProps {
 export function AssistantPanel({
   open,
   loading,
+  retrying,
   error,
   conversation,
   pendingPatch,
@@ -160,7 +162,7 @@ export function AssistantPanel({
               <div className="flex items-center gap-2 rounded-lg bg-[var(--bg-hover)] px-3 py-2">
                 <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--accent-coral)] border-t-transparent" />
                 <span className="text-xs text-[var(--text-secondary)]">
-                  Thinking...
+                  {retrying ? "Improving..." : "Thinking..."}
                 </span>
               </div>
             </div>

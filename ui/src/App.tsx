@@ -1,4 +1,4 @@
-import { useAppStore } from "./store/useAppStore";
+import { useAppStore, useStore } from "./store/useAppStore";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { NodePalette } from "./components/NodePalette";
@@ -76,6 +76,9 @@ function App() {
       listen("menu://run-workflow", () => actions.runWorkflow()),
       listen("menu://stop-workflow", () => actions.stopWorkflow()),
       listen("menu://toggle-assistant", () => actions.toggleAssistant()),
+      listen("assistant://repairing", () => {
+        useStore.setState({ assistantRetrying: true });
+      }),
     ]);
 
     return () => {
@@ -153,6 +156,7 @@ function App() {
               <AssistantPanel
                 open={state.assistantOpen}
                 loading={state.assistantLoading}
+                retrying={state.assistantRetrying}
                 error={state.assistantError}
                 conversation={state.conversation}
                 pendingPatch={state.pendingPatch}
