@@ -8,6 +8,21 @@ use tracing::warn;
 #[derive(Default)]
 pub struct ExecutorHandle {
     stop_tx: Option<tokio::sync::mpsc::Sender<ExecutorCommand>>,
+    task_handle: Option<tauri::async_runtime::JoinHandle<()>>,
+}
+
+impl ExecutorHandle {
+    /// Forcefully abort the running executor task. The MCP subprocess is killed
+    /// as a side effect: aborting the task drops `McpClient`, whose `Drop` impl
+    /// calls `kill()`. Returns `true` if a task was actually running.
+    pub fn force_stop(&mut self) -> bool {
+        let had_task = self.task_handle.is_some();
+        if let Some(task) = self.task_handle.take() {
+            task.abort();
+        }
+        self.stop_tx = None;
+        had_task
+    }
 }
 
 #[tauri::command]
@@ -39,15 +54,10 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(256);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<ExecutorCommand>(8);
 
-    {
-        let handle = app.state::<Mutex<ExecutorHandle>>();
-        handle.lock().unwrap().stop_tx = Some(cmd_tx);
-    }
-
     let emit_handle = app.clone();
     let cleanup_handle = emit_handle.clone();
 
-    tauri::async_runtime::spawn(async move {
+    let task_handle = tauri::async_runtime::spawn(async move {
         let mut executor = WorkflowExecutor::new(
             request.workflow,
             agent_config,
@@ -60,8 +70,19 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         executor.run(cmd_rx).await;
     });
 
+    {
+        let handle = app.state::<Mutex<ExecutorHandle>>();
+        let mut guard = handle.lock().unwrap();
+        guard.stop_tx = Some(cmd_tx);
+        guard.task_handle = Some(task_handle);
+    }
+
     tauri::async_runtime::spawn(async move {
+        let mut saw_idle = false;
         while let Some(event) = event_rx.recv().await {
+            if matches!(event, ExecutorEvent::StateChanged(ExecutorState::Idle)) {
+                saw_idle = true;
+            }
             let emit_result = match event {
                 ExecutorEvent::Log(msg) | ExecutorEvent::Error(msg) => {
                     emit_handle.emit("executor://log", LogPayload { message: msg })
@@ -107,11 +128,22 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             }
         }
 
-        cleanup_handle
-            .state::<Mutex<ExecutorHandle>>()
-            .lock()
-            .unwrap()
-            .stop_tx = None;
+        // On forceful abort the executor task is killed before it can emit
+        // StateChanged(Idle), so the UI would stay stuck on "Running".
+        // Only emit the fallback idle if the executor didn't send one itself.
+        if !saw_idle {
+            let _ = emit_handle.emit(
+                "executor://state",
+                StatePayload {
+                    state: "idle".to_owned(),
+                },
+            );
+        }
+
+        let state = cleanup_handle.state::<Mutex<ExecutorHandle>>();
+        let mut guard = state.lock().unwrap();
+        guard.stop_tx = None;
+        guard.task_handle = None;
     });
 
     Ok(())
@@ -120,12 +152,10 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 #[tauri::command]
 #[specta::specta]
 pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), String> {
-    let guard = app.state::<Mutex<ExecutorHandle>>();
-    let guard = guard.lock().unwrap();
-    let tx = guard
-        .stop_tx
-        .as_ref()
-        .ok_or_else(|| "No workflow is running".to_string())?;
-    tx.try_send(ExecutorCommand::Stop)
-        .map_err(|e| format!("Failed to send stop command: {}", e))
+    let handle = app.state::<Mutex<ExecutorHandle>>();
+    let mut guard = handle.lock().unwrap();
+    if !guard.force_stop() {
+        return Err("No workflow is running".to_string());
+    }
+    Ok(())
 }

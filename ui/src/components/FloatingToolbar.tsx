@@ -60,6 +60,7 @@ export function FloatingToolbar({
         )}
         <button
           onClick={handleRunStop}
+          title={isRunning ? "Stop workflow (⌘⇧Esc works globally)" : "Run workflow (⌘R)"}
           className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
             isRunning
               ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
@@ -69,6 +70,11 @@ export function FloatingToolbar({
           {isRunning ? "Stop" : "Test Workflow"}
         </button>
       </div>
+      {isRunning && (
+        <div className="absolute bottom-8 left-1/2 z-20 -translate-x-1/2 animate-pulse text-center text-[10px] text-red-400/70">
+          Press <kbd className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 font-mono text-[9px] text-red-400">⌘⇧Esc</kbd> to stop from any app
+        </div>
+      )}
 
       {showConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">

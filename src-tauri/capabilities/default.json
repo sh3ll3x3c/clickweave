@@ -11,6 +11,7 @@
     "dialog:allow-save",
     "shell:default",
     "shell:allow-open",
-    "store:default"
+    "store:default",
+    "global-shortcut:allow-register"
   ]
 }

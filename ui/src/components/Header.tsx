@@ -43,6 +43,9 @@ export function Header({
           <span className="flex items-center gap-1.5 text-xs text-[var(--accent-green)]">
             <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-green)]" />
             Running
+            <span className="ml-1 text-[var(--text-muted)]">
+              (⌘⇧Esc to stop)
+            </span>
           </span>
         )}
       </div>

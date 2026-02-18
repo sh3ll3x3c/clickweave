@@ -7,6 +7,7 @@ mod menu;
 use commands::*;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_specta::{Builder, collect_commands};
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -93,6 +94,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Mutex::new(ExecutorHandle::default()))
         .manage(Mutex::new(AssistantHandle::default()))
         .invoke_handler(builder.invoke_handler())
@@ -110,6 +112,19 @@ fn main() {
                 let id = event.id().as_ref();
                 let _ = handle.emit(&format!("menu://{id}"), ());
             });
+
+            // Global emergency stop: Cmd+Shift+Escape works even when another app has focus
+            app.global_shortcut()
+                .on_shortcut("CommandOrControl+Shift+Escape", |app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        let state = app.state::<Mutex<ExecutorHandle>>();
+                        let mut guard = state.lock().unwrap();
+                        if guard.force_stop() {
+                            tracing::info!("Emergency stop triggered via global shortcut");
+                        }
+                    }
+                })
+                .expect("Failed to register global stop shortcut");
 
             Ok(())
         })
