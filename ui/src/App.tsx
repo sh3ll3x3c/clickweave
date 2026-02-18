@@ -12,6 +12,7 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 
 function App() {
@@ -25,6 +26,7 @@ function App() {
     [state.selectedNode, state.workflow.nodes],
   );
 
+  useEscapeKey();
   useUndoRedoKeyboard(actions.undo, actions.redo);
 
   const hasAiNodes = useMemo(

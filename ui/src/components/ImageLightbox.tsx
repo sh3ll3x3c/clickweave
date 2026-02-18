@@ -30,12 +30,15 @@ export function ImageLightbox({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      else if (e.key === "ArrowLeft" && hasMultiple) goPrev();
+      if (e.key === "Escape") {
+        e.stopImmediatePropagation();
+        onClose();
+      } else if (e.key === "ArrowLeft" && hasMultiple) goPrev();
       else if (e.key === "ArrowRight" && hasMultiple) goNext();
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    // Capture phase so this fires before the global useEscapeKey handler
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [onClose, goPrev, goNext, hasMultiple]);
 
   if (!current) return null;
