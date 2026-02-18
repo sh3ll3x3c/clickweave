@@ -1,6 +1,6 @@
 # Planning & LLM Retry Logic (Reference)
 
-Verified at commit: `0e907fc`
+Verified at commit: `1d53429`
 
 Planner/assistant flows layer retries and parsing tolerance to handle malformed LLM output.
 
@@ -81,6 +81,107 @@ UI setting is persisted as `maxRepairAttempts` in `settings.json`.
 
 For flat plans, `pair_endloop_with_loop()` pairs EndLoop/Loop by nesting order before inference.
 
+## Prompt Structure
+
+All prompt builders live in `crates/clickweave-llm/src/planner/prompt.rs`. The AI-step runtime prompt lives in `crates/clickweave-llm/src/client.rs`.
+
+### Planner Prompt (`planner_system_prompt`)
+
+Composed for `plan_workflow`. Structure:
+
+```
+Role: "You are a workflow planner for UI automation."
+  ↓
+MCP tool schemas (pretty-printed JSON array from tools/list)
+  ↓
+Step type catalog (conditionally includes AiTransform / AiStep based on feature flags):
+  1. Tool         — single MCP tool call
+  2. AiTransform  — bounded AI op, no tool access (if allow_ai_transforms)
+  3. AiStep       — agentic LLM+tool loop (if allow_agent_steps)
+  4. Loop         — do-while with exit condition
+  5. EndLoop      — marks loop body end
+  6. If           — 2-branch conditional
+  ↓
+Condition / Variable / Operator reference
+  ↓
+Output format rules:
+  - Simple workflows: {"steps": [...]}
+  - Control-flow workflows: {"nodes": [...], "edges": [...]}
+  ↓
+Behavioral rules (find_text before click, focus window first, launch_app if needed, etc.)
+```
+
+User message: `"Plan a workflow for: <intent>"`
+
+### Patcher Prompt (`patcher_system_prompt`)
+
+Composed for `patch_workflow`. Structure:
+
+```
+Role: "You are a workflow editor for UI automation."
+  ↓
+Current workflow snapshot:
+  - Nodes: [{id, name, tool_name, arguments}] (Click nodes include target field)
+  - Edges: [{from, to}]
+  ↓
+MCP tool schemas
+  ↓
+Step types summary (references planning format)
+  ↓
+Output format: JSON patch object with optional fields:
+  - add: [<steps>]
+  - add_nodes: [<nodes with id>] (for control flow)
+  - add_edges: [{from, to, output}]
+  - remove_node_ids: [<ids>]
+  - update: [{node_id, name, node_type}]
+  ↓
+Patch rules (only changed fields, valid IDs, keep flow functional)
+```
+
+User message: `"Modify the workflow: <user_prompt>"`
+
+### Assistant Prompt (`assistant_system_prompt`)
+
+Delegates to planner or patcher prompt based on workflow state:
+
+- **Empty workflow** → wraps `planner_system_prompt` with conversational preamble
+- **Non-empty workflow** → wraps `patcher_system_prompt` with conversational preamble + instruction to respond conversationally when no changes are needed
+
+Both variants append `run_context` (execution results summary) when available.
+
+Message assembly in `assistant_chat_with_backend`:
+
+```
+1. System prompt (planner or patcher variant)
+2. Summary context (if available): injected as user + assistant exchange
+3. Recent conversation window (last 5 exchanges = 10 messages)
+4. New user message
+```
+
+### AI-Step Runtime Prompt (`workflow_system_prompt` + `build_step_prompt`)
+
+Used at execution time for `AiStep` nodes. Lives in `client.rs`.
+
+System prompt:
+```
+Role: "You are a UI automation assistant executing an AI Step node."
+  ↓
+Available MCP tool descriptions (abbreviated)
+  ↓
+VLM_IMAGE_SUMMARY format documentation
+  ↓
+Strategy guidance (screenshot → find → act → verify)
+  ↓
+Completion signal: "STEP_COMPLETE" when done
+```
+
+User message built by `build_step_prompt`:
+```
+<prompt text>
+[Button to find: "<button_text>"]     (optional)
+[Image to find: <template_path>]      (optional)
+```
+
 ## Planner Pipeline (`plan_workflow`)
 
 1. Build planner prompt
@@ -113,6 +214,8 @@ For flat plans, `pair_endloop_with_loop()` pairs EndLoop/Loop by nesting order b
 
 | File | Role |
 |------|------|
+| `crates/clickweave-llm/src/planner/prompt.rs` | planner, patcher, and assistant system prompts |
+| `crates/clickweave-llm/src/client.rs` | AI-step runtime prompt (`workflow_system_prompt`, `build_step_prompt`) |
 | `crates/clickweave-llm/src/planner/repair.rs` | one-shot repair retry wrapper |
 | `crates/clickweave-llm/src/planner/assistant.rs` | assistant retry loop + patch merge validation |
 | `crates/clickweave-llm/src/planner/plan.rs` | planner entrypoint and workflow build |

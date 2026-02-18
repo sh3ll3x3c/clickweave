@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `0fe361e`
+Verified at commit: `1d53429`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -146,7 +146,7 @@ Registered node types:
 
 - Palette click adds a node (not drag-and-drop)
 - Handle-to-handle connect creates edges
-- Delete key removes selected nodes/edges
+- Delete key removes selected nodes/edges (multi-select supported; independently selected edges are removed silently via `removeEdgesOnly` without a separate history entry)
 - Node selection drives detail modal visibility
 - Loop groups support collapsed/expanded rendering and child containment
 
@@ -199,7 +199,7 @@ Do not edit manually.
 | `ui/src/components/node-detail/NodeDetailModal.tsx` | node detail shell |
 | `ui/src/components/node-detail/tabs/TraceTab.tsx` | trace + artifact viewer |
 | `ui/src/store/useAppStore.ts` | composed Zustand store hook |
-| `ui/src/store/useWorkflowMutations.ts` | node/edge mutation helpers with history push |
+| `ui/src/store/useWorkflowMutations.ts` | node/edge mutation helpers with history push (`removeEdgesOnly` for silent edge removal) |
 | `ui/src/store/slices/types.ts` | `StoreState` composition |
 | `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
 | `ui/src/store/settings.ts` | persisted settings I/O |

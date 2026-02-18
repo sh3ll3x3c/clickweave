@@ -1,6 +1,6 @@
 # Architecture Overview (Reference)
 
-Verified at commit: `0e907fc`
+Verified at commit: `1d53429`
 
 Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
 
@@ -63,8 +63,9 @@ See [Workflow Execution](../engine/execution.md).
 
 | Module | Purpose |
 |--------|---------|
-| `client.rs` | OpenAI-compatible chat client |
+| `client.rs` | OpenAI-compatible chat client, AI-step prompts (`workflow_system_prompt`, `build_step_prompt`), VLM analysis (`analyze_images`) |
 | `types.rs` | `ChatBackend`, message/response/tool-call types |
+| `planner/prompt.rs` | Planner, patcher, and assistant system prompt builders |
 | `planner/plan.rs` | `plan_workflow()` |
 | `planner/patch.rs` | `patch_workflow()` |
 | `planner/assistant.rs` | `assistant_chat()` with patch validation retry |
@@ -74,8 +75,6 @@ See [Workflow Execution](../engine/execution.md).
 | `planner/mapping.rs` | `PlanStep` → `NodeType` mapping |
 | `planner/conversation.rs` | Conversation session windowing |
 | `planner/summarize.rs` | Overflow summarization |
-| `vision.rs` | image analysis helpers |
-| `step_prompt.rs` | AI-step prompt builder |
 
 See [Planning & LLM Retry Logic](../llm/planning-retries.md).
 
@@ -119,22 +118,47 @@ UI
 
 Commands are registered in `src-tauri/src/main.rs` and implemented under `src-tauri/src/commands/`.
 
-Key commands:
+### Commands Directory
 
-| Command | Purpose |
-|---------|---------|
-| `plan_workflow` | Generate workflow from intent |
-| `patch_workflow` | Generate workflow patch |
-| `assistant_chat` | Conversational assistant + optional patch |
-| `cancel_assistant_chat` | Cancel in-flight assistant request |
-| `run_workflow` | Execute workflow |
-| `stop_workflow` | Stop active execution |
-| `validate` | Validate workflow |
-| `open_project` / `save_project` | Project I/O |
-| `list_runs` / `load_run_events` | Run history + trace events |
-| `read_artifact_base64` | Load artifact contents |
-| `import_asset` | Copy image asset into project |
-| `node_type_defaults` | Return default node configs |
+```
+src-tauri/src/commands/
+├── mod.rs          # Re-exports all public commands and handles
+├── types.rs        # IPC request/response payloads, shared helpers (resolve_storage, project_dir)
+├── planner.rs      # plan_workflow, patch_workflow, fetch_mcp_tool_schemas
+├── assistant.rs    # assistant_chat, cancel_assistant_chat (AssistantHandle with AbortHandle)
+├── executor.rs     # run_workflow, stop_workflow (ExecutorHandle with stop channel)
+├── project.rs      # open/save/validate, node_type_defaults, import_asset, pick_*_file, conversation I/O, ping
+└── runs.rs         # list_runs, load_run_events, read_artifact_base64
+```
+
+### Managed State
+
+Two `Mutex`-wrapped handles are registered as Tauri managed state:
+
+| Handle | State | Purpose |
+|--------|-------|---------|
+| `ExecutorHandle` | `stop_tx: Option<Sender<ExecutorCommand>>`, `task_handle: Option<JoinHandle<()>>` | `force_stop()` aborts the executor task and drops the MCP subprocess |
+| `AssistantHandle` | `Option<AbortHandle>` | Cancels in-flight assistant LLM call |
+
+### Command Summary
+
+| Command | File | Purpose |
+|---------|------|---------|
+| `plan_workflow` | `planner.rs` | Generate workflow from intent |
+| `patch_workflow` | `planner.rs` | Generate workflow patch |
+| `assistant_chat` | `assistant.rs` | Conversational assistant + optional patch |
+| `cancel_assistant_chat` | `assistant.rs` | Cancel in-flight assistant request |
+| `run_workflow` | `executor.rs` | Execute workflow |
+| `stop_workflow` | `executor.rs` | Stop active execution |
+| `validate` | `project.rs` | Validate workflow |
+| `open_project` / `save_project` | `project.rs` | Project I/O |
+| `save_conversation` / `load_conversation` | `project.rs` | Assistant conversation persistence |
+| `pick_workflow_file` / `pick_save_file` | `project.rs` | Native file dialogs |
+| `node_type_defaults` | `project.rs` | Return default node configs |
+| `import_asset` | `project.rs` | Copy image asset into project |
+| `list_runs` / `load_run_events` | `runs.rs` | Run history + trace events |
+| `read_artifact_base64` | `runs.rs` | Load artifact contents |
+| `ping` | `project.rs` | Health check |
 
 ## Event Contract (`executor://`)
 
