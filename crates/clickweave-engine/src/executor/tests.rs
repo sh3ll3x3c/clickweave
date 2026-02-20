@@ -145,6 +145,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             workflow,
             agent,
             vlm,
+            supervision: None,
             mcp_command,
             execution_mode,
             project_path,
@@ -155,6 +156,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
             decision_cache: RwLock::new(decision_cache),
+            supervision_history: RwLock::new(Vec::new()),
             completed_checks: Vec::new(),
         }
     }

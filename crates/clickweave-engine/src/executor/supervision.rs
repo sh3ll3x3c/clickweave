@@ -5,6 +5,16 @@ use clickweave_mcp::{McpClient, ToolContent};
 use serde_json::Value;
 use tracing::debug;
 
+const SUPERVISION_SYSTEM_PROMPT: &str = "\
+You are supervising a UI automation workflow step by step. \
+After each step executes, you receive the step description and a visual observation \
+from a vision model describing the current screen state.
+
+Your job is to determine whether each step achieved its intended effect. \
+Consider the full history of prior steps to understand the workflow's progress.
+
+Return ONLY a JSON object: {\"passed\": true/false, \"reasoning\": \"brief explanation\"}";
+
 /// Result of LLM step verification.
 pub(crate) struct VerificationResult {
     pub passed: bool,
@@ -12,7 +22,8 @@ pub(crate) struct VerificationResult {
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
-    /// Take a screenshot and ask the LLM whether the step achieved its intent.
+    /// Take a screenshot, ask the VLM to describe it, then ask the planner
+    /// (with full conversation history) whether the step succeeded.
     pub(crate) async fn verify_step(
         &self,
         node_name: &str,
@@ -37,29 +48,51 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .and_then(|g| g.clone())
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Capture screenshot
+        // Stage 1: Capture screenshot and get VLM description
         let screenshot_data = self.capture_verification_screenshot(mcp).await;
-        let Some(image_base64) = screenshot_data else {
-            // If screenshot fails, assume pass — don't block on capture failures
-            self.log("Supervision: screenshot capture failed, assuming pass".to_string());
-            return VerificationResult {
-                passed: true,
-                reasoning: "Could not capture screenshot for verification".to_string(),
-            };
+        let observation = match screenshot_data {
+            Some(image_base64) => {
+                self.describe_screenshot(&image_base64, node_name, &action, &app_name)
+                    .await
+            }
+            None => {
+                self.log(
+                    "Supervision: screenshot capture failed, using text-only verification"
+                        .to_string(),
+                );
+                "Screenshot capture failed — no visual observation available.".to_string()
+            }
         };
 
-        // Build verification prompt
+        // Stage 2: Ask planner with persistent conversation history
+        self.judge_step(node_name, &action, &app_name, &observation)
+            .await
+    }
+
+    /// Ask the VLM to describe what it sees in the screenshot.
+    async fn describe_screenshot(
+        &self,
+        image_base64: &str,
+        node_name: &str,
+        action: &str,
+        app_name: &str,
+    ) -> String {
+        let vlm = match self.vlm.as_ref() {
+            Some(v) => v,
+            None => {
+                // No VLM configured — fall back to a generic observation
+                return format!(
+                    "No VLM configured. Step '{}' ({}) executed in app '{}'.",
+                    node_name, action, app_name
+                );
+            }
+        };
+
         let prompt = format!(
-            "You are verifying a UI automation step.\n\
-             \n\
-             Step: \"{}\" — {}\n\
-             App: {}\n\
-             \n\
-             The step has executed. Look at the screenshot and determine if it worked correctly.\n\
-             \n\
-             Return ONLY a JSON object:\n\
-             {{\"passed\": true/false, \"reasoning\": \"brief explanation\"}}",
-            node_name, action, app_name
+            "Describe what you see on the screen. Focus on the app '{}' and whether \
+             the action '{}' — {} appears to have taken effect. \
+             Be concise (1-2 sentences).",
+            app_name, node_name, action
         );
 
         let messages = vec![Message {
@@ -77,8 +110,55 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             name: None,
         }];
 
-        // Prefer VLM for image understanding, fall back to agent
-        let backend = self.vlm.as_ref().unwrap_or(&self.agent);
+        match vlm.chat(messages, None).await {
+            Ok(response) => response
+                .choices
+                .first()
+                .and_then(|c| c.message.content_text())
+                .unwrap_or("VLM returned empty response")
+                .to_string(),
+            Err(e) => {
+                self.log(format!("Supervision: VLM description failed: {}", e));
+                format!("VLM error: {}. Step '{}' executed.", e, node_name)
+            }
+        }
+    }
+
+    /// Use the planner with persistent conversation history to judge the step.
+    async fn judge_step(
+        &self,
+        node_name: &str,
+        action: &str,
+        app_name: &str,
+        observation: &str,
+    ) -> VerificationResult {
+        let backend = self
+            .supervision
+            .as_ref()
+            .or(self.vlm.as_ref())
+            .unwrap_or(&self.agent);
+
+        // Build the user message for this step
+        let step_message = format!(
+            "Step: \"{}\" — {}\nApp: {}\n\nVisual observation: {}",
+            node_name, action, app_name, observation
+        );
+
+        // Add to persistent history and build the full message list
+        let messages = {
+            let mut history = self
+                .supervision_history
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+
+            // Add system prompt on first step
+            if history.is_empty() {
+                history.push(Message::system(SUPERVISION_SYSTEM_PROMPT));
+            }
+
+            history.push(Message::user(&step_message));
+            history.clone()
+        };
 
         let result = match backend.chat(messages, None).await {
             Ok(response) => {
@@ -87,12 +167,32 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .first()
                     .and_then(|c| c.message.content_text())
                     .unwrap_or("");
+
+                // Store assistant response in history for context continuity
+                {
+                    let mut history = self
+                        .supervision_history
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner());
+                    history.push(Message::assistant(raw));
+                }
+
                 parse_verification_response(raw)
             }
             Err(e) => {
-                self.log(format!("Supervision: LLM verification failed: {}", e));
-                // On LLM error, assume pass — don't block execution
-                (true, format!("LLM verification error: {}", e))
+                self.log(format!("Supervision: planner verification failed: {}", e));
+                // Store error note in history so planner knows what happened
+                {
+                    let mut history = self
+                        .supervision_history
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner());
+                    history.push(Message::assistant(format!(
+                        "{{\"passed\": true, \"reasoning\": \"verification error: {}\"}}",
+                        e
+                    )));
+                }
+                (true, format!("Planner verification error: {}", e))
             }
         };
 

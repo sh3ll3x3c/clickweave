@@ -86,6 +86,8 @@ pub struct RunRequest {
     pub project_path: Option<String>,
     pub agent: EndpointConfig,
     pub vlm: Option<EndpointConfig>,
+    /// Planner LLM used for supervision in Test mode.
+    pub planner: Option<EndpointConfig>,
     pub mcp_command: String,
     pub execution_mode: ExecutionMode,
 }

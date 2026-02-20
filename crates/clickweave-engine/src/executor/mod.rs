@@ -14,7 +14,7 @@ use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{Check, ExecutionMode, NodeRun, NodeVerdict, Workflow};
-use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
+use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -69,6 +69,9 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     workflow: Workflow,
     agent: C,
     vlm: Option<C>,
+    /// Planner-class LLM used for supervision verification in Test mode.
+    /// Falls back to VLM, then agent if not configured.
+    supervision: Option<C>,
     mcp_command: String,
     execution_mode: ExecutionMode,
     project_path: Option<PathBuf>,
@@ -79,6 +82,8 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
     decision_cache: RwLock<DecisionCache>,
+    /// Persistent conversation history for supervision across the entire run.
+    supervision_history: RwLock<Vec<Message>>,
     /// Nodes that completed successfully and have checks, in execution order.
     completed_checks: Vec<(Uuid, Vec<Check>, Option<String>)>,
 }
@@ -89,6 +94,7 @@ impl WorkflowExecutor {
         workflow: Workflow,
         agent_config: LlmConfig,
         vlm_config: Option<LlmConfig>,
+        supervision_config: Option<LlmConfig>,
         mcp_command: String,
         execution_mode: ExecutionMode,
         project_path: Option<PathBuf>,
@@ -101,6 +107,7 @@ impl WorkflowExecutor {
             workflow,
             agent: LlmClient::new(agent_config),
             vlm: vlm_config.map(LlmClient::new),
+            supervision: supervision_config.map(LlmClient::new),
             mcp_command,
             execution_mode,
             project_path,
@@ -111,6 +118,7 @@ impl WorkflowExecutor {
             element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
             decision_cache: RwLock::new(decision_cache),
+            supervision_history: RwLock::new(Vec::new()),
             completed_checks: Vec::new(),
         }
     }
