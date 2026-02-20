@@ -123,9 +123,32 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                     emit_handle.emit("executor://checks_completed", verdicts)
                 }
                 ExecutorEvent::RunCreated(_, _) => Ok(()),
-                // Forwarded in Task 7 — no-op for now
-                ExecutorEvent::SupervisionPassed { .. }
-                | ExecutorEvent::SupervisionPaused { .. } => Ok(()),
+                ExecutorEvent::SupervisionPassed {
+                    node_id,
+                    node_name,
+                    summary,
+                } => emit_handle.emit(
+                    "executor://supervision_passed",
+                    SupervisionPassedPayload {
+                        node_id: node_id.to_string(),
+                        node_name,
+                        summary,
+                    },
+                ),
+                ExecutorEvent::SupervisionPaused {
+                    node_id,
+                    node_name,
+                    finding,
+                    screenshot,
+                } => emit_handle.emit(
+                    "executor://supervision_paused",
+                    SupervisionPausedPayload {
+                        node_id: node_id.to_string(),
+                        node_name,
+                        finding,
+                        screenshot,
+                    },
+                ),
             };
             if let Err(e) = emit_result {
                 warn!("Failed to emit executor event to UI: {}", e);
@@ -162,4 +185,26 @@ pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), String> {
         return Err("No workflow is running".to_string());
     }
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn supervision_respond(app: tauri::AppHandle, action: String) -> Result<(), String> {
+    let handle = app.state::<Mutex<ExecutorHandle>>();
+    let guard = handle.lock().unwrap();
+    let tx = guard
+        .stop_tx
+        .as_ref()
+        .ok_or("No workflow is running")?
+        .clone();
+    drop(guard);
+
+    let command = match action.as_str() {
+        "retry" => ExecutorCommand::Resume,
+        "skip" => ExecutorCommand::Skip,
+        "abort" => ExecutorCommand::Abort,
+        _ => return Err(format!("Unknown supervision action: {}", action)),
+    };
+    tx.try_send(command)
+        .map_err(|e| format!("Failed to send command: {}", e))
 }

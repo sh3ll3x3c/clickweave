@@ -110,6 +110,14 @@ async stopWorkflow() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async supervisionRespond(action: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("supervision_respond", { action }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async listRuns(query: RunsQuery) : Promise<Result<NodeRun[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_runs", { query }) };
@@ -196,6 +204,7 @@ export type EndLoopParams = {
  */
 loop_id: string }
 export type EndpointConfig = { base_url: string; model: string; api_key: string | null }
+export type ExecutionMode = "Test" | "Run"
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
 export type FocusMethod = "WindowId" | "AppName" | "Pid"
@@ -246,7 +255,7 @@ export type ProjectData = { path: string; workflow: Workflow }
  */
 export type RunContext = { execution_dir: string; node_results: NodeResult[] }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
-export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; vlm: EndpointConfig | null; mcp_command: string }
+export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; vlm: EndpointConfig | null; mcp_command: string; execution_mode: ExecutionMode }
 export type RunStatus = "Ok" | "Failed" | "Stopped"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 export type ScreenshotMode = "Screen" | "Window" | "Region"

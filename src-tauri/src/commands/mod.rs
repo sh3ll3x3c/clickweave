@@ -6,7 +6,7 @@ mod runs;
 mod types;
 
 pub use assistant::{AssistantHandle, assistant_chat, cancel_assistant_chat};
-pub use executor::{ExecutorHandle, run_workflow, stop_workflow};
+pub use executor::{ExecutorHandle, run_workflow, stop_workflow, supervision_respond};
 pub use planner::{patch_workflow, plan_workflow};
 pub use project::{
     import_asset, load_conversation, node_type_defaults, open_project, pick_save_file,

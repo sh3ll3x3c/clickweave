@@ -68,6 +68,23 @@ function App() {
         actions.setExecutorState("idle");
         actions.setActiveNode(null);
       }),
+      listen<{ node_id: string; node_name: string; summary: string }>(
+        "executor://supervision_passed",
+        (e) => {
+          actions.pushLog(`Verified: ${e.payload.node_name} — ${e.payload.summary}`);
+        },
+      ),
+      listen<{ node_id: string; node_name: string; finding: string; screenshot: string | null }>(
+        "executor://supervision_paused",
+        (e) => {
+          actions.setSupervisionPause({
+            nodeId: e.payload.node_id,
+            nodeName: e.payload.node_name,
+            finding: e.payload.finding,
+            screenshot: e.payload.screenshot,
+          });
+        },
+      ),
       listen("menu://new", () => actions.newProject()),
       listen("menu://open", () => actions.openProject()),
       listen("menu://save", () => actions.saveProject()),
@@ -141,6 +158,7 @@ function App() {
 
                 <FloatingToolbar
                   executorState={state.executorState}
+                  executionMode={state.executionMode}
                   logsOpen={state.logsDrawerOpen}
                   hasAiNodes={hasAiNodes}
                   onToggleLogs={actions.toggleLogsDrawer}
@@ -150,6 +168,7 @@ function App() {
                       : actions.runWorkflow
                   }
                   onAssistant={actions.toggleAssistant}
+                  onSetExecutionMode={actions.setExecutionMode}
                 />
               </div>
 
