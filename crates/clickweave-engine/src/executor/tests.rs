@@ -2,7 +2,7 @@ use super::*;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{
-    ClickParams, Condition, EdgeOutput, EndLoopParams, FindTextParams, FocusMethod,
+    ClickParams, Condition, EdgeOutput, EndLoopParams, ExecutionMode, FindTextParams, FocusMethod,
     FocusWindowParams, IfParams, LiteralValue, LoopParams, McpToolCallParams, NodeType, Operator,
     Position, ScreenshotMode, TakeScreenshotParams, TypeTextParams, ValueRef, Workflow,
 };
@@ -40,6 +40,7 @@ fn make_test_executor() -> WorkflowExecutor<StubBackend> {
         StubBackend,
         None,
         "stub-mcp".to_string(),
+        ExecutionMode::Run,
         None,
         tx,
         storage,
@@ -101,6 +102,7 @@ fn make_scripted_executor(responses: Vec<&str>) -> WorkflowExecutor<ScriptedBack
         ScriptedBackend::new(responses),
         None,
         "stub-mcp".to_string(),
+        ExecutionMode::Run,
         None,
         tx,
         storage,
@@ -133,6 +135,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         agent: C,
         vlm: Option<C>,
         mcp_command: String,
+        execution_mode: ExecutionMode,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
@@ -142,6 +145,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             agent,
             vlm,
             mcp_command,
+            execution_mode,
             project_path,
             event_tx,
             storage,
@@ -618,6 +622,7 @@ fn make_executor_with_workflow(workflow: Workflow) -> WorkflowExecutor<StubBacke
         StubBackend,
         None,
         "stub".into(),
+        ExecutionMode::Run,
         None,
         tx,
         storage,

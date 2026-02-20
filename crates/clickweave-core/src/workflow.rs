@@ -288,6 +288,34 @@ impl NodeType {
         }
     }
 
+    /// Human-readable description of what this node does, for LLM verification prompts.
+    pub fn action_description(&self) -> String {
+        match self {
+            NodeType::Click(p) => match &p.target {
+                Some(t) => format!("Clicked on '{}'", t),
+                None => format!(
+                    "Clicked at ({}, {})",
+                    p.x.unwrap_or(0.0),
+                    p.y.unwrap_or(0.0)
+                ),
+            },
+            NodeType::TypeText(p) => format!("Typed '{}'", p.text),
+            NodeType::PressKey(p) => format!("Pressed key '{}'", p.key),
+            NodeType::Scroll(p) => format!("Scrolled by {}", p.delta_y),
+            NodeType::FocusWindow(p) => match &p.value {
+                Some(v) => format!("Focused window '{}'", v),
+                None => "Focused window".to_string(),
+            },
+            NodeType::ListWindows(_) => "Listed windows".to_string(),
+            NodeType::FindText(p) => format!("Searched for text '{}'", p.search_text),
+            NodeType::FindImage(_) => "Searched for image template".to_string(),
+            NodeType::TakeScreenshot(_) => "Took a screenshot".to_string(),
+            NodeType::McpToolCall(p) => format!("Called tool '{}'", p.tool_name),
+            NodeType::AppDebugKitOp(p) => format!("Called AppDebugKit '{}'", p.operation_name),
+            _ => self.display_name().to_string(),
+        }
+    }
+
     pub fn icon(&self) -> &'static str {
         match self {
             NodeType::AiStep(_) => "🤖",
@@ -586,6 +614,16 @@ pub struct EndLoopParams {
     /// When EndLoop is reached during execution, the walker jumps directly to
     /// this Loop node, which then re-evaluates its exit condition.
     pub loop_id: Uuid,
+}
+
+// --- Execution mode ---
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum ExecutionMode {
+    #[default]
+    Test,
+    Run,
 }
 
 // --- Trace & check types ---

@@ -63,6 +63,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             agent_config,
             vlm_config,
             request.mcp_command,
+            request.execution_mode,
             project_path,
             event_tx,
             storage,
@@ -122,6 +123,9 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                     emit_handle.emit("executor://checks_completed", verdicts)
                 }
                 ExecutorEvent::RunCreated(_, _) => Ok(()),
+                // Forwarded in Task 7 — no-op for now
+                ExecutorEvent::SupervisionPassed { .. }
+                | ExecutorEvent::SupervisionPaused { .. } => Ok(()),
             };
             if let Err(e) = emit_result {
                 warn!("Failed to emit executor event to UI: {}", e);

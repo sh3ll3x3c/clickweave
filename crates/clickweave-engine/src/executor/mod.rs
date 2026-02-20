@@ -11,7 +11,7 @@ mod tests;
 
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{Check, NodeRun, NodeVerdict, Workflow};
+use clickweave_core::{Check, ExecutionMode, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,6 +28,9 @@ pub enum ExecutorState {
 
 pub enum ExecutorCommand {
     Stop,
+    Resume,
+    Skip,
+    Abort,
 }
 
 /// Events sent from the executor back to the UI
@@ -42,6 +45,17 @@ pub enum ExecutorEvent {
     WorkflowCompleted,
     ChecksCompleted(Vec<NodeVerdict>),
     Error(String),
+    SupervisionPassed {
+        node_id: Uuid,
+        node_name: String,
+        summary: String,
+    },
+    SupervisionPaused {
+        node_id: Uuid,
+        node_name: String,
+        finding: String,
+        screenshot: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +69,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     agent: C,
     vlm: Option<C>,
     mcp_command: String,
+    execution_mode: ExecutionMode,
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
     storage: RunStorage,
@@ -72,6 +87,7 @@ impl WorkflowExecutor {
         agent_config: LlmConfig,
         vlm_config: Option<LlmConfig>,
         mcp_command: String,
+        execution_mode: ExecutionMode,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
@@ -81,6 +97,7 @@ impl WorkflowExecutor {
             agent: LlmClient::new(agent_config),
             vlm: vlm_config.map(LlmClient::new),
             mcp_command,
+            execution_mode,
             project_path,
             event_tx,
             storage,

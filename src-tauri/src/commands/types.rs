@@ -1,5 +1,5 @@
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{NodeType, Workflow};
+use clickweave_core::{ExecutionMode, NodeType, Workflow};
 use clickweave_llm::LlmConfig;
 use clickweave_llm::planner::conversation::{ChatEntry, RunContext};
 use serde::{Deserialize, Serialize};
@@ -87,6 +87,7 @@ pub struct RunRequest {
     pub agent: EndpointConfig,
     pub vlm: Option<EndpointConfig>,
     pub mcp_command: String,
+    pub execution_mode: ExecutionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
