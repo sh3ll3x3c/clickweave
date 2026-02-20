@@ -10,6 +10,7 @@ import { NodeDetailModal } from "./components/node-detail/NodeDetailModal";
 import { AssistantPanel } from "./components/AssistantPanel";
 import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
+import { SupervisionModal } from "./components/SupervisionModal";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useEscapeKey } from "./hooks/useEscapeKey";
@@ -234,6 +235,13 @@ function App() {
         onMcpCommandChange={actions.setMcpCommand}
         onMaxRepairAttemptsChange={actions.setMaxRepairAttempts}
       />
+
+      {state.supervisionPause && (
+        <SupervisionModal
+          pause={state.supervisionPause}
+          onRespond={actions.supervisionRespond}
+        />
+      )}
     </div>
   );
 }
