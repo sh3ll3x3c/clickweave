@@ -4,6 +4,7 @@ mod check_eval;
 mod deterministic;
 mod element_resolve;
 mod run_loop;
+mod supervision;
 mod trace;
 
 #[cfg(test)]
@@ -82,6 +83,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
 }
 
 impl WorkflowExecutor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         workflow: Workflow,
         agent_config: LlmConfig,

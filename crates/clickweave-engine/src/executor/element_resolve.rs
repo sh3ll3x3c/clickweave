@@ -158,6 +158,121 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok(name.to_string())
     }
 
+    /// When find_text returns multiple matches for a click target, ask the LLM
+    /// to pick the most appropriate one based on text, role, and position.
+    pub(crate) async fn disambiguate_click_matches(
+        &self,
+        target: &str,
+        matches: &[Value],
+        app_name: Option<&str>,
+        node_run: Option<&NodeRun>,
+    ) -> Result<usize, String> {
+        let app_context = match app_name {
+            Some(name) => format!(" in app \"{}\"", name),
+            None => String::new(),
+        };
+
+        let matches_list = matches
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let text = m["text"].as_str().unwrap_or("?");
+                let role = m["role"].as_str().unwrap_or("unknown");
+                let x = m["x"].as_f64().unwrap_or(0.0);
+                let y = m["y"].as_f64().unwrap_or(0.0);
+                format!(
+                    "{}: text=\"{}\" role=\"{}\" at ({:.0}, {:.0})",
+                    i, text, role, x, y
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        debug!(
+            target = target,
+            match_count = matches.len(),
+            "disambiguating click matches"
+        );
+
+        let prompt = format!(
+            "You need to click on \"{target}\"{app_context}.\n\
+             \n\
+             Multiple UI elements matched:\n\
+             {matches_list}\n\
+             \n\
+             Which element should be clicked? Return ONLY a JSON object:\n\
+             {{\"index\": <number>}}\n\
+             \n\
+             Pick the element that is most likely the intended click target.\n\
+             Prefer interactive elements (buttons, links) over static display text.\n\
+             Prefer exact text matches over partial/substring matches."
+        );
+
+        let messages = vec![Message::user(prompt)];
+        let response = self
+            .agent
+            .chat(messages, None)
+            .await
+            .map_err(|e| format!("LLM error during click disambiguation: {}", e))?;
+
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| "No response from LLM during click disambiguation".to_string())?;
+
+        let raw_text = choice
+            .message
+            .content_text()
+            .ok_or_else(|| "LLM returned empty content during click disambiguation".to_string())?;
+
+        let json_text =
+            super::app_resolve::extract_json_object(super::app_resolve::strip_code_block(raw_text))
+                .ok_or_else(|| {
+                    format!("No JSON object found in LLM response (raw: {})", raw_text)
+                })?;
+
+        let parsed: Value = serde_json::from_str(json_text)
+            .map_err(|e| format!("Failed to parse LLM response: {} (raw: {})", e, raw_text))?;
+
+        let index = parsed["index"].as_u64().ok_or_else(|| {
+            format!(
+                "LLM returned no valid index for click disambiguation (raw: {})",
+                raw_text
+            )
+        })? as usize;
+
+        if index >= matches.len() {
+            return Err(format!(
+                "LLM returned out-of-bounds index {} for {} matches",
+                index,
+                matches.len()
+            ));
+        }
+
+        let chosen = &matches[index];
+        let chosen_text = chosen["text"].as_str().unwrap_or("?");
+        let chosen_role = chosen["role"].as_str().unwrap_or("unknown");
+
+        self.record_event(
+            node_run,
+            "match_disambiguated",
+            serde_json::json!({
+                "target": target,
+                "match_count": matches.len(),
+                "chosen_index": index,
+                "chosen_text": chosen_text,
+                "chosen_role": chosen_role,
+            }),
+        );
+
+        self.log(format!(
+            "Disambiguated '{}' -> index {} (text=\"{}\", role={})",
+            target, index, chosen_text, chosen_role
+        ));
+
+        Ok(index)
+    }
+
     /// Remove a cached element resolution so the next attempt re-resolves via LLM.
     pub(crate) fn evict_element_cache(&self, target: &str, app_name: Option<&str>) {
         let cache_key = (target.to_string(), app_name.map(|s| s.to_string()));

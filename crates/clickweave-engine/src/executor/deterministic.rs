@@ -295,13 +295,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             matches = serde_json::from_str(&retry_text).unwrap_or_default();
         }
 
-        let best = matches.first().ok_or_else(|| {
-            format!(
+        let best = if matches.is_empty() {
+            return Err(format!(
                 "Could not find text '{}' on screen (find_text returned: {})",
                 target,
                 truncate_for_error(&result_text, 120),
-            )
-        })?;
+            ));
+        } else if matches.len() == 1 {
+            &matches[0]
+        } else {
+            let idx = self
+                .disambiguate_click_matches(
+                    target,
+                    &matches,
+                    scoped_app.as_deref(),
+                    node_run.as_deref(),
+                )
+                .await?;
+            &matches[idx]
+        };
 
         let x = best["x"]
             .as_f64()

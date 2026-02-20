@@ -609,6 +609,69 @@ async fn prepare_find_text_retry_none_when_llm_finds_no_match() {
 }
 
 // ---------------------------------------------------------------------------
+// Click disambiguation tests
+// ---------------------------------------------------------------------------
+
+fn make_find_text_matches(entries: &[(&str, &str)]) -> Vec<Value> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, (text, role))| {
+            serde_json::json!({
+                "text": text,
+                "role": role,
+                "x": 100.0 + i as f64 * 50.0,
+                "y": 200.0 + i as f64 * 50.0,
+            })
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn disambiguate_click_matches_picks_llm_choice() {
+    let exec = make_scripted_executor(vec![r#"{"index": 1}"#]);
+    let matches = make_find_text_matches(&[("2×", "AXStaticText"), ("2", "AXButton")]);
+    let idx = exec
+        .disambiguate_click_matches("2", &matches, Some("Calculator"), None)
+        .await
+        .unwrap();
+    assert_eq!(idx, 1);
+}
+
+#[tokio::test]
+async fn disambiguate_click_matches_out_of_bounds() {
+    let exec = make_scripted_executor(vec![r#"{"index": 5}"#]);
+    let matches = make_find_text_matches(&[("2×", "AXStaticText"), ("2", "AXButton")]);
+    let err = exec
+        .disambiguate_click_matches("2", &matches, None, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("out-of-bounds"));
+}
+
+#[tokio::test]
+async fn disambiguate_click_matches_missing_index_key() {
+    let exec = make_scripted_executor(vec![r#"{"choice": 0}"#]);
+    let matches = make_find_text_matches(&[("Save", "AXButton"), ("Save as...", "AXMenuItem")]);
+    let err = exec
+        .disambiguate_click_matches("Save", &matches, None, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("no valid index"));
+}
+
+#[tokio::test]
+async fn disambiguate_click_matches_code_block_wrapped() {
+    let exec = make_scripted_executor(vec!["```json\n{\"index\": 0}\n```"]);
+    let matches = make_find_text_matches(&[("OK", "AXButton"), ("OK", "AXStaticText")]);
+    let idx = exec
+        .disambiguate_click_matches("OK", &matches, Some("MyApp"), None)
+        .await
+        .unwrap();
+    assert_eq!(idx, 0);
+}
+
+// ---------------------------------------------------------------------------
 // Graph walker tests
 // ---------------------------------------------------------------------------
 
