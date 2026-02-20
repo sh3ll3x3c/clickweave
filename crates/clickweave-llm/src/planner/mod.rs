@@ -637,6 +637,20 @@ pub(crate) fn infer_control_flow_edges(
 
     let endloop_ids: HashSet<Uuid> = endloop_for_loop.values().copied().collect();
 
+    // Control-flow node IDs — used in Phase 2 to decide whether to clear
+    // stale output labels on rerouted back-edges. Regular execution nodes
+    // get their labels cleared; control-flow nodes (If, Switch) keep theirs.
+    let cf_node_ids: HashSet<Uuid> = nodes
+        .iter()
+        .filter(|n| {
+            matches!(
+                n.node_type,
+                NodeType::If(_) | NodeType::Switch(_) | NodeType::Loop(_) | NodeType::EndLoop(_)
+            )
+        })
+        .map(|n| n.id)
+        .collect();
+
     // ── Phase 1: Label Loop outgoing edges ────────────────────────
     for node in nodes {
         if !matches!(node.node_type, NodeType::Loop(_)) {
@@ -726,9 +740,18 @@ pub(crate) fn infer_control_flow_edges(
             // Reroute body→Loop edges through EndLoop.
             // Any edge from a body node back to the Loop should go through
             // EndLoop, regardless of its output label (e.g. IfFalse).
+            //
+            // For regular (non-control-flow) source nodes, also clear the
+            // output label — it's stale from the LLM (e.g. LoopBody on a
+            // Click→Loop edge) and would prevent follow_single_edge from
+            // finding the edge. Control-flow nodes (If, Switch) keep their
+            // label because the executor uses follow_edge with that label.
             for edge in edges.iter_mut() {
                 if edge.to == loop_id && edge.from != endloop_id && body_set.contains(&edge.from) {
                     edge.to = endloop_id;
+                    if !cf_node_ids.contains(&edge.from) {
+                        edge.output = None;
+                    }
                 }
             }
         }

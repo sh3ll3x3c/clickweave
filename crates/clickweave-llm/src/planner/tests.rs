@@ -1610,6 +1610,72 @@ async fn test_infer_loop_reroutes_back_edge_through_endloop() {
         check_edges[0].to, endloop_node.id,
         "Back-edge should be rerouted through EndLoop"
     );
+    assert_eq!(
+        check_edges[0].output, None,
+        "Rerouted edge should be a regular edge (no output label)"
+    );
+}
+
+#[tokio::test]
+async fn test_infer_loop_clears_stale_output_on_rerouted_back_edge() {
+    // LLM produces: body_end→Loop with LoopBody label (stale), plus EndLoop node.
+    // This is the exact pattern from the 2x2=128 calculator bug where the LLM
+    // labeled the back-edge as LoopBody instead of routing through EndLoop.
+    // Without clearing the output, follow_single_edge can't find the edge.
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Launch"},
+        {"id": "n2", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
+        {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2 Setup"},
+        {"id": "n4", "step_type": "Loop", "name": "Multiply Loop", "exit_condition": {
+            "left": {"type": "Variable", "name": "click_equals.result"},
+            "operator": "GreaterThan",
+            "right": {"type": "Literal", "value": {"type": "Number", "value": 128}}
+        }, "max_iterations": 10},
+        {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "×"}, "name": "Click Multiply"},
+        {"id": "n6", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
+        {"id": "n7", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click Equals"},
+        {"id": "n8", "step_type": "EndLoop", "loop_id": "n4", "name": "End Loop"},
+        {"id": "n9", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Screenshot"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3"},
+        {"from": "n3", "to": "n4"},
+        {"from": "n4", "to": "n5", "output": {"type": "LoopBody"}},
+        {"from": "n5", "to": "n6"},
+        {"from": "n6", "to": "n7"},
+        {"from": "n7", "to": "n4", "output": {"type": "LoopBody"}},
+        {"from": "n4", "to": "n9", "output": {"type": "LoopDone"}}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result =
+        plan_workflow_with_backend(&mock, "Calculator 2x2 loop", &sample_tools(), false, false)
+            .await
+            .unwrap();
+
+    let wf = &result.workflow;
+    let endloop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+        .unwrap();
+
+    // Click Equals should connect to EndLoop with a regular (unlabeled) edge
+    let equals_node = wf.nodes.iter().find(|n| n.name == "Click Equals").unwrap();
+    let equals_edges: Vec<_> = wf
+        .edges
+        .iter()
+        .filter(|e| e.from == equals_node.id)
+        .collect();
+    assert_eq!(equals_edges.len(), 1, "Click Equals should have one edge");
+    assert_eq!(
+        equals_edges[0].to, endloop_node.id,
+        "Click Equals should connect to EndLoop"
+    );
+    assert_eq!(
+        equals_edges[0].output, None,
+        "Rerouted edge must have output cleared (was LoopBody)"
+    );
 }
 
 #[tokio::test]
@@ -2089,8 +2155,8 @@ async fn test_assistant_retry_succeeds_on_second_attempt() {
 async fn test_assistant_repair_callback_is_invoked() {
     use super::assistant::assistant_chat_with_backend;
     use super::conversation::ConversationSession;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let (_id, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
 
