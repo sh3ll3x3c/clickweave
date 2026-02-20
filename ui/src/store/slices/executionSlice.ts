@@ -9,7 +9,6 @@ export interface SupervisionPause {
   nodeId: string;
   nodeName: string;
   finding: string;
-  screenshot: string | null;
 }
 
 export interface ExecutionSlice {

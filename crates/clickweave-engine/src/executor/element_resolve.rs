@@ -1,5 +1,6 @@
 use super::WorkflowExecutor;
-use clickweave_core::NodeRun;
+use clickweave_core::decision_cache::{self, ClickDisambiguation, ElementResolution};
+use clickweave_core::{ExecutionMode, NodeRun};
 use clickweave_llm::{ChatBackend, Message};
 use serde_json::Value;
 use tracing::debug;
@@ -155,6 +156,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or_else(|e| e.into_inner())
             .insert(cache_key, name.to_string());
 
+        // Record in decision cache for replay in Run mode
+        if self.execution_mode == ExecutionMode::Test {
+            let ck = decision_cache::cache_key(target, app_name);
+            self.decision_cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .element_resolution
+                .insert(
+                    ck,
+                    ElementResolution {
+                        target: target.to_string(),
+                        resolved_name: name.to_string(),
+                    },
+                );
+        }
+
         Ok(name.to_string())
     }
 
@@ -269,6 +286,24 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             "Disambiguated '{}' -> index {} (text=\"{}\", role={})",
             target, index, chosen_text, chosen_role
         ));
+
+        // Record decision in cache for replay in Run mode
+        if self.execution_mode == ExecutionMode::Test {
+            let ck = decision_cache::cache_key(target, app_name);
+            self.decision_cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .click_disambiguation
+                .insert(
+                    ck,
+                    ClickDisambiguation {
+                        target: target.to_string(),
+                        app_name: app_name.map(|s| s.to_string()),
+                        chosen_text: chosen_text.to_string(),
+                        chosen_role: chosen_role.to_string(),
+                    },
+                );
+        }
 
         Ok(index)
     }

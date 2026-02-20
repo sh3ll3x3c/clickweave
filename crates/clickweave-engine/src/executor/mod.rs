@@ -10,6 +10,7 @@ mod trace;
 #[cfg(test)]
 mod tests;
 
+use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{Check, ExecutionMode, NodeRun, NodeVerdict, Workflow};
@@ -55,7 +56,6 @@ pub enum ExecutorEvent {
         node_id: Uuid,
         node_name: String,
         finding: String,
-        screenshot: Option<String>,
     },
 }
 
@@ -78,6 +78,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     focused_app: RwLock<Option<String>>,
     element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
+    decision_cache: RwLock<DecisionCache>,
     /// Nodes that completed successfully and have checks, in execution order.
     completed_checks: Vec<(Uuid, Vec<Check>, Option<String>)>,
 }
@@ -94,6 +95,8 @@ impl WorkflowExecutor {
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
     ) -> Self {
+        let decision_cache = DecisionCache::load(&storage.cache_path())
+            .unwrap_or_else(|| DecisionCache::new(workflow.id));
         Self {
             workflow,
             agent: LlmClient::new(agent_config),
@@ -107,6 +110,7 @@ impl WorkflowExecutor {
             focused_app: RwLock::new(None),
             element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
+            decision_cache: RwLock::new(decision_cache),
             completed_checks: Vec::new(),
         }
     }

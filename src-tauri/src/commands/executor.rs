@@ -139,14 +139,12 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                     node_id,
                     node_name,
                     finding,
-                    screenshot,
                 } => emit_handle.emit(
                     "executor://supervision_paused",
                     SupervisionPausedPayload {
                         node_id: node_id.to_string(),
                         node_name,
                         finding,
-                        screenshot,
                     },
                 ),
             };

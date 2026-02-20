@@ -9,8 +9,6 @@ use tracing::debug;
 pub(crate) struct VerificationResult {
     pub passed: bool,
     pub reasoning: String,
-    /// Path to the saved screenshot artifact, if captured.
-    pub screenshot_path: Option<String>,
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -26,7 +24,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return VerificationResult {
                 passed: true,
                 reasoning: "Screenshot steps are not verified".to_string(),
-                screenshot_path: None,
             };
         }
 
@@ -48,7 +45,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return VerificationResult {
                 passed: true,
                 reasoning: "Could not capture screenshot for verification".to_string(),
-                screenshot_path: None,
             };
         };
 
@@ -110,7 +106,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         VerificationResult {
             passed: result.0,
             reasoning: result.1,
-            screenshot_path: None,
         }
     }
 

@@ -182,7 +182,6 @@ pub struct SupervisionPausedPayload {
     pub node_id: String,
     pub node_name: String,
     pub finding: String,
-    pub screenshot: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

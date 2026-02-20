@@ -567,7 +567,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     node_id,
                                     node_name: node_name.clone(),
                                     finding: verification.reasoning,
-                                    screenshot: verification.screenshot_path,
                                 });
 
                                 match wait_for_supervision_command(&mut command_rx).await {
@@ -672,6 +671,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     }
                 }
                 self.emit(ExecutorEvent::ChecksCompleted(verdicts));
+            }
+        }
+
+        // Save decision cache after Test mode runs
+        if self.execution_mode == ExecutionMode::Test {
+            let save_result = self
+                .decision_cache
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .save(&self.storage.cache_path());
+            match save_result {
+                Ok(()) => self.log("Decision cache saved".to_string()),
+                Err(e) => self.log(format!("Warning: failed to save decision cache: {}", e)),
             }
         }
 

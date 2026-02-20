@@ -75,14 +75,13 @@ function App() {
           actions.pushLog(`Verified: ${e.payload.node_name} — ${e.payload.summary}`);
         },
       ),
-      listen<{ node_id: string; node_name: string; finding: string; screenshot: string | null }>(
+      listen<{ node_id: string; node_name: string; finding: string }>(
         "executor://supervision_paused",
         (e) => {
           actions.setSupervisionPause({
             nodeId: e.payload.node_id,
             nodeName: e.payload.node_name,
             finding: e.payload.finding,
-            screenshot: e.payload.screenshot,
           });
         },
       ),

@@ -1,4 +1,5 @@
 use super::WorkflowExecutor;
+use clickweave_core::decision_cache::cache_key;
 use clickweave_core::{
     ClickParams, FocusMethod, FocusWindowParams, NodeRun, NodeType, ScreenshotMode,
     TakeScreenshotParams, tool_mapping,
@@ -304,14 +305,33 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         } else if matches.len() == 1 {
             &matches[0]
         } else {
-            let idx = self
-                .disambiguate_click_matches(
+            // Check decision cache first
+            let ck = cache_key(target, scoped_app.as_deref());
+            let cached_idx = self
+                .decision_cache
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .click_disambiguation
+                .get(&ck)
+                .and_then(|cached| {
+                    matches.iter().position(|m| {
+                        m["text"].as_str() == Some(cached.chosen_text.as_str())
+                            && m["role"].as_str() == Some(cached.chosen_role.as_str())
+                    })
+                });
+
+            let idx = if let Some(idx) = cached_idx {
+                self.log(format!("Using cached disambiguation for '{}'", target));
+                idx
+            } else {
+                self.disambiguate_click_matches(
                     target,
                     &matches,
                     scoped_app.as_deref(),
                     node_run.as_deref(),
                 )
-                .await?;
+                .await?
+            };
             &matches[idx]
         };
 

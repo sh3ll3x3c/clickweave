@@ -140,6 +140,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
     ) -> Self {
+        let decision_cache = clickweave_core::decision_cache::DecisionCache::new(workflow.id);
         Self {
             workflow,
             agent,
@@ -153,6 +154,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             focused_app: RwLock::new(None),
             element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
+            decision_cache: RwLock::new(decision_cache),
             completed_checks: Vec::new(),
         }
     }

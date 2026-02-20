@@ -70,6 +70,14 @@ impl RunStorage {
         &self.base_path
     }
 
+    /// Path for the workflow's decision cache file.
+    ///
+    /// Stored as `decisions.json` at the workflow run directory level
+    /// (sibling to per-execution directories).
+    pub fn cache_path(&self) -> PathBuf {
+        self.base_path.join("decisions.json")
+    }
+
     /// Create storage for a saved project.
     ///
     /// Path: `<project>/.clickweave/runs/<sanitized_workflow_name>/`
