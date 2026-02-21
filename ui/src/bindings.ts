@@ -255,7 +255,11 @@ export type ProjectData = { path: string; workflow: Workflow }
  */
 export type RunContext = { execution_dir: string; node_results: NodeResult[] }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
-export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; vlm: EndpointConfig | null; planner: EndpointConfig | null; mcp_command: string; execution_mode: ExecutionMode }
+export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; vlm: EndpointConfig | null; 
+/**
+ * Planner LLM used for supervision in Test mode.
+ */
+planner: EndpointConfig | null; mcp_command: string; execution_mode: ExecutionMode }
 export type RunStatus = "Ok" | "Failed" | "Stopped"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 export type ScreenshotMode = "Screen" | "Window" | "Region"

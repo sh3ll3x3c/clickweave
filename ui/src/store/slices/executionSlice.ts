@@ -9,6 +9,7 @@ export interface SupervisionPause {
   nodeId: string;
   nodeName: string;
   finding: string;
+  screenshot: string | null;
 }
 
 export interface ExecutionSlice {
@@ -60,7 +61,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       project_path: projectPath,
       agent: toEndpoint(agentConfig),
       vlm: vlmEnabled ? toEndpoint(vlmConfig) : null,
-      planner: executionMode === "Test" ? toEndpoint(plannerConfig) : null,
+      planner: toEndpoint(plannerConfig),
       mcp_command: mcpCommand,
       execution_mode: executionMode,
     };

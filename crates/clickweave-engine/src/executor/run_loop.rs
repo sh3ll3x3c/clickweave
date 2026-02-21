@@ -252,6 +252,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     #[allow(clippy::too_many_arguments)]
     async fn execute_node_with_retries(
         &self,
+        node_id: Uuid,
         node_name: &str,
         node_type: &NodeType,
         tools: &[Value],
@@ -277,7 +278,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .await
                 }
                 other => {
-                    self.execute_deterministic(other, mcp, node_run.as_mut())
+                    self.execute_deterministic(node_id, other, mcp, node_run.as_mut())
                         .await
                 }
             };
@@ -516,10 +517,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }),
             );
 
-            // Inner loop: re-executes on supervision Retry
-            let node_succeeded = loop {
+            // Inner loop: re-executes on supervision Retry.
+            // Returns (succeeded, was_abort) to distinguish supervision
+            // aborts from execution errors (which handle their own
+            // finalization inside the Err arm).
+            let (node_succeeded, was_supervision_abort) = loop {
                 match self
                     .execute_node_with_retries(
+                        node_id,
                         &node_name,
                         &node_type,
                         &tools,
@@ -561,12 +566,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     node_name: node_name.clone(),
                                     summary: verification.reasoning,
                                 });
-                                break true;
+                                break (true, false);
                             } else {
                                 self.emit(ExecutorEvent::SupervisionPaused {
                                     node_id,
                                     node_name: node_name.clone(),
                                     finding: verification.reasoning,
+                                    screenshot: verification.screenshot,
                                 });
 
                                 match wait_for_supervision_command(&mut command_rx).await {
@@ -576,16 +582,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     }
                                     SupervisionAction::Skip => {
                                         self.log("Supervision: user chose Skip".to_string());
-                                        break true;
+                                        break (true, false);
                                     }
                                     SupervisionAction::Abort => {
                                         self.log("Supervision: user chose Abort".to_string());
-                                        break false;
+                                        break (false, true);
                                     }
                                 }
                             }
                         } else {
-                            break true;
+                            break (true, false);
                         }
                     }
                     Err(e) => {
@@ -594,12 +600,23 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             self.finalize_run(run, RunStatus::Failed);
                         }
                         self.emit(ExecutorEvent::NodeFailed(node_id, e));
-                        break false;
+                        break (false, false);
                     }
                 }
             };
 
             if !node_succeeded {
+                // Only finalize + emit for supervision aborts; execution
+                // errors already handle this in the Err arm above.
+                if was_supervision_abort {
+                    if let Some(ref mut run) = node_run {
+                        self.finalize_run(run, RunStatus::Failed);
+                    }
+                    self.emit(ExecutorEvent::NodeFailed(
+                        node_id,
+                        "Aborted by user during supervision".to_string(),
+                    ));
+                }
                 completed_normally = false;
                 break;
             }

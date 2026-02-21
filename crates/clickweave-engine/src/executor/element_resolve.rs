@@ -4,6 +4,7 @@ use clickweave_core::{ExecutionMode, NodeRun};
 use clickweave_llm::{ChatBackend, Message};
 use serde_json::Value;
 use tracing::debug;
+use uuid::Uuid;
 
 /// Extract the `available_elements` array from a find_text response.
 ///
@@ -46,6 +47,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// incur one LLM call.
     pub(crate) async fn resolve_element_name(
         &self,
+        node_id: Uuid,
         target: &str,
         available_elements: &[String],
         app_name: Option<&str>,
@@ -53,6 +55,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ) -> Result<String, String> {
         let cache_key = (target.to_string(), app_name.map(|s| s.to_string()));
 
+        // Check in-memory cache first (populated during this execution)
         if let Some(cached) = self
             .element_cache
             .read()
@@ -66,6 +69,38 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 target, cached
             ));
             return Ok(cached);
+        }
+
+        // Check persistent decision cache (replays Test-mode decisions in Run mode)
+        let ck = decision_cache::cache_key(node_id, target, app_name);
+        if let Some(cached) = self
+            .decision_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .element_resolution
+            .get(&ck)
+            .cloned()
+        {
+            if available_elements
+                .iter()
+                .any(|e| e == &cached.resolved_name)
+            {
+                debug!(target = target, resolved_name = %cached.resolved_name, "decision_cache hit");
+                self.log(format!(
+                    "Element resolved (decision cache): \"{}\" -> \"{}\"",
+                    target, cached.resolved_name
+                ));
+                self.element_cache
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(cache_key, cached.resolved_name.clone());
+                return Ok(cached.resolved_name);
+            }
+            debug!(
+                target = target,
+                cached_name = %cached.resolved_name,
+                "decision_cache hit but name not in available elements, falling through to LLM"
+            );
         }
 
         let app_context = match app_name {
@@ -96,7 +131,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let messages = vec![Message::user(prompt)];
         let response = self
-            .agent
+            .reasoning_backend()
             .chat(messages, None)
             .await
             .map_err(|e| format!("LLM error during element resolution: {}", e))?;
@@ -158,7 +193,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // Record in decision cache for replay in Run mode
         if self.execution_mode == ExecutionMode::Test {
-            let ck = decision_cache::cache_key(target, app_name);
+            let ck = decision_cache::cache_key(node_id, target, app_name);
             self.decision_cache
                 .write()
                 .unwrap_or_else(|e| e.into_inner())
@@ -179,6 +214,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// to pick the most appropriate one based on text, role, and position.
     pub(crate) async fn disambiguate_click_matches(
         &self,
+        node_id: Uuid,
         target: &str,
         matches: &[Value],
         app_name: Option<&str>,
@@ -227,7 +263,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let messages = vec![Message::user(prompt)];
         let response = self
-            .agent
+            .reasoning_backend()
             .chat(messages, None)
             .await
             .map_err(|e| format!("LLM error during click disambiguation: {}", e))?;
@@ -289,7 +325,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // Record decision in cache for replay in Run mode
         if self.execution_mode == ExecutionMode::Test {
-            let ck = decision_cache::cache_key(target, app_name);
+            let ck = decision_cache::cache_key(node_id, target, app_name);
             self.decision_cache
                 .write()
                 .unwrap_or_else(|e| e.into_inner())

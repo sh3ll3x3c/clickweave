@@ -8,7 +8,7 @@ interface SupervisionModalProps {
 export function SupervisionModal({ pause, onRespond }: SupervisionModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-[420px] rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] p-5 shadow-2xl">
+      <div className="w-[480px] rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] p-5 shadow-2xl">
         <div className="mb-3 flex items-center gap-2">
           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-500/20 text-[10px] text-amber-400">
             !
@@ -25,6 +25,16 @@ export function SupervisionModal({ pause, onRespond }: SupervisionModalProps) {
         <div className="mb-4 rounded bg-[var(--bg-dark)] px-3 py-2 text-xs leading-relaxed text-[var(--text-secondary)]">
           {pause.finding}
         </div>
+
+        {pause.screenshot && (
+          <div className="mb-4">
+            <img
+              src={`data:image/png;base64,${pause.screenshot}`}
+              alt="Verification screenshot"
+              className="w-full rounded border border-[var(--border)]"
+            />
+          </div>
+        )}
 
         <div className="flex justify-end gap-2">
           <button

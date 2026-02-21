@@ -184,6 +184,8 @@ pub struct SupervisionPausedPayload {
     pub node_id: String,
     pub node_name: String,
     pub finding: String,
+    /// Base64-encoded screenshot captured during verification, if available.
+    pub screenshot: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

@@ -19,6 +19,8 @@ Return ONLY a JSON object: {\"passed\": true/false, \"reasoning\": \"brief expla
 pub(crate) struct VerificationResult {
     pub passed: bool,
     pub reasoning: String,
+    /// Base64-encoded screenshot captured for verification, if available.
+    pub screenshot: Option<String>,
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -35,6 +37,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return VerificationResult {
                 passed: true,
                 reasoning: "Screenshot steps are not verified".to_string(),
+                screenshot: None,
             };
         }
 
@@ -50,9 +53,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // Stage 1: Capture screenshot and get VLM description
         let screenshot_data = self.capture_verification_screenshot(mcp).await;
-        let observation = match screenshot_data {
+        let observation = match &screenshot_data {
             Some(image_base64) => {
-                self.describe_screenshot(&image_base64, node_name, &action, &app_name)
+                self.describe_screenshot(image_base64, node_name, &action, &app_name)
                     .await
             }
             None => {
@@ -65,8 +68,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         };
 
         // Stage 2: Ask planner with persistent conversation history
-        self.judge_step(node_name, &action, &app_name, &observation)
-            .await
+        let mut result = self
+            .judge_step(node_name, &action, &app_name, &observation)
+            .await;
+        result.screenshot = screenshot_data;
+        result
     }
 
     /// Ask the VLM to describe what it sees in the screenshot.
@@ -206,6 +212,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         VerificationResult {
             passed: result.0,
             reasoning: result.1,
+            screenshot: None, // Populated by verify_step after this returns
         }
     }
 

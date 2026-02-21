@@ -11,10 +11,14 @@ use uuid::Uuid;
 pub struct DecisionCache {
     pub version: u32,
     pub workflow_id: Uuid,
-    /// Keyed by `"target\0app_name"` (NUL separator cannot appear in UI text).
+    /// Keyed by `"node_id\0target\0app_name"` (NUL separator cannot appear in UI text).
     pub click_disambiguation: HashMap<String, ClickDisambiguation>,
-    /// Keyed by `"target\0app_name"`.
+    /// Keyed by `"node_id\0target\0app_name"`.
     pub element_resolution: HashMap<String, ElementResolution>,
+    /// Keyed by `"node_id\0user_input"`. Stores the resolved app name (not PID,
+    /// since PIDs change between runs).
+    #[serde(default)]
+    pub app_resolution: HashMap<String, AppResolution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,12 +35,19 @@ pub struct ElementResolution {
     pub resolved_name: String,
 }
 
-/// Build a cache key from a target and optional app name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppResolution {
+    pub user_input: String,
+    pub resolved_name: String,
+}
+
+/// Build a cache key from a node ID, target, and optional app name.
 /// Uses NUL as separator since it cannot appear in UI element text.
-pub fn cache_key(target: &str, app_name: Option<&str>) -> String {
+/// Node-scoped to prevent cross-node collisions for the same target.
+pub fn cache_key(node_id: Uuid, target: &str, app_name: Option<&str>) -> String {
     match app_name {
-        Some(app) => format!("{}\0{}", target, app),
-        None => target.to_string(),
+        Some(app) => format!("{}\0{}\0{}", node_id, target, app),
+        None => format!("{}\0{}", node_id, target),
     }
 }
 
@@ -71,12 +82,20 @@ mod tests {
 
     #[test]
     fn cache_key_with_app() {
-        assert_eq!(cache_key("2", Some("Calculator")), "2\0Calculator");
+        let id = Uuid::nil();
+        assert_eq!(
+            cache_key(id, "2", Some("Calculator")),
+            format!("{}\0{}\0{}", id, "2", "Calculator")
+        );
     }
 
     #[test]
     fn cache_key_without_app() {
-        assert_eq!(cache_key("Submit", None), "Submit");
+        let id = Uuid::nil();
+        assert_eq!(
+            cache_key(id, "Submit", None),
+            format!("{}\0{}", id, "Submit")
+        );
     }
 
     #[test]
@@ -86,9 +105,10 @@ mod tests {
             .join(Uuid::new_v4().to_string());
         let path = dir.join("decisions.json");
 
+        let node_id = Uuid::new_v4();
         let mut cache = DecisionCache::new(Uuid::new_v4());
         cache.click_disambiguation.insert(
-            cache_key("2", Some("Calculator")),
+            cache_key(node_id, "2", Some("Calculator")),
             ClickDisambiguation {
                 target: "2".to_string(),
                 app_name: Some("Calculator".to_string()),
@@ -97,7 +117,7 @@ mod tests {
             },
         );
         cache.element_resolution.insert(
-            cache_key("×", Some("Calculator")),
+            cache_key(node_id, "×", Some("Calculator")),
             ElementResolution {
                 target: "×".to_string(),
                 resolved_name: "Multiply".to_string(),
@@ -113,7 +133,7 @@ mod tests {
 
         let disambig = loaded
             .click_disambiguation
-            .get(&cache_key("2", Some("Calculator")))
+            .get(&cache_key(node_id, "2", Some("Calculator")))
             .unwrap();
         assert_eq!(disambig.chosen_text, "2");
         assert_eq!(disambig.chosen_role, "AXButton");

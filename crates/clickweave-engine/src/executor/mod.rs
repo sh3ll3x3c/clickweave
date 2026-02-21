@@ -56,6 +56,8 @@ pub enum ExecutorEvent {
         node_id: Uuid,
         node_name: String,
         finding: String,
+        /// Base64-encoded screenshot captured during verification, if available.
+        screenshot: Option<String>,
     },
 }
 
@@ -121,5 +123,18 @@ impl WorkflowExecutor {
             supervision_history: RwLock::new(Vec::new()),
             completed_checks: Vec::new(),
         }
+    }
+}
+
+impl<C: ChatBackend> WorkflowExecutor<C> {
+    /// Return the best available LLM for text reasoning tasks (app resolution,
+    /// element resolution). Prefers supervision (planner-class), falls back to
+    /// VLM, then agent. The tiny agent model often has insufficient context for
+    /// these prompts.
+    pub(crate) fn reasoning_backend(&self) -> &C {
+        self.supervision
+            .as_ref()
+            .or(self.vlm.as_ref())
+            .unwrap_or(&self.agent)
     }
 }
