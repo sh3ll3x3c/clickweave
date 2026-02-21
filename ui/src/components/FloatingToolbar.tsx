@@ -1,24 +1,42 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
+import type { ExecutionMode } from "../bindings";
 
 interface FloatingToolbarProps {
   executorState: "idle" | "running";
+  executionMode: ExecutionMode;
   logsOpen: boolean;
   hasAiNodes: boolean;
   onToggleLogs: () => void;
   onRunStop: () => void;
   onAssistant: () => void;
+  onSetExecutionMode: (mode: ExecutionMode) => void;
 }
 
 export function FloatingToolbar({
   executorState,
+  executionMode,
   logsOpen,
   hasAiNodes,
   onToggleLogs,
   onRunStop,
   onAssistant,
+  onSetExecutionMode,
 }: FloatingToolbarProps) {
   const isRunning = executorState === "running";
   const [showConfirm, setShowConfirm] = useState(false);
+  const [showModeMenu, setShowModeMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showModeMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowModeMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showModeMenu]);
 
   const handleRunStop = () => {
     if (isRunning) {
@@ -31,6 +49,8 @@ export function FloatingToolbar({
       onRunStop();
     }
   };
+
+  const runLabel = executionMode === "Test" ? "Test Workflow" : "Run Workflow";
 
   return (
     <>
@@ -58,17 +78,72 @@ export function FloatingToolbar({
             AI
           </span>
         )}
-        <button
-          onClick={handleRunStop}
-          title={isRunning ? "Stop workflow (⌘⇧Esc works globally)" : "Run workflow (⌘R)"}
-          className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-            isRunning
-              ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-              : "bg-[var(--accent-green)]/20 text-[var(--accent-green)] hover:bg-[var(--accent-green)]/30"
-          }`}
-        >
-          {isRunning ? "Stop" : "Test Workflow"}
-        </button>
+        <div className="relative" ref={menuRef}>
+          <div className="flex items-center">
+            <button
+              onClick={handleRunStop}
+              title={isRunning ? "Stop workflow (⌘⇧Esc works globally)" : `${runLabel} (⌘R)`}
+              className={`rounded-l px-3 py-1.5 text-xs font-medium transition-colors ${
+                isRunning
+                  ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                  : "bg-[var(--accent-green)]/20 text-[var(--accent-green)] hover:bg-[var(--accent-green)]/30"
+              }`}
+            >
+              {isRunning ? "Stop" : runLabel}
+            </button>
+            {!isRunning && (
+              <button
+                onClick={() => setShowModeMenu((prev) => !prev)}
+                title="Switch execution mode"
+                className="rounded-r border-l border-[var(--border)] bg-[var(--accent-green)]/20 px-1.5 py-1.5 text-xs text-[var(--accent-green)] hover:bg-[var(--accent-green)]/30"
+              >
+                <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+                  <path d="M1 3l3 3 3-3z" />
+                </svg>
+              </button>
+            )}
+          </div>
+          {showModeMenu && (
+            <div className="absolute bottom-full right-0 mb-1 w-40 rounded-md border border-[var(--border)] bg-[var(--bg-panel)] py-1 shadow-lg">
+              <button
+                onClick={() => {
+                  onSetExecutionMode("Test");
+                  setShowModeMenu(false);
+                }}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-[var(--bg-hover)] ${
+                  executionMode === "Test"
+                    ? "text-[var(--accent-green)]"
+                    : "text-[var(--text-secondary)]"
+                }`}
+              >
+                {executionMode === "Test" && (
+                  <span className="text-[10px]">&#10003;</span>
+                )}
+                <span className={executionMode === "Test" ? "" : "ml-4"}>
+                  Test Workflow
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  onSetExecutionMode("Run");
+                  setShowModeMenu(false);
+                }}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-[var(--bg-hover)] ${
+                  executionMode === "Run"
+                    ? "text-[var(--accent-green)]"
+                    : "text-[var(--text-secondary)]"
+                }`}
+              >
+                {executionMode === "Run" && (
+                  <span className="text-[10px]">&#10003;</span>
+                )}
+                <span className={executionMode === "Run" ? "" : "ml-4"}>
+                  Run Workflow
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       {isRunning && (
         <div className="absolute bottom-8 left-1/2 z-20 -translate-x-1/2 animate-pulse text-center text-[10px] text-red-400/70">

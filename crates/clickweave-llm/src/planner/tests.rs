@@ -1922,6 +1922,108 @@ async fn test_infer_loop_reroutes_if_false_back_edge_to_loop() {
         .expect("Workflow with IfFalse rerouted through EndLoop should validate");
 }
 
+#[tokio::test]
+async fn test_infer_loop_removes_stray_endloop_forward_edge_when_loop_done_exists() {
+    // LLM emits LoopDone on the Loop node AND a forward edge from EndLoop to a
+    // post-loop node. The forward edge is stray — EndLoop must only point back to
+    // its paired Loop. Phase 2 should remove it.
+    //
+    // This matches the exact pattern seen with Qwen 30B:
+    //   n4→n5 (LoopBody), n5→n6, n6→n7, n7→n4 (LoopBody),  // body→Loop
+    //   n4→n8 (LoopDone),                                     // exit already present
+    //   n10→n9                                                 // EndLoop→post-loop (WRONG)
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Launch Calculator"},
+        {"id": "n2", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus Calculator"},
+        {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2 Start"},
+        {"id": "n4", "step_type": "Loop", "name": "Loop Until > 128", "exit_condition": {
+            "left": {"type": "Variable", "name": "click_equals.result"},
+            "operator": "GreaterThan",
+            "right": {"type": "Literal", "value": {"type": "Number", "value": 128}}
+        }, "max_iterations": 10},
+        {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "×"}, "name": "Click Multiply"},
+        {"id": "n6", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
+        {"id": "n7", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click Equals"},
+        {"id": "n8", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {"app_name": "Calculator"}, "name": "Final Screenshot"},
+        {"id": "n9", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "128"}, "name": "Verify Result"},
+        {"id": "n10", "step_type": "EndLoop", "loop_id": "n4", "name": "End Loop"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3"},
+        {"from": "n3", "to": "n4"},
+        {"from": "n4", "to": "n5", "output": {"type": "LoopBody"}},
+        {"from": "n5", "to": "n6"},
+        {"from": "n6", "to": "n7"},
+        {"from": "n7", "to": "n4", "output": {"type": "LoopBody"}},
+        {"from": "n4", "to": "n8", "output": {"type": "LoopDone"}},
+        {"from": "n8", "to": "n9"},
+        {"from": "n10", "to": "n9"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Calculator multiply loop with stray EndLoop edge",
+        &sample_tools(),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let wf = &result.workflow;
+    let loop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::Loop(_)))
+        .unwrap();
+    let endloop_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::EndLoop(_)))
+        .unwrap();
+
+    // EndLoop should have exactly one outgoing edge pointing to Loop
+    let endloop_edges: Vec<_> = wf
+        .edges
+        .iter()
+        .filter(|e| e.from == endloop_node.id)
+        .collect();
+    assert_eq!(
+        endloop_edges.len(),
+        1,
+        "EndLoop should have exactly 1 outgoing edge"
+    );
+    assert_eq!(
+        endloop_edges[0].to, loop_node.id,
+        "EndLoop's only edge must point back to its paired Loop"
+    );
+
+    // Last body step (Click Equals) should be rerouted to EndLoop
+    let equals_node = wf.nodes.iter().find(|n| n.name == "Click Equals").unwrap();
+    let equals_edges: Vec<_> = wf
+        .edges
+        .iter()
+        .filter(|e| e.from == equals_node.id)
+        .collect();
+    assert_eq!(equals_edges.len(), 1);
+    assert_eq!(
+        equals_edges[0].to, endloop_node.id,
+        "Last body step should route to EndLoop, not directly to Loop"
+    );
+
+    // LoopDone should still exist on the Loop node
+    let loop_done = wf
+        .edges
+        .iter()
+        .find(|e| e.from == loop_node.id && e.output == Some(EdgeOutput::LoopDone));
+    assert!(loop_done.is_some(), "LoopDone edge should be preserved");
+
+    // Workflow should pass validation
+    clickweave_core::validate_workflow(wf)
+        .expect("Workflow with stray EndLoop forward edge removed should validate");
+}
+
 #[test]
 fn test_unknown_step_type_deserializes() {
     // Verify that an unknown step_type like "End" deserializes as PlanStep::Unknown

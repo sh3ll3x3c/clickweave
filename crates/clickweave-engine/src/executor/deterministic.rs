@@ -1,4 +1,5 @@
 use super::WorkflowExecutor;
+use clickweave_core::decision_cache::cache_key;
 use clickweave_core::{
     ClickParams, FocusMethod, FocusWindowParams, NodeRun, NodeType, ScreenshotMode,
     TakeScreenshotParams, tool_mapping,
@@ -6,10 +7,12 @@ use clickweave_core::{
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::{McpClient, ToolCallResult};
 use serde_json::Value;
+use uuid::Uuid;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn execute_deterministic(
         &self,
+        node_id: Uuid,
         node_type: &NodeType,
         mcp: &McpClient,
         mut node_run: Option<&mut NodeRun>,
@@ -55,7 +58,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             && p.target.is_some()
             && p.x.is_none()
         {
-            resolved_click = self.resolve_click_target(mcp, p, &mut node_run).await?;
+            resolved_click = self
+                .resolve_click_target(node_id, mcp, p, &mut node_run)
+                .await?;
             &resolved_click
         } else {
             node_type
@@ -68,7 +73,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         {
             let user_input = p.value.as_deref().unwrap();
             let app = self
-                .resolve_app_name(user_input, mcp, node_run.as_deref())
+                .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
                 .await?;
             *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = Some(app.name.clone());
             resolved_fw = NodeType::FocusWindow(FocusWindowParams {
@@ -88,7 +93,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         {
             let user_input = p.target.as_deref().unwrap();
             let app = self
-                .resolve_app_name(user_input, mcp, node_run.as_deref())
+                .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
                 .await?;
             resolved_ss = NodeType::TakeScreenshot(TakeScreenshotParams {
                 mode: p.mode,
@@ -114,6 +119,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             None
         };
 
+        // Extract app_name before args is moved into call_tool
+        let launch_app_name = if tool_name == "launch_app" {
+            args.as_ref()
+                .and_then(|a| a.get("app_name"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+
         self.record_event(
             node_run.as_deref(),
             "tool_call",
@@ -126,6 +141,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         Self::check_tool_error(&result, tool_name)?;
 
+        // launch_app implies the app is now focused
+        if let Some(name) = &launch_app_name {
+            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = Some(name.clone());
+        }
+
         let images = self.save_result_images(&result, "result", &mut node_run);
         let result_text = Self::extract_result_text(&result);
 
@@ -136,9 +156,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .unwrap_or_default()
                 .is_empty()
         {
-            self.try_resolve_find_text(original_args, &result_text, mcp, node_run.as_deref())
-                .await
-                .unwrap_or(result_text)
+            self.try_resolve_find_text(
+                node_id,
+                original_args,
+                &result_text,
+                mcp,
+                node_run.as_deref(),
+            )
+            .await
+            .unwrap_or(result_text)
         } else {
             result_text
         };
@@ -192,13 +218,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// and only replaces the `text` field with the resolved name.
     async fn try_resolve_find_text(
         &self,
+        node_id: Uuid,
         original_args: &Value,
         original_result_text: &str,
         mcp: &McpClient,
         node_run: Option<&NodeRun>,
     ) -> Option<String> {
         let retry_args = self
-            .prepare_find_text_retry(original_args, original_result_text, node_run)
+            .prepare_find_text_retry(node_id, original_args, original_result_text, node_run)
             .await?;
         let retry_result = mcp.call_tool("find_text", Some(retry_args)).await.ok()?;
         if retry_result.is_error == Some(true) {
@@ -215,6 +242,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// find_text fallback path, separated from the MCP I/O for testability.
     pub(crate) async fn prepare_find_text_retry(
         &self,
+        node_id: Uuid,
         original_args: &Value,
         original_result_text: &str,
         node_run: Option<&NodeRun>,
@@ -233,7 +261,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .clone()
             });
         let resolved_name = self
-            .resolve_element_name(target, &available, scoped_app.as_deref(), node_run)
+            .resolve_element_name(node_id, target, &available, scoped_app.as_deref(), node_run)
             .await
             .ok()?;
 
@@ -249,6 +277,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     async fn resolve_click_target(
         &self,
+        node_id: Uuid,
         mcp: &McpClient,
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
@@ -289,19 +318,51 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Fallback: if no matches but available_elements present, ask LLM to resolve
         if matches.is_empty()
             && let Some(retry_text) = self
-                .try_resolve_find_text(&find_args, &result_text, mcp, node_run.as_deref())
+                .try_resolve_find_text(node_id, &find_args, &result_text, mcp, node_run.as_deref())
                 .await
         {
             matches = serde_json::from_str(&retry_text).unwrap_or_default();
         }
 
-        let best = matches.first().ok_or_else(|| {
-            format!(
+        let best = if matches.is_empty() {
+            return Err(format!(
                 "Could not find text '{}' on screen (find_text returned: {})",
                 target,
                 truncate_for_error(&result_text, 120),
-            )
-        })?;
+            ));
+        } else if matches.len() == 1 {
+            &matches[0]
+        } else {
+            // Check decision cache first
+            let ck = cache_key(node_id, target, scoped_app.as_deref());
+            let cached_idx = self
+                .decision_cache
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .click_disambiguation
+                .get(&ck)
+                .and_then(|cached| {
+                    matches.iter().position(|m| {
+                        m["text"].as_str() == Some(cached.chosen_text.as_str())
+                            && m["role"].as_str() == Some(cached.chosen_role.as_str())
+                    })
+                });
+
+            let idx = if let Some(idx) = cached_idx {
+                self.log(format!("Using cached disambiguation for '{}'", target));
+                idx
+            } else {
+                self.disambiguate_click_matches(
+                    node_id,
+                    target,
+                    &matches,
+                    scoped_app.as_deref(),
+                    node_run.as_deref(),
+                )
+                .await?
+            };
+            &matches[idx]
+        };
 
         let x = best["x"]
             .as_f64()

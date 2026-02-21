@@ -159,6 +159,9 @@ pub async fn assistant_chat_with_backend(
                     messages.push(Message::assistant(&content));
                     messages.push(Message::user(format!(
                         "Your previous output produced a patch that fails validation: {}\n\n\
+                         Reminder: EndLoop must have exactly 1 outgoing edge that points BACK to its paired Loop node \
+                         (regular edge, no output label). The last body step flows into EndLoop, and EndLoop flows back to Loop. \
+                         EndLoop never has a forward edge to post-loop nodes — Loop's LoopDone edge handles the exit path.\n\n\
                          Please fix the JSON output so the resulting workflow is valid.",
                         validation_err
                     )));

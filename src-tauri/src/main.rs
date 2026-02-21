@@ -69,6 +69,7 @@ fn main() {
         load_conversation,
         run_workflow,
         stop_workflow,
+        supervision_respond,
         list_runs,
         load_run_events,
         read_artifact_base64,

@@ -1,4 +1,5 @@
-import type { Workflow, NodeTypeInfo, WorkflowPatch, ConversationSession } from "../bindings";
+import type { Workflow, NodeTypeInfo, WorkflowPatch, ConversationSession, ExecutionMode } from "../bindings";
+import type { SupervisionPause } from "./slices/executionSlice";
 
 export type DetailTab = "setup" | "trace" | "checks" | "runs";
 
@@ -19,6 +20,8 @@ export interface AppState {
   selectedNode: string | null;
   activeNode: string | null;
   executorState: "idle" | "running";
+  executionMode: ExecutionMode;
+  supervisionPause: SupervisionPause | null;
   detailTab: DetailTab;
   sidebarCollapsed: boolean;
   logsDrawerOpen: boolean;
@@ -72,6 +75,10 @@ export interface AppActions {
   setMaxRepairAttempts: (n: number) => void;
   setActiveNode: (id: string | null) => void;
   setExecutorState: (state: "idle" | "running") => void;
+  setExecutionMode: (mode: ExecutionMode) => void;
+  setSupervisionPause: (pause: SupervisionPause | null) => void;
+  clearSupervisionPause: () => void;
+  supervisionRespond: (action: "retry" | "skip" | "abort") => Promise<void>;
   runWorkflow: () => Promise<void>;
   stopWorkflow: () => Promise<void>;
   setAllowAiTransforms: (allow: boolean) => void;

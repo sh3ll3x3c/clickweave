@@ -42,6 +42,10 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         .vlm
         .filter(|v| !v.is_empty())
         .map(|v| v.into_llm_config(Some(0.1)));
+    let supervision_config = request
+        .planner
+        .filter(|p| !p.is_empty())
+        .map(|p| p.into_llm_config(None));
 
     let storage = resolve_storage(
         &app,
@@ -62,7 +66,9 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             request.workflow,
             agent_config,
             vlm_config,
+            supervision_config,
             request.mcp_command,
+            request.execution_mode,
             project_path,
             event_tx,
             storage,
@@ -122,6 +128,32 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                     emit_handle.emit("executor://checks_completed", verdicts)
                 }
                 ExecutorEvent::RunCreated(_, _) => Ok(()),
+                ExecutorEvent::SupervisionPassed {
+                    node_id,
+                    node_name,
+                    summary,
+                } => emit_handle.emit(
+                    "executor://supervision_passed",
+                    SupervisionPassedPayload {
+                        node_id: node_id.to_string(),
+                        node_name,
+                        summary,
+                    },
+                ),
+                ExecutorEvent::SupervisionPaused {
+                    node_id,
+                    node_name,
+                    finding,
+                    screenshot,
+                } => emit_handle.emit(
+                    "executor://supervision_paused",
+                    SupervisionPausedPayload {
+                        node_id: node_id.to_string(),
+                        node_name,
+                        finding,
+                        screenshot,
+                    },
+                ),
             };
             if let Err(e) = emit_result {
                 warn!("Failed to emit executor event to UI: {}", e);
@@ -158,4 +190,26 @@ pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), String> {
         return Err("No workflow is running".to_string());
     }
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn supervision_respond(app: tauri::AppHandle, action: String) -> Result<(), String> {
+    let handle = app.state::<Mutex<ExecutorHandle>>();
+    let guard = handle.lock().unwrap();
+    let tx = guard
+        .stop_tx
+        .as_ref()
+        .ok_or("No workflow is running")?
+        .clone();
+    drop(guard);
+
+    let command = match action.as_str() {
+        "retry" => ExecutorCommand::Resume,
+        "skip" => ExecutorCommand::Skip,
+        "abort" => ExecutorCommand::Abort,
+        _ => return Err(format!("Unknown supervision action: {}", action)),
+    };
+    tx.try_send(command)
+        .map_err(|e| format!("Failed to send command: {}", e))
 }

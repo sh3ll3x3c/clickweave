@@ -782,6 +782,12 @@ pub(crate) fn infer_control_flow_edges(
                 to: target,
                 output: Some(EdgeOutput::LoopDone),
             };
+        } else if has_loop_done {
+            // LoopDone already exists — remove any stray EndLoop forward edges.
+            // LLMs sometimes emit both a LoopDone on the Loop node AND a forward
+            // edge from EndLoop to a post-loop node. The forward edge is invalid
+            // (EndLoop must only point back to its paired Loop).
+            edges.retain(|e| !(e.from == endloop_id && e.to != loop_id));
         }
     }
 

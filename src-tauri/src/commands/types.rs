@@ -1,5 +1,5 @@
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{NodeType, Workflow};
+use clickweave_core::{ExecutionMode, NodeType, Workflow};
 use clickweave_llm::LlmConfig;
 use clickweave_llm::planner::conversation::{ChatEntry, RunContext};
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,10 @@ pub struct RunRequest {
     pub project_path: Option<String>,
     pub agent: EndpointConfig,
     pub vlm: Option<EndpointConfig>,
+    /// Planner LLM used for supervision in Test mode.
+    pub planner: Option<EndpointConfig>,
     pub mcp_command: String,
+    pub execution_mode: ExecutionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -167,6 +170,22 @@ pub struct NodePayload {
 pub struct NodeErrorPayload {
     pub node_id: String,
     pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SupervisionPassedPayload {
+    pub node_id: String,
+    pub node_name: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SupervisionPausedPayload {
+    pub node_id: String,
+    pub node_name: String,
+    pub finding: String,
+    /// Base64-encoded screenshot captured during verification, if available.
+    pub screenshot: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

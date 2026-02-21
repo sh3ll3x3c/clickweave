@@ -1,8 +1,10 @@
 use super::WorkflowExecutor;
-use clickweave_core::NodeRun;
+use clickweave_core::decision_cache::{self, ClickDisambiguation, ElementResolution};
+use clickweave_core::{ExecutionMode, NodeRun};
 use clickweave_llm::{ChatBackend, Message};
 use serde_json::Value;
 use tracing::debug;
+use uuid::Uuid;
 
 /// Extract the `available_elements` array from a find_text response.
 ///
@@ -45,6 +47,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// incur one LLM call.
     pub(crate) async fn resolve_element_name(
         &self,
+        node_id: Uuid,
         target: &str,
         available_elements: &[String],
         app_name: Option<&str>,
@@ -52,6 +55,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ) -> Result<String, String> {
         let cache_key = (target.to_string(), app_name.map(|s| s.to_string()));
 
+        // Check in-memory cache first (populated during this execution)
         if let Some(cached) = self
             .element_cache
             .read()
@@ -65,6 +69,38 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 target, cached
             ));
             return Ok(cached);
+        }
+
+        // Check persistent decision cache (replays Test-mode decisions in Run mode)
+        let ck = decision_cache::cache_key(node_id, target, app_name);
+        if let Some(cached) = self
+            .decision_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .element_resolution
+            .get(&ck)
+            .cloned()
+        {
+            if available_elements
+                .iter()
+                .any(|e| e == &cached.resolved_name)
+            {
+                debug!(target = target, resolved_name = %cached.resolved_name, "decision_cache hit");
+                self.log(format!(
+                    "Element resolved (decision cache): \"{}\" -> \"{}\"",
+                    target, cached.resolved_name
+                ));
+                self.element_cache
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(cache_key, cached.resolved_name.clone());
+                return Ok(cached.resolved_name);
+            }
+            debug!(
+                target = target,
+                cached_name = %cached.resolved_name,
+                "decision_cache hit but name not in available elements, falling through to LLM"
+            );
         }
 
         let app_context = match app_name {
@@ -95,7 +131,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let messages = vec![Message::user(prompt)];
         let response = self
-            .agent
+            .reasoning_backend()
             .chat(messages, None)
             .await
             .map_err(|e| format!("LLM error during element resolution: {}", e))?;
@@ -155,7 +191,157 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or_else(|e| e.into_inner())
             .insert(cache_key, name.to_string());
 
+        // Record in decision cache for replay in Run mode
+        if self.execution_mode == ExecutionMode::Test {
+            let ck = decision_cache::cache_key(node_id, target, app_name);
+            self.decision_cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .element_resolution
+                .insert(
+                    ck,
+                    ElementResolution {
+                        target: target.to_string(),
+                        resolved_name: name.to_string(),
+                    },
+                );
+        }
+
         Ok(name.to_string())
+    }
+
+    /// When find_text returns multiple matches for a click target, ask the LLM
+    /// to pick the most appropriate one based on text, role, and position.
+    pub(crate) async fn disambiguate_click_matches(
+        &self,
+        node_id: Uuid,
+        target: &str,
+        matches: &[Value],
+        app_name: Option<&str>,
+        node_run: Option<&NodeRun>,
+    ) -> Result<usize, String> {
+        let app_context = match app_name {
+            Some(name) => format!(" in app \"{}\"", name),
+            None => String::new(),
+        };
+
+        let matches_list = matches
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let text = m["text"].as_str().unwrap_or("?");
+                let role = m["role"].as_str().unwrap_or("unknown");
+                let x = m["x"].as_f64().unwrap_or(0.0);
+                let y = m["y"].as_f64().unwrap_or(0.0);
+                format!(
+                    "{}: text=\"{}\" role=\"{}\" at ({:.0}, {:.0})",
+                    i, text, role, x, y
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        debug!(
+            target = target,
+            match_count = matches.len(),
+            "disambiguating click matches"
+        );
+
+        let prompt = format!(
+            "You need to click on \"{target}\"{app_context}.\n\
+             \n\
+             Multiple UI elements matched:\n\
+             {matches_list}\n\
+             \n\
+             Which element should be clicked? Return ONLY a JSON object:\n\
+             {{\"index\": <number>}}\n\
+             \n\
+             Pick the element that is most likely the intended click target.\n\
+             Prefer interactive elements (buttons, links) over static display text.\n\
+             Prefer exact text matches over partial/substring matches."
+        );
+
+        let messages = vec![Message::user(prompt)];
+        let response = self
+            .reasoning_backend()
+            .chat(messages, None)
+            .await
+            .map_err(|e| format!("LLM error during click disambiguation: {}", e))?;
+
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| "No response from LLM during click disambiguation".to_string())?;
+
+        let raw_text = choice
+            .message
+            .content_text()
+            .ok_or_else(|| "LLM returned empty content during click disambiguation".to_string())?;
+
+        let json_text =
+            super::app_resolve::extract_json_object(super::app_resolve::strip_code_block(raw_text))
+                .ok_or_else(|| {
+                    format!("No JSON object found in LLM response (raw: {})", raw_text)
+                })?;
+
+        let parsed: Value = serde_json::from_str(json_text)
+            .map_err(|e| format!("Failed to parse LLM response: {} (raw: {})", e, raw_text))?;
+
+        let index = parsed["index"].as_u64().ok_or_else(|| {
+            format!(
+                "LLM returned no valid index for click disambiguation (raw: {})",
+                raw_text
+            )
+        })? as usize;
+
+        if index >= matches.len() {
+            return Err(format!(
+                "LLM returned out-of-bounds index {} for {} matches",
+                index,
+                matches.len()
+            ));
+        }
+
+        let chosen = &matches[index];
+        let chosen_text = chosen["text"].as_str().unwrap_or("?");
+        let chosen_role = chosen["role"].as_str().unwrap_or("unknown");
+
+        self.record_event(
+            node_run,
+            "match_disambiguated",
+            serde_json::json!({
+                "target": target,
+                "match_count": matches.len(),
+                "chosen_index": index,
+                "chosen_text": chosen_text,
+                "chosen_role": chosen_role,
+            }),
+        );
+
+        self.log(format!(
+            "Disambiguated '{}' -> index {} (text=\"{}\", role={})",
+            target, index, chosen_text, chosen_role
+        ));
+
+        // Record decision in cache for replay in Run mode
+        if self.execution_mode == ExecutionMode::Test {
+            let ck = decision_cache::cache_key(node_id, target, app_name);
+            self.decision_cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .click_disambiguation
+                .insert(
+                    ck,
+                    ClickDisambiguation {
+                        target: target.to_string(),
+                        app_name: app_name.map(|s| s.to_string()),
+                        chosen_text: chosen_text.to_string(),
+                        chosen_role: chosen_role.to_string(),
+                    },
+                );
+        }
+
+        Ok(index)
     }
 
     /// Remove a cached element resolution so the next attempt re-resolves via LLM.

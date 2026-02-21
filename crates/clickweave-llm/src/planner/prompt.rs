@@ -92,10 +92,20 @@ Rules:
   - Each node must have an `"id"` field (e.g. "n1", "n2").
   - Each edge has `"from"`, `"to"`, and optional `"output"` ({{"type": "LoopBody"}}, {{"type": "LoopDone"}}, {{"type": "IfTrue"}}, {{"type": "IfFalse"}}).
   - Regular edges (no control flow) omit `"output"`.
-  - EndLoop edges back to their Loop node are regular edges.
-  - Loop nodes must have exactly 2 outgoing edges: LoopBody and LoopDone.
+  - **EndLoop** must have exactly 1 outgoing edge pointing back to its paired Loop node (regular edge, no `"output"`).
+  - Loop nodes must have exactly 2 outgoing edges: LoopBody (into the body) and LoopDone (exit after the loop).
   - If nodes must have exactly 2 outgoing edges: IfTrue and IfFalse.
 - Use Loop/EndLoop when the user's intent involves repetition ("until", "while", "keep", "repeat", "N times"). Prefer loops over unrolling steps.
+- **Loop edge wiring** — the cycle goes: Loop →(LoopBody)→ body steps → EndLoop → Loop. The exit goes: Loop →(LoopDone)→ after steps. Example edges for a 3-step body:
+  ```
+  Loop→A  (LoopBody)   // enter body
+  A→B                   // body chain
+  B→C                   // body chain
+  C→EndLoop             // last body step flows into EndLoop
+  EndLoop→Loop          // EndLoop loops BACK to Loop (regular edge)
+  Loop→After (LoopDone) // exit when condition met
+  ```
+  WRONG: body→Loop or EndLoop→After. EndLoop ALWAYS points back to Loop, never forward.
 - **Loop structure — think like code.** A loop has three parts:
   1. **Before the loop** (setup, runs once): e.g. launch app, type initial value
   2. **Loop body** (between Loop→LoopBody and EndLoop): ONLY the steps that repeat each iteration

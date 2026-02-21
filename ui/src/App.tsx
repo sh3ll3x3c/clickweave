@@ -10,6 +10,7 @@ import { NodeDetailModal } from "./components/node-detail/NodeDetailModal";
 import { AssistantPanel } from "./components/AssistantPanel";
 import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
+import { SupervisionModal } from "./components/SupervisionModal";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useEscapeKey } from "./hooks/useEscapeKey";
@@ -68,6 +69,23 @@ function App() {
         actions.setExecutorState("idle");
         actions.setActiveNode(null);
       }),
+      listen<{ node_id: string; node_name: string; summary: string }>(
+        "executor://supervision_passed",
+        (e) => {
+          actions.pushLog(`Verified: ${e.payload.node_name} — ${e.payload.summary}`);
+        },
+      ),
+      listen<{ node_id: string; node_name: string; finding: string; screenshot: string | null }>(
+        "executor://supervision_paused",
+        (e) => {
+          actions.setSupervisionPause({
+            nodeId: e.payload.node_id,
+            nodeName: e.payload.node_name,
+            finding: e.payload.finding,
+            screenshot: e.payload.screenshot ?? null,
+          });
+        },
+      ),
       listen("menu://new", () => actions.newProject()),
       listen("menu://open", () => actions.openProject()),
       listen("menu://save", () => actions.saveProject()),
@@ -141,6 +159,7 @@ function App() {
 
                 <FloatingToolbar
                   executorState={state.executorState}
+                  executionMode={state.executionMode}
                   logsOpen={state.logsDrawerOpen}
                   hasAiNodes={hasAiNodes}
                   onToggleLogs={actions.toggleLogsDrawer}
@@ -150,6 +169,7 @@ function App() {
                       : actions.runWorkflow
                   }
                   onAssistant={actions.toggleAssistant}
+                  onSetExecutionMode={actions.setExecutionMode}
                 />
               </div>
 
@@ -215,6 +235,13 @@ function App() {
         onMcpCommandChange={actions.setMcpCommand}
         onMaxRepairAttemptsChange={actions.setMaxRepairAttempts}
       />
+
+      {state.supervisionPause && (
+        <SupervisionModal
+          pause={state.supervisionPause}
+          onRespond={actions.supervisionRespond}
+        />
+      )}
     </div>
   );
 }

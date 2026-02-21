@@ -1,6 +1,6 @@
 use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor, check_eval};
 use clickweave_core::runtime::RuntimeContext;
-use clickweave_core::{EdgeOutput, NodeRun, NodeType, RunStatus};
+use clickweave_core::{EdgeOutput, ExecutionMode, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpClient;
 use serde_json::Value;
@@ -8,6 +8,24 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
+
+enum SupervisionAction {
+    Retry,
+    Skip,
+    Abort,
+}
+
+async fn wait_for_supervision_command(
+    command_rx: &mut Receiver<ExecutorCommand>,
+) -> SupervisionAction {
+    match command_rx.recv().await {
+        Some(ExecutorCommand::Resume) => SupervisionAction::Retry,
+        Some(ExecutorCommand::Skip) => SupervisionAction::Skip,
+        Some(ExecutorCommand::Abort) | Some(ExecutorCommand::Stop) | None => {
+            SupervisionAction::Abort
+        }
+    }
+}
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Find entry points: nodes with no incoming edges.
@@ -234,6 +252,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     #[allow(clippy::too_many_arguments)]
     async fn execute_node_with_retries(
         &self,
+        node_id: Uuid,
         node_name: &str,
         node_type: &NodeType,
         tools: &[Value],
@@ -259,7 +278,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .await
                 }
                 other => {
-                    self.execute_deterministic(other, mcp, node_run.as_mut())
+                    self.execute_deterministic(node_id, other, mcp, node_run.as_mut())
                         .await
                 }
             };
@@ -498,46 +517,108 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }),
             );
 
-            match self
-                .execute_node_with_retries(
-                    &node_name,
-                    &node_type,
-                    &tools,
-                    &mcp,
-                    timeout_ms,
-                    retries,
-                    &mut command_rx,
-                    &mut node_run,
-                )
-                .await
-            {
-                Ok(node_result) => {
-                    self.extract_and_store_variables(
+            // Inner loop: re-executes on supervision Retry.
+            // Returns (succeeded, was_abort) to distinguish supervision
+            // aborts from execution errors (which handle their own
+            // finalization inside the Err arm).
+            let (node_succeeded, was_supervision_abort) = loop {
+                match self
+                    .execute_node_with_retries(
+                        node_id,
                         &node_name,
-                        &node_result,
                         &node_type,
-                        node_run.as_ref(),
-                    );
+                        &tools,
+                        &mcp,
+                        timeout_ms,
+                        retries,
+                        &mut command_rx,
+                        &mut node_run,
+                    )
+                    .await
+                {
+                    Ok(node_result) => {
+                        self.extract_and_store_variables(
+                            &node_name,
+                            &node_result,
+                            &node_type,
+                            node_run.as_ref(),
+                        );
 
-                    // Capture post-node screenshot and track checked nodes
-                    let has_checks = !checks.is_empty() || expected_outcome.is_some();
-                    if has_checks {
-                        if let Some(ref mut run) = node_run {
-                            self.capture_check_screenshot(&mcp, run).await;
+                        // Capture post-node screenshot and track checked nodes
+                        let has_checks = !checks.is_empty() || expected_outcome.is_some();
+                        if has_checks {
+                            if let Some(ref mut run) = node_run {
+                                self.capture_check_screenshot(&mcp, run).await;
+                            }
+                            self.completed_checks.push((
+                                node_id,
+                                checks.clone(),
+                                expected_outcome.clone(),
+                            ));
                         }
-                        self.completed_checks
-                            .push((node_id, checks, expected_outcome));
+
+                        // Supervision (Test mode only)
+                        if self.execution_mode == ExecutionMode::Test {
+                            let verification = self.verify_step(&node_name, &node_type, &mcp).await;
+                            if verification.passed {
+                                self.emit(ExecutorEvent::SupervisionPassed {
+                                    node_id,
+                                    node_name: node_name.clone(),
+                                    summary: verification.reasoning,
+                                });
+                                break (true, false);
+                            } else {
+                                self.emit(ExecutorEvent::SupervisionPaused {
+                                    node_id,
+                                    node_name: node_name.clone(),
+                                    finding: verification.reasoning,
+                                    screenshot: verification.screenshot,
+                                });
+
+                                match wait_for_supervision_command(&mut command_rx).await {
+                                    SupervisionAction::Retry => {
+                                        self.log("Supervision: user chose Retry".to_string());
+                                        continue;
+                                    }
+                                    SupervisionAction::Skip => {
+                                        self.log("Supervision: user chose Skip".to_string());
+                                        break (true, false);
+                                    }
+                                    SupervisionAction::Abort => {
+                                        self.log("Supervision: user chose Abort".to_string());
+                                        break (false, true);
+                                    }
+                                }
+                            }
+                        } else {
+                            break (true, false);
+                        }
+                    }
+                    Err(e) => {
+                        self.emit_error(format!("Node {} failed: {}", node_name, e));
+                        if let Some(ref mut run) = node_run {
+                            self.finalize_run(run, RunStatus::Failed);
+                        }
+                        self.emit(ExecutorEvent::NodeFailed(node_id, e));
+                        break (false, false);
                     }
                 }
-                Err(e) => {
-                    self.emit_error(format!("Node {} failed: {}", node_name, e));
+            };
+
+            if !node_succeeded {
+                // Only finalize + emit for supervision aborts; execution
+                // errors already handle this in the Err arm above.
+                if was_supervision_abort {
                     if let Some(ref mut run) = node_run {
                         self.finalize_run(run, RunStatus::Failed);
                     }
-                    self.emit(ExecutorEvent::NodeFailed(node_id, e));
-                    completed_normally = false;
-                    break;
+                    self.emit(ExecutorEvent::NodeFailed(
+                        node_id,
+                        "Aborted by user during supervision".to_string(),
+                    ));
                 }
+                completed_normally = false;
+                break;
             }
 
             if let Some(ms) = settle_ms.filter(|&ms| ms > 0) {
@@ -607,6 +688,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     }
                 }
                 self.emit(ExecutorEvent::ChecksCompleted(verdicts));
+            }
+        }
+
+        // Save decision cache after Test mode runs
+        if self.execution_mode == ExecutionMode::Test {
+            let save_result = self
+                .decision_cache
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .save(&self.storage.cache_path());
+            match save_result {
+                Ok(()) => self.log("Decision cache saved".to_string()),
+                Err(e) => self.log(format!("Warning: failed to save decision cache: {}", e)),
             }
         }
 

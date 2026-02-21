@@ -1,9 +1,11 @@
 use super::{ResolvedApp, WorkflowExecutor};
-use clickweave_core::{FocusMethod, NodeRun, NodeType};
+use clickweave_core::decision_cache::{self, AppResolution};
+use clickweave_core::{ExecutionMode, FocusMethod, NodeRun, NodeType};
 use clickweave_llm::{ChatBackend, Message};
 use clickweave_mcp::McpClient;
 use serde_json::Value;
 use tracing::debug;
+use uuid::Uuid;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Resolve a user-provided app name (e.g. "chrome", "my editor") to a concrete
@@ -12,10 +14,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// to the same user string only incur one LLM call.
     pub(crate) async fn resolve_app_name(
         &self,
+        node_id: Uuid,
         user_input: &str,
         mcp: &McpClient,
         node_run: Option<&NodeRun>,
     ) -> Result<ResolvedApp, String> {
+        // Check in-memory cache first (populated during this execution)
         if let Some(cached) = self
             .app_cache
             .read()
@@ -29,6 +33,47 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 user_input, cached.name, cached.pid
             ));
             return Ok(cached);
+        }
+
+        // Check persistent decision cache (replays Test-mode app name decisions).
+        // Clone the cached value out before any .await to avoid holding the
+        // RwLockReadGuard across an await point (which breaks Send).
+        let ck = decision_cache::cache_key(node_id, user_input, None);
+        let cached_app = self
+            .decision_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .app_resolution
+            .get(&ck)
+            .cloned();
+        if let Some(cached) = cached_app {
+            debug!(user_input, resolved_name = %cached.resolved_name, "decision_cache app hit");
+            // We have the app name but need a fresh PID — look it up
+            match self.lookup_app_pid(&cached.resolved_name, mcp).await {
+                Ok(pid) => {
+                    let resolved = ResolvedApp {
+                        name: cached.resolved_name.clone(),
+                        pid,
+                    };
+                    self.log(format!(
+                        "App resolved (decision cache): \"{}\" -> {} (pid {})",
+                        user_input, resolved.name, resolved.pid
+                    ));
+                    self.app_cache
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(user_input.to_string(), resolved.clone());
+                    return Ok(resolved);
+                }
+                Err(e) => {
+                    debug!(
+                        user_input,
+                        cached_name = %cached.resolved_name,
+                        error = %e,
+                        "decision_cache app hit but PID lookup failed, falling through to LLM"
+                    );
+                }
+            }
         }
 
         let apps_result = mcp
@@ -76,7 +121,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let messages = vec![Message::user(prompt)];
         let response = self
-            .agent
+            .reasoning_backend()
             .chat(messages, None)
             .await
             .map_err(|e| format!("LLM error during app resolution: {}", e))?;
@@ -150,7 +195,46 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or_else(|e| e.into_inner())
             .insert(user_input.to_string(), resolved.clone());
 
+        // Record in decision cache for replay in Run mode (name only, not PID)
+        if self.execution_mode == ExecutionMode::Test {
+            self.decision_cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .app_resolution
+                .insert(
+                    ck,
+                    AppResolution {
+                        user_input: user_input.to_string(),
+                        resolved_name: resolved.name.clone(),
+                    },
+                );
+        }
+
         Ok(resolved)
+    }
+
+    /// Look up a PID for an app by its exact name via `list_apps`.
+    async fn lookup_app_pid(&self, app_name: &str, mcp: &McpClient) -> Result<i32, String> {
+        let result = mcp
+            .call_tool(
+                "list_apps",
+                Some(serde_json::json!({"app_name": app_name, "user_apps_only": true})),
+            )
+            .await
+            .map_err(|e| format!("Failed to list apps: {}", e))?;
+        let text = Self::extract_result_text(&result);
+        let apps: Vec<Value> = serde_json::from_str(&text).unwrap_or_default();
+        for app in &apps {
+            if app["name"].as_str() == Some(app_name)
+                && let Some(pid) = app["pid"].as_i64()
+            {
+                return Ok(pid as i32);
+            }
+        }
+        Err(format!(
+            "App \"{}\" is not running (not found in app list)",
+            app_name
+        ))
     }
 
     /// Remove a cached app resolution so the next attempt re-resolves via LLM.

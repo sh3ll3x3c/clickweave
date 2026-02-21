@@ -4,15 +4,17 @@ mod check_eval;
 mod deterministic;
 mod element_resolve;
 mod run_loop;
+mod supervision;
 mod trace;
 
 #[cfg(test)]
 mod tests;
 
+use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{Check, NodeRun, NodeVerdict, Workflow};
-use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
+use clickweave_core::{Check, ExecutionMode, NodeRun, NodeVerdict, Workflow};
+use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,6 +30,9 @@ pub enum ExecutorState {
 
 pub enum ExecutorCommand {
     Stop,
+    Resume,
+    Skip,
+    Abort,
 }
 
 /// Events sent from the executor back to the UI
@@ -42,6 +47,18 @@ pub enum ExecutorEvent {
     WorkflowCompleted,
     ChecksCompleted(Vec<NodeVerdict>),
     Error(String),
+    SupervisionPassed {
+        node_id: Uuid,
+        node_name: String,
+        summary: String,
+    },
+    SupervisionPaused {
+        node_id: Uuid,
+        node_name: String,
+        finding: String,
+        /// Base64-encoded screenshot captured during verification, if available.
+        screenshot: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +71,11 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     workflow: Workflow,
     agent: C,
     vlm: Option<C>,
+    /// Planner-class LLM used for supervision verification in Test mode.
+    /// Falls back to VLM, then agent if not configured.
+    supervision: Option<C>,
     mcp_command: String,
+    execution_mode: ExecutionMode,
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
     storage: RunStorage,
@@ -62,25 +83,35 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     focused_app: RwLock<Option<String>>,
     element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
+    decision_cache: RwLock<DecisionCache>,
+    /// Persistent conversation history for supervision across the entire run.
+    supervision_history: RwLock<Vec<Message>>,
     /// Nodes that completed successfully and have checks, in execution order.
     completed_checks: Vec<(Uuid, Vec<Check>, Option<String>)>,
 }
 
 impl WorkflowExecutor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         workflow: Workflow,
         agent_config: LlmConfig,
         vlm_config: Option<LlmConfig>,
+        supervision_config: Option<LlmConfig>,
         mcp_command: String,
+        execution_mode: ExecutionMode,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
     ) -> Self {
+        let decision_cache = DecisionCache::load(&storage.cache_path())
+            .unwrap_or_else(|| DecisionCache::new(workflow.id));
         Self {
             workflow,
             agent: LlmClient::new(agent_config),
             vlm: vlm_config.map(LlmClient::new),
+            supervision: supervision_config.map(LlmClient::new),
             mcp_command,
+            execution_mode,
             project_path,
             event_tx,
             storage,
@@ -88,7 +119,22 @@ impl WorkflowExecutor {
             focused_app: RwLock::new(None),
             element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
+            decision_cache: RwLock::new(decision_cache),
+            supervision_history: RwLock::new(Vec::new()),
             completed_checks: Vec::new(),
         }
+    }
+}
+
+impl<C: ChatBackend> WorkflowExecutor<C> {
+    /// Return the best available LLM for text reasoning tasks (app resolution,
+    /// element resolution). Prefers supervision (planner-class), falls back to
+    /// VLM, then agent. The tiny agent model often has insufficient context for
+    /// these prompts.
+    pub(crate) fn reasoning_backend(&self) -> &C {
+        self.supervision
+            .as_ref()
+            .or(self.vlm.as_ref())
+            .unwrap_or(&self.agent)
     }
 }
