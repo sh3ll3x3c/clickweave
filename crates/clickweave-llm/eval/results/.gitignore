@@ -1,0 +1,3 @@
+# Keep results dir but ignore JSON output files
+*.json
+!.gitkeep

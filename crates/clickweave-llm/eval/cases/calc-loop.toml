@@ -1,0 +1,9 @@
+name = "Calculator multiply loop"
+prompt = "Open the calculator app and keep calculating 2x2 until you get to 128"
+
+[expect]
+valid = true
+min_nodes = 6
+max_nodes = 12
+required_tools = ["launch_app", "click"]
+required_patterns = ["loop"]
