@@ -173,7 +173,7 @@ fn test_planner_system_prompt_includes_tools() {
             "parameters": {}
         }
     })];
-    let prompt = planner_system_prompt(&tools, false, false);
+    let prompt = planner_system_prompt(&tools, false, false, None);
     assert!(prompt.contains("click"));
     assert!(prompt.contains("Tool"));
     assert!(!prompt.contains("step_type\": \"AiTransform\""));
@@ -182,7 +182,7 @@ fn test_planner_system_prompt_includes_tools() {
 
 #[test]
 fn test_planner_system_prompt_with_all_features() {
-    let prompt = planner_system_prompt(&[], true, true);
+    let prompt = planner_system_prompt(&[], true, true, None);
     assert!(prompt.contains("AiTransform"));
     assert!(prompt.contains("AiStep"));
 }
@@ -267,7 +267,7 @@ fn test_truncate_intent_multibyte_utf8() {
 
 #[test]
 fn test_planner_prompt_includes_control_flow() {
-    let prompt = planner_system_prompt(&[], false, false);
+    let prompt = planner_system_prompt(&[], false, false, None);
     assert!(
         prompt.contains("Loop"),
         "Prompt should mention Loop step type"
@@ -313,6 +313,7 @@ async fn test_plan_focus_screenshot_click() {
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -347,9 +348,10 @@ async fn test_plan_with_code_fence_wrapping() {
 ]}
 ```"#;
     let mock = MockBackend::single(response);
-    let result = plan_workflow_with_backend(&mock, "Type hello", &sample_tools(), false, false)
-        .await
-        .unwrap();
+    let result =
+        plan_workflow_with_backend(&mock, "Type hello", &sample_tools(), false, false, None)
+            .await
+            .unwrap();
 
     assert_eq!(result.workflow.nodes.len(), 1);
     assert!(matches!(
@@ -371,6 +373,7 @@ async fn test_plan_agent_steps_filtered_when_disabled() {
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -392,6 +395,7 @@ async fn test_plan_agent_steps_kept_when_enabled() {
         &sample_tools(),
         false,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -409,10 +413,16 @@ async fn test_repair_pass_fixes_invalid_json() {
     let good_response = r#"{"steps": [{"step_type": "Tool", "tool_name": "click", "arguments": {"x": 50, "y": 50}}]}"#;
     let mock = MockBackend::new(vec![bad_response, good_response]);
 
-    let result =
-        plan_workflow_with_backend(&mock, "Click somewhere", &sample_tools(), false, false)
-            .await
-            .unwrap();
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Click somewhere",
+        &sample_tools(),
+        false,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.workflow.nodes.len(), 1);
     // Should have called the backend twice (initial + repair)
@@ -424,8 +434,15 @@ async fn test_repair_pass_fails_after_max_attempts() {
     let bad = r#"not json at all"#;
     let mock = MockBackend::new(vec![bad, bad]);
 
-    let result =
-        plan_workflow_with_backend(&mock, "Click somewhere", &sample_tools(), false, false).await;
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Click somewhere",
+        &sample_tools(),
+        false,
+        false,
+        None,
+    )
+    .await;
 
     assert!(result.is_err());
     assert_eq!(mock.call_count(), 2);
@@ -436,7 +453,7 @@ async fn test_plan_empty_steps_returns_error() {
     let response = r#"{"steps": []}"#;
     let mock = MockBackend::single(response);
     let result =
-        plan_workflow_with_backend(&mock, "Do nothing", &sample_tools(), false, false).await;
+        plan_workflow_with_backend(&mock, "Do nothing", &sample_tools(), false, false, None).await;
 
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no steps"));
@@ -1152,6 +1169,7 @@ async fn test_plan_calculator_loop_scenario() {
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -1498,9 +1516,10 @@ async fn test_infer_loop_edges_from_unlabeled() {
     ]}"#;
 
     let mock = MockBackend::single(response);
-    let result = plan_workflow_with_backend(&mock, "Loop test", &sample_tools(), false, false)
-        .await
-        .unwrap();
+    let result =
+        plan_workflow_with_backend(&mock, "Loop test", &sample_tools(), false, false, None)
+            .await
+            .unwrap();
 
     let wf = &result.workflow;
     let loop_node = wf
@@ -1557,6 +1576,7 @@ async fn test_infer_loop_reroutes_back_edge_through_endloop() {
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -1648,10 +1668,16 @@ async fn test_infer_loop_clears_stale_output_on_rerouted_back_edge() {
     ]}"#;
 
     let mock = MockBackend::single(response);
-    let result =
-        plan_workflow_with_backend(&mock, "Calculator 2x2 loop", &sample_tools(), false, false)
-            .await
-            .unwrap();
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Calculator 2x2 loop",
+        &sample_tools(),
+        false,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
 
     let wf = &result.workflow;
     let endloop_node = wf
@@ -1695,7 +1721,7 @@ async fn test_infer_if_edges_from_unlabeled() {
     ]}"#;
 
     let mock = MockBackend::single(response);
-    let result = plan_workflow_with_backend(&mock, "If check", &sample_tools(), false, false)
+    let result = plan_workflow_with_backend(&mock, "If check", &sample_tools(), false, false, None)
         .await
         .unwrap();
 
@@ -1812,6 +1838,7 @@ async fn test_infer_loop_reroutes_body_back_edge_when_endloop_edge_already_exist
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -1893,6 +1920,7 @@ async fn test_infer_loop_reroutes_if_false_back_edge_to_loop() {
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -1967,6 +1995,7 @@ async fn test_infer_loop_removes_stray_endloop_forward_edge_when_loop_done_exist
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -2069,6 +2098,7 @@ async fn test_unknown_step_type_skipped_not_fatal() {
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -2097,6 +2127,7 @@ async fn test_malformed_node_missing_fields_skipped() {
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -2128,6 +2159,7 @@ async fn test_malformed_edge_unknown_output_type_skipped() {
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -2157,6 +2189,7 @@ async fn test_malformed_flat_step_skipped() {
         &sample_tools(),
         false,
         false,
+        None,
     )
     .await
     .unwrap();

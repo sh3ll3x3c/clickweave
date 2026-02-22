@@ -25,20 +25,30 @@ pub async fn plan_workflow(
         mcp_tools_openai,
         allow_ai_transforms,
         allow_agent_steps,
+        None,
     )
     .await
 }
 
 /// Plan a workflow using a given ChatBackend (for testability).
 /// On parse or validation failure, retries once with the error message appended.
+///
+/// When `prompt_template` is `Some`, uses that string as the prompt template
+/// instead of the compiled-in default.
 pub async fn plan_workflow_with_backend(
     backend: &impl ChatBackend,
     intent: &str,
     mcp_tools_openai: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
+    prompt_template: Option<&str>,
 ) -> Result<PlanResult> {
-    let system = planner_system_prompt(mcp_tools_openai, allow_ai_transforms, allow_agent_steps);
+    let system = planner_system_prompt(
+        mcp_tools_openai,
+        allow_ai_transforms,
+        allow_agent_steps,
+        prompt_template,
+    );
     let user_msg = format!("Plan a workflow for: {}", intent);
 
     info!("Planning workflow for intent: {}", intent);
