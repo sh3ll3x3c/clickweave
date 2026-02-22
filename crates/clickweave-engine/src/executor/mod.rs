@@ -88,6 +88,31 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     supervision_history: RwLock<Vec<Message>>,
     /// Nodes that completed successfully and have checks, in execution order.
     completed_checks: Vec<(Uuid, Vec<Check>, Option<String>)>,
+    /// Set by eval_control_flow when a loop exits; consumed by the main loop
+    /// to run a deferred visual verification after the loop completes.
+    pending_loop_exit: Option<PendingLoopExit>,
+}
+
+pub(crate) struct PendingLoopExit {
+    pub node_id: Uuid,
+    pub loop_name: String,
+    pub reason: LoopExitReason,
+    pub iterations: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopExitReason {
+    ConditionMet,
+    MaxIterations,
+}
+
+impl LoopExitReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoopExitReason::ConditionMet => "condition_met",
+            LoopExitReason::MaxIterations => "max_iterations",
+        }
+    }
 }
 
 impl WorkflowExecutor {
@@ -122,6 +147,7 @@ impl WorkflowExecutor {
             decision_cache: RwLock::new(decision_cache),
             supervision_history: RwLock::new(Vec::new()),
             completed_checks: Vec::new(),
+            pending_loop_exit: None,
         }
     }
 }

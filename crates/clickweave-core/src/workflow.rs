@@ -267,6 +267,18 @@ impl NodeType {
         }
     }
 
+    /// Returns true for node types that only observe/query state without modifying it.
+    /// Used to skip supervision inside loops where "not found" is expected behavior.
+    pub fn is_read_only(&self) -> bool {
+        matches!(
+            self,
+            NodeType::FindText(_)
+                | NodeType::FindImage(_)
+                | NodeType::TakeScreenshot(_)
+                | NodeType::ListWindows(_)
+        )
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             NodeType::AiStep(_) => "AI Step",

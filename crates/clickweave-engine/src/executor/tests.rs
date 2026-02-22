@@ -159,6 +159,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             decision_cache: RwLock::new(decision_cache),
             supervision_history: RwLock::new(Vec::new()),
             completed_checks: Vec::new(),
+            pending_loop_exit: None,
         }
     }
 }

@@ -1,4 +1,7 @@
-use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor, check_eval};
+use super::{
+    ExecutorCommand, ExecutorEvent, ExecutorState, LoopExitReason, PendingLoopExit,
+    WorkflowExecutor, check_eval,
+};
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::{EdgeOutput, ExecutionMode, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
@@ -184,7 +187,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             NodeType::Loop(params) => {
                 let iteration = *self.context.loop_counters.get(&node_id).unwrap_or(&0);
 
-                let should_exit = if iteration >= params.max_iterations {
+                let exit_reason = if iteration >= params.max_iterations {
                     self.log(format!(
                         "Loop '{}' hit max iterations ({}), exiting",
                         node_name, params.max_iterations
@@ -199,7 +202,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             "iterations_completed": iteration,
                         }),
                     );
-                    true
+                    Some(LoopExitReason::MaxIterations)
                 } else if iteration > 0 && self.context.evaluate_condition(&params.exit_condition) {
                     self.log(format!(
                         "Loop '{}' exit condition met after {} iterations",
@@ -215,12 +218,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             "iterations_completed": iteration,
                         }),
                     );
-                    true
+                    Some(LoopExitReason::ConditionMet)
                 } else {
-                    false
+                    None
                 };
 
-                if should_exit {
+                if let Some(reason) = exit_reason {
+                    self.pending_loop_exit = Some(PendingLoopExit {
+                        node_id,
+                        loop_name: node_name.to_string(),
+                        reason,
+                        iterations: iteration,
+                    });
                     self.context.loop_counters.remove(&node_id);
                     self.follow_edge(node_id, &EdgeOutput::LoopDone)
                 } else {
@@ -484,6 +493,53 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 NodeType::If(_) | NodeType::Switch(_) | NodeType::Loop(_) | NodeType::EndLoop(_)
             ) {
                 current = self.eval_control_flow(node_id, &node_name, &node_type);
+
+                // Deferred loop-exit verification (Test mode only).
+                // Read-only nodes inside loops skip supervision during
+                // iterations; we verify the outcome once the loop exits.
+                // Note: for nested loops this is safe — `.take()` consumes
+                // the inner loop's pending exit before `eval_control_flow`
+                // on the outer loop can set its own.
+                if self.execution_mode == ExecutionMode::Test
+                    && let Some(loop_exit) = self.pending_loop_exit.take()
+                {
+                    let verification = self.verify_loop_exit(&loop_exit, &mcp).await;
+                    if verification.passed {
+                        self.emit(ExecutorEvent::SupervisionPassed {
+                            node_id: loop_exit.node_id,
+                            node_name: loop_exit.loop_name.clone(),
+                            summary: verification.reasoning,
+                        });
+                    } else {
+                        self.emit(ExecutorEvent::SupervisionPaused {
+                            node_id: loop_exit.node_id,
+                            node_name: loop_exit.loop_name.clone(),
+                            finding: verification.reasoning,
+                            screenshot: verification.screenshot,
+                        });
+
+                        match wait_for_supervision_command(&mut command_rx).await {
+                            SupervisionAction::Retry => {
+                                // Can't re-run a loop; treat as skip
+                                self.log(
+                                    "Supervision: user chose Retry (continuing past loop)"
+                                        .to_string(),
+                                );
+                            }
+                            SupervisionAction::Skip => {
+                                self.log("Supervision: user chose Skip for loop exit".to_string());
+                            }
+                            SupervisionAction::Abort => {
+                                self.log(
+                                    "Supervision: user chose Abort after loop exit".to_string(),
+                                );
+                                completed_normally = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 continue;
             }
 
@@ -559,6 +615,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                         // Supervision (Test mode only)
                         if self.execution_mode == ExecutionMode::Test {
+                            // Skip supervision for read-only nodes inside loops —
+                            // these are typically condition checks (e.g. find_text
+                            // to test a value), and "not found" is expected on
+                            // early iterations.
+                            // Safe for any nesting depth: the graph walk is
+                            // linear, so active counters always belong to
+                            // loops whose body is currently executing.
+                            let inside_loop = !self.context.loop_counters.is_empty();
+                            if inside_loop && node_type.is_read_only() {
+                                self.log(format!(
+                                    "Skipping supervision for '{}' (read-only inside loop)",
+                                    node_name
+                                ));
+                                break (true, false);
+                            }
+
                             let verification = self.verify_step(&node_name, &node_type, &mcp).await;
                             if verification.passed {
                                 self.emit(ExecutorEvent::SupervisionPassed {
