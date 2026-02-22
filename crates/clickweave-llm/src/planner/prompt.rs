@@ -56,7 +56,7 @@ pub(crate) fn planner_system_prompt(
    {"id": "<id>", "step_type": "EndLoop", "loop_id": "<loop_node_id>", "name": "optional label"}
    ```
 
-6. **If** — conditional branch with exactly 2 outgoing edges (IfTrue, IfFalse):
+6. **If** — conditional branch. MUST have exactly 2 outgoing edges in the graph: one with `{"type": "IfTrue"}` and one with `{"type": "IfFalse"}`. Both branches must connect to downstream nodes (no dangling edges):
    ```json
    {"id": "<id>", "step_type": "If", "condition": <Condition>, "name": "optional label"}
    ```

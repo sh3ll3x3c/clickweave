@@ -1,0 +1,8 @@
+name = "Minimal screenshot task"
+prompt = "Take a screenshot"
+
+[expect]
+valid = true
+min_nodes = 1
+max_nodes = 2
+required_tools = ["take_screenshot"]
