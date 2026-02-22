@@ -48,9 +48,9 @@ Before outputting, verify: count nodes with zero incoming edges. If more than 1,
 - Do not add "End" or "Start" nodes. The workflow ends after the last node.
 - Output ONLY valid JSON. No explanation, no markdown fences.
 
-## Complete example
+## Conditional example
 
-User: "Open Calculator, click 5, click +, click 3, click =. If the display shows 8, take a screenshot."
+User: "Open Calculator, calculate 5+3. If the result shows 8, take a screenshot. Otherwise, click 'Clear' to reset."
 
 ```json
 {
@@ -62,7 +62,8 @@ User: "Open Calculator, click 5, click +, click 3, click =. If the display shows
     {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click ="},
     {"id": "n6", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "8"}, "name": "Check result"},
     {"id": "n7", "step_type": "If", "condition": {"left": {"type": "Variable", "name": "check_result.found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "name": "Result is 8?"},
-    {"id": "n8", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Take screenshot"}
+    {"id": "n8", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Take screenshot"},
+    {"id": "n9", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "Clear"}, "name": "Click Clear"}
   ],
   "edges": [
     {"from": "n1", "to": "n2"},
@@ -72,12 +73,12 @@ User: "Open Calculator, click 5, click +, click 3, click =. If the display shows
     {"from": "n5", "to": "n6"},
     {"from": "n6", "to": "n7"},
     {"from": "n7", "to": "n8", "output": {"type": "IfTrue"}},
-    {"from": "n7", "to": "n8", "output": {"type": "IfFalse"}}
+    {"from": "n7", "to": "n9", "output": {"type": "IfFalse"}}
   ]
 }
 ```
 
-Note: both IfTrue and IfFalse point to n8 because there is no "else" action. The If node still requires both edges.
+Note: IfTrue → screenshot, IfFalse → clear. Both branches have distinct actions. The If node MUST always have exactly 2 outgoing edges (IfTrue and IfFalse). If only one branch has meaningful work, point the other branch to the next shared downstream node so both paths rejoin.
 
 ## Loop example
 

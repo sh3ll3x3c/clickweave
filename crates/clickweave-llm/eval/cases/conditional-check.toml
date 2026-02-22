@@ -1,5 +1,5 @@
 name = "Conditional screenshot"
-prompt = "Open Calculator, click 5, click +, click 3, click =. If the result shows 8, take a screenshot"
+prompt = "Open Calculator, click 5, click +, click 3, click =. If the result shows 8, take a screenshot. Otherwise click Clear."
 
 [expect]
 valid = true
