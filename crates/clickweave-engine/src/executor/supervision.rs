@@ -278,9 +278,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Capture a screenshot for verification. Returns base64-encoded image data.
     ///
-    /// Tries an app-scoped window screenshot up to 3 times with 500ms delays
-    /// (the window may not be ready right after `launch_app`).
+    /// Waits briefly for UI animations to settle, then tries an app-scoped
+    /// window screenshot up to 3 times with 500ms delays (the window may not
+    /// be ready right after `launch_app`).
     async fn capture_verification_screenshot(&self, mcp: &McpClient) -> Option<String> {
+        // Let UI animations/transitions settle before capturing.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
         let app_name = self.focused_app.read().ok().and_then(|g| g.clone());
         let mut args = serde_json::json!({ "mode": "window" });
         if let Some(ref name) = app_name {
