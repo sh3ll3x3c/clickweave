@@ -277,14 +277,35 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Capture a screenshot for verification. Returns base64-encoded image data.
+    ///
+    /// Tries an app-scoped window screenshot up to 3 times with 500ms delays
+    /// (the window may not be ready right after `launch_app`).
     async fn capture_verification_screenshot(&self, mcp: &McpClient) -> Option<String> {
         let app_name = self.focused_app.read().ok().and_then(|g| g.clone());
-        let mut args = serde_json::json!({ "format": "png" });
+        let mut args = serde_json::json!({ "mode": "window" });
         if let Some(ref name) = app_name {
             args["app_name"] = Value::String(name.clone());
         }
 
+        // Retry window screenshot — the app window may take a moment to appear.
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            if let Some(image) = self.extract_screenshot_image(mcp, args.clone()).await {
+                return Some(image);
+            }
+        }
+
+        None
+    }
+
+    /// Call `take_screenshot` and extract the base64-encoded image from the result.
+    async fn extract_screenshot_image(&self, mcp: &McpClient, args: Value) -> Option<String> {
         let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
+        if result.is_error == Some(true) {
+            return None;
+        }
         for content in &result.content {
             if let ToolContent::Image { data, .. } = content {
                 return Some(data.clone());
