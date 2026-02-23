@@ -79,7 +79,13 @@ pub fn node_type_to_tool_invocation(
             }
             ("take_screenshot", args)
         }
-        NodeType::FindText(p) => ("find_text", serde_json::json!({"text": p.search_text})),
+        NodeType::FindText(p) => {
+            let mut args = serde_json::json!({"text": p.search_text});
+            if let Some(ref scope) = p.scope {
+                args["app_name"] = Value::String(scope.clone());
+            }
+            ("find_text", args)
+        }
         NodeType::FindImage(p) => {
             let mut args = serde_json::json!({
                 "threshold": p.threshold,
@@ -209,6 +215,10 @@ pub fn tool_invocation_to_node_type(
             let text = required_str(args, "find_text", "text")?;
             Ok(NodeType::FindText(FindTextParams {
                 search_text: text.to_string(),
+                scope: args
+                    .get("app_name")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 ..Default::default()
             }))
         }

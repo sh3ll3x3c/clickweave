@@ -110,7 +110,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let tool_name = &invocation.name;
 
         self.log(format!("Calling MCP tool: {}", tool_name));
-        let args = self.resolve_image_paths(Some(invocation.arguments));
+        let mut args = self.resolve_image_paths(Some(invocation.arguments));
+
+        // Scope find_text to the focused app when no explicit app_name is set
+        if tool_name == "find_text"
+            && let Some(ref mut a) = args
+            && a.get("app_name").is_none()
+        {
+            let scoped_app = self
+                .focused_app
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if let Some(app_name) = scoped_app {
+                a["app_name"] = serde_json::Value::String(app_name);
+            }
+        }
 
         // Save original args for find_text retry fallback (args will be moved into call_tool)
         let find_text_original_args = if tool_name == "find_text" {
