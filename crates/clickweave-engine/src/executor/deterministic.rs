@@ -302,12 +302,24 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .as_deref()
             .ok_or("resolve_click_target called with no target")?;
 
-        let mut find_args = serde_json::json!({"text": target});
         let scoped_app = self
             .focused_app
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+
+        // Use cached element resolution if available (e.g. × → Multiply) to
+        // avoid matching display text that happens to contain the symbol.
+        let element_key = (target.to_string(), scoped_app.clone());
+        let search_text = self
+            .element_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&element_key)
+            .cloned()
+            .unwrap_or_else(|| target.to_string());
+
+        let mut find_args = serde_json::json!({"text": search_text});
         if let Some(ref app_name) = scoped_app {
             find_args["app_name"] = serde_json::Value::String(app_name.clone());
         }
