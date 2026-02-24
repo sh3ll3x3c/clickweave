@@ -1,12 +1,24 @@
 # Workflow Execution (Reference)
 
-Verified at commit: `0e907fc`
+Verified at commit: `d65ae72`
 
 The engine executes a workflow graph sequentially, evaluating control-flow nodes in place and dispatching execution nodes to MCP tools or an AI-step tool loop.
 
 ## Entry Point
 
 Execution starts at Tauri command `run_workflow` (`src-tauri/src/commands/executor.rs`), which creates `WorkflowExecutor` and calls `run()`.
+
+`WorkflowExecutor::new()` takes `agent_config`, `vlm_config`, `supervision_config`, `mcp_command`, `execution_mode`, `project_path`, `event_tx`, and `storage`. Key fields on the executor:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `agent` | `C: ChatBackend` | Primary LLM (small/fast) |
+| `vlm` | `Option<C>` | Vision-language model for image analysis |
+| `supervision` | `Option<C>` | Planner-class LLM for supervision verification (Test mode) |
+| `execution_mode` | `ExecutionMode` | `Test` (interactive supervision, records decisions) or `Run` (replays cached decisions) |
+| `decision_cache` | `RwLock<DecisionCache>` | Persisted LLM decisions from Test mode, replayed in Run mode |
+| `supervision_history` | `RwLock<Vec<Message>>` | Persistent conversation history for supervision across the entire run |
+| `pending_loop_exit` | `Option<PendingLoopExit>` | Set when a loop exits; consumed by the main loop to run deferred verification |
 
 High-level flow in `run()`:
 
@@ -15,10 +27,11 @@ High-level flow in `run()`:
 3. Spawn MCP server (`npx` or custom command)
 4. `RunStorage::begin_execution()`
 5. Find entry points
-6. Walk graph
+6. Walk graph (with per-step supervision in Test mode)
 7. Run post-execution check pass (if needed)
-8. Emit `WorkflowCompleted` when completed normally
-9. Emit `StateChanged(Idle)`
+8. Save decision cache (Test mode only)
+9. Emit `WorkflowCompleted` when completed normally
+10. Emit `StateChanged(Idle)`
 
 ## Graph Walk
 
@@ -27,8 +40,36 @@ Main state machine (in `executor/run_loop.rs`):
 1. Stop check (`ExecutorCommand::Stop`)
 2. Skip disabled nodes (`follow_disabled_edge`)
 3. For control-flow nodes, evaluate branch and jump
-4. For execution nodes, run with retries
-5. Follow next edge (`follow_single_edge`)
+4. If a loop just exited (Test mode): run `verify_loop_exit` supervision check
+5. For execution nodes, run with retries
+6. If Test mode and not inside a loop: run `verify_step` supervision check
+7. On supervision failure: pause and wait for user command (`Resume`, `Skip`, `Abort`)
+8. Follow next edge (`follow_single_edge`)
+
+### Executor Commands
+
+| Command | Purpose |
+|---------|---------|
+| `Stop` | Gracefully stop workflow execution |
+| `Resume` | Continue after a supervision pause (re-executes the current node) |
+| `Skip` | Skip past a supervision failure and continue to the next node |
+| `Abort` | Abort execution after a supervision failure |
+
+### Executor Events
+
+| Event | Payload | Purpose |
+|-------|---------|---------|
+| `Log(String)` | message | General log message |
+| `StateChanged(ExecutorState)` | `Idle` or `Running` | Execution state transition |
+| `NodeStarted(Uuid)` | node id | Node execution began |
+| `NodeCompleted(Uuid)` | node id | Node execution succeeded |
+| `NodeFailed(Uuid, String)` | node id, error | Node execution failed |
+| `RunCreated(Uuid, NodeRun)` | node id, run metadata | Node run directory created |
+| `WorkflowCompleted` | none | Graph walk completed normally |
+| `ChecksCompleted(Vec<NodeVerdict>)` | verdicts | Post-execution check results |
+| `Error(String)` | message | Fatal error |
+| `SupervisionPassed` | `node_id`, `node_name`, `summary` | Step passed verification (Test mode) |
+| `SupervisionPaused` | `node_id`, `node_name`, `finding`, `screenshot?` | Step failed verification, awaiting user action (Test mode) |
 
 ### Entry Points
 
@@ -81,9 +122,15 @@ For most nodes:
 Special handling:
 
 - `Click` with `target` and no coordinates: resolve via `find_text` first
+- `find_text` auto-scoped to `focused_app` when no explicit `app_name` is set on the node
 - `find_text` fallback: if no matches and `available_elements` exists, resolve element name with LLM and retry
+- `find_text` element resolution skipped inside loops: `FindText` nodes in loops act as condition checks where accurate found/not-found results are needed for exit conditions; element resolution would mask the fact that the target is not yet on screen
+- Click disambiguation: when `find_text` returns multiple matches for a click target, the LLM picks the best match based on text, role, and position (see `disambiguate_click_matches`)
 - `FocusWindow` by app name: resolve app to pid via `list_apps` + LLM
 - `TakeScreenshot(Window)` with target app name: same app-resolution path
+- `launch_app` implicitly sets `focused_app` to the launched app name
+
+App resolution and element resolution use `reasoning_backend()` priority: supervision LLM (planner-class) -> VLM -> agent. The small agent model often has insufficient context for these prompts.
 
 ### AI Step Path
 
@@ -98,6 +145,32 @@ Special handling:
    - with VLM: summarize via `analyze_images()`
    - without VLM: attach images directly to next LLM turn
 7. Stop on no tool calls, timeout, max tool calls, or user stop
+
+## Supervision (Test Mode)
+
+In `ExecutionMode::Test`, each execution node is verified after it completes:
+
+1. Capture a screenshot of the focused app (waits 500ms for UI animations to settle)
+2. Ask the VLM to describe the current screen state
+3. Ask the supervision LLM (with persistent conversation history) whether the step achieved its intended effect
+4. If passed: emit `SupervisionPassed` and continue
+5. If failed: emit `SupervisionPaused` with finding + screenshot, then wait for user command:
+   - `Resume` -> re-execute the node from scratch
+   - `Skip` -> accept the result and continue
+   - `Abort` -> stop execution
+
+### Loop Supervision
+
+Per-step supervision is skipped for nodes inside loops (detected via non-empty `loop_counters`). Individual steps like clicks, keypresses, and condition checks are verified in aggregate when the loop exits.
+
+After a loop exits (`LoopDone` edge), `verify_loop_exit` runs a deferred visual verification:
+
+1. The loop exit is stored in `pending_loop_exit` by `eval_control_flow`
+2. After `eval_control_flow` returns, the main loop consumes `pending_loop_exit`
+3. A screenshot is taken and the supervision LLM is asked whether the loop achieved its goal
+4. The same `SupervisionPassed`/`SupervisionPaused` flow applies
+
+Screenshot-only nodes (`TakeScreenshot`) skip verification entirely (no observable effect).
 
 ## Retry Behavior
 
@@ -149,6 +222,26 @@ String/number/bool result:
 | `app_cache` | user app text | `{name, pid}` | FocusWindow, TakeScreenshot |
 | `element_cache` | `(target, app_name?)` | resolved element name | Click, FindText |
 | `focused_app` | none | app name | scoped find-text and resolution |
+| `decision_cache` | varies by type (see below) | `AppResolution`, `ElementResolution`, `ClickDisambiguation` | App resolution, element resolution, click disambiguation |
+
+### Decision Cache
+
+The `DecisionCache` (`clickweave-core/src/decision_cache.rs`) persists LLM decisions made during Test mode so they can be replayed in Run mode without repeating LLM calls. Stored as `decisions.json` alongside the workflow's run directory.
+
+Types stored:
+
+| Type | Key Format | Fields | Purpose |
+|------|-----------|--------|---------|
+| `AppResolution` | `"node_id\0user_input"` | `user_input`, `resolved_name` | Maps user app text to resolved app name (not PID, since PIDs change between runs) |
+| `ElementResolution` | `"node_id\0target\0app_name"` | `target`, `resolved_name` | Maps UI element text to accessibility element name |
+| `ClickDisambiguation` | `"node_id\0target\0app_name"` | `target`, `app_name?`, `chosen_text`, `chosen_role` | Records which match was chosen when multiple `find_text` results exist |
+
+Lifecycle:
+
+1. On `WorkflowExecutor::new()`: load from `storage.cache_path()` (falls back to empty cache)
+2. During execution: in-memory cache is checked first, then decision cache, then LLM
+3. In Test mode: LLM decisions are recorded into the cache after each resolution
+4. After graph walk completes (Test mode only): saved to `storage.cache_path()`
 
 ## Run Storage Layout
 
@@ -195,6 +288,7 @@ Common event types recorded in trace files:
 - `target_resolved`
 - `app_resolved`
 - `element_resolved`
+- `match_disambiguated`
 
 ## Post-Execution Checks
 
@@ -211,7 +305,9 @@ See [Node Checks](../../verification/node-checks.md).
 | `crates/clickweave-engine/src/executor/deterministic.rs` | Deterministic node execution |
 | `crates/clickweave-engine/src/executor/ai_step.rs` | AI-step tool loop |
 | `crates/clickweave-engine/src/executor/app_resolve.rs` | App resolution + cache eviction |
-| `crates/clickweave-engine/src/executor/element_resolve.rs` | Element resolution + cache eviction |
+| `crates/clickweave-engine/src/executor/element_resolve.rs` | Element resolution, click disambiguation, cache eviction |
+| `crates/clickweave-engine/src/executor/supervision.rs` | Per-step and loop-exit verification (Test mode) |
 | `crates/clickweave-engine/src/executor/check_eval.rs` | Post-run check pass |
+| `crates/clickweave-core/src/decision_cache.rs` | Decision cache types and save/load |
 | `crates/clickweave-core/src/runtime.rs` | Runtime context and condition evaluation |
 | `crates/clickweave-core/src/storage.rs` | Run/event/artifact persistence |

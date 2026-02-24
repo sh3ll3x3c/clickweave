@@ -1,6 +1,6 @@
 # Architecture Overview (Reference)
 
-Verified at commit: `1d53429`
+Verified at commit: `d65ae72`
 
 Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
 
@@ -38,10 +38,11 @@ src-tauri
 
 | Module | Purpose |
 |--------|---------|
-| `workflow.rs` | Core types: `Workflow`, `Node`, `Edge`, `NodeType`, control-flow params, checks, trace/run types |
+| `workflow.rs` | Core types: `Workflow`, `Node`, `Edge`, `NodeType`, `ExecutionMode`, control-flow params, checks, trace/run types |
 | `validation.rs` | `validate_workflow()` graph validation |
 | `runtime.rs` | `RuntimeContext` variable store + condition evaluation + loop counters |
-| `storage.rs` | `RunStorage` execution/run/event/artifact persistence |
+| `storage.rs` | `RunStorage` execution/run/event/artifact persistence, `cache_path()` for decision cache |
+| `decision_cache.rs` | `DecisionCache` — persists LLM decisions (click disambiguation, element/app resolution) as `decisions.json` for replay in Run mode |
 | `tool_mapping.rs` | `NodeType` ↔ MCP tool invocation mapping |
 
 ### `clickweave-engine`
@@ -54,6 +55,7 @@ src-tauri
 | `executor/ai_step.rs` | Agentic `AiStep` tool loop |
 | `executor/app_resolve.rs` | LLM app-name resolution + cache eviction |
 | `executor/element_resolve.rs` | LLM element-name resolution + cache eviction |
+| `executor/supervision.rs` | Step verification via VLM + supervision LLM; screenshot capture, description, judge-with-history |
 | `executor/check_eval.rs` | Post-run check evaluation |
 | `executor/trace.rs` | Trace events, artifacts, run finalization |
 
@@ -102,15 +104,23 @@ UI
 
 ### Execution
 
+`RunRequest` carries `workflow`, `agent`, `vlm`, `planner` (supervision LLM), `mcp_command`, and `execution_mode` (`ExecutionMode::Test` or `ExecutionMode::Run`).
+
 ```
 UI
-  -> Tauri command: run_workflow
+  -> Tauri command: run_workflow (with ExecutionMode)
+  -> WorkflowExecutor::new() loads DecisionCache from decisions.json
   -> WorkflowExecutor::run()
   -> spawn MCP server for run lifetime
   -> walk graph node-by-node
      - deterministic nodes => MCP tools/call
      - AiStep => LLM + MCP tool loop
      - control-flow => evaluate RuntimeContext + follow labeled edge
+     - [Test mode] after each step => supervision verification
+       - passed => emit executor://supervision_passed
+       - failed => emit executor://supervision_paused, wait for user command
+       - user sends supervision_respond (retry / skip / abort)
+  -> persist DecisionCache to decisions.json (Run mode replays cached decisions)
   -> emit executor://* events to UI
 ```
 
@@ -126,7 +136,7 @@ src-tauri/src/commands/
 ├── types.rs        # IPC request/response payloads, shared helpers (resolve_storage, project_dir)
 ├── planner.rs      # plan_workflow, patch_workflow, fetch_mcp_tool_schemas
 ├── assistant.rs    # assistant_chat, cancel_assistant_chat (AssistantHandle with AbortHandle)
-├── executor.rs     # run_workflow, stop_workflow (ExecutorHandle with stop channel)
+├── executor.rs     # run_workflow, stop_workflow, supervision_respond (ExecutorHandle with stop/command channel)
 ├── project.rs      # open/save/validate, node_type_defaults, import_asset, pick_*_file, conversation I/O, ping
 └── runs.rs         # list_runs, load_run_events, read_artifact_base64
 ```
@@ -137,7 +147,7 @@ Two `Mutex`-wrapped handles are registered as Tauri managed state:
 
 | Handle | State | Purpose |
 |--------|-------|---------|
-| `ExecutorHandle` | `stop_tx: Option<Sender<ExecutorCommand>>`, `task_handle: Option<JoinHandle<()>>` | `force_stop()` aborts the executor task and drops the MCP subprocess |
+| `ExecutorHandle` | `stop_tx: Option<Sender<ExecutorCommand>>`, `task_handle: Option<JoinHandle<()>>` | `force_stop()` aborts the executor task and drops the MCP subprocess; also used by `supervision_respond` to send `Resume`/`Skip`/`Abort` commands |
 | `AssistantHandle` | `Option<AbortHandle>` | Cancels in-flight assistant LLM call |
 
 ### Command Summary
@@ -150,6 +160,7 @@ Two `Mutex`-wrapped handles are registered as Tauri managed state:
 | `cancel_assistant_chat` | `assistant.rs` | Cancel in-flight assistant request |
 | `run_workflow` | `executor.rs` | Execute workflow |
 | `stop_workflow` | `executor.rs` | Stop active execution |
+| `supervision_respond` | `executor.rs` | Send supervision action (`retry`/`skip`/`abort`) to paused executor |
 | `validate` | `project.rs` | Validate workflow |
 | `open_project` / `save_project` | `project.rs` | Project I/O |
 | `save_conversation` / `load_conversation` | `project.rs` | Assistant conversation persistence |
@@ -160,9 +171,9 @@ Two `Mutex`-wrapped handles are registered as Tauri managed state:
 | `read_artifact_base64` | `runs.rs` | Load artifact contents |
 | `ping` | `project.rs` | Health check |
 
-## Event Contract (`executor://`)
+## Event Contract
 
-Emitted from `src-tauri/src/commands/executor.rs` and consumed in `ui/src/App.tsx`.
+Emitted from `src-tauri/src/commands/executor.rs` and `src-tauri/src/commands/assistant.rs`; consumed in `ui/src/App.tsx`.
 
 | Event | Payload |
 |-------|---------|
@@ -173,6 +184,9 @@ Emitted from `src-tauri/src/commands/executor.rs` and consumed in `ui/src/App.ts
 | `executor://node_failed` | `{ node_id: string, error: string }` |
 | `executor://workflow_completed` | `()` |
 | `executor://checks_completed` | `NodeVerdict[]` |
+| `executor://supervision_passed` | `{ node_id: string, node_name: string, summary: string }` |
+| `executor://supervision_paused` | `{ node_id: string, node_name: string, finding: string, screenshot: string? }` |
+| `assistant://repairing` | `[attempt: number, max: number]` |
 
 Notes:
 - `ExecutorEvent::RunCreated` is internal and not emitted to UI.

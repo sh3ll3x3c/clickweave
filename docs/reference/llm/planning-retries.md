@@ -1,6 +1,6 @@
 # Planning & LLM Retry Logic (Reference)
 
-Verified at commit: `1d53429`
+Verified at commit: `d65ae72`
 
 Planner/assistant flows layer retries and parsing tolerance to handle malformed LLM output.
 
@@ -40,7 +40,8 @@ Flow:
 3. If patch exists and `max_repair_attempts > 0`:
    - build candidate via `merge_patch_into_workflow()`
    - validate candidate
-   - if invalid and attempts remain, append validation error feedback and retry
+   - if invalid and attempts remain, fire `on_repair_attempt` callback (if provided), append validation error feedback and retry
+   - feedback message includes a `Reminder:` paragraph about EndLoop edge wiring rules (must have exactly 1 outgoing edge back to paired Loop, no forward edges)
    - if invalid and exhausted, return patch as-is
 4. Return assistant result
 
@@ -72,43 +73,65 @@ UI setting is persisted as `maxRepairAttempts` in `settings.json`.
 
 `infer_control_flow_edges()` (in `planner/mod.rs`) repairs common LLM graph issues:
 
-1. Label unlabeled `If` edges as `IfTrue`/`IfFalse`
-2. Label unlabeled `Loop` edges as `LoopBody`/`LoopDone`
-3. Reroute body-to-loop back edges through `EndLoop`
-4. Add missing `EndLoop -> Loop` back-edge
-5. Convert `EndLoop -> Next` forward edge into `LoopDone` when needed
-6. Remove `LoopDone -> EndLoop` edges that would create infinite loops
+1. Label unlabeled `Loop` edges as `LoopBody`/`LoopDone` (Phase 1)
+2. Reroute body-to-loop back edges through `EndLoop` (Phase 2); clears stale `output` labels on rerouted edges from regular (non-control-flow) source nodes so `follow_single_edge` can find them
+3. Add missing `EndLoop -> Loop` back-edge
+4. Convert `EndLoop -> Next` forward edge into `LoopDone` when needed
+5. Remove stray `EndLoop` forward edges when `LoopDone` already exists on the Loop node (LLMs sometimes emit both)
+6. Remove `LoopDone -> EndLoop` edges that would create infinite loops (Phase 3)
+7. Label unlabeled `If` edges as `IfTrue`/`IfFalse` (Phase 4)
 
 For flat plans, `pair_endloop_with_loop()` pairs EndLoop/Loop by nesting order before inference.
 
 ## Prompt Structure
 
-All prompt builders live in `crates/clickweave-llm/src/planner/prompt.rs`. The AI-step runtime prompt lives in `crates/clickweave-llm/src/client.rs`.
+Prompt builders live in `crates/clickweave-llm/src/planner/prompt.rs`. The planner prompt body is loaded from a Markdown template at `crates/clickweave-llm/prompts/planner.md` (compiled in via `include_str!`, overridable at runtime via the `template_override` parameter). The AI-step runtime prompt lives in `crates/clickweave-llm/src/client.rs`.
 
 ### Planner Prompt (`planner_system_prompt`)
 
-Composed for `plan_workflow`. Structure:
+Signature: `planner_system_prompt(tools_json, allow_ai_transforms, allow_agent_steps, template_override: Option<&str>)`
+
+Composed for `plan_workflow`. The step type catalog and condition/variable reference are built in `prompt.rs`, then substituted into the template (`{{tool_list}}` and `{{step_types}}` placeholders). When `template_override` is `Some`, that string is used instead of the compiled-in `prompts/planner.md` default (used by the eval tool).
+
+Step type catalog (built in `prompt.rs`, conditionally includes AiTransform / AiStep based on feature flags):
+
+```
+1. Tool         — single MCP tool call
+2. AiTransform  — bounded AI op, no tool access (if allow_ai_transforms)
+3. AiStep       — agentic LLM+tool loop (if allow_agent_steps)
+4. Loop         — do-while with exit condition; body runs at least once, defined once (runtime repeats)
+5. EndLoop      — marks loop body end (execution jumps back to paired Loop)
+6. If           — 2-branch conditional; MUST have exactly 2 outgoing edges (IfTrue + IfFalse), both connected
+```
+
+Condition / Variable / Operator reference (also built in `prompt.rs`):
+- Variable names follow `<sanitized_node_name>.<field>`: lowercase the name, replace every non-alphanumeric character with `_`
+- Examples: `"Check result"` -> `check_result`, `"Click +"` -> `click___`
+- Operators: Equals, NotEquals, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, NotContains, IsEmpty, IsNotEmpty
+- Literal types: String, Number, Bool
+
+Template structure (`prompts/planner.md`):
 
 ```
 Role: "You are a workflow planner for UI automation."
   ↓
-MCP tool schemas (pretty-printed JSON array from tools/list)
+MCP tool schemas ({{tool_list}} — pretty-printed JSON array from tools/list)
   ↓
-Step type catalog (conditionally includes AiTransform / AiStep based on feature flags):
-  1. Tool         — single MCP tool call
-  2. AiTransform  — bounded AI op, no tool access (if allow_ai_transforms)
-  3. AiStep       — agentic LLM+tool loop (if allow_agent_steps)
-  4. Loop         — do-while with exit condition
-  5. EndLoop      — marks loop body end
-  6. If           — 2-branch conditional
-  ↓
-Condition / Variable / Operator reference
+{{step_types}} (catalog + condition/variable/operator reference)
   ↓
 Output format rules:
   - Simple workflows: {"steps": [...]}
   - Control-flow workflows: {"nodes": [...], "edges": [...]}
   ↓
-Behavioral rules (find_text before click, focus window first, launch_app if needed, etc.)
+Graph connectivity rule (exactly one entry point)
+  ↓
+Loop wiring rules + If wiring rules
+  ↓
+Conciseness rules (5-8 nodes target, no duplicate actions)
+  ↓
+Behavioral rules (click with target, launch_app if needed, prefer Tool over AiStep, etc.)
+  ↓
+Conditional example + Loop example
 ```
 
 User message: `"Plan a workflow for: <intent>"`
@@ -136,6 +159,8 @@ Output format: JSON patch object with optional fields:
   - update: [{node_id, name, node_type}]
   ↓
 Patch rules (only changed fields, valid IDs, keep flow functional)
+  ↓
+"Loop structure — think like code" rule (setup BEFORE loop, only repeating steps in body, verification/cleanup AFTER via LoopDone)
 ```
 
 User message: `"Modify the workflow: <user_prompt>"`
@@ -172,7 +197,7 @@ VLM_IMAGE_SUMMARY format documentation
   ↓
 Strategy guidance (screenshot → find → act → verify)
   ↓
-Completion signal: "STEP_COMPLETE" when done
+Completion signal: JSON `{"step_complete": true, "summary": "..."}` (or `{"step_complete": false, "error": "..."}`)
 ```
 
 User message built by `build_step_prompt`:
@@ -184,7 +209,9 @@ User message built by `build_step_prompt`:
 
 ## Planner Pipeline (`plan_workflow`)
 
-1. Build planner prompt
+`plan_workflow_with_backend(backend, intent, mcp_tools_openai, allow_ai_transforms, allow_agent_steps, prompt_template: Option<&str>)` — the `prompt_template` parameter is forwarded to `planner_system_prompt` as `template_override`.
+
+1. Build planner prompt (optionally using custom template)
 2. LLM call via `chat_with_repair`
 3. `extract_json()` (`planner/parse.rs`)
 4. Parse graph or flat output
@@ -204,17 +231,20 @@ User message built by `build_step_prompt`:
 
 ## Assistant Pipeline (`assistant_chat`)
 
+Both `assistant_chat` and `assistant_chat_with_backend` accept an `on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>` callback parameter. It is called with `(attempt, max_repair_attempts)` each time a validation retry is triggered, allowing the caller (e.g. Tauri command layer) to emit progress events.
+
 1. Build conversation messages (summary + recent window + new user message)
 2. Call LLM
 3. Parse response to patch/plan/conversation
-4. If patch and validation enabled: merge + validate + retry loop
+4. If patch and validation enabled: merge + validate + retry loop (fires `on_repair_attempt` callback on each retry)
 5. Return assistant text, optional patch, warnings, optional summary update
 
 ## Key Files
 
 | File | Role |
 |------|------|
-| `crates/clickweave-llm/src/planner/prompt.rs` | planner, patcher, and assistant system prompts |
+| `crates/clickweave-llm/src/planner/prompt.rs` | prompt builders (planner, patcher, assistant); builds step type catalog and substitutes into template |
+| `crates/clickweave-llm/prompts/planner.md` | planner prompt template (Markdown with `{{tool_list}}` and `{{step_types}}` placeholders); compiled in via `include_str!`, overridable at runtime |
 | `crates/clickweave-llm/src/client.rs` | AI-step runtime prompt (`workflow_system_prompt`, `build_step_prompt`) |
 | `crates/clickweave-llm/src/planner/repair.rs` | one-shot repair retry wrapper |
 | `crates/clickweave-llm/src/planner/assistant.rs` | assistant retry loop + patch merge validation |

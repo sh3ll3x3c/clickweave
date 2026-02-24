@@ -1,6 +1,6 @@
 # MCP Integration (Reference)
 
-Verified at commit: `0e907fc`
+Verified at commit: `d65ae72`
 
 Clickweave executes desktop/browser automation by spawning an MCP server subprocess and talking JSON-RPC over stdio.
 
@@ -93,7 +93,7 @@ File: `crates/clickweave-core/src/tool_mapping.rs`
 | NodeType | Tool | Notes |
 |----------|------|-------|
 | `TakeScreenshot` | `take_screenshot` | `mode`, `include_ocr`, optional `app_name` |
-| `FindText` | `find_text` | `text` |
+| `FindText` | `find_text` | `text`, optional `app_name` (from `FindTextParams.scope`) |
 | `FindImage` | `find_image` | `template_image_base64`, `threshold`, `max_results` |
 | `Click` | `click` | coordinates/button/count |
 | `TypeText` | `type_text` | `text` |

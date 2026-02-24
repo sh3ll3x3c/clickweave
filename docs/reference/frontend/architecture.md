@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `1d53429`
+Verified at commit: `d65ae72`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -36,6 +36,7 @@ ui/src/
 │   ├── Sidebar.tsx
 │   ├── VerdictBar.tsx
 │   ├── SettingsModal.tsx
+│   ├── SupervisionModal.tsx
 │   └── node-detail/
 │       ├── NodeDetailModal.tsx
 │       └── tabs/
@@ -44,6 +45,7 @@ ui/src/
 │           ├── ChecksTab.tsx
 │           └── RunsTab.tsx
 ├── hooks/
+│   ├── useEscapeKey.ts
 │   └── useUndoRedoKeyboard.ts
 ├── store/
 │   ├── useAppStore.ts
@@ -87,12 +89,12 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **ExecutionSlice** (`executionSlice.ts`)
 
-- `executorState: "idle" | "running"`
-- actions: `setExecutorState`, `runWorkflow`, `stopWorkflow`
+- `executorState: "idle" | "running"`, `executionMode: ExecutionMode`, `supervisionPause: SupervisionPause | null`
+- actions: `setExecutorState`, `setExecutionMode`, `setSupervisionPause`, `clearSupervisionPause`, `supervisionRespond`, `runWorkflow`, `stopWorkflow`
 
 **AssistantSlice** (`assistantSlice.ts`)
 
-- `conversation`, `assistantOpen`, `assistantLoading`, `assistantError`
+- `conversation`, `assistantOpen`, `assistantLoading`, `assistantRetrying`, `assistantError`
 - `pendingPatch`, `pendingPatchWarnings`
 - actions: `sendAssistantMessage`, `resendMessage`, `applyPendingPatch`, `discardPendingPatch`, `cancelAssistantChat`, `clearConversation`
 
@@ -128,6 +130,9 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 - `executor://node_failed`
 - `executor://checks_completed`
 - `executor://workflow_completed`
+- `executor://supervision_passed`
+- `executor://supervision_paused`
+- `assistant://repairing`
 
 It also listens to menu events (`menu://new`, `menu://open`, etc.) and maps them to store actions.
 
@@ -182,9 +187,14 @@ From `ui/src/store/state.ts` and `settings.ts`:
 
 Contains:
 
-- `commands.*` typed Tauri wrappers
+- `commands.*` typed Tauri wrappers (including `commands.supervisionRespond(action)` for resuming a paused supervision check)
 - mirrored Rust types/unions
 - command result wrappers
+
+Notable types:
+
+- `ExecutionMode` — `"Test" | "Run"`, selects whether the executor runs in supervised test mode or unattended run mode
+- `SupervisionPause` — `{ nodeId, nodeName, finding, screenshot }`, defined in `executionSlice.ts`; represents a paused supervision check awaiting user decision
 
 Do not edit manually.
 
@@ -203,4 +213,6 @@ Do not edit manually.
 | `ui/src/store/slices/types.ts` | `StoreState` composition |
 | `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
 | `ui/src/store/settings.ts` | persisted settings I/O |
+| `ui/src/components/SupervisionModal.tsx` | supervision pause modal (retry / skip / abort) |
+| `ui/src/hooks/useEscapeKey.ts` | global Escape key handler that closes panels in priority order |
 | `ui/src/hooks/useUndoRedoKeyboard.ts` | Ctrl+Z / Ctrl+Shift+Z keyboard binding |
