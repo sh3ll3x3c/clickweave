@@ -1,6 +1,6 @@
 # Architecture Overview (Reference)
 
-Verified at commit: `d65ae72`
+Verified at commit: `f8e0d5b`
 
 Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
 
@@ -50,7 +50,10 @@ src-tauri
 | Module | Purpose |
 |--------|---------|
 | `executor/mod.rs` | `WorkflowExecutor`, events, caches |
-| `executor/run_loop.rs` | Main run loop, control-flow handling, retries, variable extraction |
+| `executor/run_loop.rs` | Main run loop, retries, supervision wait |
+| `executor/control_flow.rs` | `eval_control_flow` — If/Switch/Loop/EndLoop branch evaluation |
+| `executor/graph_nav.rs` | `entry_points`, `follow_single_edge`, `follow_edge`, `follow_disabled_edge` |
+| `executor/variables.rs` | `extract_and_store_variables` — post-execution variable extraction |
 | `executor/deterministic.rs` | Deterministic node execution (`NodeType` → MCP tool call) |
 | `executor/ai_step.rs` | Agentic `AiStep` tool loop |
 | `executor/app_resolve.rs` | LLM app-name resolution + cache eviction |

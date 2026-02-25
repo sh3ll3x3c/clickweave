@@ -1,6 +1,6 @@
 # Workflow Execution (Reference)
 
-Verified at commit: `d65ae72`
+Verified at commit: `f8e0d5b`
 
 The engine executes a workflow graph sequentially, evaluating control-flow nodes in place and dispatching execution nodes to MCP tools or an AI-step tool loop.
 
@@ -301,7 +301,10 @@ See [Node Checks](../../verification/node-checks.md).
 | File | Role |
 |------|------|
 | `crates/clickweave-engine/src/executor/mod.rs` | Executor struct and events |
-| `crates/clickweave-engine/src/executor/run_loop.rs` | Graph walk + retries + variable extraction |
+| `crates/clickweave-engine/src/executor/run_loop.rs` | Graph walk, retries, supervision wait |
+| `crates/clickweave-engine/src/executor/control_flow.rs` | `eval_control_flow` — If/Switch/Loop/EndLoop |
+| `crates/clickweave-engine/src/executor/graph_nav.rs` | Entry points, edge followers |
+| `crates/clickweave-engine/src/executor/variables.rs` | Post-execution variable extraction |
 | `crates/clickweave-engine/src/executor/deterministic.rs` | Deterministic node execution |
 | `crates/clickweave-engine/src/executor/ai_step.rs` | AI-step tool loop |
 | `crates/clickweave-engine/src/executor/app_resolve.rs` | App resolution + cache eviction |

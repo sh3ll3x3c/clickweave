@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `d65ae72`
+Verified at commit: `f8e0d5b`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -46,7 +46,12 @@ ui/src/
 │           └── RunsTab.tsx
 ├── hooks/
 │   ├── useEscapeKey.ts
-│   └── useUndoRedoKeyboard.ts
+│   ├── useUndoRedoKeyboard.ts
+│   ├── useLoopGrouping.ts
+│   ├── useNodeSync.ts
+│   ├── useEdgeSync.ts
+│   ├── useWorkflowActions.ts
+│   └── test-helpers.ts
 ├── store/
 │   ├── useAppStore.ts
 │   ├── useWorkflowMutations.ts
@@ -138,7 +143,11 @@ It also listens to menu events (`menu://new`, `menu://open`, etc.) and maps them
 
 ## Graph Editor (`GraphCanvas`)
 
-`GraphCanvas.tsx` wraps React Flow and maps workflow nodes/edges into RF nodes/edges.
+`GraphCanvas.tsx` is a thin composition shell that delegates to three hooks:
+
+- `useLoopGrouping` — loop collapse state, hidden node tracking
+- `useNodeSync` — RF node state, position tracking, selection sync
+- `useEdgeSync` — RF edge filtering, change handling, connect
 
 ### Node type keys
 
@@ -214,5 +223,9 @@ Do not edit manually.
 | `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
 | `ui/src/store/settings.ts` | persisted settings I/O |
 | `ui/src/components/SupervisionModal.tsx` | supervision pause modal (retry / skip / abort) |
+| `ui/src/hooks/useLoopGrouping.ts` | loop collapse state, hidden node tracking |
+| `ui/src/hooks/useNodeSync.ts` | RF node state, position tracking, selection sync |
+| `ui/src/hooks/useEdgeSync.ts` | RF edge filtering, change handling |
+| `ui/src/hooks/useWorkflowActions.ts` | workflow mutation dispatchers (wraps `useWorkflowMutations`) |
 | `ui/src/hooks/useEscapeKey.ts` | global Escape key handler that closes panels in priority order |
 | `ui/src/hooks/useUndoRedoKeyboard.ts` | Ctrl+Z / Ctrl+Shift+Z keyboard binding |
