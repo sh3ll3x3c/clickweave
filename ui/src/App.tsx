@@ -1,4 +1,4 @@
-import { useAppStore, useStore } from "./store/useAppStore";
+import { useStore } from "./store/useAppStore";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { NodePalette } from "./components/NodePalette";
@@ -15,70 +15,146 @@ import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
+import { useWorkflowActions } from "./hooks/useWorkflowActions";
 
 function App() {
-  const [state, actions] = useAppStore();
+  // ── One-time loaders ─────────────────────────────────────────────
+  useEffect(() => {
+    useStore.getState().loadSettingsFromDisk();
+    useStore.getState().loadNodeTypes();
+  }, []);
 
+  // ── State selectors ──────────────────────────────────────────────
+  const workflow = useStore((s) => s.workflow);
+  const projectPath = useStore((s) => s.projectPath);
+  const nodeTypes = useStore((s) => s.nodeTypes);
+  const selectedNode = useStore((s) => s.selectedNode);
+  const activeNode = useStore((s) => s.activeNode);
+  const executorState = useStore((s) => s.executorState);
+  const executionMode = useStore((s) => s.executionMode);
+  const supervisionPause = useStore((s) => s.supervisionPause);
+  const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
+  const logsDrawerOpen = useStore((s) => s.logsDrawerOpen);
+  const nodeSearch = useStore((s) => s.nodeSearch);
+  const showSettings = useStore((s) => s.showSettings);
+  const isNewWorkflow = useStore((s) => s.isNewWorkflow);
+  const assistantOpen = useStore((s) => s.assistantOpen);
+  const assistantLoading = useStore((s) => s.assistantLoading);
+  const assistantRetrying = useStore((s) => s.assistantRetrying);
+  const assistantError = useStore((s) => s.assistantError);
+  const conversation = useStore((s) => s.conversation);
+  const pendingPatch = useStore((s) => s.pendingPatch);
+  const pendingPatchWarnings = useStore((s) => s.pendingPatchWarnings);
+  const logs = useStore((s) => s.logs);
+  const plannerConfig = useStore((s) => s.plannerConfig);
+  const agentConfig = useStore((s) => s.agentConfig);
+  const vlmConfig = useStore((s) => s.vlmConfig);
+  const vlmEnabled = useStore((s) => s.vlmEnabled);
+  const mcpCommand = useStore((s) => s.mcpCommand);
+  const maxRepairAttempts = useStore((s) => s.maxRepairAttempts);
+  const detailTab = useStore((s) => s.detailTab);
+
+  // ── Action selectors ─────────────────────────────────────────────
+  const setWorkflow = useStore((s) => s.setWorkflow);
+  const selectNode = useStore((s) => s.selectNode);
+  const setDetailTab = useStore((s) => s.setDetailTab);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const toggleLogsDrawer = useStore((s) => s.toggleLogsDrawer);
+  const setNodeSearch = useStore((s) => s.setNodeSearch);
+  const setShowSettings = useStore((s) => s.setShowSettings);
+  const clearLogs = useStore((s) => s.clearLogs);
+  const pushHistory = useStore((s) => s.pushHistory);
+  const openProject = useStore((s) => s.openProject);
+  const saveProject = useStore((s) => s.saveProject);
+  const newProject = useStore((s) => s.newProject);
+  const setPlannerConfig = useStore((s) => s.setPlannerConfig);
+  const setAgentConfig = useStore((s) => s.setAgentConfig);
+  const setVlmConfig = useStore((s) => s.setVlmConfig);
+  const setVlmEnabled = useStore((s) => s.setVlmEnabled);
+  const setMcpCommand = useStore((s) => s.setMcpCommand);
+  const setMaxRepairAttempts = useStore((s) => s.setMaxRepairAttempts);
+  const setExecutionMode = useStore((s) => s.setExecutionMode);
+  const supervisionRespond = useStore((s) => s.supervisionRespond);
+  const runWorkflow = useStore((s) => s.runWorkflow);
+  const stopWorkflow = useStore((s) => s.stopWorkflow);
+  const setAssistantOpen = useStore((s) => s.setAssistantOpen);
+  const toggleAssistant = useStore((s) => s.toggleAssistant);
+  const skipIntentEntry = useStore((s) => s.skipIntentEntry);
+  const sendAssistantMessage = useStore((s) => s.sendAssistantMessage);
+  const resendMessage = useStore((s) => s.resendMessage);
+  const cancelAssistantChat = useStore((s) => s.cancelAssistantChat);
+  const applyPendingPatch = useStore((s) => s.applyPendingPatch);
+  const discardPendingPatch = useStore((s) => s.discardPendingPatch);
+  const clearConversation = useStore((s) => s.clearConversation);
+  const undo = useStore((s) => s.undo);
+  const redo = useStore((s) => s.redo);
+
+  // ── Workflow mutations ───────────────────────────────────────────
+  const { addNode, removeNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge, removeEdge } =
+    useWorkflowActions();
+
+  // ── Derived state ────────────────────────────────────────────────
   const selectedNodeData = useMemo(
     () =>
-      state.selectedNode
-        ? state.workflow.nodes.find((n) => n.id === state.selectedNode) ?? null
+      selectedNode
+        ? workflow.nodes.find((n) => n.id === selectedNode) ?? null
         : null,
-    [state.selectedNode, state.workflow.nodes],
+    [selectedNode, workflow.nodes],
   );
 
   useEscapeKey();
-  useUndoRedoKeyboard(actions.undo, actions.redo);
+  useUndoRedoKeyboard(undo, redo);
 
   const hasAiNodes = useMemo(
-    () => state.workflow.nodes.some((n) => n.node_type.type === "AiStep"),
-    [state.workflow.nodes],
+    () => workflow.nodes.some((n) => n.node_type.type === "AiStep"),
+    [workflow.nodes],
   );
 
+  // ── Tauri event listeners (use getState() to avoid stale closures) ──
   useEffect(() => {
     const subscriptions = Promise.all([
       listen<{ message: string }>("executor://log", (e) => {
-        actions.pushLog(e.payload.message);
+        useStore.getState().pushLog(e.payload.message);
       }),
       listen<{ state: string }>("executor://state", (e) => {
         const s = e.payload.state as "idle" | "running";
-        actions.setExecutorState(s);
-        if (s === "idle") actions.setActiveNode(null);
-        if (s === "running") actions.clearVerdicts();
+        useStore.getState().setExecutorState(s);
+        if (s === "idle") useStore.getState().setActiveNode(null);
+        if (s === "running") useStore.getState().clearVerdicts();
       }),
       listen<{ node_id: string }>("executor://node_started", (e) => {
-        actions.setActiveNode(e.payload.node_id);
-        actions.pushLog(`Node started: ${e.payload.node_id}`);
+        useStore.getState().setActiveNode(e.payload.node_id);
+        useStore.getState().pushLog(`Node started: ${e.payload.node_id}`);
       }),
       listen<{ node_id: string }>("executor://node_completed", (e) => {
-        actions.setActiveNode(null);
-        actions.pushLog(`Node completed: ${e.payload.node_id}`);
+        useStore.getState().setActiveNode(null);
+        useStore.getState().pushLog(`Node completed: ${e.payload.node_id}`);
       }),
       listen<{ node_id: string; error: string }>("executor://node_failed", (e) => {
-        actions.setActiveNode(null);
-        actions.pushLog(`Node failed: ${e.payload.node_id} - ${e.payload.error}`);
+        useStore.getState().setActiveNode(null);
+        useStore.getState().pushLog(`Node failed: ${e.payload.node_id} - ${e.payload.error}`);
       }),
       listen<import("./store/slices/verdictSlice").NodeVerdict[]>(
         "executor://checks_completed",
         (e) => {
-          actions.setVerdicts(e.payload);
+          useStore.getState().setVerdicts(e.payload);
         },
       ),
       listen("executor://workflow_completed", () => {
-        actions.pushLog("Workflow completed");
-        actions.setExecutorState("idle");
-        actions.setActiveNode(null);
+        useStore.getState().pushLog("Workflow completed");
+        useStore.getState().setExecutorState("idle");
+        useStore.getState().setActiveNode(null);
       }),
       listen<{ node_id: string; node_name: string; summary: string }>(
         "executor://supervision_passed",
         (e) => {
-          actions.pushLog(`Verified: ${e.payload.node_name} — ${e.payload.summary}`);
+          useStore.getState().pushLog(`Verified: ${e.payload.node_name} — ${e.payload.summary}`);
         },
       ),
       listen<{ node_id: string; node_name: string; finding: string; screenshot: string | null }>(
         "executor://supervision_paused",
         (e) => {
-          actions.setSupervisionPause({
+          useStore.getState().setSupervisionPause({
             nodeId: e.payload.node_id,
             nodeName: e.payload.node_name,
             finding: e.payload.finding,
@@ -86,14 +162,14 @@ function App() {
           });
         },
       ),
-      listen("menu://new", () => actions.newProject()),
-      listen("menu://open", () => actions.openProject()),
-      listen("menu://save", () => actions.saveProject()),
-      listen("menu://toggle-sidebar", () => actions.toggleSidebar()),
-      listen("menu://toggle-logs", () => actions.toggleLogsDrawer()),
-      listen("menu://run-workflow", () => actions.runWorkflow()),
-      listen("menu://stop-workflow", () => actions.stopWorkflow()),
-      listen("menu://toggle-assistant", () => actions.toggleAssistant()),
+      listen("menu://new", () => useStore.getState().newProject()),
+      listen("menu://open", () => useStore.getState().openProject()),
+      listen("menu://save", () => useStore.getState().saveProject()),
+      listen("menu://toggle-sidebar", () => useStore.getState().toggleSidebar()),
+      listen("menu://toggle-logs", () => useStore.getState().toggleLogsDrawer()),
+      listen("menu://run-workflow", () => useStore.getState().runWorkflow()),
+      listen("menu://stop-workflow", () => useStore.getState().stopWorkflow()),
+      listen("menu://toggle-assistant", () => useStore.getState().toggleAssistant()),
       listen("assistant://repairing", () => {
         useStore.setState({ assistantRetrying: true });
       }),
@@ -102,144 +178,144 @@ function App() {
     return () => {
       subscriptions.then((unlisteners) => unlisteners.forEach((u) => u()));
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-dark)]">
       <Sidebar
-        collapsed={state.sidebarCollapsed}
-        onToggle={actions.toggleSidebar}
+        collapsed={sidebarCollapsed}
+        onToggle={toggleSidebar}
       />
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header
-          workflowName={state.workflow.name}
-          projectPath={state.projectPath}
-          executorState={state.executorState}
-          onSave={actions.saveProject}
-          onOpen={actions.openProject}
-          onNew={actions.newProject}
-          onSettings={() => actions.setShowSettings(true)}
+          workflowName={workflow.name}
+          projectPath={projectPath}
+          executorState={executorState}
+          onSave={saveProject}
+          onOpen={openProject}
+          onNew={newProject}
+          onSettings={() => setShowSettings(true)}
           onNameChange={(name) => {
-            actions.pushHistory("Rename Workflow");
-            actions.setWorkflow({ ...state.workflow, name });
+            pushHistory("Rename Workflow");
+            setWorkflow({ ...workflow, name });
           }}
         />
         <VerdictBar />
 
         <div className="flex flex-1 overflow-hidden">
-          {state.isNewWorkflow && state.workflow.nodes.length === 0 ? (
+          {isNewWorkflow && workflow.nodes.length === 0 ? (
             <IntentEmptyState
               onGenerate={(intent) => {
-                actions.setAssistantOpen(true);
-                actions.skipIntentEntry();
-                actions.sendAssistantMessage(intent);
+                setAssistantOpen(true);
+                skipIntentEntry();
+                sendAssistantMessage(intent);
               }}
-              onSkip={actions.skipIntentEntry}
-              loading={state.assistantLoading}
+              onSkip={skipIntentEntry}
+              loading={assistantLoading}
             />
           ) : (
             <>
               <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
                 <GraphCanvas
-                  workflow={state.workflow}
-                  selectedNode={state.selectedNode}
-                  activeNode={state.activeNode}
-                  onSelectNode={actions.selectNode}
-                  onNodePositionsChange={actions.updateNodePositions}
+                  workflow={workflow}
+                  selectedNode={selectedNode}
+                  activeNode={activeNode}
+                  onSelectNode={selectNode}
+                  onNodePositionsChange={updateNodePositions}
                   onEdgesChange={(edges) => {
-                    actions.pushHistory("Remove Edge");
-                    actions.setWorkflow({ ...state.workflow, edges });
+                    pushHistory("Remove Edge");
+                    setWorkflow({ ...workflow, edges });
                   }}
-                  onConnect={actions.addEdge}
-                  onDeleteNodes={actions.removeNodes}
-                  onRemoveExtraEdges={actions.removeEdgesOnly}
-                  onBeforeNodeDrag={() => actions.pushHistory("Move Nodes")}
+                  onConnect={addEdge}
+                  onDeleteNodes={removeNodes}
+                  onRemoveExtraEdges={removeEdgesOnly}
+                  onBeforeNodeDrag={() => pushHistory("Move Nodes")}
                 />
 
                 <FloatingToolbar
-                  executorState={state.executorState}
-                  executionMode={state.executionMode}
-                  logsOpen={state.logsDrawerOpen}
+                  executorState={executorState}
+                  executionMode={executionMode}
+                  logsOpen={logsDrawerOpen}
                   hasAiNodes={hasAiNodes}
-                  onToggleLogs={actions.toggleLogsDrawer}
+                  onToggleLogs={toggleLogsDrawer}
                   onRunStop={
-                    state.executorState === "running"
-                      ? actions.stopWorkflow
-                      : actions.runWorkflow
+                    executorState === "running"
+                      ? stopWorkflow
+                      : runWorkflow
                   }
-                  onAssistant={actions.toggleAssistant}
-                  onSetExecutionMode={actions.setExecutionMode}
+                  onAssistant={toggleAssistant}
+                  onSetExecutionMode={setExecutionMode}
                 />
               </div>
 
               <AssistantPanel
-                open={state.assistantOpen}
-                loading={state.assistantLoading}
-                retrying={state.assistantRetrying}
-                error={state.assistantError}
-                conversation={state.conversation}
-                pendingPatch={state.pendingPatch}
-                pendingPatchWarnings={state.pendingPatchWarnings}
-                onSendMessage={actions.sendAssistantMessage}
-                onResendMessage={actions.resendMessage}
-                onCancel={actions.cancelAssistantChat}
-                onApplyPatch={actions.applyPendingPatch}
-                onDiscardPatch={actions.discardPendingPatch}
-                onClearConversation={actions.clearConversation}
-                onClose={() => actions.setAssistantOpen(false)}
+                open={assistantOpen}
+                loading={assistantLoading}
+                retrying={assistantRetrying}
+                error={assistantError}
+                conversation={conversation}
+                pendingPatch={pendingPatch}
+                pendingPatchWarnings={pendingPatchWarnings}
+                onSendMessage={sendAssistantMessage}
+                onResendMessage={resendMessage}
+                onCancel={cancelAssistantChat}
+                onApplyPatch={applyPendingPatch}
+                onDiscardPatch={discardPendingPatch}
+                onClearConversation={clearConversation}
+                onClose={() => setAssistantOpen(false)}
               />
 
               <NodePalette
-                nodeTypes={state.nodeTypes}
-                search={state.nodeSearch}
-                onSearchChange={actions.setNodeSearch}
-                onAdd={actions.addNode}
+                nodeTypes={nodeTypes}
+                search={nodeSearch}
+                onSearchChange={setNodeSearch}
+                onAdd={addNode}
               />
             </>
           )}
         </div>
 
         <LogsDrawer
-          open={state.logsDrawerOpen}
-          logs={state.logs}
-          onToggle={actions.toggleLogsDrawer}
-          onClear={actions.clearLogs}
+          open={logsDrawerOpen}
+          logs={logs}
+          onToggle={toggleLogsDrawer}
+          onClear={clearLogs}
         />
       </div>
 
       <NodeDetailModal
         node={selectedNodeData}
-        projectPath={state.projectPath}
-        workflowId={state.workflow.id}
-        workflowName={state.workflow.name}
-        tab={state.detailTab}
-        onTabChange={actions.setDetailTab}
-        onUpdate={actions.updateNode}
-        onClose={() => actions.selectNode(null)}
+        projectPath={projectPath}
+        workflowId={workflow.id}
+        workflowName={workflow.name}
+        tab={detailTab}
+        onTabChange={setDetailTab}
+        onUpdate={updateNode}
+        onClose={() => selectNode(null)}
       />
 
       <SettingsModal
-        open={state.showSettings}
-        plannerConfig={state.plannerConfig}
-        agentConfig={state.agentConfig}
-        vlmConfig={state.vlmConfig}
-        vlmEnabled={state.vlmEnabled}
-        mcpCommand={state.mcpCommand}
-        maxRepairAttempts={state.maxRepairAttempts}
-        onClose={() => actions.setShowSettings(false)}
-        onPlannerConfigChange={actions.setPlannerConfig}
-        onAgentConfigChange={actions.setAgentConfig}
-        onVlmConfigChange={actions.setVlmConfig}
-        onVlmEnabledChange={actions.setVlmEnabled}
-        onMcpCommandChange={actions.setMcpCommand}
-        onMaxRepairAttemptsChange={actions.setMaxRepairAttempts}
+        open={showSettings}
+        plannerConfig={plannerConfig}
+        agentConfig={agentConfig}
+        vlmConfig={vlmConfig}
+        vlmEnabled={vlmEnabled}
+        mcpCommand={mcpCommand}
+        maxRepairAttempts={maxRepairAttempts}
+        onClose={() => setShowSettings(false)}
+        onPlannerConfigChange={setPlannerConfig}
+        onAgentConfigChange={setAgentConfig}
+        onVlmConfigChange={setVlmConfig}
+        onVlmEnabledChange={setVlmEnabled}
+        onMcpCommandChange={setMcpCommand}
+        onMaxRepairAttemptsChange={setMaxRepairAttempts}
       />
 
-      {state.supervisionPause && (
+      {supervisionPause && (
         <SupervisionModal
-          pause={state.supervisionPause}
-          onRespond={actions.supervisionRespond}
+          pause={supervisionPause}
+          onRespond={supervisionRespond}
         />
       )}
     </div>
