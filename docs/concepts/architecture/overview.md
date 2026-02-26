@@ -2,6 +2,8 @@
 
 Clickweave has one core idea: describe desktop automation as a graph, then execute that graph reliably with observable state.
 
+![System Overview](system-overview.drawio.png)
+
 ![Crate Architecture](crate-architecture.drawio.png)
 
 ## Mental Model

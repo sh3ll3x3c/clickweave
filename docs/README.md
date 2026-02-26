@@ -1,5 +1,7 @@
 # Documentation Map
 
+![System Overview](concepts/architecture/system-overview.drawio.png)
+
 Clickweave docs are split into two layers:
 
 ## 1) Reference Docs (`docs/reference/*`)
