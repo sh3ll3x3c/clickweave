@@ -2,6 +2,8 @@
 
 Execution is a graph walk with guardrails.
 
+![Execution Engine](execution-engine.drawio.png)
+
 ## How to Think About It
 
 - The executor advances node by node.
@@ -31,9 +33,11 @@ This Test-then-Run workflow means a workflow is authored once with human oversig
 
 In Test mode, every action node is verified immediately after execution:
 
-1. **Screenshot** -- the executor captures a window screenshot of the focused app.
-2. **VLM description** -- a vision-language model describes what the screen shows relative to the action that just ran.
-3. **LLM judge** -- a planner-class LLM receives the VLM description along with the full conversation history of prior steps and returns a pass/fail verdict with reasoning.
+1. **Screenshot** -- the executor waits for UI to settle, then captures a window screenshot of the focused app (retrying up to 3 times if the window is not yet ready).
+2. **VLM description** -- a vision-language model describes what the screen shows relative to the action that just ran. If no VLM is configured, this step is skipped and the judge works from the action trace alone.
+3. **LLM judge** -- a planner-class LLM (falling back to VLM, then agent) receives the VLM description along with the full conversation history of prior steps and returns a pass/fail verdict with reasoning.
+
+Read-only nodes (TakeScreenshot, FindText, FindImage, ListWindows) skip supervision entirely, since their results are data, not UI-changing actions.
 
 If the step passes, execution continues. If it fails, the executor pauses and presents the finding (plus screenshot) to the user, who can choose:
 
@@ -64,15 +68,20 @@ Desktop automation often needs "try once, inspect, retry." Do-while semantics gu
 - **Loop** -- do-while semantics. The body always executes at least once. After each iteration, the exit condition is checked; if met (or max iterations reached), execution follows the "done" edge. A pending loop exit triggers deferred supervision verification in Test mode.
 - **EndLoop** -- marks the end of a loop body. Jumps back to the corresponding Loop node to re-evaluate the exit condition.
 
+## Settle Delay
+
+Each node has an optional `settle_ms` field. After a node executes successfully, the executor sleeps for this duration before finalizing the run and following the next edge. This gives the target application time to finish animations or state transitions before subsequent nodes act on the UI.
+
 ## Reliability Principles
 
 - Retry failed nodes a bounded number of times.
 - Evict resolution caches for the specific node being retried (app name, element name), not the entire cache -- other nodes' cached resolutions remain valid.
+- Inside loops, `find_text` element name resolution via LLM is deliberately skipped -- accurate found/not-found results are needed for exit conditions, and LLM resolution could mask "not yet on screen" states.
 - Capture traces and artifacts per run so failures are diagnosable.
 
 ## Post-Workflow Check Evaluation
 
-Nodes can carry checks (assertions about expected outcomes). These are not evaluated inline during execution. Instead, after the graph walk completes, the executor runs a separate check-evaluation pass: it gathers the trace summary and post-node screenshot for each checked node, sends them to the VLM, and produces pass/fail verdicts. This is distinct from per-step supervision -- supervision verifies that each step took effect; check evaluation verifies that the workflow produced the right business-level outcomes.
+Nodes can carry checks (assertions about expected outcomes). These are not evaluated inline during execution. Instead, after the graph walk completes, the executor runs a separate check-evaluation pass: it gathers the trace summary and post-node screenshot for each checked node, sends them to the VLM (or the agent LLM if no VLM is configured), and produces pass/fail verdicts. The pass short-circuits on the first hard failure (`FailNode` policy) -- remaining checks are skipped. This is distinct from per-step supervision -- supervision verifies that each step took effect; check evaluation verifies that the workflow produced the right business-level outcomes.
 
 ## Runtime Context
 

@@ -15,8 +15,10 @@ Use these when you need exact, code-coupled truth.
 Use these when you need system understanding and design intent.
 
 - Target audience: humans
-- Characteristics: architecture mental models, rationale, tradeoffs
+- Characteristics: architecture mental models, rationale, tradeoffs, visual diagrams
 - Stability: less coupled to file-level details
+
+Each conceptual doc includes a `.drawio.png` diagram (editable in draw.io via the embedded XML). The `.drawio` source files live alongside the PNGs in each subdirectory.
 
 ## Area Index
 

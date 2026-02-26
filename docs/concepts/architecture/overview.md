@@ -2,6 +2,8 @@
 
 Clickweave has one core idea: describe desktop automation as a graph, then execute that graph reliably with observable state.
 
+![Crate Architecture](crate-architecture.drawio.png)
+
 ## Mental Model
 
 1. A user starts with intent.

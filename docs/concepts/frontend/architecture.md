@@ -2,13 +2,16 @@
 
 The frontend is a workflow editor plus execution cockpit.
 
+![Frontend & Tauri IPC](frontend-ipc.drawio.png)
+
 ## Primary UX Surfaces
 
-- Graph canvas for building and wiring workflow nodes.
-- Node detail panel for setup, checks, and trace inspection.
-- Assistant panel for conversational edits and patch proposals.
-- Run/log/verdict surfaces for execution feedback.
-- Supervision modal for human-in-the-loop review during Test runs. When a step fails verification the engine pauses and the modal shows the node name, a finding description, and an optional screenshot. The user can retry the step, skip past it, or abort the entire run.
+- **Graph canvas** for building and wiring workflow nodes. Nodes are added via a click-based palette (not drag-and-drop). Loop groups can be collapsed/expanded. During execution, the currently-running node is highlighted (`activeNode`), distinct from the user-selected node.
+- **Node detail modal** for setup, checks, and trace inspection (4 tabs: Setup, Trace, Checks, Runs).
+- **Assistant panel** for conversational edits and patch proposals.
+- **Run/log/verdict surfaces** for execution feedback.
+- **Supervision modal** for human-in-the-loop review during Test runs. When a step fails verification the engine pauses and the modal shows the node name, a finding description, and an optional screenshot. The user can retry the step, skip past it, or abort the entire run.
+- **Intent empty state** -- when a new project has no nodes, an onboarding screen prompts the user to describe their intent, which triggers assistant-based planning.
 
 ## Execution Modes
 
@@ -21,15 +24,17 @@ The current mode is stored in execution state and sent to the backend as part of
 
 ## State Philosophy
 
-A single store with slices keeps cross-feature coordination simple:
+A single Zustand store composed from 8 slices keeps cross-feature coordination simple:
 
-- project/workflow editing,
-- execution state (run status, current mode, supervision pause),
-- undo/redo history (snapshotted workflow states for reversible edits),
-- assistant conversation and pending patches,
-- settings,
-- logs/verdicts,
-- UI chrome/selection state.
+- project/workflow editing (ProjectSlice),
+- execution state -- run status, current mode, supervision pause (ExecutionSlice),
+- undo/redo history -- up to 50 snapshots in each direction via `structuredClone` (HistorySlice),
+- assistant conversation and pending patches (AssistantSlice),
+- settings -- persisted to disk via `tauri-plugin-store` (SettingsSlice),
+- logs and verdicts (LogSlice, VerdictSlice),
+- UI chrome/selection state (UiSlice).
+
+All workflow mutations (add/remove nodes, connect edges, update positions) go through `useWorkflowMutations`, which automatically pushes undo history on each change.
 
 ## Event-Driven Runtime UX
 
