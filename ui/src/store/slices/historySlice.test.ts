@@ -68,8 +68,8 @@ const makeNode = (id: string): Node => ({
   settle_ms: null,
   retries: 0,
   trace_level: "Minimal",
+  role: "Default",
   expected_outcome: null,
-  checks: [],
 });
 
 const makeWorkflowWithNodes = (name: string, nodeIds: string[]): Workflow => ({

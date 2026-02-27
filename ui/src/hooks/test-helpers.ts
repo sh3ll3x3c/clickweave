@@ -11,8 +11,8 @@ export function node(id: string, type: string, params?: Record<string, unknown>)
     settle_ms: null,
     retries: 0,
     trace_level: "Full",
+    role: "Default",
     expected_outcome: null,
-    checks: [],
   };
 }
 

@@ -173,7 +173,6 @@ export type AssistantChatResponse = { assistant_message: string; patch: Workflow
  */
 export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
 export type ChatRole = "user" | "assistant"
-export type Check = { name: string; check_type: CheckType; params: JsonValue; on_fail: OnCheckFail }
 export type CheckType = "TextPresent" | "TextAbsent" | "TemplateFound" | "WindowTitleMatches"
 export type ClickParams = { target: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
 export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
@@ -233,12 +232,12 @@ max_iterations: number }
 export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
-export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; trace_level: TraceLevel; expected_outcome: string | null; checks: Check[] }
+export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; trace_level: TraceLevel; role: NodeRole; expected_outcome: string | null }
+export type NodeRole = "Default" | "Verification"
 export type NodeResult = { node_name: string; status: string; error?: string | null }
 export type NodeRun = { run_id: string; node_id: string; node_name?: string; execution_dir?: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
 export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | ({ type: "If" } & IfParams) | ({ type: "Switch" } & SwitchParams) | ({ type: "Loop" } & LoopParams) | ({ type: "EndLoop" } & EndLoopParams)
 export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
-export type OnCheckFail = "FailNode" | "WarnOnly"
 export type Operator = "Equals" | "NotEquals" | "GreaterThan" | "LessThan" | "GreaterThanOrEqual" | "LessThanOrEqual" | "Contains" | "NotContains" | "IsEmpty" | "IsNotEmpty"
 export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
 /**

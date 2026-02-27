@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Node } from "../../bindings";
 import type { DetailTab } from "../../store/useAppStore";
-import { ChecksTab, RunsTab, SetupTab, TraceTab } from "./tabs";
+import { RunsTab, SetupTab, TraceTab } from "./tabs";
 
 interface NodeDetailModalProps {
   node: Node | null;
@@ -17,7 +17,6 @@ interface NodeDetailModalProps {
 const tabs: { key: DetailTab; label: string }[] = [
   { key: "setup", label: "Setup" },
   { key: "trace", label: "Trace" },
-  { key: "checks", label: "Checks" },
   { key: "runs", label: "Runs" },
 ];
 
@@ -83,9 +82,6 @@ export function NodeDetailModal({
               workflowName={workflowName}
               initialRunId={selectedRunId}
             />
-          )}
-          {tab === "checks" && (
-            <ChecksTab node={node} onUpdate={(u) => onUpdate(node.id, u)} />
           )}
           {tab === "runs" && (
             <RunsTab

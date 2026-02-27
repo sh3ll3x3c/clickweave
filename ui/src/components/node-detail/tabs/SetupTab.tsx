@@ -8,6 +8,8 @@ import {
 } from "../fields";
 import { editorRegistry } from "./editors";
 
+const READ_ONLY_TYPES = ["FindText", "FindImage", "TakeScreenshot", "ListWindows"];
+
 export function SetupTab({
   node,
   onUpdate,
@@ -18,6 +20,7 @@ export function SetupTab({
   projectPath: string | null;
 }) {
   const Editor = editorRegistry[node.node_type.type];
+  const isReadOnly = READ_ONLY_TYPES.includes(node.node_type.type);
 
   return (
     <div className="space-y-4">
@@ -57,15 +60,27 @@ export function SetupTab({
             onUpdate({ trace_level: trace_level as Node["trace_level"] })
           }
         />
-        <TextField
-          label="Expected Outcome"
-          value={node.expected_outcome ?? ""}
-          onChange={(v) =>
-            onUpdate({ expected_outcome: v === "" ? null : v })
-          }
-          placeholder="Optional"
-        />
       </FieldGroup>
+
+      {isReadOnly && (
+        <FieldGroup title="Verification">
+          <CheckboxField
+            label="Use as verification"
+            value={node.role === "Verification"}
+            onChange={(v) => onUpdate({ role: v ? "Verification" : "Default" })}
+          />
+          {node.role === "Verification" && node.node_type.type === "TakeScreenshot" && (
+            <TextField
+              label="Expected Outcome (required)"
+              value={node.expected_outcome ?? ""}
+              onChange={(v) =>
+                onUpdate({ expected_outcome: v === "" ? null : v })
+              }
+              placeholder="Describe what should be visible..."
+            />
+          )}
+        </FieldGroup>
+      )}
 
       {Editor ? (
         <Editor
