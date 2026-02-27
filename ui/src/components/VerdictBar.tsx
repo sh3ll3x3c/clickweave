@@ -33,7 +33,7 @@ export function VerdictBar() {
           ? `PASSED with warnings — ${passed}/${total} checks`
           : status === "failed"
             ? `FAILED — ${passed}/${total} checks passed`
-            : "COMPLETED — no checks configured";
+            : "COMPLETED";
 
     return (
       <div className={`border-b ${bgColor}`}>
