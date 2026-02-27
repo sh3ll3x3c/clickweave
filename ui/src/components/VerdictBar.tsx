@@ -1,109 +1,66 @@
-import { useState } from "react";
 import { useStore } from "../store/useAppStore";
-import type { NodeVerdict, CheckResult } from "../store/slices/verdictSlice";
+import { countChecks } from "../store/slices/verdictSlice";
 
 export function VerdictBar() {
   const verdicts = useStore((s) => s.verdicts);
   const status = useStore((s) => s.verdictStatus);
   const visible = useStore((s) => s.verdictBarVisible);
+  const executorState = useStore((s) => s.executorState);
+  const hasNodes = useStore((s) => s.workflow.nodes.length > 0);
   const dismiss = useStore((s) => s.dismissVerdictBar);
-  const [expanded, setExpanded] = useState(false);
+  const openModal = useStore((s) => s.openVerdictModal);
 
-  if (!visible || status === "none") return null;
+  // Hide when running or when there's no workflow to test
+  if (executorState === "running" || !hasNodes) return null;
 
-  const totalChecks = verdicts.reduce(
-    (sum, v) => sum + v.check_results.length + (v.expected_outcome_verdict ? 1 : 0),
-    0,
-  );
-  const passedChecks = verdicts.reduce(
-    (sum, v) =>
-      sum +
-      v.check_results.filter((r) => r.verdict === "Pass").length +
-      (v.expected_outcome_verdict?.verdict === "Pass" ? 1 : 0),
-    0,
-  );
+  // Post-run state: show result bar
+  if (visible) {
+    const { total, passed } = countChecks(verdicts);
 
-  const bgColor =
-    status === "passed"
-      ? "bg-green-900/80 border-green-700"
-      : status === "warned"
-        ? "bg-yellow-900/80 border-yellow-700"
-        : "bg-red-900/80 border-red-700";
+    const bgColor =
+      status === "passed"
+        ? "bg-green-900/80 border-green-700"
+        : status === "warned"
+          ? "bg-yellow-900/80 border-yellow-700"
+          : status === "failed"
+            ? "bg-red-900/80 border-red-700"
+            : "bg-zinc-800/80 border-zinc-600";
 
-  const label =
-    status === "passed"
-      ? `PASSED \u2014 ${passedChecks}/${totalChecks} checks`
-      : status === "warned"
-        ? `PASSED with warnings \u2014 ${passedChecks}/${totalChecks} checks`
-        : `FAILED \u2014 ${passedChecks}/${totalChecks} checks passed`;
+    const label =
+      status === "passed"
+        ? `PASSED — ${passed}/${total} checks`
+        : status === "warned"
+          ? `PASSED with warnings — ${passed}/${total} checks`
+          : status === "failed"
+            ? `FAILED — ${passed}/${total} checks passed`
+            : "COMPLETED — no checks configured";
 
-  return (
-    <div className={`border-b ${bgColor}`}>
-      <div className="flex items-center justify-between px-4 py-2">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="text-sm font-semibold text-white hover:underline"
-        >
-          {label}
-        </button>
-        <button
-          onClick={dismiss}
-          className="text-xs text-white/60 hover:text-white"
-        >
-          Dismiss
-        </button>
+    return (
+      <div className={`border-b ${bgColor}`}>
+        <div className="flex items-center justify-between px-4 py-2">
+          <button
+            onClick={openModal}
+            className="text-sm font-semibold text-white hover:underline"
+          >
+            {label}
+          </button>
+          <button
+            onClick={dismiss}
+            className="text-xs text-white/60 hover:text-white"
+          >
+            Dismiss
+          </button>
+        </div>
       </div>
-      {expanded && (
-        <div className="space-y-3 border-t border-white/10 px-4 py-3">
-          {verdicts.map((v, i) => (
-            <VerdictNodeRow key={`${v.node_id}-${i}`} verdict={v} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+    );
+  }
 
-function VerdictNodeRow({ verdict }: { verdict: NodeVerdict }) {
-  const [open, setOpen] = useState(false);
-  const allResults: CheckResult[] = [
-    ...verdict.check_results,
-    ...(verdict.expected_outcome_verdict ? [verdict.expected_outcome_verdict] : []),
-  ];
-
+  // Never-run state
   return (
-    <div>
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-xs text-white/90 hover:text-white"
-      >
-        <span>{open ? "\u25BC" : "\u25B6"}</span>
-        <span className="font-medium">{verdict.node_name}</span>
-        <span className="text-white/50">
-          ({allResults.filter((r) => r.verdict === "Pass").length}/{allResults.length} passed)
-        </span>
-      </button>
-      {open && (
-        <div className="ml-5 mt-1 space-y-1">
-          {allResults.map((r, i) => (
-            <div key={i} className="text-xs">
-              <span
-                className={
-                  r.verdict === "Pass"
-                    ? "text-green-400"
-                    : r.verdict === "Warn"
-                      ? "text-yellow-400"
-                      : "text-red-400"
-                }
-              >
-                {r.verdict === "Pass" ? "\u2713" : r.verdict === "Warn" ? "\u26A0" : "\u2717"}
-              </span>{" "}
-              <span className="text-white/80">{r.check_name}</span>
-              <span className="ml-2 text-white/40">&mdash; {r.reasoning}</span>
-            </div>
-          ))}
-        </div>
-      )}
+    <div className="border-b bg-zinc-800/40 border-zinc-700/50">
+      <div className="px-4 py-1.5">
+        <span className="text-xs text-zinc-500">Not yet tested</span>
+      </div>
     </div>
   );
 }

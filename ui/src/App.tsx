@@ -10,6 +10,7 @@ import { NodeDetailModal } from "./components/node-detail/NodeDetailModal";
 import { AssistantPanel } from "./components/AssistantPanel";
 import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
+import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -144,6 +145,7 @@ function App() {
         useStore.getState().pushLog("Workflow completed");
         useStore.getState().setExecutorState("idle");
         useStore.getState().setActiveNode(null);
+        useStore.getState().openVerdictModal();
       }),
       listen<{ node_id: string; node_name: string; summary: string }>(
         "executor://supervision_passed",
@@ -315,6 +317,8 @@ function App() {
         onMcpCommandChange={setMcpCommand}
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
       />
+
+      <VerdictModal />
 
       {supervisionPause && (
         <SupervisionModal

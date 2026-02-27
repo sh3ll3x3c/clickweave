@@ -24,10 +24,28 @@ export interface VerdictSlice {
   verdicts: NodeVerdict[];
   verdictStatus: VerdictStatus;
   verdictBarVisible: boolean;
+  verdictModalOpen: boolean;
 
   setVerdicts: (verdicts: NodeVerdict[]) => void;
   dismissVerdictBar: () => void;
   clearVerdicts: () => void;
+  openVerdictModal: () => void;
+  closeVerdictModal: () => void;
+}
+
+export function countChecks(verdicts: NodeVerdict[]): { total: number; passed: number } {
+  const total = verdicts.reduce(
+    (sum, v) => sum + v.check_results.length + (v.expected_outcome_verdict ? 1 : 0),
+    0,
+  );
+  const passed = verdicts.reduce(
+    (sum, v) =>
+      sum +
+      v.check_results.filter((r) => r.verdict === "Pass").length +
+      (v.expected_outcome_verdict?.verdict === "Pass" ? 1 : 0),
+    0,
+  );
+  return { total, passed };
 }
 
 function computeStatus(verdicts: NodeVerdict[]): VerdictStatus {
@@ -51,6 +69,7 @@ export const createVerdictSlice: StateCreator<StoreState, [], [], VerdictSlice> 
   verdicts: [],
   verdictStatus: "none",
   verdictBarVisible: false,
+  verdictModalOpen: false,
 
   setVerdicts: (verdicts) =>
     set({
@@ -62,5 +81,8 @@ export const createVerdictSlice: StateCreator<StoreState, [], [], VerdictSlice> 
   dismissVerdictBar: () => set({ verdictBarVisible: false }),
 
   clearVerdicts: () =>
-    set({ verdicts: [], verdictStatus: "none", verdictBarVisible: false }),
+    set({ verdicts: [], verdictStatus: "none", verdictBarVisible: false, verdictModalOpen: false }),
+
+  openVerdictModal: () => set({ verdictModalOpen: true, verdictBarVisible: true }),
+  closeVerdictModal: () => set({ verdictModalOpen: false }),
 });

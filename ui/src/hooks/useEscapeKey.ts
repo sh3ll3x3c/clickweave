@@ -3,7 +3,7 @@ import { useStore } from "../store/useAppStore";
 
 /**
  * Global Escape key handler that closes panels in priority order:
- * Settings modal → Node detail → Assistant panel → Logs drawer
+ * Verdict modal → Settings modal → Node detail → Assistant panel → Logs drawer
  *
  * Reads state at event time via getState() so the listener is registered
  * once and always sees fresh values.
@@ -14,6 +14,8 @@ export function useEscapeKey() {
       if (e.key !== "Escape") return;
 
       const {
+        verdictModalOpen,
+        closeVerdictModal,
         showSettings,
         selectedNode,
         assistantOpen,
@@ -24,7 +26,9 @@ export function useEscapeKey() {
         toggleLogsDrawer,
       } = useStore.getState();
 
-      if (showSettings) {
+      if (verdictModalOpen) {
+        closeVerdictModal();
+      } else if (showSettings) {
         setShowSettings(false);
       } else if (selectedNode !== null) {
         selectNode(null);
