@@ -1,6 +1,5 @@
 mod ai_step;
 mod app_resolve;
-mod check_eval;
 mod control_flow;
 mod deterministic;
 mod element_resolve;
@@ -17,7 +16,7 @@ mod tests;
 use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{Check, ExecutionMode, NodeRun, NodeVerdict, Workflow};
+use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -90,8 +89,6 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     decision_cache: RwLock<DecisionCache>,
     /// Persistent conversation history for supervision across the entire run.
     supervision_history: RwLock<Vec<Message>>,
-    /// Nodes that completed successfully and have checks, in execution order.
-    completed_checks: Vec<(Uuid, Vec<Check>, Option<String>)>,
     /// Verdicts from Verification-role nodes, accumulated during execution.
     runtime_verdicts: Vec<NodeVerdict>,
     /// Set by eval_control_flow when a loop exits; consumed by the main loop
@@ -152,7 +149,6 @@ impl WorkflowExecutor {
             context: RuntimeContext::new(),
             decision_cache: RwLock::new(decision_cache),
             supervision_history: RwLock::new(Vec::new()),
-            completed_checks: Vec::new(),
             runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
         }
