@@ -1,6 +1,6 @@
 import type { Workflow, ConversationSession } from "../bindings";
 
-export type DetailTab = "setup" | "trace" | "checks" | "runs";
+export type DetailTab = "setup" | "trace" | "runs";
 
 export interface EndpointConfig {
   baseUrl: string;

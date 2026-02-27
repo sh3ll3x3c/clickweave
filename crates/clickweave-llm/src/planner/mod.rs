@@ -14,7 +14,9 @@ mod tests;
 
 use std::collections::{HashMap, HashSet};
 
-use clickweave_core::{Edge, EdgeOutput, Node, NodeType, Position, Workflow, tool_mapping};
+use clickweave_core::{
+    Edge, EdgeOutput, Node, NodeRole, NodeType, Position, Workflow, tool_mapping,
+};
 use mapping::step_to_node_type;
 use parse::{id_str_short, layout_nodes, step_rejected_reason};
 use serde::{Deserialize, Serialize};
@@ -88,6 +90,10 @@ pub struct PlanNode {
     pub id: String,
     #[serde(flatten)]
     pub step: PlanStep,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub expected_outcome: Option<String>,
 }
 
 /// An edge in the graph-based planner output.
@@ -249,24 +255,30 @@ pub(crate) fn build_patch_from_output(
             output.add.len(),
         ));
     } else {
-        let (add_steps, add_warnings) = parse_lenient::<PlanStep>(&output.add);
+        let (add_steps, add_warnings) = parse_lenient::<plan::FlatPlanStep>(&output.add);
         warnings.extend(add_warnings);
-        for (i, step) in add_steps.iter().enumerate() {
-            if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps)
+        for (i, flat) in add_steps.iter().enumerate() {
+            if let Some(reason) =
+                step_rejected_reason(&flat.step, allow_ai_transforms, allow_agent_steps)
             {
                 warnings.push(format!("Added step {} removed: {}", i, reason));
                 continue;
             }
-            match step_to_node_type(step, mcp_tools) {
+            match step_to_node_type(&flat.step, mcp_tools) {
                 Ok((node_type, display_name)) => {
-                    added_nodes.push(Node::new(
+                    let mut node = Node::new(
                         node_type,
                         Position {
                             x: 300.0,
                             y: last_y + 120.0 + (i as f32) * 120.0,
                         },
                         display_name,
-                    ));
+                    );
+                    if flat.role.as_deref() == Some("Verification") {
+                        node.role = NodeRole::Verification;
+                    }
+                    node.expected_outcome = flat.expected_outcome.clone();
+                    added_nodes.push(node);
                 }
                 Err(e) => warnings.push(format!("Added step {} skipped: {}", i, e)),
             }
@@ -410,26 +422,33 @@ pub(crate) fn build_plan_as_patch(
 ) -> PatchResult {
     let mut warnings = Vec::new();
 
-    let (steps, step_warnings) = parse_lenient::<PlanStep>(raw_steps);
+    let (flat_steps, step_warnings) = parse_lenient::<plan::FlatPlanStep>(raw_steps);
     warnings.extend(step_warnings);
 
     let mut valid_steps = Vec::new();
 
-    for (i, step) in steps.iter().enumerate() {
-        if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps) {
+    for (i, flat) in flat_steps.iter().enumerate() {
+        if let Some(reason) =
+            step_rejected_reason(&flat.step, allow_ai_transforms, allow_agent_steps)
+        {
             warnings.push(format!("Step {} removed: {}", i, reason));
             continue;
         }
-        valid_steps.push(step);
+        valid_steps.push(flat);
     }
 
     let positions = layout_nodes(valid_steps.len());
     let mut added_nodes = Vec::new();
 
-    for (i, step) in valid_steps.iter().enumerate() {
-        match step_to_node_type(step, mcp_tools) {
+    for (i, flat) in valid_steps.iter().enumerate() {
+        match step_to_node_type(&flat.step, mcp_tools) {
             Ok((node_type, display_name)) => {
-                added_nodes.push(Node::new(node_type, positions[i], display_name));
+                let mut node = Node::new(node_type, positions[i], display_name);
+                if flat.role.as_deref() == Some("Verification") {
+                    node.role = NodeRole::Verification;
+                }
+                node.expected_outcome = flat.expected_outcome.clone();
+                added_nodes.push(node);
             }
             Err(e) => warnings.push(format!("Step {} skipped: {}", i, e)),
         }
@@ -525,7 +544,11 @@ fn build_nodes_and_edges_from_graph(
         }
         match step_to_node_type(&plan_node.step, mcp_tools) {
             Ok((node_type, display_name)) => {
-                let node = Node::new(node_type, pos, display_name);
+                let mut node = Node::new(node_type, pos, display_name);
+                if plan_node.role.as_deref() == Some("Verification") {
+                    node.role = NodeRole::Verification;
+                }
+                node.expected_outcome = plan_node.expected_outcome.clone();
                 id_map.insert(plan_node.id.clone(), node.id);
                 nodes.push(node);
             }

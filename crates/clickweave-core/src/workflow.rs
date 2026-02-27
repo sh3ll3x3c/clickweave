@@ -34,8 +34,9 @@ pub struct Node {
     pub settle_ms: Option<u64>,
     pub retries: u32,
     pub trace_level: TraceLevel,
+    #[serde(default)]
+    pub role: NodeRole,
     pub expected_outcome: Option<String>,
-    pub checks: Vec<Check>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -82,8 +83,8 @@ impl Node {
             settle_ms: None,
             retries: 0,
             trace_level: TraceLevel::Minimal,
+            role: NodeRole::Default,
             expected_outcome: None,
-            checks: vec![],
         }
     }
 }
@@ -649,30 +650,21 @@ pub enum TraceLevel {
     Full,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum NodeRole {
+    #[default]
+    Default,
+    Verification,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum CheckType {
     TextPresent,
-    TextAbsent,
     TemplateFound,
     WindowTitleMatches,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub enum OnCheckFail {
-    #[default]
-    FailNode,
-    WarnOnly,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct Check {
-    pub name: String,
-    pub check_type: CheckType,
-    pub params: Value,
-    pub on_fail: OnCheckFail,
+    ScreenshotMatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

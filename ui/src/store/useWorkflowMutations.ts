@@ -24,8 +24,8 @@ export function useWorkflowMutations(
         settle_ms: null,
         retries: 0,
         trace_level: "Minimal",
+        role: "Default" as const,
         expected_outcome: null,
-        checks: [],
       };
       setWorkflow((prev) => ({ ...prev, nodes: [...prev.nodes, node] }));
       setSelectedNode(id);
