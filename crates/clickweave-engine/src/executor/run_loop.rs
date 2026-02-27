@@ -373,6 +373,59 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             }
                         }
 
+                        // Inline VLM verdict for TakeScreenshot verification
+                        if node_role == NodeRole::Verification
+                            && matches!(node_type, NodeType::TakeScreenshot(_))
+                        {
+                            if let Some(ref outcome) = expected_outcome {
+                                let mut args = serde_json::json!({ "format": "png" });
+                                if let Some(ref name) =
+                                    self.focused_app.read().ok().and_then(|g| g.clone())
+                                {
+                                    args["app_name"] = serde_json::Value::String(name.clone());
+                                }
+                                let screenshot_b64 =
+                                    self.extract_screenshot_image(&mcp, args).await;
+                                match screenshot_b64 {
+                                    Some(img) => {
+                                        let backend = self.vlm.as_ref().unwrap_or(&self.agent);
+                                        let v = super::verdict::screenshot_verdict(
+                                            backend, node_id, &node_name, outcome, &img,
+                                        )
+                                        .await;
+                                        let failed = v.check_results.iter().any(|r| {
+                                            r.verdict == clickweave_core::CheckVerdict::Fail
+                                        });
+                                        self.log(format!(
+                                            "Verification '{}': {}",
+                                            node_name,
+                                            if failed { "FAIL" } else { "PASS" },
+                                        ));
+                                        self.runtime_verdicts.push(v);
+                                        if failed {
+                                            self.emit_error(format!(
+                                                "Verification failed: '{}'",
+                                                node_name,
+                                            ));
+                                            verification_failed = true;
+                                            break (false, false);
+                                        }
+                                    }
+                                    None => {
+                                        self.log(format!(
+                                            "Warning: could not capture screenshot for verification '{}'",
+                                            node_name,
+                                        ));
+                                    }
+                                }
+                            } else {
+                                self.log(format!(
+                                    "Warning: TakeScreenshot node '{}' has Verification role but no expected_outcome — skipping",
+                                    node_name,
+                                ));
+                            }
+                        }
+
                         // Supervision (Test mode only)
                         if self.execution_mode == ExecutionMode::Test {
                             // Skip per-step supervision for nodes inside loops —

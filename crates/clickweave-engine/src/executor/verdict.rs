@@ -1,4 +1,5 @@
 use clickweave_core::{CheckResult, CheckType, CheckVerdict, NodeType, NodeVerdict};
+use clickweave_llm::{ChatBackend, Message};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -45,6 +46,83 @@ pub(crate) fn deterministic_verdict(
         check_results: vec![CheckResult {
             check_name: node_name.to_string(),
             check_type,
+            verdict,
+            reasoning,
+        }],
+        expected_outcome_verdict: None,
+    }
+}
+
+fn screenshot_verification_prompt() -> &'static str {
+    "You are verifying whether a UI automation step produced the expected visual result. \
+     You will receive a screenshot taken after the step completed and a description of \
+     what should be visible.\n\n\
+     Respond with ONLY a JSON object (no markdown fences):\n\
+     {\"verdict\": \"pass\" or \"fail\", \"reasoning\": \"...\"}\n\n\
+     Be precise: only mark 'pass' if the screenshot clearly shows what was expected."
+}
+
+#[derive(serde::Deserialize)]
+struct VlmVerdict {
+    verdict: String,
+    reasoning: String,
+}
+
+/// Evaluate a TakeScreenshot verification node using VLM.
+/// Sends the screenshot + expected_outcome to the VLM and returns a NodeVerdict.
+pub(crate) async fn screenshot_verdict<C: ChatBackend>(
+    backend: &C,
+    node_id: Uuid,
+    node_name: &str,
+    expected_outcome: &str,
+    screenshot_base64: &str,
+) -> NodeVerdict {
+    let user_msg = Message::user_with_images(
+        format!(
+            "## Node: \"{}\"\n\n## Expected outcome:\n{}",
+            node_name, expected_outcome
+        ),
+        vec![(screenshot_base64.to_string(), "image/png".to_string())],
+    );
+
+    let messages = vec![Message::system(screenshot_verification_prompt()), user_msg];
+
+    let (verdict, reasoning) = match backend.chat(messages, None).await {
+        Ok(response) => {
+            let text = response
+                .choices
+                .first()
+                .and_then(|c| c.message.text_content())
+                .unwrap_or("");
+            let cleaned = text
+                .trim()
+                .trim_start_matches("```json")
+                .trim_start_matches("```")
+                .trim_end_matches("```")
+                .trim();
+            match serde_json::from_str::<VlmVerdict>(cleaned) {
+                Ok(v) => {
+                    let verdict = match v.verdict.to_lowercase().as_str() {
+                        "pass" => CheckVerdict::Pass,
+                        _ => CheckVerdict::Fail,
+                    };
+                    (verdict, v.reasoning)
+                }
+                Err(_) => (
+                    CheckVerdict::Fail,
+                    format!("Failed to parse VLM response: {}", text),
+                ),
+            }
+        }
+        Err(e) => (CheckVerdict::Fail, format!("VLM call failed: {}", e)),
+    };
+
+    NodeVerdict {
+        node_id,
+        node_name: node_name.to_string(),
+        check_results: vec![CheckResult {
+            check_name: format!("{}: {}", node_name, expected_outcome),
+            check_type: CheckType::TextPresent,
             verdict,
             reasoning,
         }],

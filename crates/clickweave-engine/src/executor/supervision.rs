@@ -305,7 +305,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Call `take_screenshot` and extract the base64-encoded image from the result.
-    async fn extract_screenshot_image(&self, mcp: &McpClient, args: Value) -> Option<String> {
+    pub(crate) async fn extract_screenshot_image(
+        &self,
+        mcp: &McpClient,
+        args: Value,
+    ) -> Option<String> {
         let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
         if result.is_error == Some(true) {
             return None;
