@@ -3,10 +3,49 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{Artifact, ArtifactKind, NodeRun, NodeVerdict, RunStatus, TraceEvent, TraceLevel};
+
+/// Returns the current time as milliseconds since the Unix epoch.
+pub fn now_millis() -> u64 {
+    Utc::now().timestamp_millis() as u64
+}
+
+/// Formats a timestamped directory name as `YYYY-MM-DD_HH-MM-SS_<short_uuid>`.
+pub fn format_timestamped_dirname(started_at_ms: u64, id: Uuid) -> String {
+    let ts = i64::try_from(started_at_ms).ok();
+    let dt = ts
+        .and_then(DateTime::from_timestamp_millis)
+        .unwrap_or_default();
+    let short_id = &id.to_string()[..12];
+    format!("{}_{short_id}", dt.format("%Y-%m-%d_%H-%M-%S"))
+}
+
+/// Serializes a value as pretty-printed JSON and writes it to a file.
+pub fn write_json_pretty<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
+    let json = serde_json::to_string_pretty(value).context("Failed to serialize JSON")?;
+    std::fs::write(path, json).with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
+}
+
+/// Appends a single JSON line to a file (newline-delimited JSON).
+pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let mut line = serde_json::to_string(value).context("Failed to serialize JSONL entry")?;
+    line.push('\n');
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .context("Failed to open JSONL file")?;
+    file.write_all(line.as_bytes())
+        .context("Failed to write JSONL entry")?;
+
+    Ok(())
+}
 
 /// Sanitizes a name for use as a directory component.
 ///
@@ -35,12 +74,7 @@ pub fn sanitize_name(name: &str) -> String {
 
 /// Formats an execution directory name as `YYYY-MM-DD_HH-MM-SS_<short_uuid>`.
 fn format_execution_dirname(started_at_ms: u64, run_id: Uuid) -> String {
-    let ts = i64::try_from(started_at_ms).ok();
-    let dt = ts
-        .and_then(DateTime::from_timestamp_millis)
-        .unwrap_or_default();
-    let short_id = &run_id.to_string()[..12];
-    format!("{}_{short_id}", dt.format("%Y-%m-%d_%H-%M-%S"))
+    format_timestamped_dirname(started_at_ms, run_id)
 }
 
 /// Manages on-disk storage for node run artifacts and trace data.
@@ -180,8 +214,8 @@ impl RunStorage {
         )
     }
 
-    pub(crate) fn now_millis() -> u64 {
-        Utc::now().timestamp_millis() as u64
+    pub fn now_millis() -> u64 {
+        now_millis()
     }
 
     /// Create a new run for a node within the current execution.
@@ -268,18 +302,7 @@ impl RunStorage {
     }
 
     fn write_event_line(path: &Path, event: &TraceEvent) -> Result<()> {
-        let mut line = serde_json::to_string(event).context("Failed to serialize event")?;
-        line.push('\n');
-
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .context("Failed to open events.jsonl")?;
-        file.write_all(line.as_bytes())
-            .context("Failed to write event")?;
-
-        Ok(())
+        append_jsonl(path, event)
     }
 
     pub fn save_artifact(

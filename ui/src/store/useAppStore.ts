@@ -7,6 +7,7 @@ import { createProjectSlice } from "./slices/projectSlice";
 import { createSettingsSlice } from "./slices/settingsSlice";
 import { createUiSlice } from "./slices/uiSlice";
 import { createVerdictSlice } from "./slices/verdictSlice";
+import { createWalkthroughSlice } from "./slices/walkthroughSlice";
 import type { StoreState } from "./slices/types";
 
 export type { DetailTab, EndpointConfig } from "./state";
@@ -22,4 +23,5 @@ export const useStore = create<StoreState>()((...a) => ({
   ...createLogSlice(...a),
   ...createUiSlice(...a),
   ...createVerdictSlice(...a),
+  ...createWalkthroughSlice(...a),
 }));

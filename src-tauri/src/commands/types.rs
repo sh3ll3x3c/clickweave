@@ -211,3 +211,15 @@ pub struct AssistantChatResponse {
     pub summary_cutoff: usize,
     pub warnings: Vec<String>,
 }
+
+// --- Walkthrough event payloads ---
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WalkthroughStatePayload {
+    pub status: clickweave_core::WalkthroughStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WalkthroughEventPayload {
+    pub event: clickweave_core::WalkthroughEvent,
+}

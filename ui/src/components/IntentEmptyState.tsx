@@ -3,10 +3,11 @@ import { useState } from "react";
 interface IntentEmptyStateProps {
   onGenerate: (intent: string) => void;
   onSkip: () => void;
+  onRecordWalkthrough: () => void;
   loading: boolean;
 }
 
-export function IntentEmptyState({ onGenerate, onSkip, loading }: IntentEmptyStateProps) {
+export function IntentEmptyState({ onGenerate, onSkip, onRecordWalkthrough, loading }: IntentEmptyStateProps) {
   const [intent, setIntent] = useState("");
 
   const handleSubmit = () => {
@@ -54,6 +55,13 @@ export function IntentEmptyState({ onGenerate, onSkip, loading }: IntentEmptySta
             className="rounded-lg bg-[var(--accent-coral)] px-5 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {loading ? "Generating..." : "Generate Workflow"}
+          </button>
+          <button
+            onClick={onRecordWalkthrough}
+            disabled={loading}
+            className="rounded-lg border border-[var(--border)] px-4 py-2 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:opacity-50"
+          >
+            Record Walkthrough
           </button>
           <button
             onClick={onSkip}

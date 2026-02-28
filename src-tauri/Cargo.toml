@@ -29,3 +29,8 @@ clickweave-core = { workspace = true, features = ["specta"] }
 clickweave-engine.workspace = true
 clickweave-llm = { workspace = true, features = ["specta"] }
 clickweave-mcp.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"
+foreign-types = "0.5"

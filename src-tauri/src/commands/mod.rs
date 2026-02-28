@@ -4,6 +4,7 @@ mod planner;
 mod project;
 mod runs;
 mod types;
+mod walkthrough;
 
 pub use assistant::{AssistantHandle, assistant_chat, cancel_assistant_chat};
 pub use executor::{ExecutorHandle, run_workflow, stop_workflow, supervision_respond};
@@ -14,3 +15,7 @@ pub use project::{
 };
 pub use runs::{list_runs, load_run_events, read_artifact_base64};
 pub use types::AppDataDir;
+pub use walkthrough::{
+    WalkthroughHandle, apply_walkthrough_annotations, cancel_walkthrough, pause_walkthrough,
+    resume_walkthrough, start_walkthrough, stop_walkthrough,
+};

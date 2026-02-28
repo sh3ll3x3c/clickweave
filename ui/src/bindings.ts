@@ -149,6 +149,54 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, st
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async pauseWalkthrough() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pause_walkthrough") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resumeWalkthrough() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resume_walkthrough") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async stopWalkthrough() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_walkthrough") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async cancelWalkthrough() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_walkthrough") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async applyWalkthroughAnnotations(annotations: WalkthroughAnnotations) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("apply_walkthrough_annotations", { annotations }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -162,6 +210,7 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, st
 
 /** user-defined types **/
 
+export type ActionRename = { action_id: string; new_name: string }
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
@@ -273,11 +322,14 @@ export type SwitchParams = {
  */
 cases: SwitchCase[] }
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
+export type TargetOverride = { action_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
 export type TypeTextParams = { text: string }
 export type ValidationResult = { valid: boolean; errors: string[] }
 export type ValueRef = { type: "Variable"; name: string } | { type: "Literal"; value: LiteralValue }
+export type VariablePromotion = { action_id: string; variable_name: string }
+export type WalkthroughAnnotations = { deleted_action_ids: string[]; renamed_actions: ActionRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }
 export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 
