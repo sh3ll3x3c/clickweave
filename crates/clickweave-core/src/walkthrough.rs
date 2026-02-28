@@ -418,11 +418,12 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
     let mut seen_apps: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut last_app: Option<String> = None;
     let mut text_buffer: Vec<(Uuid, u64, String)> = Vec::new();
-    let mut last_ocr: Option<&WalkthroughEventKind> = None;
-    let mut last_screenshot_path: Option<String> = None;
     let mut last_scroll_ts: u64 = 0;
+    let mut i = 0;
 
-    for event in events.iter() {
+    while i < events.len() {
+        let event = &events[i];
+        i += 1;
         match &event.kind {
             WalkthroughEventKind::AppFocused {
                 app_name,
@@ -474,9 +475,30 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             } => {
                 flush_text(&mut text_buffer, &mut actions, &last_app);
 
-                // Find best target candidate from preceding OCR data.
+                // Lookahead: collect enrichment events (screenshot, OCR)
+                // that follow this click before the next action event.
+                let mut screenshot_path: Option<String> = None;
+                let mut ocr_annotations: Option<&Vec<OcrAnnotation>> = None;
+                let mut peek = i;
+                while peek < events.len() {
+                    match &events[peek].kind {
+                        WalkthroughEventKind::ScreenshotCaptured { path, .. } => {
+                            screenshot_path = Some(path.clone());
+                        }
+                        WalkthroughEventKind::OcrCaptured { annotations, .. } => {
+                            ocr_annotations = Some(annotations);
+                        }
+                        // Stop at the next action event.
+                        _ => break,
+                    }
+                    peek += 1;
+                }
+                // Advance past consumed enrichment events.
+                i = peek;
+
+                // Find best target candidate from OCR data.
                 let mut candidates = Vec::new();
-                if let Some(WalkthroughEventKind::OcrCaptured { annotations, .. }) = last_ocr {
+                if let Some(annotations) = ocr_annotations {
                     let mut nearest: Option<(&OcrAnnotation, f64)> = None;
                     for ann in annotations {
                         let dist = ((ann.x - x).powi(2) + (ann.y - y).powi(2)).sqrt();
@@ -524,12 +546,10 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 action.target_candidates = candidates;
                 action.confidence = confidence;
                 action.warnings = click_warnings;
-                if let Some(path) = last_screenshot_path.take() {
+                if let Some(path) = screenshot_path {
                     action.artifact_paths.push(path);
                 }
                 actions.push(action);
-
-                last_ocr = None; // consumed
             }
 
             WalkthroughEventKind::KeyPressed { key, modifiers } => {
@@ -577,14 +597,10 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 last_scroll_ts = event.timestamp;
             }
 
-            WalkthroughEventKind::OcrCaptured { .. } => {
-                // Store for the next click event to use.
-                last_ocr = Some(&event.kind);
-            }
-
-            WalkthroughEventKind::ScreenshotCaptured { path, .. } => {
-                last_screenshot_path = Some(path.clone());
-            }
+            // Enrichment events (OcrCaptured, ScreenshotCaptured) are consumed
+            // by the MouseClicked lookahead above, so standalone occurrences are skipped.
+            WalkthroughEventKind::OcrCaptured { .. }
+            | WalkthroughEventKind::ScreenshotCaptured { .. } => {}
 
             // Skip non-action events.
             WalkthroughEventKind::Paused
@@ -1022,7 +1038,7 @@ mod tests {
             id: Uuid::new_v4(),
             timestamp: 2000,
             kind: WalkthroughEventKind::KeyPressed {
-                key: "Return".into(),
+                key: "return".into(),
                 modifiers: vec![],
             },
         };
@@ -1262,7 +1278,17 @@ mod tests {
         fn test_click_with_nearby_ocr_gets_medium_confidence() {
             let events = vec![
                 make_event(
-                    900,
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 100.0,
+                        y: 200.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1100,
                     WalkthroughEventKind::OcrCaptured {
                         annotations: vec![
                             OcrAnnotation {
@@ -1278,16 +1304,6 @@ mod tests {
                         ],
                         click_x: 100.0,
                         click_y: 200.0,
-                    },
-                ),
-                make_event(
-                    1000,
-                    WalkthroughEventKind::MouseClicked {
-                        x: 100.0,
-                        y: 200.0,
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers: vec![],
                     },
                 ),
             ];
@@ -1334,7 +1350,7 @@ mod tests {
             let events = vec![make_event(
                 1000,
                 WalkthroughEventKind::KeyPressed {
-                    key: "Return".into(),
+                    key: "return".into(),
                     modifiers: vec![],
                 },
             )];
@@ -1342,7 +1358,7 @@ mod tests {
             assert_eq!(actions.len(), 1);
             assert!(matches!(
                 &actions[0].kind,
-                WalkthroughActionKind::PressKey { key, .. } if key == "Return"
+                WalkthroughActionKind::PressKey { key, .. } if key == "return"
             ));
         }
 
@@ -1512,7 +1528,7 @@ mod tests {
                     text: "hello".into(),
                 }),
                 make_action(WalkthroughActionKind::PressKey {
-                    key: "Return".into(),
+                    key: "return".into(),
                     modifiers: vec![],
                 }),
             ];
