@@ -244,26 +244,35 @@ fn build_enhanced_action_node_map(
 }
 
 /// Check if a walkthrough action kind matches a workflow node type.
+///
+/// Handles both built-in node types and MCP tool call nodes (the LLM may
+/// produce tool names like `launch_app` that map to `McpToolCall` rather
+/// than a built-in `FocusWindow`).
 fn action_matches_node(action: &WalkthroughActionKind, node_type: &NodeType) -> bool {
-    matches!(
-        (action, node_type),
-        (
-            WalkthroughActionKind::LaunchApp { .. },
-            NodeType::FocusWindow(_)
-        ) | (
-            WalkthroughActionKind::FocusWindow { .. },
-            NodeType::FocusWindow(_)
-        ) | (WalkthroughActionKind::Click { .. }, NodeType::Click(_))
-            | (
-                WalkthroughActionKind::TypeText { .. },
-                NodeType::TypeText(_)
-            )
-            | (
-                WalkthroughActionKind::PressKey { .. },
-                NodeType::PressKey(_)
-            )
-            | (WalkthroughActionKind::Scroll { .. }, NodeType::Scroll(_))
-    )
+    match (action, node_type) {
+        (WalkthroughActionKind::LaunchApp { .. }, NodeType::FocusWindow(_)) => true,
+        (WalkthroughActionKind::FocusWindow { .. }, NodeType::FocusWindow(_)) => true,
+        (WalkthroughActionKind::Click { .. }, NodeType::Click(_)) => true,
+        (WalkthroughActionKind::TypeText { .. }, NodeType::TypeText(_)) => true,
+        (WalkthroughActionKind::PressKey { .. }, NodeType::PressKey(_)) => true,
+        (WalkthroughActionKind::Scroll { .. }, NodeType::Scroll(_)) => true,
+        // LLM may use MCP tool names that become McpToolCall nodes.
+        (WalkthroughActionKind::LaunchApp { .. }, NodeType::McpToolCall(p)) => {
+            p.tool_name == "launch_app" || p.tool_name == "focus_window"
+        }
+        (WalkthroughActionKind::FocusWindow { .. }, NodeType::McpToolCall(p)) => {
+            p.tool_name == "focus_window" || p.tool_name == "launch_app"
+        }
+        (WalkthroughActionKind::Click { .. }, NodeType::McpToolCall(p)) => p.tool_name == "click",
+        (WalkthroughActionKind::TypeText { .. }, NodeType::McpToolCall(p)) => {
+            p.tool_name == "type_text"
+        }
+        (WalkthroughActionKind::PressKey { .. }, NodeType::McpToolCall(p)) => {
+            p.tool_name == "press_key"
+        }
+        (WalkthroughActionKind::Scroll { .. }, NodeType::McpToolCall(p)) => p.tool_name == "scroll",
+        _ => false,
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────
@@ -425,5 +434,33 @@ mod tests {
         assert_eq!(result.action_node_map.len(), 2);
         assert_eq!(result.action_node_map[0].action_id, actions[0].id);
         assert_eq!(result.action_node_map[0].node_id, deterministic.nodes[0].id);
+    }
+
+    #[tokio::test]
+    async fn enhanced_map_skips_llm_added_nodes() {
+        // LLM adds a verification node between the two action-derived nodes.
+        let llm_output = r#"{"steps": [
+            {"step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Open Calculator"},
+            {"step_type": "Tool", "tool_name": "take_screenshot", "arguments": {"app_name": "Calculator"}, "name": "Verify app launched", "role": "Verification", "expected_outcome": "Calculator is open"},
+            {"step_type": "Tool", "tool_name": "click", "arguments": {"target": "5"}, "name": "Click 5"}
+        ]}"#;
+
+        let backend = MockBackend::new(llm_output);
+        let actions = sample_actions();
+        let deterministic =
+            clickweave_core::walkthrough::synthesize_draft(&actions, uuid::Uuid::new_v4(), "test");
+        let tools = sample_tools();
+
+        let result = generalize_walkthrough(&backend, &deterministic, &actions, &tools).await;
+
+        assert!(!result.used_fallback);
+        // 3 nodes from LLM, but only 2 actions → map has 2 entries.
+        assert_eq!(result.workflow.nodes.len(), 3);
+        assert_eq!(result.action_node_map.len(), 2);
+
+        // First action (LaunchApp) maps to first node (launch_app tool).
+        assert_eq!(result.action_node_map[0].action_id, actions[0].id);
+        // Second action (Click) maps to third node (click tool), skipping the verification.
+        assert_eq!(result.action_node_map[1].action_id, actions[1].id);
     }
 }

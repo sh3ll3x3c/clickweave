@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useStore } from "../store/useAppStore";
+import { isWalkthroughActive } from "../store/slices/walkthroughSlice";
 
 /**
  * Global Escape key handler that closes panels in priority order:
@@ -29,7 +30,7 @@ export function useEscapeKey() {
         toggleLogsDrawer,
       } = useStore.getState();
 
-      const walkthroughActive = walkthroughStatus !== "Idle" && walkthroughStatus !== "Applied" && walkthroughStatus !== "Cancelled";
+      const walkthroughActive = isWalkthroughActive(walkthroughStatus);
 
       if (verdictModalOpen) {
         closeVerdictModal();

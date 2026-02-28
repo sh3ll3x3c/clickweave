@@ -4,6 +4,7 @@ import { commands } from "../../bindings";
 import { makeEmptyConversation } from "../state";
 import { toEndpoint } from "../settings";
 import { edgeOutputToHandle } from "../../utils/edgeHandles";
+import { isWalkthroughActive } from "./walkthroughSlice";
 import type { StoreState } from "./types";
 
 export interface AssistantSlice {
@@ -35,15 +36,25 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   pendingPatchWarnings: [],
 
   setAssistantOpen: (open) => {
-    if (open && get().walkthroughStatus !== "Idle") {
-      get().discardDraft();
+    if (open && isWalkthroughActive(get().walkthroughStatus)) {
+      const status = get().walkthroughStatus;
+      if (status === "Recording" || status === "Paused") {
+        get().cancelWalkthrough();
+      } else {
+        get().discardDraft();
+      }
     }
     set({ assistantOpen: open });
   },
   toggleAssistant: () => {
     const opening = !get().assistantOpen;
-    if (opening && get().walkthroughStatus !== "Idle") {
-      get().discardDraft();
+    if (opening && isWalkthroughActive(get().walkthroughStatus)) {
+      const status = get().walkthroughStatus;
+      if (status === "Recording" || status === "Paused") {
+        get().cancelWalkthrough();
+      } else {
+        get().discardDraft();
+      }
     }
     set({ assistantOpen: opening });
   },

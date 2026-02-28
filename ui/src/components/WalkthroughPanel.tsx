@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import type { WalkthroughAction, TargetCandidate, Node } from "../bindings";
+import { isWalkthroughActive, buildActionByNodeId } from "../store/slices/walkthroughSlice";
 import type { WalkthroughCapturedEvent } from "../store/slices/walkthroughSlice";
 
 function eventDescription(event: WalkthroughCapturedEvent): { icon: string; text: string } {
@@ -148,7 +149,7 @@ export function WalkthroughPanel() {
     feedEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [walkthroughEvents.length]);
 
-  if (walkthroughStatus === "Idle" || walkthroughStatus === "Applied" || walkthroughStatus === "Cancelled") return null;
+  if (!isWalkthroughActive(walkthroughStatus)) return null;
 
   const isRecording = walkthroughStatus === "Recording" || walkthroughStatus === "Paused";
 
@@ -269,16 +270,15 @@ export function WalkthroughPanel() {
   if (walkthroughStatus !== "Review") return null;
 
   // Build action lookup by node_id for metadata (screenshots, candidates, confidence).
-  const actionByNodeId = new Map<string, WalkthroughAction>();
-  for (const entry of walkthroughActionNodeMap) {
-    const action = walkthroughActions.find((a) => a.id === entry.action_id);
-    if (action) actionByNodeId.set(entry.node_id, action);
-  }
+  const actionByNodeId = buildActionByNodeId(walkthroughActionNodeMap, walkthroughActions);
 
   const draftNodes = walkthroughDraft?.nodes ?? [];
-  const activeNodes = draftNodes.filter(
-    (n) => !walkthroughAnnotations.deleted_node_ids.includes(n.id),
-  );
+  const deletedSet = new Set(walkthroughAnnotations.deleted_node_ids);
+  const renameMap = new Map(walkthroughAnnotations.renamed_nodes.map((r) => [r.node_id, r]));
+  const targetMap = new Map(walkthroughAnnotations.target_overrides.map((o) => [o.node_id, o]));
+  const varPromoMap = new Map(walkthroughAnnotations.variable_promotions.map((p) => [p.node_id, p]));
+
+  const activeNodes = draftNodes.filter((n) => !deletedSet.has(n.id));
   const allDeleted = draftNodes.length > 0 && activeNodes.length === 0;
   const warningCount = walkthroughActions.reduce((sum, a) => sum + a.warnings.length, 0) + walkthroughWarnings.length;
 
@@ -286,7 +286,7 @@ export function WalkthroughPanel() {
   const stepNumbers = new Map<string, number>();
   let step = 0;
   for (const n of draftNodes) {
-    if (!walkthroughAnnotations.deleted_node_ids.includes(n.id)) {
+    if (!deletedSet.has(n.id)) {
       stepNumbers.set(n.id, ++step);
     }
   }
@@ -348,23 +348,23 @@ export function WalkthroughPanel() {
           <div className="space-y-1.5">
             {draftNodes.map((node) => {
               const action = actionByNodeId.get(node.id);
-              const isDeleted = walkthroughAnnotations.deleted_node_ids.includes(node.id);
+              const isDeleted = deletedSet.has(node.id);
               const isExpanded = walkthroughExpandedAction === node.id;
               const currentStep = stepNumbers.get(node.id) ?? null;
               const { icon, color } = action ? actionIcon(action.kind) : nodeTypeIcon(node.node_type);
               const isLlmAdded = !action && !walkthroughUsedFallback;
 
               // Get rename if any
-              const renameEntry = walkthroughAnnotations.renamed_nodes.find((r) => r.node_id === node.id);
+              const renameEntry = renameMap.get(node.id);
               const defaultLabel = action ? actionLabel(action) : node.name;
               const displayLabel = renameEntry?.new_name || defaultLabel;
 
               // Get target override if any
-              const targetOverride = walkthroughAnnotations.target_overrides.find((o) => o.node_id === node.id);
+              const targetOverride = targetMap.get(node.id);
               const chosenTargetIdx = targetOverride?.chosen_candidate_index ?? 0;
 
               // Get variable promotion if any
-              const variablePromo = walkthroughAnnotations.variable_promotions.find((p) => p.node_id === node.id);
+              const variablePromo = varPromoMap.get(node.id);
 
               return (
                 <div

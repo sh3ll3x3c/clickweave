@@ -6,6 +6,24 @@ import type { StoreState } from "./types";
 
 export type WalkthroughStatus = "Idle" | "Recording" | "Paused" | "Processing" | "Review" | "Applied" | "Cancelled";
 
+/** Returns true when the walkthrough panel is visible and active (not in a terminal state). */
+export function isWalkthroughActive(status: WalkthroughStatus): boolean {
+  return status !== "Idle" && status !== "Applied" && status !== "Cancelled";
+}
+
+/** Build a lookup map from node_id → WalkthroughAction using the action-node map. */
+export function buildActionByNodeId(
+  actionNodeMap: ActionNodeEntry[],
+  actions: WalkthroughAction[],
+): Map<string, WalkthroughAction> {
+  const map = new Map<string, WalkthroughAction>();
+  for (const entry of actionNodeMap) {
+    const action = actions.find((a) => a.id === entry.action_id);
+    if (action) map.set(entry.node_id, action);
+  }
+  return map;
+}
+
 /** Opaque captured event from the backend (serialized WalkthroughEvent). */
 export type WalkthroughCapturedEvent = Record<string, unknown>;
 
@@ -231,11 +249,12 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     const deletedNodeIds = new Set(ann.deleted_node_ids);
 
     // Build action lookup by node_id for target candidates.
-    const actionByNodeId = new Map<string, WalkthroughAction>();
-    for (const entry of walkthroughActionNodeMap) {
-      const action = walkthroughActions.find((a) => a.id === entry.action_id);
-      if (action) actionByNodeId.set(entry.node_id, action);
-    }
+    const actionByNodeId = buildActionByNodeId(walkthroughActionNodeMap, walkthroughActions);
+
+    // Pre-build annotation lookups for O(1) access in the loop.
+    const renameMap = new Map(ann.renamed_nodes.map((r) => [r.node_id, r]));
+    const targetMap = new Map(ann.target_overrides.map((o) => [o.node_id, o]));
+    const varPromoMap = new Map(ann.variable_promotions.map((p) => [p.node_id, p]));
 
     // Filter and transform nodes.
     const nodes = walkthroughDraft.nodes
@@ -244,11 +263,11 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
         let updated = { ...n };
 
         // Apply rename.
-        const rename = ann.renamed_nodes.find((r) => r.node_id === n.id);
+        const rename = renameMap.get(n.id);
         if (rename) updated = { ...updated, name: rename.new_name };
 
         // Apply target override (Click nodes).
-        const targetOvr = ann.target_overrides.find((o) => o.node_id === n.id);
+        const targetOvr = targetMap.get(n.id);
         if (targetOvr && updated.node_type.type === "Click") {
           const action = actionByNodeId.get(n.id);
           const candidate = action?.target_candidates[targetOvr.chosen_candidate_index];
@@ -268,7 +287,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
         }
 
         // Apply variable promotion (TypeText nodes).
-        const varPromo = ann.variable_promotions.find((p) => p.node_id === n.id);
+        const varPromo = varPromoMap.get(n.id);
         if (varPromo?.variable_name && updated.node_type.type === "TypeText") {
           updated = { ...updated, node_type: { ...updated.node_type, text: `{{${varPromo.variable_name}}}` } };
         }
