@@ -18,6 +18,9 @@ export function useEscapeKey() {
         closeVerdictModal,
         showSettings,
         selectedNode,
+        walkthroughStatus,
+        cancelWalkthrough,
+        discardDraft,
         assistantOpen,
         logsDrawerOpen,
         setShowSettings,
@@ -26,12 +29,22 @@ export function useEscapeKey() {
         toggleLogsDrawer,
       } = useStore.getState();
 
+      const walkthroughActive = walkthroughStatus !== "Idle" && walkthroughStatus !== "Applied" && walkthroughStatus !== "Cancelled";
+
       if (verdictModalOpen) {
         closeVerdictModal();
       } else if (showSettings) {
         setShowSettings(false);
       } else if (selectedNode !== null) {
         selectNode(null);
+      } else if (walkthroughActive) {
+        if (walkthroughStatus === "Review") {
+          discardDraft();
+        } else if (walkthroughStatus === "Recording" || walkthroughStatus === "Paused") {
+          cancelWalkthrough();
+        } else {
+          discardDraft();
+        }
       } else if (assistantOpen) {
         setAssistantOpen(false);
       } else if (logsDrawerOpen) {

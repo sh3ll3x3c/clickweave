@@ -8,6 +8,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { NodeDetailModal } from "./components/node-detail/NodeDetailModal";
 import { AssistantPanel } from "./components/AssistantPanel";
+import { WalkthroughPanel } from "./components/WalkthroughPanel";
 import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
@@ -296,6 +297,8 @@ function App() {
                 onClearConversation={clearConversation}
                 onClose={() => setAssistantOpen(false)}
               />
+
+              <WalkthroughPanel />
 
               <NodePalette
                 nodeTypes={nodeTypes}

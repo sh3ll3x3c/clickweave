@@ -34,8 +34,19 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   pendingPatch: null,
   pendingPatchWarnings: [],
 
-  setAssistantOpen: (open) => set({ assistantOpen: open }),
-  toggleAssistant: () => set((s) => ({ assistantOpen: !s.assistantOpen })),
+  setAssistantOpen: (open) => {
+    if (open && get().walkthroughStatus !== "Idle") {
+      get().discardDraft();
+    }
+    set({ assistantOpen: open });
+  },
+  toggleAssistant: () => {
+    const opening = !get().assistantOpen;
+    if (opening && get().walkthroughStatus !== "Idle") {
+      get().discardDraft();
+    }
+    set({ assistantOpen: opening });
+  },
 
   sendAssistantMessage: async (message) => {
     const { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand, maxRepairAttempts, pushLog } = get();
