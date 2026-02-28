@@ -47,16 +47,19 @@ impl WalkthroughHandle {
         Ok(session)
     }
 
-    fn stop_capture(&mut self) {
+    /// Stop the capture backend and return the processing task handle.
+    ///
+    /// Dropping the event tap closes the channel sender, so the processing
+    /// loop will drain remaining events and exit naturally. The caller
+    /// should await the returned handle (with a timeout) instead of aborting.
+    fn stop_capture(&mut self) -> Option<tauri::async_runtime::JoinHandle<()>> {
         #[cfg(target_os = "macos")]
         if let Some(tap) = self.event_tap.take() {
             tap.send_command(CaptureCommand::Stop);
-            // Drop the tap handle — this joins the thread.
+            // Drop the tap handle — this joins the thread and closes the sender.
             drop(tap);
         }
-        if let Some(task) = self.processing_task.take() {
-            task.abort();
-        }
+        self.processing_task.take()
     }
 }
 
@@ -123,33 +126,49 @@ pub async fn start_walkthrough(
         (session_dir, processing_storage)
     };
 
-    // Start the platform event tap.
-    #[cfg(target_os = "macos")]
-    let (event_tap, event_rx) =
-        MacOSEventTap::start().map_err(|e| format!("Failed to start event tap: {e}"))?;
-
-    // Spawn the async processing loop.
-    let emit_handle = app.clone();
-    let processing_task = tauri::async_runtime::spawn(async move {
-        process_capture_events(
-            emit_handle,
-            event_rx,
-            mcp_command,
-            processing_storage,
-            session_dir,
-        )
-        .await;
-    });
-
-    // Store handles under the lock.
-    {
+    // Helper to roll back session state on failure.
+    let clear_session = |app: &tauri::AppHandle| {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
-        #[cfg(target_os = "macos")]
-        {
-            guard.event_tap = Some(event_tap);
-        }
+        guard.session = None;
+        guard.session_dir = None;
+        guard.storage = None;
+        guard.mcp_command = None;
+    };
+
+    // Start the platform event tap and processing loop.
+    #[cfg(target_os = "macos")]
+    {
+        let (event_tap, event_rx) = match MacOSEventTap::start() {
+            Ok(pair) => pair,
+            Err(e) => {
+                clear_session(&app);
+                return Err(format!("Failed to start event tap: {e}"));
+            }
+        };
+
+        let emit_handle = app.clone();
+        let processing_task = tauri::async_runtime::spawn(async move {
+            process_capture_events(
+                emit_handle,
+                event_rx,
+                mcp_command,
+                processing_storage,
+                session_dir,
+            )
+            .await;
+        });
+
+        let handle = app.state::<Mutex<WalkthroughHandle>>();
+        let mut guard = handle.lock().unwrap();
+        guard.event_tap = Some(event_tap);
         guard.processing_task = Some(processing_task);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        clear_session(&app);
+        return Err("Walkthrough capture is only supported on macOS".to_string());
     }
 
     emit_state(&app, WalkthroughStatus::Recording);
@@ -223,7 +242,7 @@ pub async fn stop_walkthrough(
     app: tauri::AppHandle,
     planner: Option<super::types::EndpointConfig>,
 ) -> Result<(), String> {
-    let (storage, session_dir, workflow_id, mcp_command) = {
+    let (processing_task, storage, session_dir, workflow_id, mcp_command) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
@@ -232,7 +251,7 @@ pub async fn stop_walkthrough(
         session.status = WalkthroughStatus::Processing;
         session.ended_at = Some(now_millis());
 
-        guard.stop_capture();
+        let task = guard.stop_capture();
 
         // Persist the Stopped event.
         if let (Some(storage), Some(dir)) = (&guard.storage, &guard.session_dir) {
@@ -245,6 +264,7 @@ pub async fn stop_walkthrough(
         }
 
         (
+            task,
             guard.storage.clone(),
             guard.session_dir.clone(),
             guard.session.as_ref().unwrap().workflow_id,
@@ -252,6 +272,14 @@ pub async fn stop_walkthrough(
         )
     };
     emit_state(&app, WalkthroughStatus::Processing);
+
+    // Wait for the processing task to drain remaining events (with timeout).
+    if let Some(task) = processing_task {
+        let drain_timeout = tokio::time::Duration::from_secs(5);
+        if tokio::time::timeout(drain_timeout, task).await.is_err() {
+            tracing::warn!("Processing task did not finish draining within timeout");
+        }
+    }
 
     // --- Processing phase (outside the lock) ---
 
@@ -339,6 +367,13 @@ pub async fn stop_walkthrough(
             (draft, map, true, warnings)
         };
 
+    // Persist final draft to disk (overwrites pre-generalization draft).
+    if let (Some(storage), Some(dir)) = (&storage, &session_dir)
+        && let Err(e) = storage.save_draft(dir, &final_draft)
+    {
+        tracing::warn!("Failed to save final draft: {e}");
+    }
+
     // Store results back on the session.
     {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
@@ -424,7 +459,11 @@ pub async fn cancel_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
         return Err("No walkthrough session is active".to_string());
     }
 
-    guard.stop_capture();
+    // For cancel, we don't need to drain — abort immediately.
+    let task = guard.stop_capture();
+    if let Some(task) = task {
+        task.abort();
+    }
     guard.session = None;
     guard.session_dir = None;
     guard.storage = None;
@@ -561,18 +600,6 @@ async fn process_capture_events(
                 click_count,
                 modifiers,
             } => {
-                // Enrich: take screenshot with OCR near the click point.
-                let app_name = app_cache.get(&capture.target_pid).cloned();
-                let enrichment_events = enrich_click(
-                    &mcp,
-                    &session_dir,
-                    x,
-                    y,
-                    app_name.as_deref(),
-                    capture.timestamp,
-                )
-                .await;
-
                 let click_event = WalkthroughEvent {
                     id: Uuid::new_v4(),
                     timestamp: capture.timestamp,
@@ -585,12 +612,29 @@ async fn process_capture_events(
                     },
                 };
 
-                // Emit enrichment events first (screenshot + OCR), then click event.
+                // Persist the click event immediately so it's never lost
+                // if enrichment is slow and the drain timeout expires.
+                persist_and_emit(&app, &storage, &session_dir, &click_event);
+
+                // Enrich: take screenshot with OCR near the click point.
+                let app_name = app_cache.get(&capture.target_pid).cloned();
+                let enrichment_events = enrich_click(
+                    &mcp,
+                    &session_dir,
+                    x,
+                    y,
+                    app_name.as_deref(),
+                    capture.timestamp,
+                )
+                .await;
+
                 for ev in &enrichment_events {
                     persist_and_emit(&app, &storage, &session_dir, ev);
                 }
 
-                click_event
+                // Already persisted above — skip the persist_and_emit at
+                // the bottom of the loop.
+                continue;
             }
 
             CaptureEventKind::KeyDown {

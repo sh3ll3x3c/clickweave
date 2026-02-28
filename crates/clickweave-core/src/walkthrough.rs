@@ -419,6 +419,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
     let mut last_app: Option<String> = None;
     let mut text_buffer: Vec<(Uuid, u64, String)> = Vec::new();
     let mut last_ocr: Option<&WalkthroughEventKind> = None;
+    let mut last_screenshot_path: Option<String> = None;
     let mut last_scroll_ts: u64 = 0;
 
     for event in events.iter() {
@@ -523,6 +524,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 action.target_candidates = candidates;
                 action.confidence = confidence;
                 action.warnings = click_warnings;
+                if let Some(path) = last_screenshot_path.take() {
+                    action.artifact_paths.push(path);
+                }
                 actions.push(action);
 
                 last_ocr = None; // consumed
@@ -578,9 +582,12 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 last_ocr = Some(&event.kind);
             }
 
+            WalkthroughEventKind::ScreenshotCaptured { path, .. } => {
+                last_screenshot_path = Some(path.clone());
+            }
+
             // Skip non-action events.
-            WalkthroughEventKind::ScreenshotCaptured { .. }
-            | WalkthroughEventKind::Paused
+            WalkthroughEventKind::Paused
             | WalkthroughEventKind::Resumed
             | WalkthroughEventKind::Stopped => {}
         }

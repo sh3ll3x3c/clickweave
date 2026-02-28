@@ -295,10 +295,21 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
         return updated;
       });
 
-    // Filter edges — remove any referencing deleted nodes.
-    const edges = walkthroughDraft.edges.filter(
+    // Rebuild edges: keep original edges between non-deleted nodes, and
+    // bridge gaps left by deleted nodes. Walkthrough drafts are linear, so
+    // consecutive non-deleted nodes should be connected.
+    const keptEdges = walkthroughDraft.edges.filter(
       (e) => !deletedNodeIds.has(e.from) && !deletedNodeIds.has(e.to),
     );
+    const connectedPairs = new Set(keptEdges.map((e) => `${e.from}->${e.to}`));
+    const activeNodeIds = nodes.map((n) => n.id);
+    for (let i = 0; i < activeNodeIds.length - 1; i++) {
+      const key = `${activeNodeIds[i]}->${activeNodeIds[i + 1]}`;
+      if (!connectedPairs.has(key)) {
+        keptEdges.push({ from: activeNodeIds[i], to: activeNodeIds[i + 1], output: null });
+      }
+    }
+    const edges = keptEdges;
 
     const modifiedDraft: Workflow = { ...walkthroughDraft, nodes, edges };
 
@@ -320,20 +331,28 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughUsedFallback: false,
       isNewWorkflow: false,
     });
+
+    // Clear the backend session so a new recording can start.
+    commands.cancelWalkthrough().catch(() => {});
   },
 
-  discardDraft: () => set({
-    walkthroughStatus: "Idle",
-    walkthroughActions: [],
-    walkthroughDraft: null,
-    walkthroughWarnings: [],
-    walkthroughAnnotations: { ...emptyAnnotations },
-    walkthroughExpandedAction: null,
-    walkthroughEvents: [],
-    walkthroughActionNodeMap: [],
-    walkthroughUsedFallback: false,
-    walkthroughError: null,
-  }),
+  discardDraft: () => {
+    set({
+      walkthroughStatus: "Idle",
+      walkthroughActions: [],
+      walkthroughDraft: null,
+      walkthroughWarnings: [],
+      walkthroughAnnotations: { ...emptyAnnotations },
+      walkthroughExpandedAction: null,
+      walkthroughEvents: [],
+      walkthroughActionNodeMap: [],
+      walkthroughUsedFallback: false,
+      walkthroughError: null,
+    });
+
+    // Clear the backend session so a new recording can start.
+    commands.cancelWalkthrough().catch(() => {});
+  },
 });
 
 /** Seed the decision cache with app resolution entries from the applied workflow. */

@@ -1,3 +1,4 @@
+use core_foundation::base::TCFType;
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
@@ -5,7 +6,7 @@ use core_graphics::event::{
 };
 use foreign_types::ForeignType;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
@@ -19,6 +20,9 @@ pub struct MacOSEventTap {
     thread: Option<std::thread::JoinHandle<()>>,
     paused: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    /// Raw CFRunLoopRef for the tap thread, used to wake/stop the run loop
+    /// from the control thread. `CFRunLoopStop` is thread-safe.
+    run_loop: Arc<AtomicPtr<std::ffi::c_void>>,
 }
 
 impl MacOSEventTap {
@@ -30,14 +34,16 @@ impl MacOSEventTap {
         let (tx, rx) = mpsc::unbounded_channel();
         let paused = Arc::new(AtomicBool::new(false));
         let stopped = Arc::new(AtomicBool::new(false));
+        let run_loop = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
 
         let paused_clone = paused.clone();
         let stopped_clone = stopped.clone();
+        let run_loop_clone = run_loop.clone();
 
         let thread = std::thread::Builder::new()
             .name("walkthrough-event-tap".into())
             .spawn(move || {
-                run_event_tap(tx, paused_clone, stopped_clone);
+                run_event_tap(tx, paused_clone, stopped_clone, run_loop_clone);
             })
             .map_err(|e| format!("Failed to spawn event tap thread: {e}"))?;
 
@@ -46,6 +52,7 @@ impl MacOSEventTap {
                 thread: Some(thread),
                 paused,
                 stopped,
+                run_loop,
             },
             rx,
         ))
@@ -57,14 +64,18 @@ impl MacOSEventTap {
             CaptureCommand::Resume => self.paused.store(false, Ordering::SeqCst),
             CaptureCommand::Stop => {
                 self.stopped.store(true, Ordering::SeqCst);
-                // Stop the CFRunLoop so the thread can exit.
-                // CFRunLoop::get_current() only works from the tap thread, so
-                // we use CFRunLoopStop from this thread — safe because
-                // CFRunLoopStop is thread-safe when given the right run loop ref.
-                // However, we don't have the run loop ref here, so the tap
-                // thread checks `stopped` and calls CFRunLoop::stop() itself
-                // on each event callback. For immediate stop when idle, we rely
-                // on the timeout-based re-enable mechanism in the tap callback.
+                self.wake_run_loop();
+            }
+        }
+    }
+
+    /// Stop the tap thread's CFRunLoop from any thread.
+    /// `CFRunLoopStop` is thread-safe.
+    fn wake_run_loop(&self) {
+        let rl = self.run_loop.load(Ordering::SeqCst);
+        if !rl.is_null() {
+            unsafe {
+                CFRunLoopStop(rl as *const _);
             }
         }
     }
@@ -73,6 +84,7 @@ impl MacOSEventTap {
 impl Drop for MacOSEventTap {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
+        self.wake_run_loop();
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
         }
@@ -83,6 +95,7 @@ fn run_event_tap(
     tx: mpsc::UnboundedSender<CaptureEvent>,
     paused: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    run_loop_out: Arc<AtomicPtr<std::ffi::c_void>>,
 ) {
     let events_of_interest = vec![
         CGEventType::LeftMouseDown,
@@ -91,6 +104,7 @@ fn run_event_tap(
         CGEventType::ScrollWheel,
     ];
 
+    let stopped_for_check = stopped.clone();
     let tap_result = CGEventTap::new(
         CGEventTapLocation::Session,
         CGEventTapPlacement::HeadInsertEventTap,
@@ -149,6 +163,17 @@ fn run_event_tap(
     unsafe {
         current_loop.add_source(&loop_source, kCFRunLoopCommonModes);
     }
+
+    // Publish the run loop ref so the control thread can call CFRunLoopStop.
+    let raw_rl = current_loop.as_concrete_TypeRef() as *mut std::ffi::c_void;
+    run_loop_out.store(raw_rl, Ordering::SeqCst);
+
+    // Check if stop was already requested before we got here.
+    if stopped_for_check.load(Ordering::SeqCst) {
+        info!("macOS event tap: stop requested before run loop started");
+        return;
+    }
+
     tap.enable();
 
     info!("macOS event tap started");
@@ -301,4 +326,9 @@ unsafe extern "C" {
         actual_len: *mut u64,
         buf: *mut u16,
     );
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRunLoopStop(rl: *const std::ffi::c_void);
 }

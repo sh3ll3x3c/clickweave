@@ -7,28 +7,29 @@ import { isWalkthroughActive, buildActionByNodeId } from "../store/slices/walkth
 import type { WalkthroughCapturedEvent } from "../store/slices/walkthroughSlice";
 
 function eventDescription(event: WalkthroughCapturedEvent): { icon: string; text: string } {
-  const e = event as Record<string, unknown>;
-  const type = (e.type ?? e.event_type ?? "") as string;
+  // The backend serializes WalkthroughEvent as { id, timestamp, kind: { type, ...fields } }.
+  const kind = (event as Record<string, unknown>).kind as Record<string, unknown> | undefined;
+  const type_ = ((kind?.type ?? "") as string);
 
-  if (type === "MouseClicked") {
-    const x = (e.x as number) ?? 0;
-    const y = (e.y as number) ?? 0;
+  if (type_ === "MouseClicked") {
+    const x = (kind?.x as number) ?? 0;
+    const y = (kind?.y as number) ?? 0;
     return { icon: "◉", text: `Clicked at (${Math.round(x)}, ${Math.round(y)})` };
   }
-  if (type === "KeyPressed") {
-    return { icon: "⌥", text: `Pressed ${(e.key as string) ?? "key"}` };
+  if (type_ === "KeyPressed") {
+    return { icon: "⌥", text: `Pressed ${(kind?.key as string) ?? "key"}` };
   }
-  if (type === "TextCommitted") {
-    const text = (e.text as string) ?? "";
+  if (type_ === "TextCommitted") {
+    const text = (kind?.text as string) ?? "";
     return { icon: "⌨", text: `Typed '${text.length > 30 ? text.slice(0, 30) + "…" : text}'` };
   }
-  if (type === "AppFocused") {
-    return { icon: "⬡", text: `Focused ${(e.app_name as string) ?? "app"}` };
+  if (type_ === "AppFocused") {
+    return { icon: "⬡", text: `Focused ${(kind?.app_name as string) ?? "app"}` };
   }
-  if (type === "Scrolled") {
+  if (type_ === "Scrolled") {
     return { icon: "↕", text: "Scrolled" };
   }
-  return { icon: "•", text: type || "Event" };
+  return { icon: "•", text: type_ || "Event" };
 }
 
 function actionIcon(kind: WalkthroughAction["kind"]): { icon: string; color: string } {
@@ -156,9 +157,9 @@ export function WalkthroughPanel() {
   // Derive current focused app from last AppFocused event (backwards scan, no copy)
   let currentApp: string | null = null;
   for (let i = walkthroughEvents.length - 1; i >= 0; i--) {
-    const e = walkthroughEvents[i] as Record<string, unknown>;
-    if (e.type === "AppFocused") {
-      currentApp = (e.app_name as string) ?? null;
+    const kind = (walkthroughEvents[i] as Record<string, unknown>).kind as Record<string, unknown> | undefined;
+    if (kind?.type === "AppFocused") {
+      currentApp = (kind.app_name as string) ?? null;
       break;
     }
   }
