@@ -82,8 +82,8 @@ export interface WalkthroughSlice {
   promoteToVariable: (nodeId: string, variableName: string) => void;
   removeVariablePromotion: (nodeId: string) => void;
   resetAnnotations: () => void;
-  applyDraftToCanvas: () => void;
-  discardDraft: () => void;
+  applyDraftToCanvas: () => Promise<void>;
+  discardDraft: () => Promise<void>;
 }
 
 export const createWalkthroughSlice: StateCreator<StoreState, [], [], WalkthroughSlice> = (set, get) => ({
@@ -240,7 +240,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughExpandedAction: null,
   }),
 
-  applyDraftToCanvas: () => {
+  applyDraftToCanvas: async () => {
     const { walkthroughDraft, walkthroughActions, walkthroughAnnotations: ann,
             walkthroughActionNodeMap } = get();
     if (!walkthroughDraft) return;
@@ -311,13 +311,20 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     }
     const edges = keptEdges;
 
-    const modifiedDraft: Workflow = { ...walkthroughDraft, nodes, edges };
+    // Preserve the existing workflow's name and ID instead of clobbering
+    // them with the draft's placeholder "Walkthrough Draft" title.
+    const { workflow } = get();
+    const modifiedDraft: Workflow = { ...walkthroughDraft, id: workflow.id, name: workflow.name, nodes, edges };
 
     get().pushHistory("Apply Walkthrough");
     get().setWorkflow(modifiedDraft);
 
     // Seed decision cache.
     seedCache(modifiedDraft, get);
+
+    // Clear the backend session before transitioning to Idle so a new
+    // recording started immediately after won't race with the cancel.
+    await commands.cancelWalkthrough().catch(() => {});
 
     set({
       walkthroughStatus: "Idle",
@@ -331,12 +338,13 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughUsedFallback: false,
       isNewWorkflow: false,
     });
-
-    // Clear the backend session so a new recording can start.
-    commands.cancelWalkthrough().catch(() => {});
   },
 
-  discardDraft: () => {
+  discardDraft: async () => {
+    // Clear the backend session before transitioning to Idle so a new
+    // recording started immediately after won't race with the cancel.
+    await commands.cancelWalkthrough().catch(() => {});
+
     set({
       walkthroughStatus: "Idle",
       walkthroughActions: [],
@@ -349,9 +357,6 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughUsedFallback: false,
       walkthroughError: null,
     });
-
-    // Clear the backend session so a new recording can start.
-    commands.cancelWalkthrough().catch(() => {});
   },
 });
 

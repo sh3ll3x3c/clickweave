@@ -414,7 +414,7 @@ fn flush_text(
 /// Returns `(actions, warnings)`. Pure function — no I/O.
 pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>, Vec<String>) {
     let mut actions: Vec<WalkthroughAction> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
+    let warnings: Vec<String> = Vec::new();
     let mut seen_apps: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut last_app: Option<String> = None;
     let mut text_buffer: Vec<(Uuid, u64, String)> = Vec::new();
@@ -612,12 +612,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
     // Flush remaining text buffer.
     flush_text(&mut text_buffer, &mut actions, &last_app);
 
-    // Collect warnings from individual actions.
-    for action in &actions {
-        for w in &action.warnings {
-            warnings.push(w.clone());
-        }
-    }
+    // Per-action warnings are stored on each action and rendered inline in the
+    // review UI. Only top-level (non-action-specific) warnings are returned here
+    // to avoid double-counting in the warning badge and global warning strip.
 
     (actions, warnings)
 }
@@ -719,8 +716,9 @@ pub fn synthesize_draft(
             }
 
             WalkthroughActionKind::TypeText { text } => {
-                let display = if text.len() > 20 {
-                    format!("Type '{}'...", &text[..20])
+                let display = if text.chars().count() > 20 {
+                    let truncated: String = text.chars().take(20).collect();
+                    format!("Type '{truncated}'...")
                 } else {
                     format!("Type '{text}'")
                 };

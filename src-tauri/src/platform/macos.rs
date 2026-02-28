@@ -40,12 +40,21 @@ impl MacOSEventTap {
         let stopped_clone = stopped.clone();
         let run_loop_clone = run_loop.clone();
 
+        // Oneshot for the tap thread to signal whether initialization succeeded.
+        let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+
         let thread = std::thread::Builder::new()
             .name("walkthrough-event-tap".into())
             .spawn(move || {
-                run_event_tap(tx, paused_clone, stopped_clone, run_loop_clone);
+                run_event_tap(tx, paused_clone, stopped_clone, run_loop_clone, init_tx);
             })
             .map_err(|e| format!("Failed to spawn event tap thread: {e}"))?;
+
+        // Wait for the tap thread to report init success or failure.
+        let init_result = init_rx
+            .recv()
+            .map_err(|_| "Event tap thread exited before reporting init status".to_string())?;
+        init_result?;
 
         Ok((
             Self {
@@ -96,6 +105,7 @@ fn run_event_tap(
     paused: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
     run_loop_out: Arc<AtomicPtr<std::ffi::c_void>>,
+    init_tx: std::sync::mpsc::Sender<Result<(), String>>,
 ) {
     let events_of_interest = vec![
         CGEventType::LeftMouseDown,
@@ -142,11 +152,11 @@ fn run_event_tap(
     let tap = match tap_result {
         Ok(tap) => tap,
         Err(()) => {
-            error!(
-                "Failed to create CGEvent tap. \
+            let msg = "Failed to create CGEvent tap. \
                  Ensure Accessibility permissions are granted in \
-                 System Settings > Privacy & Security > Accessibility."
-            );
+                 System Settings > Privacy & Security > Accessibility.";
+            error!("{msg}");
+            let _ = init_tx.send(Err(msg.to_string()));
             return;
         }
     };
@@ -154,7 +164,9 @@ fn run_event_tap(
     let loop_source = match tap.mach_port.create_runloop_source(0) {
         Ok(source) => source,
         Err(()) => {
-            error!("Failed to create CFRunLoop source for event tap");
+            let msg = "Failed to create CFRunLoop source for event tap";
+            error!("{msg}");
+            let _ = init_tx.send(Err(msg.to_string()));
             return;
         }
     };
@@ -167,6 +179,9 @@ fn run_event_tap(
     // Publish the run loop ref so the control thread can call CFRunLoopStop.
     let raw_rl = current_loop.as_concrete_TypeRef() as *mut std::ffi::c_void;
     run_loop_out.store(raw_rl, Ordering::SeqCst);
+
+    // Signal successful initialization before entering the run loop.
+    let _ = init_tx.send(Ok(()));
 
     // Check if stop was already requested before we got here.
     if stopped_for_check.load(Ordering::SeqCst) {

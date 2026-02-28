@@ -126,10 +126,15 @@ pub async fn start_walkthrough(
         (session_dir, processing_storage)
     };
 
-    // Helper to roll back session state on failure.
+    // Helper to roll back session state and clean up the session directory on failure.
     let clear_session = |app: &tauri::AppHandle| {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
+        if let Some(dir) = &guard.session_dir {
+            if let Err(e) = std::fs::remove_dir_all(dir) {
+                tracing::warn!("Failed to clean up session dir on rollback: {e}");
+            }
+        }
         guard.session = None;
         guard.session_dir = None;
         guard.storage = None;
@@ -242,7 +247,7 @@ pub async fn stop_walkthrough(
     app: tauri::AppHandle,
     planner: Option<super::types::EndpointConfig>,
 ) -> Result<(), String> {
-    let (processing_task, storage, session_dir, workflow_id, mcp_command) = {
+    let (processing_task, storage, session_dir, workflow_id, session_id, mcp_command) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
@@ -263,11 +268,13 @@ pub async fn stop_walkthrough(
             let _ = storage.append_event(dir, &event);
         }
 
+        let sess = guard.session.as_ref().unwrap();
         (
             task,
             guard.storage.clone(),
             guard.session_dir.clone(),
-            guard.session.as_ref().unwrap().workflow_id,
+            sess.workflow_id,
+            sess.id,
             guard.mcp_command.clone(),
         )
     };
@@ -374,34 +381,43 @@ pub async fn stop_walkthrough(
         tracing::warn!("Failed to save final draft: {e}");
     }
 
-    // Store results back on the session.
+    // Store results, persist, and emit — all under the same lock acquisition
+    // to prevent cancel_walkthrough() from racing between the session update
+    // and the frontend emission.
     {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
-        if let Some(session) = guard.session.as_mut() {
-            session.actions = actions.clone();
-            session.warnings = all_warnings.clone();
-            session.status = WalkthroughStatus::Review;
+        let same_session = guard.session.as_ref().is_some_and(|s| s.id == session_id);
+        if !same_session {
+            tracing::info!(
+                "Walkthrough session changed during processing (expected {session_id}), skipping review"
+            );
+            return Ok(());
         }
+        let session = guard.session.as_mut().unwrap();
+        session.actions = actions.clone();
+        session.warnings = all_warnings.clone();
+        session.status = WalkthroughStatus::Review;
 
         // Persist the updated session.
-        if let (Some(storage), Some(dir)) = (&guard.storage, &guard.session_dir) {
-            let _ = storage.save_session(dir, guard.session.as_ref().unwrap());
+        if let (Some(storage), Some(dir)) = (&storage, &session_dir) {
+            let _ = storage.save_session(dir, session);
         }
-    }
 
-    // Emit results to frontend.
-    let _ = app.emit(
-        "walkthrough://draft_ready",
-        WalkthroughDraftPayload {
-            actions,
-            draft: final_draft,
-            warnings: all_warnings,
-            action_node_map,
-            used_fallback,
-        },
-    );
-    emit_state(&app, WalkthroughStatus::Review);
+        // Emit results to frontend while still holding the lock, so cancel
+        // cannot interleave between the session update and the emission.
+        let _ = app.emit(
+            "walkthrough://draft_ready",
+            WalkthroughDraftPayload {
+                actions,
+                draft: final_draft,
+                warnings: all_warnings,
+                action_node_map,
+                used_fallback,
+            },
+        );
+        emit_state(&app, WalkthroughStatus::Review);
+    }
 
     tracing::info!("Walkthrough processing complete, entering review");
     Ok(())
@@ -464,6 +480,15 @@ pub async fn cancel_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(task) = task {
         task.abort();
     }
+
+    // Clean up session artifacts from disk (events, screenshots, draft).
+    // The recording may contain typed secrets, so we don't leave it behind.
+    if let Some(dir) = &guard.session_dir {
+        if let Err(e) = std::fs::remove_dir_all(dir) {
+            tracing::warn!("Failed to clean up walkthrough session dir: {e}");
+        }
+    }
+
     guard.session = None;
     guard.session_dir = None;
     guard.storage = None;
