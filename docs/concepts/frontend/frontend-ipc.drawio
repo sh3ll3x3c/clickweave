@@ -12,7 +12,7 @@
     <mxCell id="store_box" value="" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#f5f0ff;strokeColor=#9673a6;dashed=1;" vertex="1" parent="1">
       <mxGeometry x="40" y="100" width="720" height="1300" as="geometry"/>
     </mxCell>
-    <mxCell id="store_title" value="&lt;b&gt;Zustand Store (useAppStore)&lt;/b&gt;&lt;br&gt;Single store composed from 8 slices" style="text;html=1;align=left;verticalAlign=top;strokeColor=none;fillColor=none;fontSize=16;fontColor=#7B1FA2;" vertex="1" parent="1">
+    <mxCell id="store_title" value="&lt;b&gt;Zustand Store (useAppStore)&lt;/b&gt;&lt;br&gt;Single store composed from 9 slices" style="text;html=1;align=left;verticalAlign=top;strokeColor=none;fillColor=none;fontSize=16;fontColor=#7B1FA2;" vertex="1" parent="1">
       <mxGeometry x="60" y="110" width="400" height="45" as="geometry"/>
     </mxCell>
 
@@ -44,8 +44,12 @@
       <mxGeometry x="70" y="770" width="200" height="80" as="geometry"/>
     </mxCell>
 
-    <mxCell id="slice_verdict" value="&lt;b&gt;VerdictSlice&lt;/b&gt;&lt;br&gt;Check verdicts display&lt;br&gt;setVerdicts()" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;spacingLeft=10;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+    <mxCell id="slice_verdict" value="&lt;b&gt;VerdictSlice&lt;/b&gt;&lt;br&gt;Inline verification verdicts&lt;br&gt;setVerdicts(), verdictStatus" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;spacingLeft=10;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
       <mxGeometry x="300" y="770" width="210" height="80" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="slice_walkthrough" value="&lt;b&gt;WalkthroughSlice&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;walkthroughStatus, walkthroughEvents&lt;br&gt;walkthroughDraft, walkthroughAnnotations&lt;br&gt;&lt;br&gt;startWalkthrough(), stopWalkthrough()&lt;br&gt;applyDraftToCanvas(), discardDraft()&lt;br&gt;Recording bar overlay lifecycle" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#fff3e0;strokeColor=#e65100;align=left;spacingLeft=10;spacingRight=10;spacingTop=4;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="540" y="770" width="220" height="190" as="geometry"/>
     </mxCell>
 
     <!-- Mutation hooks -->
@@ -90,8 +94,8 @@
     </mxCell>
 
     <!-- Right-side components -->
-    <mxCell id="comp_detail" value="&lt;b&gt;Node Detail Modal&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;4 tabs:&lt;br&gt;Setup: node params, per-type editors&lt;br&gt;Trace: events + artifact lightbox&lt;br&gt;Checks: check defs + on_fail policy&lt;br&gt;Runs: run history list" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;align=left;spacingLeft=10;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
-      <mxGeometry x="840" y="670" width="300" height="160" as="geometry"/>
+    <mxCell id="comp_detail" value="&lt;b&gt;Node Detail Modal&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;3 tabs:&lt;br&gt;Setup: node params, verification toggle&lt;br&gt;Trace: events + artifact lightbox&lt;br&gt;Runs: run history list" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;align=left;spacingLeft=10;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="840" y="670" width="300" height="140" as="geometry"/>
     </mxCell>
 
     <mxCell id="comp_assistant" value="&lt;b&gt;AssistantPanel&lt;/b&gt;&lt;br&gt;Chat interface for AI planning&lt;br&gt;Sends messages, shows patches&lt;br&gt;Apply/reject workflow changes" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#333333;" vertex="1" parent="1">
@@ -110,8 +114,16 @@
       <mxGeometry x="1180" y="910" width="180" height="55" as="geometry"/>
     </mxCell>
 
-    <mxCell id="comp_verdict" value="&lt;b&gt;VerdictBar&lt;/b&gt;&lt;br&gt;Post-run check results" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#333333;" vertex="1" parent="1">
-      <mxGeometry x="840" y="980" width="180" height="55" as="geometry"/>
+    <mxCell id="comp_verdict" value="&lt;b&gt;VerdictBar + VerdictModal&lt;/b&gt;&lt;br&gt;Inline verification results" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="840" y="980" width="230" height="55" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="comp_walkthrough" value="&lt;b&gt;WalkthroughPanel&lt;/b&gt;&lt;br&gt;Draft review, annotations&lt;br&gt;rename/delete/annotate steps" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#fff3e0;strokeColor=#e65100;fontSize=12;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="840" y="1060" width="250" height="65" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="comp_recording" value="&lt;b&gt;RecordingBarView&lt;/b&gt;&lt;br&gt;Global overlay window&lt;br&gt;Recording controls" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#fff3e0;strokeColor=#e65100;fontSize=12;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="1120" y="1060" width="200" height="65" as="geometry"/>
     </mxCell>
 
     <mxCell id="comp_settings" value="&lt;b&gt;Settings&lt;/b&gt;&lt;br&gt;LLM endpoints, MCP config" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#333333;" vertex="1" parent="1">
@@ -167,6 +179,10 @@
       <mxGeometry x="1580" y="625" width="280" height="80" as="geometry"/>
     </mxCell>
 
+    <mxCell id="cmd_walkthrough" value="&lt;b&gt;Walkthrough commands&lt;/b&gt;&lt;br&gt;startWalkthrough, pauseWalkthrough&lt;br&gt;resumeWalkthrough, stopWalkthrough&lt;br&gt;cancelWalkthrough, getWalkthroughDraft&lt;br&gt;applyWalkthroughAnnotations&lt;br&gt;seedWalkthroughCache" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#fff3e0;strokeColor=#e65100;align=left;spacingLeft=10;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="1900" y="625" width="310" height="150" as="geometry"/>
+    </mxCell>
+
     <!-- Events (backend to frontend) -->
     <mxCell id="evt_title" value="&lt;b&gt;Tauri Events (backend &amp;rarr; frontend)&lt;/b&gt;&lt;br&gt;Subscribed in App.tsx on mount" style="text;html=1;align=left;verticalAlign=top;strokeColor=none;fillColor=none;fontSize=13;fontColor=#666666;" vertex="1" parent="1">
       <mxGeometry x="1970" y="150" width="350" height="40" as="geometry"/>
@@ -180,13 +196,17 @@
       <mxGeometry x="1970" y="480" width="340" height="85" as="geometry"/>
     </mxCell>
 
-    <mxCell id="evt_menu" value="&lt;b&gt;menu://* events&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;menu://new, open, save&lt;br&gt;menu://toggle-sidebar&lt;br&gt;menu://toggle-logs&lt;br&gt;menu://run-workflow&lt;br&gt;menu://stop-workflow&lt;br&gt;menu://toggle-assistant&lt;br&gt;&amp;rarr; delegates to store actions" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=10;spacingTop=4;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
-      <mxGeometry x="1970" y="595" width="300" height="200" as="geometry"/>
+    <mxCell id="evt_walkthrough" value="&lt;b&gt;walkthrough://* events&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;walkthrough://state &amp;rarr; setWalkthroughStatus()&lt;br&gt;walkthrough://event &amp;rarr; pushWalkthroughEvent()&lt;br&gt;walkthrough://draft_ready &amp;rarr; setDraft()&lt;br&gt;recording-bar://action &amp;rarr; dispatch action" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#fff3e0;strokeColor=#e65100;align=left;spacingLeft=10;spacingTop=4;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="1970" y="595" width="370" height="130" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="evt_menu" value="&lt;b&gt;menu://* events&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;menu://new, open, save&lt;br&gt;menu://toggle-logs&lt;br&gt;menu://run-workflow&lt;br&gt;menu://stop-workflow&lt;br&gt;menu://toggle-assistant&lt;br&gt;&amp;rarr; delegates to store actions" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=10;spacingTop=4;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="1970" y="755" width="300" height="180" as="geometry"/>
     </mxCell>
 
     <!-- Tauri backend state -->
-    <mxCell id="backend_state" value="&lt;b&gt;Backend Managed State&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;Mutex&amp;lt;ExecutorHandle&amp;gt;&lt;br&gt;&amp;nbsp; stop_tx: Sender&amp;lt;ExecutorCommand&amp;gt;&lt;br&gt;&amp;nbsp; task_handle: JoinHandle for force_stop&lt;br&gt;&lt;br&gt;Mutex&amp;lt;AssistantHandle&amp;gt;&lt;br&gt;&amp;nbsp; abort: Option&amp;lt;AbortHandle&amp;gt;" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;align=left;spacingLeft=10;spacingRight=10;spacingTop=4;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
-      <mxGeometry x="1580" y="740" width="320" height="170" as="geometry"/>
+    <mxCell id="backend_state" value="&lt;b&gt;Backend Managed State&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;Mutex&amp;lt;ExecutorHandle&amp;gt;&lt;br&gt;&amp;nbsp; stop_tx: Sender&amp;lt;ExecutorCommand&amp;gt;&lt;br&gt;&amp;nbsp; task_handle: JoinHandle for force_stop&lt;br&gt;&lt;br&gt;Mutex&amp;lt;AssistantHandle&amp;gt;&lt;br&gt;&amp;nbsp; abort: Option&amp;lt;AbortHandle&amp;gt;&lt;br&gt;&lt;br&gt;Mutex&amp;lt;WalkthroughHandle&amp;gt;&lt;br&gt;&amp;nbsp; session, event_tap, processing_task" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;align=left;spacingLeft=10;spacingRight=10;spacingTop=4;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="1580" y="810" width="320" height="220" as="geometry"/>
     </mxCell>
 
     <!-- Global shortcut -->

@@ -79,9 +79,17 @@ Each node has an optional `settle_ms` field. After a node executes successfully,
 - Inside loops, `find_text` element name resolution via LLM is deliberately skipped -- accurate found/not-found results are needed for exit conditions, and LLM resolution could mask "not yet on screen" states.
 - Capture traces and artifacts per run so failures are diagnosable.
 
-## Post-Workflow Check Evaluation
+## Inline Verification Verdicts
 
-Nodes can carry checks (assertions about expected outcomes). These are not evaluated inline during execution. Instead, after the graph walk completes, the executor runs a separate check-evaluation pass: it gathers the trace summary and post-node screenshot for each checked node, sends them to the VLM (or the agent LLM if no VLM is configured), and produces pass/fail verdicts. The pass short-circuits on the first hard failure (`FailNode` policy) -- remaining checks are skipped. This is distinct from per-step supervision -- supervision verifies that each step took effect; check evaluation verifies that the workflow produced the right business-level outcomes.
+Nodes can be marked with a Verification role (available on read-only node types: FindText, FindImage, ListWindows, TakeScreenshot). Verification verdicts are evaluated inline during the graph walk, immediately after the node executes -- not in a separate post-run pass.
+
+**Deterministic verdicts** (FindText, FindImage, ListWindows): the MCP tool result is inspected directly. A non-empty result means pass; an empty result means fail. No LLM is involved.
+
+**VLM-based verdicts** (TakeScreenshot): the captured screenshot is sent to the VLM along with the node's `expected_outcome` text. The VLM returns a pass/fail verdict with reasoning.
+
+If any verification verdict is Fail, execution stops immediately (fail-fast). No subsequent nodes run. This gives workflows built-in test assertions that catch failures at the earliest possible point.
+
+This is distinct from per-step supervision -- supervision verifies that each step took effect; verification nodes assert that the workflow produced the right business-level outcomes.
 
 ## Runtime Context
 

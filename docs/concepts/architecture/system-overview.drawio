@@ -42,11 +42,25 @@
       </mxGeometry>
     </mxCell>
 
+    <!-- PHASE 2b: Walkthrough Recording -->
+    <mxCell id="walkthrough" value="&lt;b&gt;Walkthrough Recording&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;User demonstrates the task&lt;br&gt;OS event capture &amp;rarr; normalize&lt;br&gt;&amp;rarr; synthesize &amp;rarr; LLM generalize&lt;br&gt;&amp;rarr; draft workflow + review&lt;/font&gt;" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#fff3e0;strokeColor=#e65100;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="370" y="240" width="210" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="walkthrough_label" value="&lt;font style=&quot;font-size:9px;color:#e65100&quot;&gt;Walkthrough Layer&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+      <mxGeometry x="410" y="340" width="120" height="15" as="geometry"/>
+    </mxCell>
+
     <!-- Edges: Intent flow -->
-    <mxCell id="e_user_planner" style="html=1;edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" source="user" target="planner" parent="1">
+    <mxCell id="e_user_planner" value="&lt;font style=&quot;font-size:10px&quot;&gt;describe&lt;/font&gt;" style="html=1;edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" source="user" target="planner" parent="1">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e_user_walkthrough" value="&lt;font style=&quot;font-size:10px&quot;&gt;demonstrate&lt;/font&gt;" style="html=1;edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#e65100;" edge="1" source="user" target="walkthrough" parent="1">
       <mxGeometry relative="1" as="geometry"/>
     </mxCell>
     <mxCell id="e_planner_wf" style="html=1;edgeStyle=orthogonalEdgeStyle;strokeWidth=2;" edge="1" source="planner" target="workflow" parent="1">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e_walkthrough_wf" style="html=1;edgeStyle=orthogonalEdgeStyle;strokeWidth=2;strokeColor=#e65100;" edge="1" source="walkthrough" target="workflow" parent="1">
       <mxGeometry relative="1" as="geometry"/>
     </mxCell>
 
