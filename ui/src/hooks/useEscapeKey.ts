@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useStore } from "../store/useAppStore";
+import { isWalkthroughActive } from "../store/slices/walkthroughSlice";
 
 /**
  * Global Escape key handler that closes panels in priority order:
@@ -18,6 +19,9 @@ export function useEscapeKey() {
         closeVerdictModal,
         showSettings,
         selectedNode,
+        walkthroughStatus,
+        cancelWalkthrough,
+        discardDraft,
         assistantOpen,
         logsDrawerOpen,
         setShowSettings,
@@ -26,12 +30,22 @@ export function useEscapeKey() {
         toggleLogsDrawer,
       } = useStore.getState();
 
+      const walkthroughActive = isWalkthroughActive(walkthroughStatus);
+
       if (verdictModalOpen) {
         closeVerdictModal();
       } else if (showSettings) {
         setShowSettings(false);
       } else if (selectedNode !== null) {
         selectNode(null);
+      } else if (walkthroughActive) {
+        if (walkthroughStatus === "Review") {
+          discardDraft();
+        } else if (walkthroughStatus === "Recording" || walkthroughStatus === "Paused") {
+          cancelWalkthrough();
+        } else {
+          discardDraft();
+        }
       } else if (assistantOpen) {
         setAssistantOpen(false);
       } else if (logsDrawerOpen) {

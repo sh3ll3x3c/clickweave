@@ -6,6 +6,7 @@ import type { ProjectSlice } from "./projectSlice";
 import type { SettingsSlice } from "./settingsSlice";
 import type { UiSlice } from "./uiSlice";
 import type { VerdictSlice } from "./verdictSlice";
+import type { WalkthroughSlice } from "./walkthroughSlice";
 
 export type StoreState = AssistantSlice &
   ExecutionSlice &
@@ -14,4 +15,5 @@ export type StoreState = AssistantSlice &
   ProjectSlice &
   SettingsSlice &
   UiSlice &
-  VerdictSlice;
+  VerdictSlice &
+  WalkthroughSlice;

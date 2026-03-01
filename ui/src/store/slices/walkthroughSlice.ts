@@ -1,0 +1,383 @@
+import type { StateCreator } from "zustand";
+import { commands } from "../../bindings";
+import type { Node, NodeRename, NodeType, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
+import { toEndpoint } from "../settings";
+import type { StoreState } from "./types";
+
+export type WalkthroughStatus = "Idle" | "Recording" | "Paused" | "Processing" | "Review" | "Applied" | "Cancelled";
+
+/** Returns true when the walkthrough panel is visible and active (not in a terminal state). */
+export function isWalkthroughActive(status: WalkthroughStatus): boolean {
+  return status !== "Idle" && status !== "Applied" && status !== "Cancelled";
+}
+
+/** Build a lookup map from node_id → WalkthroughAction using the action-node map. */
+export function buildActionByNodeId(
+  actionNodeMap: ActionNodeEntry[],
+  actions: WalkthroughAction[],
+): Map<string, WalkthroughAction> {
+  const map = new Map<string, WalkthroughAction>();
+  for (const entry of actionNodeMap) {
+    const action = actions.find((a) => a.id === entry.action_id);
+    if (action) map.set(entry.node_id, action);
+  }
+  return map;
+}
+
+/** Opaque captured event from the backend (serialized WalkthroughEvent). */
+export type WalkthroughCapturedEvent = Record<string, unknown>;
+
+/** Maps a walkthrough action to its corresponding workflow node. */
+export interface ActionNodeEntry {
+  action_id: string;
+  node_id: string;
+}
+
+/** Upsert an entry into an annotation array, matching by node_id. */
+function upsertAnnotation<T extends { node_id: string }>(arr: T[], entry: T): T[] {
+  const idx = arr.findIndex((item) => item.node_id === entry.node_id);
+  return idx >= 0 ? arr.map((item, i) => (i === idx ? entry : item)) : [...arr, entry];
+}
+
+const emptyAnnotations: WalkthroughAnnotations = {
+  deleted_node_ids: [],
+  renamed_nodes: [],
+  target_overrides: [],
+  variable_promotions: [],
+};
+
+export interface WalkthroughSlice {
+  walkthroughStatus: WalkthroughStatus;
+  walkthroughError: string | null;
+  walkthroughEvents: WalkthroughCapturedEvent[];
+  walkthroughActions: WalkthroughAction[];
+  walkthroughDraft: Workflow | null;
+  walkthroughWarnings: string[];
+  walkthroughAnnotations: WalkthroughAnnotations;
+  walkthroughExpandedAction: string | null;
+  walkthroughActionNodeMap: ActionNodeEntry[];
+  walkthroughUsedFallback: boolean;
+
+  setWalkthroughStatus: (status: WalkthroughStatus) => void;
+  pushWalkthroughEvent: (event: WalkthroughCapturedEvent) => void;
+  setWalkthroughDraft: (payload: {
+    actions: WalkthroughAction[];
+    draft: Workflow | null;
+    warnings: string[];
+    action_node_map: ActionNodeEntry[];
+    used_fallback: boolean;
+  }) => void;
+  fetchWalkthroughDraft: () => Promise<void>;
+  startWalkthrough: () => Promise<void>;
+  pauseWalkthrough: () => Promise<void>;
+  resumeWalkthrough: () => Promise<void>;
+  stopWalkthrough: () => Promise<void>;
+  cancelWalkthrough: () => Promise<void>;
+
+  setWalkthroughExpandedAction: (id: string | null) => void;
+  deleteNode: (nodeId: string) => void;
+  restoreNode: (nodeId: string) => void;
+  renameNode: (nodeId: string, newName: string) => void;
+  overrideTarget: (nodeId: string, candidateIndex: number) => void;
+  promoteToVariable: (nodeId: string, variableName: string) => void;
+  removeVariablePromotion: (nodeId: string) => void;
+  resetAnnotations: () => void;
+  applyDraftToCanvas: () => Promise<void>;
+  discardDraft: () => Promise<void>;
+}
+
+export const createWalkthroughSlice: StateCreator<StoreState, [], [], WalkthroughSlice> = (set, get) => ({
+  walkthroughStatus: "Idle",
+  walkthroughError: null,
+  walkthroughEvents: [],
+  walkthroughActions: [],
+  walkthroughDraft: null,
+  walkthroughWarnings: [],
+  walkthroughAnnotations: { ...emptyAnnotations },
+  walkthroughExpandedAction: null,
+  walkthroughActionNodeMap: [],
+  walkthroughUsedFallback: false,
+
+  setWalkthroughStatus: (status) => set({ walkthroughStatus: status }),
+
+  pushWalkthroughEvent: (event) => set((s) => ({
+    walkthroughEvents: [...s.walkthroughEvents, event],
+  })),
+
+  setWalkthroughDraft: ({ actions, draft, warnings, action_node_map, used_fallback }) => set({
+    walkthroughActions: actions,
+    walkthroughDraft: draft,
+    walkthroughWarnings: warnings,
+    walkthroughActionNodeMap: action_node_map,
+    walkthroughUsedFallback: used_fallback,
+    walkthroughStatus: "Review",
+    walkthroughAnnotations: { ...emptyAnnotations },
+  }),
+
+  fetchWalkthroughDraft: async () => {
+    const result = await commands.getWalkthroughDraft();
+    if (result.status === "ok") {
+      set({
+        walkthroughActions: result.data.actions,
+        walkthroughDraft: result.data.draft ?? null,
+        walkthroughWarnings: result.data.warnings,
+        walkthroughStatus: "Review",
+      });
+    }
+  },
+
+  startWalkthrough: async () => {
+    const { workflow, mcpCommand, projectPath, pushLog } = get();
+    set({
+      walkthroughError: null,
+      walkthroughEvents: [],
+      walkthroughAnnotations: { ...emptyAnnotations },
+      walkthroughExpandedAction: null,
+      walkthroughActionNodeMap: [],
+      walkthroughUsedFallback: false,
+      assistantOpen: false,
+    });
+    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null);
+    if (result.status === "error") {
+      set({ walkthroughError: result.error });
+      pushLog(`Walkthrough start failed: ${result.error}`);
+    }
+  },
+
+  pauseWalkthrough: async () => {
+    const { pushLog } = get();
+    const result = await commands.pauseWalkthrough();
+    if (result.status === "error") {
+      pushLog(`Walkthrough pause failed: ${result.error}`);
+    }
+  },
+
+  resumeWalkthrough: async () => {
+    const { pushLog } = get();
+    const result = await commands.resumeWalkthrough();
+    if (result.status === "error") {
+      pushLog(`Walkthrough resume failed: ${result.error}`);
+    }
+  },
+
+  stopWalkthrough: async () => {
+    const { pushLog, plannerConfig } = get();
+    const planner = plannerConfig.baseUrl && plannerConfig.model
+      ? toEndpoint(plannerConfig)
+      : null;
+    const result = await commands.stopWalkthrough(planner);
+    if (result.status === "error") {
+      pushLog(`Walkthrough stop failed: ${result.error}`);
+    }
+  },
+
+  cancelWalkthrough: async () => {
+    const { pushLog } = get();
+    set({
+      walkthroughEvents: [],
+      walkthroughActions: [],
+      walkthroughDraft: null,
+      walkthroughWarnings: [],
+      walkthroughAnnotations: { ...emptyAnnotations },
+      walkthroughExpandedAction: null,
+      walkthroughActionNodeMap: [],
+      walkthroughUsedFallback: false,
+    });
+    const result = await commands.cancelWalkthrough();
+    if (result.status === "error") {
+      pushLog(`Walkthrough cancel failed: ${result.error}`);
+    }
+  },
+
+  setWalkthroughExpandedAction: (id) => set((s) => ({
+    walkthroughExpandedAction: s.walkthroughExpandedAction === id ? null : id,
+  })),
+
+  deleteNode: (nodeId) => set((s) => ({
+    walkthroughAnnotations: {
+      ...s.walkthroughAnnotations,
+      deleted_node_ids: [...s.walkthroughAnnotations.deleted_node_ids, nodeId],
+    },
+  })),
+
+  restoreNode: (nodeId) => set((s) => ({
+    walkthroughAnnotations: {
+      ...s.walkthroughAnnotations,
+      deleted_node_ids: s.walkthroughAnnotations.deleted_node_ids.filter((id) => id !== nodeId),
+    },
+  })),
+
+  renameNode: (nodeId, newName) => set((s) => ({
+    walkthroughAnnotations: {
+      ...s.walkthroughAnnotations,
+      renamed_nodes: upsertAnnotation(s.walkthroughAnnotations.renamed_nodes, { node_id: nodeId, new_name: newName }),
+    },
+  })),
+
+  overrideTarget: (nodeId, candidateIndex) => set((s) => ({
+    walkthroughAnnotations: {
+      ...s.walkthroughAnnotations,
+      target_overrides: upsertAnnotation(s.walkthroughAnnotations.target_overrides, { node_id: nodeId, chosen_candidate_index: candidateIndex }),
+    },
+  })),
+
+  promoteToVariable: (nodeId, variableName) => set((s) => ({
+    walkthroughAnnotations: {
+      ...s.walkthroughAnnotations,
+      variable_promotions: upsertAnnotation(s.walkthroughAnnotations.variable_promotions, { node_id: nodeId, variable_name: variableName }),
+    },
+  })),
+
+  removeVariablePromotion: (nodeId) => set((s) => ({
+    walkthroughAnnotations: {
+      ...s.walkthroughAnnotations,
+      variable_promotions: s.walkthroughAnnotations.variable_promotions.filter((p) => p.node_id !== nodeId),
+    },
+  })),
+
+  resetAnnotations: () => set({
+    walkthroughAnnotations: { ...emptyAnnotations },
+    walkthroughExpandedAction: null,
+  }),
+
+  applyDraftToCanvas: async () => {
+    const { walkthroughDraft, walkthroughActions, walkthroughAnnotations: ann,
+            walkthroughActionNodeMap } = get();
+    if (!walkthroughDraft) return;
+
+    // Collect deleted node IDs directly (annotations already use node_id).
+    const deletedNodeIds = new Set(ann.deleted_node_ids);
+
+    // Build action lookup by node_id for target candidates.
+    const actionByNodeId = buildActionByNodeId(walkthroughActionNodeMap, walkthroughActions);
+
+    // Pre-build annotation lookups for O(1) access in the loop.
+    const renameMap = new Map(ann.renamed_nodes.map((r) => [r.node_id, r]));
+    const targetMap = new Map(ann.target_overrides.map((o) => [o.node_id, o]));
+    const varPromoMap = new Map(ann.variable_promotions.map((p) => [p.node_id, p]));
+
+    // Filter and transform nodes.
+    const nodes = walkthroughDraft.nodes
+      .filter((n) => !deletedNodeIds.has(n.id))
+      .map((n): Node => {
+        let updated = { ...n };
+
+        // Apply rename.
+        const rename = renameMap.get(n.id);
+        if (rename) updated = { ...updated, name: rename.new_name };
+
+        // Apply target override (Click nodes).
+        const targetOvr = targetMap.get(n.id);
+        if (targetOvr && updated.node_type.type === "Click") {
+          const action = actionByNodeId.get(n.id);
+          const candidate = action?.target_candidates[targetOvr.chosen_candidate_index];
+          if (candidate) {
+            let nodeType: NodeType;
+            if (candidate.type === "AccessibilityLabel") {
+              nodeType = { ...updated.node_type, target: candidate.label, x: null, y: null };
+            } else if (candidate.type === "OcrText") {
+              nodeType = { ...updated.node_type, target: candidate.text, x: null, y: null };
+            } else if (candidate.type === "Coordinates") {
+              nodeType = { ...updated.node_type, target: null, x: candidate.x, y: candidate.y };
+            } else {
+              nodeType = updated.node_type;
+            }
+            updated = { ...updated, node_type: nodeType };
+          }
+        }
+
+        // Apply variable promotion (TypeText nodes).
+        const varPromo = varPromoMap.get(n.id);
+        if (varPromo?.variable_name && updated.node_type.type === "TypeText") {
+          updated = { ...updated, node_type: { ...updated.node_type, text: `{{${varPromo.variable_name}}}` } };
+        }
+
+        return updated;
+      });
+
+    // Rebuild edges: keep original edges between non-deleted nodes, and
+    // bridge gaps left by deleted nodes. Walkthrough drafts are linear, so
+    // consecutive non-deleted nodes should be connected.
+    const keptEdges = walkthroughDraft.edges.filter(
+      (e) => !deletedNodeIds.has(e.from) && !deletedNodeIds.has(e.to),
+    );
+    const connectedPairs = new Set(keptEdges.map((e) => `${e.from}->${e.to}`));
+    const activeNodeIds = nodes.map((n) => n.id);
+    for (let i = 0; i < activeNodeIds.length - 1; i++) {
+      const key = `${activeNodeIds[i]}->${activeNodeIds[i + 1]}`;
+      if (!connectedPairs.has(key)) {
+        keptEdges.push({ from: activeNodeIds[i], to: activeNodeIds[i + 1], output: null });
+      }
+    }
+    const edges = keptEdges;
+
+    // Preserve the existing workflow's name and ID instead of clobbering
+    // them with the draft's placeholder "Walkthrough Draft" title.
+    const { workflow } = get();
+    const modifiedDraft: Workflow = { ...walkthroughDraft, id: workflow.id, name: workflow.name, nodes, edges };
+
+    get().pushHistory("Apply Walkthrough");
+    get().setWorkflow(modifiedDraft);
+
+    // Seed decision cache.
+    seedCache(modifiedDraft, get);
+
+    // Clear the backend session before transitioning to Idle so a new
+    // recording started immediately after won't race with the cancel.
+    await commands.cancelWalkthrough().catch(() => {});
+
+    set({
+      walkthroughStatus: "Idle",
+      walkthroughActions: [],
+      walkthroughDraft: null,
+      walkthroughWarnings: [],
+      walkthroughAnnotations: { ...emptyAnnotations },
+      walkthroughExpandedAction: null,
+      walkthroughEvents: [],
+      walkthroughActionNodeMap: [],
+      walkthroughUsedFallback: false,
+      isNewWorkflow: false,
+    });
+  },
+
+  discardDraft: async () => {
+    // Clear the backend session before transitioning to Idle so a new
+    // recording started immediately after won't race with the cancel.
+    await commands.cancelWalkthrough().catch(() => {});
+
+    set({
+      walkthroughStatus: "Idle",
+      walkthroughActions: [],
+      walkthroughDraft: null,
+      walkthroughWarnings: [],
+      walkthroughAnnotations: { ...emptyAnnotations },
+      walkthroughExpandedAction: null,
+      walkthroughEvents: [],
+      walkthroughActionNodeMap: [],
+      walkthroughUsedFallback: false,
+      walkthroughError: null,
+    });
+  },
+});
+
+/** Seed the decision cache with app resolution entries from the applied workflow. */
+async function seedCache(workflow: Workflow, get: () => StoreState) {
+  const entries: { node_id: string; app_name: string }[] = [];
+  for (const node of workflow.nodes) {
+    if (node.node_type.type === "FocusWindow" && node.node_type.value) {
+      entries.push({ node_id: node.id, app_name: node.node_type.value });
+    }
+  }
+  if (entries.length === 0) return;
+
+  const { projectPath } = get();
+  const result = await commands.seedWalkthroughCache(
+    workflow.id,
+    workflow.name,
+    projectPath ?? null,
+    entries,
+  );
+  if (result.status === "error") {
+    console.warn("Cache seeding failed:", result.error);
+  }
+}

@@ -8,6 +8,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { NodeDetailModal } from "./components/node-detail/NodeDetailModal";
 import { AssistantPanel } from "./components/AssistantPanel";
+import { WalkthroughPanel } from "./components/WalkthroughPanel";
 import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
@@ -181,6 +182,25 @@ function App() {
       listen("assistant://repairing", () => {
         useStore.setState({ assistantRetrying: true });
       }),
+      listen<{ status: string }>("walkthrough://state", (e) => {
+        useStore.getState().setWalkthroughStatus(
+          e.payload.status as import("./store/slices/walkthroughSlice").WalkthroughStatus,
+        );
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      listen<{ event: any }>("walkthrough://event", (e) => {
+        useStore.getState().pushWalkthroughEvent(e.payload.event);
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      listen<{ actions: any[]; draft: any; warnings: string[]; action_node_map: any[]; used_fallback: boolean }>("walkthrough://draft_ready", (e) => {
+        useStore.getState().setWalkthroughDraft({
+          actions: e.payload.actions,
+          draft: e.payload.draft,
+          warnings: e.payload.warnings,
+          action_node_map: e.payload.action_node_map ?? [],
+          used_fallback: e.payload.used_fallback ?? true,
+        });
+      }),
     ]).catch((err) => {
       console.error("Failed to subscribe to Tauri events:", err);
       useStore.getState().pushLog(`Critical: event listeners failed to initialize: ${err}`);
@@ -222,6 +242,10 @@ function App() {
                 sendAssistantMessage(intent);
               }}
               onSkip={skipIntentEntry}
+              onRecordWalkthrough={() => {
+                skipIntentEntry();
+                useStore.getState().startWalkthrough();
+              }}
               loading={assistantLoading}
             />
           ) : (
@@ -275,6 +299,8 @@ function App() {
                 onClearConversation={clearConversation}
                 onClose={() => setAssistantOpen(false)}
               />
+
+              <WalkthroughPanel />
 
               <NodePalette
                 nodeTypes={nodeTypes}

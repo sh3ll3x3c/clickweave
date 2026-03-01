@@ -1,0 +1,1559 @@
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::MouseButton;
+use crate::storage::{append_jsonl, format_timestamped_dirname, now_millis, write_json_pretty};
+
+// --- Session ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct WalkthroughSession {
+    pub id: Uuid,
+    pub workflow_id: Uuid,
+    pub started_at: u64,
+    pub ended_at: Option<u64>,
+    pub status: WalkthroughStatus,
+    #[serde(skip)]
+    pub events: Vec<WalkthroughEvent>,
+    #[serde(skip)]
+    pub actions: Vec<WalkthroughAction>,
+    pub warnings: Vec<String>,
+}
+
+impl WalkthroughSession {
+    pub fn new(workflow_id: Uuid) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            workflow_id,
+            started_at: now_millis(),
+            ended_at: None,
+            status: WalkthroughStatus::Recording,
+            events: Vec::new(),
+            actions: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum WalkthroughStatus {
+    #[default]
+    Idle,
+    Recording,
+    Paused,
+    Processing,
+    Review,
+    Applied,
+    Cancelled,
+}
+
+// --- Raw capture events ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct OcrAnnotation {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct WalkthroughEvent {
+    pub id: Uuid,
+    pub timestamp: u64,
+    pub kind: WalkthroughEventKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "type")]
+pub enum WalkthroughEventKind {
+    AppFocused {
+        app_name: String,
+        pid: i32,
+        window_title: Option<String>,
+    },
+    MouseClicked {
+        x: f64,
+        y: f64,
+        button: MouseButton,
+        click_count: u32,
+        modifiers: Vec<String>,
+    },
+    KeyPressed {
+        key: String,
+        modifiers: Vec<String>,
+    },
+    TextCommitted {
+        text: String,
+    },
+    Scrolled {
+        delta_y: f64,
+        x: Option<f64>,
+        y: Option<f64>,
+    },
+    ScreenshotCaptured {
+        path: String,
+        kind: ScreenshotKind,
+    },
+    OcrCaptured {
+        annotations: Vec<OcrAnnotation>,
+        click_x: f64,
+        click_y: f64,
+    },
+    Paused,
+    Resumed,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum ScreenshotKind {
+    BeforeClick,
+    AfterClick,
+    ClickCrop,
+}
+
+// --- Normalized semantic actions ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct WalkthroughAction {
+    pub id: Uuid,
+    pub kind: WalkthroughActionKind,
+    pub app_name: Option<String>,
+    pub window_title: Option<String>,
+    pub target_candidates: Vec<TargetCandidate>,
+    pub artifact_paths: Vec<String>,
+    pub source_event_ids: Vec<Uuid>,
+    pub confidence: ActionConfidence,
+    pub warnings: Vec<String>,
+}
+
+impl WalkthroughAction {
+    /// Create a new action with default fields (high confidence, no candidates/artifacts/warnings).
+    fn new(
+        kind: WalkthroughActionKind,
+        app_name: Option<String>,
+        source_event_ids: Vec<Uuid>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind,
+            app_name,
+            window_title: None,
+            target_candidates: vec![],
+            artifact_paths: vec![],
+            source_event_ids,
+            confidence: ActionConfidence::High,
+            warnings: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "type")]
+pub enum WalkthroughActionKind {
+    LaunchApp {
+        app_name: String,
+    },
+    FocusWindow {
+        app_name: String,
+        window_title: Option<String>,
+    },
+    Click {
+        x: f64,
+        y: f64,
+        button: MouseButton,
+        click_count: u32,
+    },
+    TypeText {
+        text: String,
+    },
+    PressKey {
+        key: String,
+        modifiers: Vec<String>,
+    },
+    Scroll {
+        delta_y: f64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "type")]
+pub enum TargetCandidate {
+    AccessibilityLabel { label: String, role: Option<String> },
+    OcrText { text: String },
+    ImageCrop { path: String },
+    Coordinates { x: f64, y: f64 },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum ActionConfidence {
+    High,
+    #[default]
+    Medium,
+    Low,
+}
+
+// --- Review annotations ---
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct WalkthroughAnnotations {
+    pub deleted_node_ids: Vec<Uuid>,
+    pub renamed_nodes: Vec<NodeRename>,
+    pub target_overrides: Vec<TargetOverride>,
+    pub variable_promotions: Vec<VariablePromotion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct NodeRename {
+    pub node_id: Uuid,
+    pub new_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct TargetOverride {
+    pub node_id: Uuid,
+    pub chosen_candidate_index: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct VariablePromotion {
+    pub node_id: Uuid,
+    pub variable_name: String,
+}
+
+/// Maps a walkthrough action to its corresponding workflow node in the draft.
+/// For deterministic drafts this is 1:1. For LLM-enhanced drafts, some actions
+/// may have no node (removed as redundant) and some nodes may have no action
+/// (LLM-added verification nodes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct ActionNodeEntry {
+    pub action_id: Uuid,
+    pub node_id: Uuid,
+}
+
+/// Build a 1:1 action→node mapping for a deterministic draft where
+/// actions and nodes are in the same order.
+pub fn build_action_node_map(
+    actions: &[WalkthroughAction],
+    workflow: &crate::Workflow,
+) -> Vec<ActionNodeEntry> {
+    actions
+        .iter()
+        .zip(workflow.nodes.iter())
+        .map(|(a, n)| ActionNodeEntry {
+            action_id: a.id,
+            node_id: n.id,
+        })
+        .collect()
+}
+
+// --- Walkthrough storage ---
+
+/// Manages on-disk storage for walkthrough session data and artifacts.
+///
+/// Directory layout:
+/// ```text
+/// walkthroughs/<timestamp>_<shortid>/
+///   session.json
+///   events.jsonl
+///   actions.json
+///   draft.json
+///   artifacts/
+/// ```
+#[derive(Clone)]
+pub struct WalkthroughStorage {
+    base_path: std::path::PathBuf,
+}
+
+impl WalkthroughStorage {
+    /// Create storage for a saved project.
+    ///
+    /// Path: `<project>/.clickweave/walkthroughs/`
+    pub fn new(project_path: &std::path::Path) -> Self {
+        Self {
+            base_path: project_path.join(".clickweave").join("walkthroughs"),
+        }
+    }
+
+    /// Create storage for an unsaved project (app data fallback).
+    ///
+    /// Path: `<app_data>/walkthroughs/`
+    pub fn new_app_data(app_data_dir: &std::path::Path) -> Self {
+        Self {
+            base_path: app_data_dir.join("walkthroughs"),
+        }
+    }
+
+    /// Create a directory for a new walkthrough session.
+    /// Returns the full path to the session directory.
+    pub fn create_session_dir(
+        &self,
+        session: &WalkthroughSession,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        let dirname = format_timestamped_dirname(session.started_at, session.id);
+        let session_dir = self.base_path.join(&dirname);
+        std::fs::create_dir_all(session_dir.join("artifacts"))
+            .map_err(|e| anyhow::anyhow!("Failed to create walkthrough session directory: {e}"))?;
+
+        Ok(session_dir)
+    }
+
+    /// Save the session metadata to `session.json`.
+    ///
+    /// Note: `events` and `actions` are skipped during serialization —
+    /// they live in `events.jsonl` and `actions.json` respectively.
+    pub fn save_session(
+        &self,
+        session_dir: &std::path::Path,
+        session: &WalkthroughSession,
+    ) -> anyhow::Result<()> {
+        write_json_pretty(&session_dir.join("session.json"), session)
+    }
+
+    /// Append a raw event to `events.jsonl`.
+    pub fn append_event(
+        &self,
+        session_dir: &std::path::Path,
+        event: &WalkthroughEvent,
+    ) -> anyhow::Result<()> {
+        append_jsonl(&session_dir.join("events.jsonl"), event)
+    }
+
+    /// Save the normalized actions to `actions.json`.
+    pub fn save_actions(
+        &self,
+        session_dir: &std::path::Path,
+        actions: &[WalkthroughAction],
+    ) -> anyhow::Result<()> {
+        write_json_pretty(&session_dir.join("actions.json"), actions)
+    }
+
+    /// Save a workflow draft to `draft.json`.
+    pub fn save_draft(
+        &self,
+        session_dir: &std::path::Path,
+        draft: &crate::Workflow,
+    ) -> anyhow::Result<()> {
+        write_json_pretty(&session_dir.join("draft.json"), draft)
+    }
+
+    /// Read all events from `events.jsonl` in a session directory.
+    pub fn read_events(
+        &self,
+        session_dir: &std::path::Path,
+    ) -> anyhow::Result<Vec<WalkthroughEvent>> {
+        let path = session_dir.join("events.jsonl");
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(anyhow::anyhow!("Failed to read events.jsonl: {e}")),
+        };
+        let mut events = Vec::new();
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event: WalkthroughEvent = serde_json::from_str(line)
+                .map_err(|e| anyhow::anyhow!("Failed to parse event line: {e}"))?;
+            events.push(event);
+        }
+        Ok(events)
+    }
+
+    pub fn base_path(&self) -> &std::path::Path {
+        &self.base_path
+    }
+}
+
+// --- Event normalization ---
+
+/// Idle gap threshold for text coalescing (milliseconds).
+const TEXT_IDLE_GAP_MS: u64 = 2000;
+
+/// Maximum distance (pixels) for matching OCR text to a click point.
+const OCR_PROXIMITY_PX: f64 = 50.0;
+
+/// Maximum gap between scroll events to coalesce (milliseconds).
+const SCROLL_COALESCE_GAP_MS: u64 = 300;
+
+/// Flush accumulated text buffer into a single TypeText action.
+fn flush_text(
+    buf: &mut Vec<(Uuid, u64, String)>,
+    actions: &mut Vec<WalkthroughAction>,
+    current_app: &Option<String>,
+) {
+    if buf.is_empty() {
+        return;
+    }
+    let text: String = buf.iter().map(|(_, _, t)| t.as_str()).collect();
+    let source_ids: Vec<Uuid> = buf.iter().map(|(id, _, _)| *id).collect();
+    actions.push(WalkthroughAction::new(
+        WalkthroughActionKind::TypeText { text },
+        current_app.clone(),
+        source_ids,
+    ));
+    buf.clear();
+}
+
+/// Normalize raw walkthrough events into semantic actions.
+///
+/// Returns `(actions, warnings)`. Pure function — no I/O.
+pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>, Vec<String>) {
+    let mut actions: Vec<WalkthroughAction> = Vec::new();
+    let warnings: Vec<String> = Vec::new();
+    let mut seen_apps: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut last_app: Option<String> = None;
+    let mut text_buffer: Vec<(Uuid, u64, String)> = Vec::new();
+    let mut last_scroll_ts: u64 = 0;
+    let mut i = 0;
+
+    while i < events.len() {
+        let event = &events[i];
+        i += 1;
+        match &event.kind {
+            WalkthroughEventKind::AppFocused {
+                app_name,
+                window_title,
+                ..
+            } => {
+                flush_text(&mut text_buffer, &mut actions, &last_app);
+
+                // Collapse repeated focus on same app.
+                if last_app.as_ref() == Some(app_name) {
+                    continue;
+                }
+
+                let is_new = seen_apps.insert(app_name.clone());
+                let kind = if is_new {
+                    WalkthroughActionKind::LaunchApp {
+                        app_name: app_name.clone(),
+                    }
+                } else {
+                    WalkthroughActionKind::FocusWindow {
+                        app_name: app_name.clone(),
+                        window_title: window_title.clone(),
+                    }
+                };
+
+                let mut action =
+                    WalkthroughAction::new(kind, Some(app_name.clone()), vec![event.id]);
+                action.window_title = window_title.clone();
+                actions.push(action);
+                last_app = Some(app_name.clone());
+            }
+
+            WalkthroughEventKind::TextCommitted { text } => {
+                // Check for idle gap — break text group.
+                if let Some((_, last_ts, _)) = text_buffer.last()
+                    && event.timestamp - last_ts > TEXT_IDLE_GAP_MS
+                {
+                    flush_text(&mut text_buffer, &mut actions, &last_app);
+                }
+                text_buffer.push((event.id, event.timestamp, text.clone()));
+            }
+
+            WalkthroughEventKind::MouseClicked {
+                x,
+                y,
+                button,
+                click_count,
+                ..
+            } => {
+                flush_text(&mut text_buffer, &mut actions, &last_app);
+
+                // Lookahead: collect enrichment events (screenshot, OCR)
+                // that follow this click before the next action event.
+                let mut screenshot_path: Option<String> = None;
+                let mut ocr_annotations: Option<&Vec<OcrAnnotation>> = None;
+                let mut peek = i;
+                while peek < events.len() {
+                    match &events[peek].kind {
+                        WalkthroughEventKind::ScreenshotCaptured { path, .. } => {
+                            screenshot_path = Some(path.clone());
+                        }
+                        WalkthroughEventKind::OcrCaptured { annotations, .. } => {
+                            ocr_annotations = Some(annotations);
+                        }
+                        // Stop at the next action event.
+                        _ => break,
+                    }
+                    peek += 1;
+                }
+                // Advance past consumed enrichment events.
+                i = peek;
+
+                // Find best target candidate from OCR data.
+                let mut candidates = Vec::new();
+                if let Some(annotations) = ocr_annotations {
+                    let mut nearest: Option<(&OcrAnnotation, f64)> = None;
+                    for ann in annotations {
+                        let dist = ((ann.x - x).powi(2) + (ann.y - y).powi(2)).sqrt();
+                        if dist <= OCR_PROXIMITY_PX
+                            && (nearest.is_none() || dist < nearest.unwrap().1)
+                        {
+                            nearest = Some((ann, dist));
+                        }
+                    }
+                    if let Some((ann, _)) = nearest {
+                        candidates.push(TargetCandidate::OcrText {
+                            text: ann.text.clone(),
+                        });
+                    }
+                }
+                // Always add coordinates as fallback.
+                candidates.push(TargetCandidate::Coordinates { x: *x, y: *y });
+
+                let confidence = if candidates
+                    .iter()
+                    .any(|c| matches!(c, TargetCandidate::OcrText { .. }))
+                {
+                    ActionConfidence::Medium
+                } else {
+                    ActionConfidence::Low
+                };
+
+                let mut click_warnings = Vec::new();
+                if confidence == ActionConfidence::Low {
+                    click_warnings.push(format!(
+                        "No text target found for click at ({x:.0}, {y:.0}) — using coordinates"
+                    ));
+                }
+
+                let mut action = WalkthroughAction::new(
+                    WalkthroughActionKind::Click {
+                        x: *x,
+                        y: *y,
+                        button: *button,
+                        click_count: *click_count,
+                    },
+                    last_app.clone(),
+                    vec![event.id],
+                );
+                action.target_candidates = candidates;
+                action.confidence = confidence;
+                action.warnings = click_warnings;
+                if let Some(path) = screenshot_path {
+                    action.artifact_paths.push(path);
+                }
+                actions.push(action);
+            }
+
+            WalkthroughEventKind::KeyPressed { key, modifiers } => {
+                flush_text(&mut text_buffer, &mut actions, &last_app);
+                actions.push(WalkthroughAction::new(
+                    WalkthroughActionKind::PressKey {
+                        key: key.clone(),
+                        modifiers: modifiers.clone(),
+                    },
+                    last_app.clone(),
+                    vec![event.id],
+                ));
+            }
+
+            WalkthroughEventKind::Scrolled { delta_y, .. } => {
+                flush_text(&mut text_buffer, &mut actions, &last_app);
+
+                // Coalesce with previous scroll if recent.
+                let coalesced = if let Some(prev) = actions.last_mut() {
+                    if let WalkthroughActionKind::Scroll {
+                        delta_y: ref mut prev_dy,
+                    } = prev.kind
+                    {
+                        if event.timestamp - last_scroll_ts <= SCROLL_COALESCE_GAP_MS {
+                            *prev_dy += delta_y;
+                            prev.source_event_ids.push(event.id);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !coalesced {
+                    actions.push(WalkthroughAction::new(
+                        WalkthroughActionKind::Scroll { delta_y: *delta_y },
+                        last_app.clone(),
+                        vec![event.id],
+                    ));
+                }
+                last_scroll_ts = event.timestamp;
+            }
+
+            // Enrichment events (OcrCaptured, ScreenshotCaptured) are consumed
+            // by the MouseClicked lookahead above, so standalone occurrences are skipped.
+            WalkthroughEventKind::OcrCaptured { .. }
+            | WalkthroughEventKind::ScreenshotCaptured { .. } => {}
+
+            // Skip non-action events.
+            WalkthroughEventKind::Paused
+            | WalkthroughEventKind::Resumed
+            | WalkthroughEventKind::Stopped => {}
+        }
+    }
+
+    // Flush remaining text buffer.
+    flush_text(&mut text_buffer, &mut actions, &last_app);
+
+    // Per-action warnings are stored on each action and rendered inline in the
+    // review UI. Only top-level (non-action-specific) warnings are returned here
+    // to avoid double-counting in the warning badge and global warning strip.
+
+    (actions, warnings)
+}
+
+// --- Draft synthesis ---
+
+/// Vertical spacing between auto-positioned nodes (pixels in canvas coords).
+const NODE_Y_SPACING: f32 = 100.0;
+const NODE_X_POSITION: f32 = 250.0;
+
+/// Synthesize a linear workflow draft from normalized walkthrough actions.
+///
+/// Pure function — no I/O. Produces a valid `Workflow` with linear edges.
+pub fn synthesize_draft(
+    actions: &[WalkthroughAction],
+    workflow_id: Uuid,
+    workflow_name: &str,
+) -> crate::Workflow {
+    use crate::{
+        ClickParams, Edge, FocusMethod, FocusWindowParams, Node, NodeType, Position,
+        PressKeyParams, ScrollParams, TypeTextParams, Workflow,
+    };
+
+    let mut workflow = Workflow {
+        id: workflow_id,
+        name: workflow_name.to_string(),
+        nodes: Vec::new(),
+        edges: Vec::new(),
+    };
+
+    for (i, action) in actions.iter().enumerate() {
+        let position = Position {
+            x: NODE_X_POSITION,
+            y: (i as f32) * NODE_Y_SPACING,
+        };
+
+        let (node_type, name) = match &action.kind {
+            WalkthroughActionKind::LaunchApp { app_name } => (
+                NodeType::FocusWindow(FocusWindowParams {
+                    method: FocusMethod::AppName,
+                    value: Some(app_name.clone()),
+                    bring_to_front: true,
+                }),
+                format!("Launch {app_name}"),
+            ),
+
+            WalkthroughActionKind::FocusWindow {
+                app_name,
+                window_title,
+            } => (
+                NodeType::FocusWindow(FocusWindowParams {
+                    method: FocusMethod::AppName,
+                    value: Some(app_name.clone()),
+                    bring_to_front: true,
+                }),
+                match window_title {
+                    Some(t) => format!("Focus '{t}'"),
+                    None => format!("Focus {app_name}"),
+                },
+            ),
+
+            WalkthroughActionKind::Click {
+                x,
+                y,
+                button,
+                click_count,
+            } => {
+                // Use the best target candidate.
+                let best_target = action.target_candidates.iter().find_map(|c| match c {
+                    TargetCandidate::AccessibilityLabel { label, .. } => Some(label.clone()),
+                    TargetCandidate::OcrText { text } => Some(text.clone()),
+                    _ => None,
+                });
+
+                let (params, name) = if let Some(ref target) = best_target {
+                    (
+                        ClickParams {
+                            target: Some(target.clone()),
+                            x: None,
+                            y: None,
+                            button: *button,
+                            click_count: *click_count,
+                        },
+                        format!("Click '{target}'"),
+                    )
+                } else {
+                    (
+                        ClickParams {
+                            target: None,
+                            x: Some(*x),
+                            y: Some(*y),
+                            button: *button,
+                            click_count: *click_count,
+                        },
+                        format!("Click ({x:.0}, {y:.0})"),
+                    )
+                };
+                (NodeType::Click(params), name)
+            }
+
+            WalkthroughActionKind::TypeText { text } => {
+                let display = if text.chars().count() > 20 {
+                    let truncated: String = text.chars().take(20).collect();
+                    format!("Type '{truncated}'...")
+                } else {
+                    format!("Type '{text}'")
+                };
+                (
+                    NodeType::TypeText(TypeTextParams { text: text.clone() }),
+                    display,
+                )
+            }
+
+            WalkthroughActionKind::PressKey { key, modifiers } => {
+                let name = if modifiers.is_empty() {
+                    format!("Press {key}")
+                } else {
+                    format!("Press {}+{key}", modifiers.join("+"))
+                };
+                (
+                    NodeType::PressKey(PressKeyParams {
+                        key: key.clone(),
+                        modifiers: modifiers.clone(),
+                    }),
+                    name,
+                )
+            }
+
+            WalkthroughActionKind::Scroll { delta_y } => (
+                NodeType::Scroll(ScrollParams {
+                    delta_y: *delta_y as i32,
+                    x: None,
+                    y: None,
+                }),
+                format!("Scroll {}", if *delta_y < 0.0 { "up" } else { "down" }),
+            ),
+        };
+
+        let node = Node::new(node_type, position, name);
+        workflow.nodes.push(node);
+    }
+
+    // Wire linear edges.
+    for i in 0..workflow.nodes.len().saturating_sub(1) {
+        let from = workflow.nodes[i].id;
+        let to = workflow.nodes[i + 1].id;
+        workflow.edges.push(Edge {
+            from,
+            to,
+            output: None,
+        });
+    }
+
+    workflow
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_walkthrough_status_default_is_idle() {
+        assert_eq!(WalkthroughStatus::default(), WalkthroughStatus::Idle);
+    }
+
+    #[test]
+    fn test_session_serialization_skips_events_and_actions() {
+        let session = WalkthroughSession {
+            id: Uuid::new_v4(),
+            workflow_id: Uuid::new_v4(),
+            started_at: 1_700_000_000_000,
+            ended_at: None,
+            status: WalkthroughStatus::Recording,
+            events: vec![WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 1_700_000_000_100,
+                kind: WalkthroughEventKind::Paused,
+            }],
+            actions: vec![],
+            warnings: vec![],
+        };
+
+        let json = serde_json::to_string(&session).expect("serialize");
+        assert!(!json.contains("Paused"));
+
+        let deserialized: WalkthroughSession = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.id, session.id);
+        assert_eq!(deserialized.status, WalkthroughStatus::Recording);
+        assert!(deserialized.events.is_empty());
+        assert!(deserialized.actions.is_empty());
+    }
+
+    #[test]
+    fn test_walkthrough_status_serde_produces_expected_strings() {
+        let variants = vec![
+            (WalkthroughStatus::Idle, "\"Idle\""),
+            (WalkthroughStatus::Recording, "\"Recording\""),
+            (WalkthroughStatus::Paused, "\"Paused\""),
+            (WalkthroughStatus::Processing, "\"Processing\""),
+            (WalkthroughStatus::Review, "\"Review\""),
+            (WalkthroughStatus::Applied, "\"Applied\""),
+            (WalkthroughStatus::Cancelled, "\"Cancelled\""),
+        ];
+        for (variant, expected) in &variants {
+            let json = serde_json::to_string(variant).expect("serialize");
+            assert_eq!(
+                &json, expected,
+                "WalkthroughStatus::{variant:?} serialized incorrectly"
+            );
+        }
+    }
+
+    #[test]
+    fn test_event_kind_serialization_roundtrip() {
+        let kinds = vec![
+            WalkthroughEventKind::AppFocused {
+                app_name: "Calculator".to_string(),
+                pid: 1234,
+                window_title: Some("Calculator".to_string()),
+            },
+            WalkthroughEventKind::MouseClicked {
+                x: 100.0,
+                y: 200.0,
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: vec![],
+            },
+            WalkthroughEventKind::KeyPressed {
+                key: "Enter".to_string(),
+                modifiers: vec![],
+            },
+            WalkthroughEventKind::TextCommitted {
+                text: "hello".to_string(),
+            },
+            WalkthroughEventKind::Scrolled {
+                delta_y: -3.0,
+                x: None,
+                y: None,
+            },
+            WalkthroughEventKind::ScreenshotCaptured {
+                path: "/tmp/shot.png".to_string(),
+                kind: ScreenshotKind::BeforeClick,
+            },
+            WalkthroughEventKind::Paused,
+            WalkthroughEventKind::Resumed,
+            WalkthroughEventKind::Stopped,
+        ];
+
+        for kind in &kinds {
+            let event = WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 1_700_000_000_000,
+                kind: kind.clone(),
+            };
+            let json = serde_json::to_string(&event).expect("serialize");
+            let deserialized: WalkthroughEvent = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(deserialized.id, event.id);
+        }
+    }
+
+    #[test]
+    fn test_action_kind_serialization_roundtrip() {
+        let kinds = vec![
+            WalkthroughActionKind::LaunchApp {
+                app_name: "Calculator".to_string(),
+            },
+            WalkthroughActionKind::FocusWindow {
+                app_name: "Calculator".to_string(),
+                window_title: Some("Calculator".to_string()),
+            },
+            WalkthroughActionKind::Click {
+                x: 100.0,
+                y: 200.0,
+                button: MouseButton::Left,
+                click_count: 1,
+            },
+            WalkthroughActionKind::TypeText {
+                text: "hello".to_string(),
+            },
+            WalkthroughActionKind::PressKey {
+                key: "Enter".to_string(),
+                modifiers: vec![],
+            },
+            WalkthroughActionKind::Scroll { delta_y: -3.0 },
+        ];
+
+        for kind in &kinds {
+            let json = serde_json::to_string(kind).expect("serialize");
+            let _deserialized: WalkthroughActionKind =
+                serde_json::from_str(&json).expect("deserialize");
+        }
+    }
+
+    #[test]
+    fn test_target_candidate_serialization_roundtrip() {
+        let candidates = vec![
+            TargetCandidate::AccessibilityLabel {
+                label: "Submit".to_string(),
+                role: Some("AXButton".to_string()),
+            },
+            TargetCandidate::OcrText {
+                text: "Submit".to_string(),
+            },
+            TargetCandidate::ImageCrop {
+                path: "/tmp/crop.png".to_string(),
+            },
+            TargetCandidate::Coordinates { x: 100.0, y: 200.0 },
+        ];
+
+        for candidate in &candidates {
+            let json = serde_json::to_string(candidate).expect("serialize");
+            let _deserialized: TargetCandidate = serde_json::from_str(&json).expect("deserialize");
+        }
+    }
+
+    #[test]
+    fn test_annotations_default() {
+        let annotations = WalkthroughAnnotations::default();
+        assert!(annotations.deleted_node_ids.is_empty());
+        assert!(annotations.renamed_nodes.is_empty());
+        assert!(annotations.target_overrides.is_empty());
+        assert!(annotations.variable_promotions.is_empty());
+    }
+
+    #[test]
+    fn test_storage_create_and_save_session() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_test_wt")
+            .join(Uuid::new_v4().to_string());
+        let storage = WalkthroughStorage::new(&dir);
+
+        let session = WalkthroughSession {
+            id: Uuid::new_v4(),
+            workflow_id: Uuid::new_v4(),
+            started_at: 1_700_000_000_000,
+            ended_at: None,
+            status: WalkthroughStatus::Recording,
+            events: vec![],
+            actions: vec![],
+            warnings: vec![],
+        };
+
+        let session_dir = storage
+            .create_session_dir(&session)
+            .expect("create session dir");
+        assert!(session_dir.exists());
+        assert!(session_dir.join("artifacts").exists());
+
+        storage
+            .save_session(&session_dir, &session)
+            .expect("save session");
+        assert!(session_dir.join("session.json").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_storage_append_event() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_test_wt")
+            .join(Uuid::new_v4().to_string());
+        let storage = WalkthroughStorage::new(&dir);
+
+        let session = WalkthroughSession {
+            id: Uuid::new_v4(),
+            workflow_id: Uuid::new_v4(),
+            started_at: 1_700_000_000_000,
+            ended_at: None,
+            status: WalkthroughStatus::Recording,
+            events: vec![],
+            actions: vec![],
+            warnings: vec![],
+        };
+
+        let session_dir = storage
+            .create_session_dir(&session)
+            .expect("create session dir");
+
+        let event = WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp: 1_700_000_000_100,
+            kind: WalkthroughEventKind::AppFocused {
+                app_name: "Calculator".to_string(),
+                pid: 1234,
+                window_title: Some("Calculator".to_string()),
+            },
+        };
+
+        storage
+            .append_event(&session_dir, &event)
+            .expect("append event");
+
+        let content =
+            std::fs::read_to_string(session_dir.join("events.jsonl")).expect("read events.jsonl");
+        assert!(content.contains("Calculator"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_storage_read_events_roundtrip() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_test_wt")
+            .join(Uuid::new_v4().to_string());
+        let storage = WalkthroughStorage::new(&dir);
+        let session = WalkthroughSession::new(Uuid::new_v4());
+        let session_dir = storage.create_session_dir(&session).expect("create dir");
+
+        let ev1 = WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp: 1000,
+            kind: WalkthroughEventKind::AppFocused {
+                app_name: "Calculator".into(),
+                pid: 100,
+                window_title: None,
+            },
+        };
+        let ev2 = WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp: 2000,
+            kind: WalkthroughEventKind::KeyPressed {
+                key: "return".into(),
+                modifiers: vec![],
+            },
+        };
+        storage.append_event(&session_dir, &ev1).expect("append");
+        storage.append_event(&session_dir, &ev2).expect("append");
+
+        let events = storage.read_events(&session_dir).expect("read events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, ev1.id);
+        assert_eq!(events[1].id, ev2.id);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_build_action_node_map_1_to_1() {
+        let actions = vec![
+            WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::Click {
+                    x: 0.0,
+                    y: 0.0,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                app_name: None,
+                window_title: None,
+                target_candidates: vec![],
+                artifact_paths: vec![],
+                source_event_ids: vec![],
+                confidence: ActionConfidence::High,
+                warnings: vec![],
+            },
+            WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::TypeText {
+                    text: "hello".into(),
+                },
+                app_name: None,
+                window_title: None,
+                target_candidates: vec![],
+                artifact_paths: vec![],
+                source_event_ids: vec![],
+                confidence: ActionConfidence::High,
+                warnings: vec![],
+            },
+        ];
+        let draft = synthesize_draft(&actions, Uuid::new_v4(), "test");
+        let map = build_action_node_map(&actions, &draft);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[0].action_id, actions[0].id);
+        assert_eq!(map[0].node_id, draft.nodes[0].id);
+        assert_eq!(map[1].action_id, actions[1].id);
+        assert_eq!(map[1].node_id, draft.nodes[1].id);
+    }
+
+    #[test]
+    fn test_build_action_node_map_empty() {
+        let map = build_action_node_map(&[], &crate::Workflow::default());
+        assert!(map.is_empty());
+    }
+
+    mod normalize_tests {
+        use super::*;
+
+        fn make_event(timestamp: u64, kind: WalkthroughEventKind) -> WalkthroughEvent {
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp,
+                kind,
+            }
+        }
+
+        #[test]
+        fn test_first_app_focus_becomes_launch_app() {
+            let events = vec![make_event(
+                1000,
+                WalkthroughEventKind::AppFocused {
+                    app_name: "Calculator".into(),
+                    pid: 100,
+                    window_title: Some("Calculator".into()),
+                },
+            )];
+            let (actions, _warnings) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::LaunchApp { app_name } if app_name == "Calculator"
+            ));
+            assert_eq!(actions[0].confidence, ActionConfidence::High);
+        }
+
+        #[test]
+        fn test_repeated_focus_same_app_collapsed() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AppFocused {
+                        app_name: "Calculator".into(),
+                        pid: 100,
+                        window_title: None,
+                    },
+                ),
+                make_event(
+                    1100,
+                    WalkthroughEventKind::AppFocused {
+                        app_name: "Calculator".into(),
+                        pid: 100,
+                        window_title: None,
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+        }
+
+        #[test]
+        fn test_refocus_previously_seen_app_becomes_focus_window() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AppFocused {
+                        app_name: "Calculator".into(),
+                        pid: 100,
+                        window_title: None,
+                    },
+                ),
+                make_event(
+                    2000,
+                    WalkthroughEventKind::AppFocused {
+                        app_name: "Notes".into(),
+                        pid: 200,
+                        window_title: None,
+                    },
+                ),
+                make_event(
+                    3000,
+                    WalkthroughEventKind::AppFocused {
+                        app_name: "Calculator".into(),
+                        pid: 100,
+                        window_title: None,
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 3);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::LaunchApp { .. }
+            ));
+            assert!(matches!(
+                &actions[1].kind,
+                WalkthroughActionKind::LaunchApp { .. }
+            ));
+            assert!(matches!(
+                &actions[2].kind,
+                WalkthroughActionKind::FocusWindow { .. }
+            ));
+        }
+
+        #[test]
+        fn test_contiguous_text_coalesced() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::TextCommitted { text: "h".into() },
+                ),
+                make_event(
+                    1050,
+                    WalkthroughEventKind::TextCommitted { text: "e".into() },
+                ),
+                make_event(
+                    1100,
+                    WalkthroughEventKind::TextCommitted { text: "l".into() },
+                ),
+                make_event(
+                    1150,
+                    WalkthroughEventKind::TextCommitted { text: "l".into() },
+                ),
+                make_event(
+                    1200,
+                    WalkthroughEventKind::TextCommitted { text: "o".into() },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::TypeText { text } if text == "hello"
+            ));
+        }
+
+        #[test]
+        fn test_text_broken_by_click() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::TextCommitted { text: "ab".into() },
+                ),
+                make_event(
+                    2000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 100.0,
+                        y: 200.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    3000,
+                    WalkthroughEventKind::TextCommitted { text: "cd".into() },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 3); // TypeText, Click, TypeText
+        }
+
+        #[test]
+        fn test_text_broken_by_idle_gap() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::TextCommitted { text: "ab".into() },
+                ),
+                make_event(
+                    4000,
+                    WalkthroughEventKind::TextCommitted { text: "cd".into() },
+                ), // >2s gap
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 2);
+        }
+
+        #[test]
+        fn test_click_with_nearby_ocr_gets_medium_confidence() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 100.0,
+                        y: 200.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1100,
+                    WalkthroughEventKind::OcrCaptured {
+                        annotations: vec![
+                            OcrAnnotation {
+                                text: "Submit".into(),
+                                x: 102.0,
+                                y: 198.0,
+                            },
+                            OcrAnnotation {
+                                text: "Cancel".into(),
+                                x: 300.0,
+                                y: 198.0,
+                            },
+                        ],
+                        click_x: 100.0,
+                        click_y: 200.0,
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::Click { .. }
+            ));
+            assert!(
+                actions[0]
+                    .target_candidates
+                    .iter()
+                    .any(|c| matches!(c, TargetCandidate::OcrText { text } if text == "Submit"))
+            );
+            assert_eq!(actions[0].confidence, ActionConfidence::Medium);
+        }
+
+        #[test]
+        fn test_click_without_ocr_gets_low_confidence() {
+            let events = vec![make_event(
+                1000,
+                WalkthroughEventKind::MouseClicked {
+                    x: 100.0,
+                    y: 200.0,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                    modifiers: vec![],
+                },
+            )];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert_eq!(actions[0].confidence, ActionConfidence::Low);
+            assert!(
+                actions[0]
+                    .target_candidates
+                    .iter()
+                    .any(|c| matches!(c, TargetCandidate::Coordinates { .. }))
+            );
+        }
+
+        #[test]
+        fn test_key_pressed_becomes_press_key() {
+            let events = vec![make_event(
+                1000,
+                WalkthroughEventKind::KeyPressed {
+                    key: "return".into(),
+                    modifiers: vec![],
+                },
+            )];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::PressKey { key, .. } if key == "return"
+            ));
+        }
+
+        #[test]
+        fn test_scroll_preserved() {
+            let events = vec![make_event(
+                1000,
+                WalkthroughEventKind::Scrolled {
+                    delta_y: -5.0,
+                    x: Some(100.0),
+                    y: Some(200.0),
+                },
+            )];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::Scroll { delta_y } if *delta_y == -5.0
+            ));
+        }
+
+        #[test]
+        fn test_rapid_scrolls_coalesced() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::Scrolled {
+                        delta_y: -2.0,
+                        x: Some(100.0),
+                        y: Some(200.0),
+                    },
+                ),
+                make_event(
+                    1050,
+                    WalkthroughEventKind::Scrolled {
+                        delta_y: -3.0,
+                        x: Some(100.0),
+                        y: Some(200.0),
+                    },
+                ),
+                make_event(
+                    1100,
+                    WalkthroughEventKind::Scrolled {
+                        delta_y: -1.0,
+                        x: Some(100.0),
+                        y: Some(200.0),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::Scroll { delta_y } if *delta_y == -6.0
+            ));
+        }
+
+        #[test]
+        fn test_paused_resumed_stopped_events_skipped() {
+            let events = vec![
+                make_event(1000, WalkthroughEventKind::Paused),
+                make_event(2000, WalkthroughEventKind::Resumed),
+                make_event(3000, WalkthroughEventKind::Stopped),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert!(actions.is_empty());
+        }
+
+        #[test]
+        fn test_screenshot_events_skipped() {
+            let events = vec![make_event(
+                1000,
+                WalkthroughEventKind::ScreenshotCaptured {
+                    path: "/tmp/shot.png".into(),
+                    kind: ScreenshotKind::AfterClick,
+                },
+            )];
+            let (actions, _) = normalize_events(&events);
+            assert!(actions.is_empty());
+        }
+    }
+
+    mod synthesis_tests {
+        use super::*;
+        use crate::{FocusMethod, NodeType};
+
+        fn make_action(kind: WalkthroughActionKind) -> WalkthroughAction {
+            WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind,
+                app_name: None,
+                window_title: None,
+                target_candidates: vec![],
+                artifact_paths: vec![],
+                source_event_ids: vec![],
+                confidence: ActionConfidence::High,
+                warnings: vec![],
+            }
+        }
+
+        #[test]
+        fn test_empty_actions_produces_empty_workflow() {
+            let wf = synthesize_draft(&[], Uuid::new_v4(), "Test");
+            assert!(wf.nodes.is_empty());
+            assert!(wf.edges.is_empty());
+        }
+
+        #[test]
+        fn test_launch_app_becomes_focus_window_node() {
+            let actions = vec![make_action(WalkthroughActionKind::LaunchApp {
+                app_name: "Calculator".into(),
+            })];
+            let wf = synthesize_draft(&actions, Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes.len(), 1);
+            assert!(matches!(
+                &wf.nodes[0].node_type,
+                NodeType::FocusWindow(p) if p.method == FocusMethod::AppName && p.value.as_deref() == Some("Calculator")
+            ));
+            assert_eq!(wf.nodes[0].name, "Launch Calculator");
+        }
+
+        #[test]
+        fn test_click_with_ocr_target_uses_target_field() {
+            let mut action = make_action(WalkthroughActionKind::Click {
+                x: 100.0,
+                y: 200.0,
+                button: MouseButton::Left,
+                click_count: 1,
+            });
+            action.target_candidates = vec![
+                TargetCandidate::OcrText {
+                    text: "Submit".into(),
+                },
+                TargetCandidate::Coordinates { x: 100.0, y: 200.0 },
+            ];
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes.len(), 1);
+            assert!(matches!(
+                &wf.nodes[0].node_type,
+                NodeType::Click(p) if p.target.as_deref() == Some("Submit")
+            ));
+            assert_eq!(wf.nodes[0].name, "Click 'Submit'");
+        }
+
+        #[test]
+        fn test_click_coordinates_only() {
+            let action = make_action(WalkthroughActionKind::Click {
+                x: 100.0,
+                y: 200.0,
+                button: MouseButton::Left,
+                click_count: 1,
+            });
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
+            assert!(matches!(
+                &wf.nodes[0].node_type,
+                NodeType::Click(p) if p.target.is_none() && p.x == Some(100.0)
+            ));
+        }
+
+        #[test]
+        fn test_linear_edges_between_nodes() {
+            let actions = vec![
+                make_action(WalkthroughActionKind::LaunchApp {
+                    app_name: "App".into(),
+                }),
+                make_action(WalkthroughActionKind::TypeText {
+                    text: "hello".into(),
+                }),
+                make_action(WalkthroughActionKind::PressKey {
+                    key: "return".into(),
+                    modifiers: vec![],
+                }),
+            ];
+            let wf = synthesize_draft(&actions, Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes.len(), 3);
+            assert_eq!(wf.edges.len(), 2);
+            assert_eq!(wf.edges[0].from, wf.nodes[0].id);
+            assert_eq!(wf.edges[0].to, wf.nodes[1].id);
+            assert_eq!(wf.edges[1].from, wf.nodes[1].id);
+            assert_eq!(wf.edges[1].to, wf.nodes[2].id);
+        }
+
+        #[test]
+        fn test_nodes_auto_positioned_vertically() {
+            let actions = vec![
+                make_action(WalkthroughActionKind::TypeText { text: "a".into() }),
+                make_action(WalkthroughActionKind::TypeText { text: "b".into() }),
+            ];
+            let wf = synthesize_draft(&actions, Uuid::new_v4(), "Test");
+            assert!(wf.nodes[1].position.y > wf.nodes[0].position.y);
+        }
+
+        #[test]
+        fn test_scroll_delta_cast_to_i32() {
+            let action = make_action(WalkthroughActionKind::Scroll { delta_y: -5.7 });
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
+            assert!(matches!(&wf.nodes[0].node_type, NodeType::Scroll(p) if p.delta_y == -5));
+        }
+    }
+}

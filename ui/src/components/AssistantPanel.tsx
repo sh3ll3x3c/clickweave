@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { ConversationSession, WorkflowPatch } from "../bindings";
 import { ChatMessage } from "./ChatMessage";
+import { useHorizontalResize } from "../hooks/useHorizontalResize";
 
 interface AssistantPanelProps {
   open: boolean;
@@ -36,31 +37,9 @@ export function AssistantPanel({
   onClose,
 }: AssistantPanelProps) {
   const [input, setInput] = useState("");
-  const [width, setWidth] = useState(380);
+  const { width, handleResizeStart } = useHorizontalResize();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const widthRef = useRef(width);
-  widthRef.current = width;
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = widthRef.current;
-    document.body.style.userSelect = "none";
-
-    const onMove = (e: MouseEvent) => {
-      e.preventDefault();
-      setWidth(Math.min(600, Math.max(280, startWidth + (startX - e.clientX))));
-    };
-    const onUp = () => {
-      document.body.style.userSelect = "";
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, []);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {

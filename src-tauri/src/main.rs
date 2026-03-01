@@ -3,6 +3,7 @@
 
 mod commands;
 mod menu;
+mod platform;
 
 use commands::*;
 use std::sync::Mutex;
@@ -74,6 +75,14 @@ fn main() {
         load_run_events,
         read_artifact_base64,
         import_asset,
+        start_walkthrough,
+        pause_walkthrough,
+        resume_walkthrough,
+        stop_walkthrough,
+        cancel_walkthrough,
+        get_walkthrough_draft,
+        apply_walkthrough_annotations,
+        seed_walkthrough_cache,
     ]);
 
     #[cfg(debug_assertions)]
@@ -98,6 +107,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Mutex::new(ExecutorHandle::default()))
         .manage(Mutex::new(AssistantHandle::default()))
+        .manage(Mutex::new(WalkthroughHandle::default()))
         .invoke_handler(builder.invoke_handler())
         .menu(menu::build_menu)
         .setup(move |app| {
