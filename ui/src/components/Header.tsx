@@ -26,7 +26,7 @@ export function Header({
     <div
       className="flex h-10 items-center justify-between border-b border-[var(--border)] bg-[var(--bg-panel)] pr-3"
       data-tauri-drag-region
-      style={{ paddingLeft: 78 } as React.CSSProperties}
+      style={{ paddingLeft: 12 } as React.CSSProperties}
     >
       {/* Left: logo + name + status */}
       <div className="flex items-center gap-2.5 min-w-0" data-tauri-drag-region>
