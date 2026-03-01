@@ -141,6 +141,7 @@ export function WalkthroughPanel() {
   const removeVariablePromotion = useStore((s) => s.removeVariablePromotion);
   const applyDraftToCanvas = useStore((s) => s.applyDraftToCanvas);
   const discardDraft = useStore((s) => s.discardDraft);
+  const assistantOpen = useStore((s) => s.assistantOpen);
 
   const { width, handleResizeStart } = useHorizontalResize();
   const feedEndRef = useRef<HTMLDivElement>(null);
@@ -151,6 +152,10 @@ export function WalkthroughPanel() {
   }, [walkthroughEvents.length]);
 
   if (!isWalkthroughActive(walkthroughStatus)) return null;
+
+  // Hide while assistant panel is open to avoid rendering both side panels.
+  // The walkthrough state is preserved — closing the assistant restores this panel.
+  if (assistantOpen) return null;
 
   const isRecording = walkthroughStatus === "Recording" || walkthroughStatus === "Paused";
 

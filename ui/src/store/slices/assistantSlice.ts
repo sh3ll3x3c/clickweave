@@ -40,9 +40,9 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       const status = get().walkthroughStatus;
       if (status === "Recording" || status === "Paused") {
         get().cancelWalkthrough();
-      } else {
-        get().discardDraft();
       }
+      // Review/Processing: don't discard — just hide the walkthrough panel
+      // while the assistant is open. Closing the assistant restores it.
     }
     set({ assistantOpen: open });
   },
@@ -52,9 +52,9 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       const status = get().walkthroughStatus;
       if (status === "Recording" || status === "Paused") {
         get().cancelWalkthrough();
-      } else {
-        get().discardDraft();
       }
+      // Review/Processing: don't discard — just hide the walkthrough panel
+      // while the assistant is open. Closing the assistant restores it.
     }
     set({ assistantOpen: opening });
   },

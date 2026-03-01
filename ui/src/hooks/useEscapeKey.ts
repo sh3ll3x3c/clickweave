@@ -38,16 +38,15 @@ export function useEscapeKey() {
         setShowSettings(false);
       } else if (selectedNode !== null) {
         selectNode(null);
+      } else if (assistantOpen) {
+        // Close assistant first — if walkthrough review is behind it, this reveals it.
+        setAssistantOpen(false);
       } else if (walkthroughActive) {
-        if (walkthroughStatus === "Review") {
-          discardDraft();
-        } else if (walkthroughStatus === "Recording" || walkthroughStatus === "Paused") {
+        if (walkthroughStatus === "Recording" || walkthroughStatus === "Paused") {
           cancelWalkthrough();
         } else {
           discardDraft();
         }
-      } else if (assistantOpen) {
-        setAssistantOpen(false);
       } else if (logsDrawerOpen) {
         toggleLogsDrawer();
       } else {
