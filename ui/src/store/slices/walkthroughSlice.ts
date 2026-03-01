@@ -48,6 +48,7 @@ const emptyAnnotations: WalkthroughAnnotations = {
 
 export interface WalkthroughSlice {
   walkthroughStatus: WalkthroughStatus;
+  walkthroughPanelOpen: boolean;
   walkthroughError: string | null;
   walkthroughEvents: WalkthroughCapturedEvent[];
   walkthroughActions: WalkthroughAction[];
@@ -59,6 +60,7 @@ export interface WalkthroughSlice {
   walkthroughUsedFallback: boolean;
 
   setWalkthroughStatus: (status: WalkthroughStatus) => void;
+  setWalkthroughPanelOpen: (open: boolean) => void;
   pushWalkthroughEvent: (event: WalkthroughCapturedEvent) => void;
   setWalkthroughDraft: (payload: {
     actions: WalkthroughAction[];
@@ -88,6 +90,7 @@ export interface WalkthroughSlice {
 
 export const createWalkthroughSlice: StateCreator<StoreState, [], [], WalkthroughSlice> = (set, get) => ({
   walkthroughStatus: "Idle",
+  walkthroughPanelOpen: false,
   walkthroughError: null,
   walkthroughEvents: [],
   walkthroughActions: [],
@@ -99,6 +102,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   walkthroughUsedFallback: false,
 
   setWalkthroughStatus: (status) => set({ walkthroughStatus: status }),
+  setWalkthroughPanelOpen: (open) => set({ walkthroughPanelOpen: open }),
 
   pushWalkthroughEvent: (event) => set((s) => ({
     walkthroughEvents: [...s.walkthroughEvents, event],
@@ -111,6 +115,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughActionNodeMap: action_node_map,
     walkthroughUsedFallback: used_fallback,
     walkthroughStatus: "Review",
+    walkthroughPanelOpen: true,
     walkthroughAnnotations: { ...emptyAnnotations },
   }),
 
@@ -122,6 +127,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
         walkthroughDraft: result.data.draft ?? null,
         walkthroughWarnings: result.data.warnings,
         walkthroughStatus: "Review",
+        walkthroughPanelOpen: true,
       });
     }
   },
@@ -182,6 +188,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughExpandedAction: null,
       walkthroughActionNodeMap: [],
       walkthroughUsedFallback: false,
+      walkthroughPanelOpen: false,
     });
     const result = await commands.cancelWalkthrough();
     if (result.status === "error") {
@@ -328,6 +335,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
     set({
       walkthroughStatus: "Idle",
+      walkthroughPanelOpen: false,
       walkthroughActions: [],
       walkthroughDraft: null,
       walkthroughWarnings: [],
@@ -347,6 +355,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
     set({
       walkthroughStatus: "Idle",
+      walkthroughPanelOpen: false,
       walkthroughActions: [],
       walkthroughDraft: null,
       walkthroughWarnings: [],

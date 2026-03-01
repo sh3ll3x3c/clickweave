@@ -141,6 +141,8 @@ export function WalkthroughPanel() {
   const removeVariablePromotion = useStore((s) => s.removeVariablePromotion);
   const applyDraftToCanvas = useStore((s) => s.applyDraftToCanvas);
   const discardDraft = useStore((s) => s.discardDraft);
+  const walkthroughPanelOpen = useStore((s) => s.walkthroughPanelOpen);
+  const setWalkthroughPanelOpen = useStore((s) => s.setWalkthroughPanelOpen);
   const assistantOpen = useStore((s) => s.assistantOpen);
 
   const { width, handleResizeStart } = useHorizontalResize();
@@ -156,6 +158,9 @@ export function WalkthroughPanel() {
   // Hide while assistant panel is open to avoid rendering both side panels.
   // The walkthrough state is preserved — closing the assistant restores this panel.
   if (assistantOpen) return null;
+
+  // Hide when user closed the panel via X. State is preserved; can reopen from toolbar.
+  if (!walkthroughPanelOpen && walkthroughStatus === "Review") return null;
 
   const isRecording = walkthroughStatus === "Recording" || walkthroughStatus === "Paused";
 
@@ -316,9 +321,9 @@ export function WalkthroughPanel() {
           )}
         </div>
         <button
-          onClick={discardDraft}
+          onClick={() => setWalkthroughPanelOpen(false)}
           className="rounded px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-          title="Discard walkthrough"
+          title="Close panel"
         >
           &times;
         </button>
@@ -539,9 +544,9 @@ export function WalkthroughPanel() {
       <div className="flex items-center gap-2 border-t border-[var(--border)] px-3 py-2.5">
         <button
           onClick={discardDraft}
-          className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]"
+          className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10"
         >
-          Discard
+          Cancel
         </button>
         {allDeleted && (
           <span className="text-[10px] text-[var(--text-muted)]">All steps deleted</span>

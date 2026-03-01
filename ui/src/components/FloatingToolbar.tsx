@@ -1,15 +1,19 @@
 import { useState, useRef, useEffect } from "react";
 import type { ExecutionMode } from "../bindings";
+import type { WalkthroughStatus } from "../store/slices/walkthroughSlice";
 
 interface FloatingToolbarProps {
   executorState: "idle" | "running";
   executionMode: ExecutionMode;
   logsOpen: boolean;
   hasAiNodes: boolean;
+  walkthroughStatus: WalkthroughStatus;
+  walkthroughPanelOpen: boolean;
   onToggleLogs: () => void;
   onRunStop: () => void;
   onAssistant: () => void;
   onSetExecutionMode: (mode: ExecutionMode) => void;
+  onOpenWalkthroughPanel: () => void;
 }
 
 export function FloatingToolbar({
@@ -17,10 +21,13 @@ export function FloatingToolbar({
   executionMode,
   logsOpen,
   hasAiNodes,
+  walkthroughStatus,
+  walkthroughPanelOpen,
   onToggleLogs,
   onRunStop,
   onAssistant,
   onSetExecutionMode,
+  onOpenWalkthroughPanel,
 }: FloatingToolbarProps) {
   const isRunning = executorState === "running";
   const [showConfirm, setShowConfirm] = useState(false);
@@ -61,6 +68,17 @@ export function FloatingToolbar({
         >
           Assistant
         </button>
+        {walkthroughStatus === "Review" && !walkthroughPanelOpen && (
+          <>
+            <div className="mx-1 h-4 w-px bg-[var(--border)]" />
+            <button
+              onClick={onOpenWalkthroughPanel}
+              className="rounded px-2.5 py-1.5 text-xs text-[var(--accent-coral)] hover:bg-[var(--bg-hover)]"
+            >
+              Review
+            </button>
+          </>
+        )}
         <div className="mx-1 h-4 w-px bg-[var(--border)]" />
         <button
           onClick={onToggleLogs}

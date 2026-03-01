@@ -20,8 +20,10 @@ export function useEscapeKey() {
         showSettings,
         selectedNode,
         walkthroughStatus,
+        walkthroughPanelOpen,
         cancelWalkthrough,
         discardDraft,
+        setWalkthroughPanelOpen,
         assistantOpen,
         logsDrawerOpen,
         setShowSettings,
@@ -41,6 +43,9 @@ export function useEscapeKey() {
       } else if (assistantOpen) {
         // Close assistant first — if walkthrough review is behind it, this reveals it.
         setAssistantOpen(false);
+      } else if (walkthroughActive && walkthroughPanelOpen) {
+        // Close the panel first; a second Escape will discard.
+        setWalkthroughPanelOpen(false);
       } else if (walkthroughActive) {
         if (walkthroughStatus === "Recording" || walkthroughStatus === "Paused") {
           cancelWalkthrough();

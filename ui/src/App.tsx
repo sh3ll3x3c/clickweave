@@ -41,6 +41,8 @@ function App() {
   const nodeSearch = useStore((s) => s.nodeSearch);
   const showSettings = useStore((s) => s.showSettings);
   const isNewWorkflow = useStore((s) => s.isNewWorkflow);
+  const walkthroughStatus = useStore((s) => s.walkthroughStatus);
+  const walkthroughPanelOpen = useStore((s) => s.walkthroughPanelOpen);
   const assistantOpen = useStore((s) => s.assistantOpen);
   const assistantLoading = useStore((s) => s.assistantLoading);
   const assistantRetrying = useStore((s) => s.assistantRetrying);
@@ -80,6 +82,7 @@ function App() {
   const stopWorkflow = useStore((s) => s.stopWorkflow);
   const setAssistantOpen = useStore((s) => s.setAssistantOpen);
   const toggleAssistant = useStore((s) => s.toggleAssistant);
+  const setWalkthroughPanelOpen = useStore((s) => s.setWalkthroughPanelOpen);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
   const sendAssistantMessage = useStore((s) => s.sendAssistantMessage);
   const resendMessage = useStore((s) => s.resendMessage);
@@ -272,6 +275,8 @@ function App() {
                   executionMode={executionMode}
                   logsOpen={logsDrawerOpen}
                   hasAiNodes={hasAiNodes}
+                  walkthroughStatus={walkthroughStatus}
+                  walkthroughPanelOpen={walkthroughPanelOpen}
                   onToggleLogs={toggleLogsDrawer}
                   onRunStop={
                     executorState === "running"
@@ -280,6 +285,7 @@ function App() {
                   }
                   onAssistant={toggleAssistant}
                   onSetExecutionMode={setExecutionMode}
+                  onOpenWalkthroughPanel={() => setWalkthroughPanelOpen(true)}
                 />
               </div>
 
