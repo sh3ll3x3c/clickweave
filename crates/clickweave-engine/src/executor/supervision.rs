@@ -32,11 +32,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_type: &NodeType,
         mcp: &McpClient,
     ) -> VerificationResult {
-        // Skip verification for steps with no observable effect
-        if matches!(node_type, NodeType::TakeScreenshot(_)) {
+        // Skip verification for read-only nodes (find_text, find_image,
+        // take_screenshot, list_windows). These produce their own definitive
+        // success/failure signal via the tool result — visual verification
+        // adds nothing and can cause false failures.
+        if node_type.is_read_only() {
             return VerificationResult {
                 passed: true,
-                reasoning: "Screenshot steps are not verified".to_string(),
+                reasoning: "Read-only steps are not verified".to_string(),
                 screenshot: None,
             };
         }
