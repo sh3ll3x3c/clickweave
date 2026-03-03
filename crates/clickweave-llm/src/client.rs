@@ -34,6 +34,20 @@ pub struct LlmConfig {
     pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
+impl LlmConfig {
+    /// Clone this config with capped `max_tokens` and thinking/reasoning disabled.
+    /// Used for simple, structured-output VLM calls (verdict, click-target labels).
+    pub fn for_fast_vision(&self, max_tokens: u32) -> Self {
+        let mut c = self.clone();
+        c.max_tokens = Some(max_tokens);
+        c.extra_body.insert(
+            "chat_template_kwargs".to_string(),
+            serde_json::json!({"enable_thinking": false}),
+        );
+        c
+    }
+}
+
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {

@@ -147,6 +147,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             agent,
             vlm,
             supervision: None,
+            verdict_vlm: None,
             mcp_command,
             execution_mode,
             project_path,

@@ -1140,13 +1140,10 @@ async fn resolve_click_targets_with_vlm(
         requests.len()
     );
 
-    let mut llm_config = planner_cfg.clone().into_llm_config(Some(0.1));
-    llm_config.max_tokens = Some(4096);
-    // Disable thinking/reasoning for this simple label extraction task.
-    llm_config.extra_body.insert(
-        "chat_template_kwargs".to_string(),
-        serde_json::json!({"enable_thinking": false}),
-    );
+    let llm_config = planner_cfg
+        .clone()
+        .into_llm_config(Some(0.1))
+        .for_fast_vision(4096);
     let backend = std::sync::Arc::new(clickweave_llm::LlmClient::new(llm_config));
 
     let prompt = "This is a screenshot of an application window with a red \

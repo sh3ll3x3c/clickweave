@@ -465,13 +465,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let screenshot_b64 = self.extract_screenshot_image(mcp, args).await;
             match screenshot_b64 {
                 Some(img) => {
-                    let backend = self.vision_backend().unwrap_or(&self.agent);
-                    Some(
+                    let verdict = if let Some(ref vb) = self.verdict_vlm {
+                        super::verdict::screenshot_verdict(vb, node_id, node_name, outcome, &img)
+                            .await
+                    } else {
+                        let backend = self.vision_backend().unwrap_or(&self.agent);
                         super::verdict::screenshot_verdict(
                             backend, node_id, node_name, outcome, &img,
                         )
-                        .await,
-                    )
+                        .await
+                    };
+                    Some(verdict)
                 }
                 None => {
                     self.log(format!(

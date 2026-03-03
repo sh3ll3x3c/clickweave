@@ -77,6 +77,8 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     /// Planner-class LLM used for supervision verification in Test mode.
     /// Falls back to VLM, then agent if not configured.
     supervision: Option<C>,
+    /// Dedicated VLM for screenshot verification: low max_tokens, thinking disabled.
+    verdict_vlm: Option<LlmClient>,
     mcp_command: String,
     execution_mode: ExecutionMode,
     project_path: Option<PathBuf>,
@@ -133,11 +135,16 @@ impl WorkflowExecutor {
     ) -> Self {
         let decision_cache = DecisionCache::load(&storage.cache_path())
             .unwrap_or_else(|| DecisionCache::new(workflow.id));
+        let verdict_vlm = vlm_config
+            .as_ref()
+            .or(supervision_config.as_ref())
+            .map(|cfg| LlmClient::new(cfg.for_fast_vision(4096)));
         Self {
             workflow,
             agent: LlmClient::new(agent_config),
             vlm: vlm_config.map(LlmClient::new),
             supervision: supervision_config.map(LlmClient::new),
+            verdict_vlm,
             mcp_command,
             execution_mode,
             project_path,
