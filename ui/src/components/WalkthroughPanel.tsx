@@ -1,8 +1,10 @@
+import { useState, useCallback } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import type { WalkthroughAction, TargetCandidate, Node } from "../bindings";
 import { buildActionByNodeId } from "../store/slices/walkthroughSlice";
+import { ImageLightbox, CrosshairOverlay, type LightboxImage } from "./ImageLightbox";
 
 function actionIcon(kind: WalkthroughAction["kind"]): { icon: string; color: string } {
   switch (kind.type) {
@@ -93,6 +95,23 @@ function confidenceDot(confidence: WalkthroughAction["confidence"]): string {
   }
 }
 
+/** Compute crosshair position as percent of image dimensions, or null if not applicable. */
+function computeCrosshairPercent(
+  action: WalkthroughAction,
+  naturalWidth: number,
+  naturalHeight: number,
+): { xPercent: number; yPercent: number } | null {
+  if (action.kind.type !== "Click" || !action.screenshot_meta) return null;
+  const meta = action.screenshot_meta;
+  const px = (action.kind.x - meta.origin_x) * meta.scale;
+  const py = (action.kind.y - meta.origin_y) * meta.scale;
+  if (naturalWidth <= 0 || naturalHeight <= 0) return null;
+  return {
+    xPercent: (px / naturalWidth) * 100,
+    yPercent: (py / naturalHeight) * 100,
+  };
+}
+
 export function WalkthroughPanel() {
   const walkthroughStatus = useStore((s) => s.walkthroughStatus);
   const walkthroughEvents = useStore((s) => s.walkthroughEvents);
@@ -116,6 +135,21 @@ export function WalkthroughPanel() {
   const walkthroughPanelOpen = useStore((s) => s.walkthroughPanelOpen);
   const setWalkthroughPanelOpen = useStore((s) => s.setWalkthroughPanelOpen);
   const assistantOpen = useStore((s) => s.assistantOpen);
+
+  const [lightboxActionId, setLightboxActionId] = useState<string | null>(null);
+  const [crosshairs, setCrosshairs] = useState<Map<string, { xPercent: number; yPercent: number }>>(new Map());
+
+  const onThumbnailLoad = useCallback((action: WalkthroughAction, img: HTMLImageElement) => {
+    const result = computeCrosshairPercent(action, img.naturalWidth, img.naturalHeight);
+    if (!result) return;
+    setCrosshairs((prev) => {
+      const existing = prev.get(action.id);
+      if (existing?.xPercent === result.xPercent && existing?.yPercent === result.yPercent) {
+        return prev;
+      }
+      return new Map(prev).set(action.id, result);
+    });
+  }, []);
 
   const { width, handleResizeStart } = useHorizontalResize();
 
@@ -149,6 +183,18 @@ export function WalkthroughPanel() {
       stepNumbers.set(n.id, ++step);
     }
   }
+
+  // Precompute lightbox image if one is open
+  const lightboxImage: LightboxImage | null = (() => {
+    if (!lightboxActionId) return null;
+    const action = walkthroughActions.find((a) => a.id === lightboxActionId);
+    if (!action || action.artifact_paths.length === 0) return null;
+    return {
+      src: convertFileSrc(action.artifact_paths[0]),
+      filename: action.artifact_paths[0].split("/").pop() ?? "screenshot",
+      crosshair: crosshairs.get(action.id),
+    };
+  })();
 
   return (
     <div className="relative flex h-full flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]" style={{ width, minWidth: width }}>
@@ -369,16 +415,28 @@ export function WalkthroughPanel() {
                       )}
 
                       {/* Screenshot thumbnail */}
-                      {action && action.artifact_paths.length > 0 && (
-                        <div>
-                          <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Screenshot</label>
-                          <img
-                            src={convertFileSrc(action.artifact_paths[0])}
-                            alt="Action screenshot"
-                            className="max-h-32 rounded border border-[var(--border)] object-contain"
-                          />
-                        </div>
-                      )}
+                      {action && action.artifact_paths.length > 0 && (() => {
+                        const crosshair = crosshairs.get(action.id);
+                        return (
+                          <div>
+                            <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Screenshot</label>
+                            <div
+                              className="relative inline-block cursor-pointer"
+                              onClick={() => setLightboxActionId(action.id)}
+                            >
+                              <img
+                                src={convertFileSrc(action.artifact_paths[0])}
+                                alt="Action screenshot"
+                                className="max-h-32 rounded border border-[var(--border)] object-contain"
+                                onLoad={(e) => onThumbnailLoad(action, e.currentTarget)}
+                              />
+                              {crosshair && (
+                                <CrosshairOverlay xPercent={crosshair.xPercent} yPercent={crosshair.yPercent} />
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -407,6 +465,16 @@ export function WalkthroughPanel() {
           Apply
         </button>
       </div>
+
+      {/* Screenshot lightbox */}
+      {lightboxImage && (
+        <ImageLightbox
+          images={[lightboxImage]}
+          index={0}
+          onClose={() => setLightboxActionId(null)}
+          onNavigate={() => {}}
+        />
+      )}
     </div>
   );
 }

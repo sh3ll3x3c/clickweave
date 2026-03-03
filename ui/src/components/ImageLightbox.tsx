@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 export interface LightboxImage {
   src: string;
   filename: string;
+  crosshair?: { xPercent: number; yPercent: number };
 }
 
 export function ImageLightbox({
@@ -76,12 +77,17 @@ export function ImageLightbox({
         className="flex flex-col items-center gap-3"
         onClick={(e) => e.stopPropagation()}
       >
-        <img
-          src={current.src}
-          alt={current.filename}
-          className="max-h-[85vh] max-w-[90vw] rounded object-contain"
-          draggable={false}
-        />
+        <div className="relative">
+          <img
+            src={current.src}
+            alt={current.filename}
+            className="max-h-[85vh] max-w-[90vw] rounded object-contain"
+            draggable={false}
+          />
+          {current.crosshair && (
+            <CrosshairOverlay xPercent={current.crosshair.xPercent} yPercent={current.crosshair.yPercent} />
+          )}
+        </div>
         <span className="text-xs text-white/60">
           {current.filename}
           {hasMultiple && (
@@ -106,5 +112,34 @@ export function ImageLightbox({
       )}
     </div>,
     document.body,
+  );
+}
+
+export function CrosshairOverlay({ xPercent, yPercent }: { xPercent: number; yPercent: number }) {
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      {/* Horizontal line */}
+      <div
+        className="absolute left-0 right-0 h-px"
+        style={{ top: `${yPercent}%`, backgroundColor: "var(--accent-coral)", opacity: 0.6 }}
+      />
+      {/* Vertical line */}
+      <div
+        className="absolute top-0 bottom-0 w-px"
+        style={{ left: `${xPercent}%`, backgroundColor: "var(--accent-coral)", opacity: 0.6 }}
+      />
+      {/* Center dot */}
+      <div
+        className="absolute h-2 w-2 rounded-full"
+        style={{
+          left: `${xPercent}%`,
+          top: `${yPercent}%`,
+          transform: "translate(-50%, -50%)",
+          backgroundColor: "var(--accent-coral)",
+          opacity: 0.9,
+          boxShadow: "0 0 0 2px rgba(0,0,0,0.4)",
+        }}
+      />
+    </div>
   );
 }
