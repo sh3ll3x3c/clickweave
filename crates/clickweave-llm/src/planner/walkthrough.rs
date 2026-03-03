@@ -213,7 +213,7 @@ fn build_step_types() -> String {
 
 ## Verification role
 
-Any read-only Tool step (take_screenshot, find_text) can be marked as a **verification** by adding `"role": "Verification"` and `"expected_outcome": "<description>"` to the step. Use this after key state transitions to assert that the expected result is visible."#
+Any read-only Tool step (take_screenshot, find_text) can be marked as a **verification** by adding `"role": "Verification"` and `"expected_outcome": "<description>"` to the step. The step_type MUST remain "Tool". Use this after key state transitions to assert that the expected result is visible."#
         .to_string()
 }
 

@@ -34,12 +34,12 @@ Produce a workflow that faithfully replays the demonstrated actions. Follow thes
 
 ## Output format
 
-Output `{"steps": [...]}` — same format as the standard planner. Each step is a Tool step:
+Output `{"steps": [...]}` — same format as the standard planner. Every step MUST use `"step_type": "Tool"`:
 
 ```json
 {"step_type": "Tool", "tool_name": "<name>", "arguments": {...}, "name": "<descriptive label>"}
 ```
 
-For verification steps, add `"role": "Verification"` and `"expected_outcome": "<description>"`.
+For verification steps, keep `"step_type": "Tool"` and add `"role": "Verification"` and `"expected_outcome": "<description>"`. Do NOT use `"step_type": "Verification"` — that is not a valid step type.
 
 Output ONLY valid JSON. No explanation, no markdown fences.
