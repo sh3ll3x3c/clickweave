@@ -14,6 +14,14 @@ pub const DEFAULT_MAX_DIMENSION: u32 = 1280;
 /// Returns `None` if the image cannot be decoded.
 pub fn prepare_image_for_vlm(image_bytes: &[u8], max_dimension: u32) -> Option<(String, String)> {
     let img = image::load_from_memory(image_bytes).ok()?;
+    Some(prepare_dynimage_for_vlm(img, max_dimension))
+}
+
+/// Downscale and JPEG-encode an already-decoded image for VLM consumption.
+///
+/// Use this when you already have a `DynamicImage` in memory to avoid a
+/// redundant encode→decode round-trip through `prepare_image_for_vlm`.
+pub fn prepare_dynimage_for_vlm(img: image::DynamicImage, max_dimension: u32) -> (String, String) {
     let (w, h) = (img.width(), img.height());
     let longest = w.max(h);
 
@@ -32,9 +40,11 @@ pub fn prepare_image_for_vlm(image_bytes: &[u8], max_dimension: u32) -> Option<(
     };
 
     let mut buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut buf, image::ImageFormat::Jpeg).ok()?;
+    // JPEG encode cannot fail for valid DynamicImage buffers.
+    img.write_to(&mut buf, image::ImageFormat::Jpeg)
+        .expect("JPEG encoding failed");
 
-    Some((STANDARD.encode(buf.into_inner()), "image/jpeg".to_string()))
+    (STANDARD.encode(buf.into_inner()), "image/jpeg".to_string())
 }
 
 /// Convenience wrapper: decode base64 image data, prepare for VLM.
