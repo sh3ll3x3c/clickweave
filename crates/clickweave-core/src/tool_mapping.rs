@@ -240,6 +240,7 @@ pub fn tool_invocation_to_node_type(
         "click" => Ok(NodeType::Click(ClickParams {
             target: args
                 .get("target")
+                .or_else(|| args.get("text"))
                 .and_then(|v| v.as_str())
                 .map(String::from),
             x: args.get("x").and_then(|v| v.as_f64()),
