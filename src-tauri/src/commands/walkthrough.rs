@@ -28,7 +28,6 @@ const SELF_APP_NAME: &str = "clickweave-tauri";
 const VLM_LABEL_MAX_LEN: usize = 80;
 
 /// Manages the walkthrough recording lifecycle.
-#[derive(Default)]
 pub struct WalkthroughHandle {
     pub session: Option<WalkthroughSession>,
     pub session_dir: Option<std::path::PathBuf>,
@@ -37,6 +36,24 @@ pub struct WalkthroughHandle {
     #[cfg(target_os = "macos")]
     event_tap: Option<MacOSEventTap>,
     processing_task: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// Cancellation signal for the processing loop.
+    cancel_tx: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for WalkthroughHandle {
+    fn default() -> Self {
+        let (cancel_tx, _) = tokio::sync::watch::channel(false);
+        Self {
+            session: None,
+            session_dir: None,
+            storage: None,
+            mcp_command: None,
+            #[cfg(target_os = "macos")]
+            event_tap: None,
+            processing_task: None,
+            cancel_tx,
+        }
+    }
 }
 
 impl WalkthroughHandle {
@@ -56,10 +73,12 @@ impl WalkthroughHandle {
 
     /// Stop the capture backend and return the processing task handle.
     ///
-    /// Dropping the event tap closes the channel sender, so the processing
-    /// loop will drain remaining events and exit naturally. The caller
-    /// should await the returned handle (with a timeout) instead of aborting.
+    /// Signals the cancellation token so the processing loop exits promptly
+    /// (any in-flight MCP call is dropped via `select!`). The caller should
+    /// `await` the returned handle for a clean shutdown.
     fn stop_capture(&mut self) -> Option<tauri::async_runtime::JoinHandle<()>> {
+        let _ = self.cancel_tx.send(true);
+
         #[cfg(target_os = "macos")]
         if let Some(tap) = self.event_tap.take() {
             tap.send_command(CaptureCommand::Stop);
@@ -95,7 +114,7 @@ pub async fn start_walkthrough(
 
     // Set up session and storage under the lock, then release it before
     // spawning async work (which needs the app handle, not the lock).
-    let (session_dir, processing_storage) = {
+    let (session_dir, processing_storage, cancel) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
@@ -130,7 +149,12 @@ pub async fn start_walkthrough(
         guard.storage = Some(storage);
         guard.mcp_command = Some(mcp_command.clone());
 
-        (session_dir, processing_storage)
+        // Fresh cancellation channel for this session.
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        guard.cancel_tx = cancel_tx;
+        let cancel = cancel_rx;
+
+        (session_dir, processing_storage, cancel)
     };
 
     // Helper to roll back session state and clean up the session directory on failure.
@@ -167,6 +191,7 @@ pub async fn start_walkthrough(
                 mcp_command,
                 processing_storage,
                 session_dir,
+                cancel,
             )
             .await;
         });
@@ -254,7 +279,7 @@ pub async fn stop_walkthrough(
     app: tauri::AppHandle,
     planner: Option<super::types::EndpointConfig>,
 ) -> Result<(), String> {
-    let (processing_task, storage, session_dir, workflow_id, session_id) = {
+    let (task, storage, session_dir, workflow_id, session_id) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
@@ -286,12 +311,11 @@ pub async fn stop_walkthrough(
     };
     emit_state(&app, WalkthroughStatus::Processing);
 
-    // Wait for the processing task to drain remaining events (with timeout).
-    if let Some(task) = processing_task {
-        let drain_timeout = tokio::time::Duration::from_secs(5);
-        if tokio::time::timeout(drain_timeout, task).await.is_err() {
-            tracing::warn!("Processing task did not finish draining within timeout");
-        }
+    // Wait for the processing loop to exit. The cancel token was already
+    // signalled by stop_capture(), so any in-flight MCP call is dropped
+    // via select! and the task exits near-instantly.
+    if let Some(task) = task {
+        let _ = task.await;
     }
 
     // --- Processing phase (outside the lock) ---
@@ -445,32 +469,37 @@ pub async fn get_walkthrough_draft(
 #[tauri::command]
 #[specta::specta]
 pub async fn cancel_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
-    let handle = app.state::<Mutex<WalkthroughHandle>>();
-    let mut guard = handle.lock().unwrap();
+    let (task, session_dir) = {
+        let handle = app.state::<Mutex<WalkthroughHandle>>();
+        let mut guard = handle.lock().unwrap();
 
-    if guard.session.is_none() {
-        return Err("No walkthrough session is active".to_string());
-    }
+        if guard.session.is_none() {
+            return Err("No walkthrough session is active".to_string());
+        }
 
-    // For cancel, we don't need to drain — abort immediately.
-    let task = guard.stop_capture();
+        let task = guard.stop_capture();
+        let dir = guard.session_dir.take();
+
+        guard.session = None;
+        guard.storage = None;
+        guard.mcp_command = None;
+
+        (task, dir)
+    };
+
+    // Await graceful shutdown outside the lock.
     if let Some(task) = task {
-        task.abort();
+        let _ = task.await;
     }
 
     // Clean up session artifacts from disk (events, screenshots, draft).
     // The recording may contain typed secrets, so we don't leave it behind.
-    if let Some(dir) = &guard.session_dir {
+    if let Some(dir) = &session_dir {
         if let Err(e) = std::fs::remove_dir_all(dir) {
             tracing::warn!("Failed to clean up walkthrough session dir: {e}");
         }
     }
 
-    guard.session = None;
-    guard.session_dir = None;
-    guard.storage = None;
-
-    drop(guard);
     emit_state(&app, WalkthroughStatus::Idle);
     tracing::info!("Walkthrough cancelled");
     Ok(())
@@ -563,6 +592,7 @@ async fn process_capture_events(
     mcp_command: String,
     storage: WalkthroughStorage,
     session_dir: std::path::PathBuf,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
 ) {
     // Spawn the MCP server for enrichment (screenshots + OCR).
     let mcp = spawn_mcp(&mcp_command).await;
@@ -576,7 +606,15 @@ async fn process_capture_events(
         populate_app_cache(mcp, &mut app_cache).await;
     }
 
-    while let Some(capture) = event_rx.recv().await {
+    loop {
+        let capture = tokio::select! {
+            biased;
+            _ = cancel.changed() => break,
+            msg = event_rx.recv() => match msg {
+                Some(c) => c,
+                None => break,
+            },
+        };
         // Detect app focus changes.
         if capture.target_pid != 0 && capture.target_pid != last_pid {
             let app_name = resolve_app_name(capture.target_pid, &mcp, &mut app_cache).await;
@@ -845,13 +883,41 @@ async fn enrich_click(
 
     let mut events = Vec::new();
 
-    // Query the accessibility element at the click point.
+    let call_timeout = tokio::time::Duration::from_secs(3);
+
+    // Build args for both calls.
+    let app_name_val = app_name.map(|n| serde_json::Value::String(n.to_string()));
     let mut ax_args = serde_json::json!({ "x": x, "y": y });
-    if let Some(name) = app_name {
-        ax_args["app_name"] = serde_json::Value::String(name.to_string());
+    let mut screenshot_args = serde_json::json!({
+        "mode": "window",
+        "include_ocr": true,
+    });
+    if let Some(val) = &app_name_val {
+        ax_args["app_name"] = val.clone();
+        screenshot_args["app_name"] = val.clone();
     }
-    match mcp.call_tool("element_at_point", Some(ax_args)).await {
-        Ok(result) => {
+
+    // Fire both MCP calls in parallel.
+    let (ax_result, screenshot_result) = tokio::join!(
+        tokio::time::timeout(
+            call_timeout,
+            mcp.call_tool("element_at_point", Some(ax_args))
+        ),
+        tokio::time::timeout(
+            call_timeout,
+            mcp.call_tool("take_screenshot", Some(screenshot_args))
+        ),
+    );
+
+    // Process accessibility result.
+    match ax_result {
+        Err(_) => {
+            tracing::info!("Accessibility enrichment timed out at ({x:.0}, {y:.0})");
+        }
+        Ok(Err(e)) => {
+            tracing::info!("Accessibility enrichment failed at ({x:.0}, {y:.0}): {e}");
+        }
+        Ok(Ok(result)) => {
             if let Some(ax) = parse_accessibility_result(&result.content) {
                 tracing::info!(
                     "Accessibility enrichment: label={:?} role={:?} at ({x:.0}, {y:.0})",
@@ -877,59 +943,51 @@ async fn enrich_click(
                 );
             }
         }
-        Err(e) => {
-            tracing::info!("Accessibility enrichment failed at ({x:.0}, {y:.0}): {e}");
+    }
+
+    // Process screenshot result.
+    match screenshot_result {
+        Err(_) => {
+            tracing::info!("Screenshot enrichment timed out at ({x:.0}, {y:.0})");
         }
-    }
+        Ok(Err(e)) => {
+            tracing::info!("Screenshot enrichment failed at ({x:.0}, {y:.0}): {e}");
+        }
+        Ok(Ok(result)) => {
+            let screenshot_meta = parse_screenshot_metadata(&result.content);
 
-    // Take screenshot with OCR for visual artifacts and text fallback.
-    let mut screenshot_args = serde_json::json!({
-        "mode": "window",
-        "include_ocr": true,
-    });
-    if let Some(name) = app_name {
-        screenshot_args["app_name"] = serde_json::Value::String(name.to_string());
-    }
-
-    if let Ok(result) = mcp
-        .call_tool("take_screenshot", Some(screenshot_args))
-        .await
-    {
-        // Parse screenshot metadata (origin, scale) from the JSON text content.
-        let screenshot_meta = parse_screenshot_metadata(&result.content);
-
-        // Extract screenshot image.
-        for content in &result.content {
-            if let clickweave_mcp::ToolContent::Image { data, .. } = content {
-                let filename = format!("click_{timestamp}.png");
-                let artifact_path = session_dir.join("artifacts").join(&filename);
-                if let Ok(image_bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
-                    let _ = std::fs::write(&artifact_path, &image_bytes);
-                    events.push(WalkthroughEvent {
-                        id: Uuid::new_v4(),
-                        timestamp,
-                        kind: WalkthroughEventKind::ScreenshotCaptured {
-                            path: artifact_path.to_string_lossy().to_string(),
-                            kind: ScreenshotKind::AfterClick,
-                            meta: screenshot_meta,
-                        },
-                    });
+            for content in &result.content {
+                if let clickweave_mcp::ToolContent::Image { data, .. } = content {
+                    let filename = format!("click_{timestamp}.png");
+                    let artifact_path = session_dir.join("artifacts").join(&filename);
+                    if let Ok(image_bytes) = base64::engine::general_purpose::STANDARD.decode(data)
+                    {
+                        let _ = std::fs::write(&artifact_path, &image_bytes);
+                        events.push(WalkthroughEvent {
+                            id: Uuid::new_v4(),
+                            timestamp,
+                            kind: WalkthroughEventKind::ScreenshotCaptured {
+                                path: artifact_path.to_string_lossy().to_string(),
+                                kind: ScreenshotKind::AfterClick,
+                                meta: screenshot_meta,
+                            },
+                        });
+                    }
                 }
             }
-        }
 
-        // Extract OCR annotations from text content.
-        let annotations = parse_ocr_annotations(&result.content);
-        if !annotations.is_empty() {
-            events.push(WalkthroughEvent {
-                id: Uuid::new_v4(),
-                timestamp,
-                kind: WalkthroughEventKind::OcrCaptured {
-                    annotations,
-                    click_x: x,
-                    click_y: y,
-                },
-            });
+            let annotations = parse_ocr_annotations(&result.content);
+            if !annotations.is_empty() {
+                events.push(WalkthroughEvent {
+                    id: Uuid::new_v4(),
+                    timestamp,
+                    kind: WalkthroughEventKind::OcrCaptured {
+                        annotations,
+                        click_x: x,
+                        click_y: y,
+                    },
+                });
+            }
         }
     }
 
