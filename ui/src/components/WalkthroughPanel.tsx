@@ -23,12 +23,9 @@ function actionLabel(action: WalkthroughAction): string {
     case "LaunchApp": return `Launch ${k.app_name}`;
     case "FocusWindow": return `Focus ${k.app_name}`;
     case "Click": {
-      // Prefer VLM label (most specific), then actionable AX labels, then OCR.
-      const vlm = action.target_candidates.find((c) => c.type === "VlmLabel");
-      const ax = action.target_candidates.find((c) => c.type === "AccessibilityLabel");
-      const ocr = action.target_candidates.find((c) => c.type === "OcrText");
-      const best = vlm ?? (ax && ax.role !== "AXWindow" ? ax : null) ?? ocr ?? ax;
-      if (best) {
+      const idx = preferredTargetIndex(action.target_candidates);
+      const best = action.target_candidates[idx];
+      if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
         const label = best.type === "OcrText" ? best.text : best.label;
         return `Click '${label.length > 25 ? label.slice(0, 25) + "…" : label}'`;
       }
@@ -54,6 +51,27 @@ function targetCandidateLabel(candidate: TargetCandidate): string {
     case "ImageCrop": return "Image crop";
     case "Coordinates": return `(${candidate.x}, ${candidate.y})`;
   }
+}
+
+/** Accessibility roles that represent specific, actionable UI elements (mirrors Rust ACTIONABLE_AX_ROLES). */
+const ACTIONABLE_AX_ROLES = new Set([
+  "AXButton", "AXCheckBox", "AXComboBox", "AXDisclosureTriangle", "AXIncrementor",
+  "AXLink", "AXMenuButton", "AXMenuItem", "AXPopUpButton", "AXRadioButton",
+  "AXSegmentedControl", "AXSlider", "AXStaticText", "AXTab", "AXTabButton",
+  "AXTextField", "AXTextArea", "AXToggle", "AXToolbarButton",
+]);
+
+/** Find the index of the preferred target candidate, mirroring backend `preferred_label()` logic.
+ *  When no text-based candidate qualifies, falls back to Coordinates (matching draft synthesis). */
+function preferredTargetIndex(candidates: TargetCandidate[]): number {
+  const idx = candidates.findIndex((c) => {
+    if (c.type === "AccessibilityLabel") return ACTIONABLE_AX_ROLES.has(c.role ?? "");
+    return c.type === "VlmLabel" || c.type === "OcrText";
+  });
+  if (idx >= 0) return idx;
+  // No preferred label — draft synthesis uses coordinates.
+  const coordIdx = candidates.findIndex((c) => c.type === "Coordinates");
+  return coordIdx >= 0 ? coordIdx : 0;
 }
 
 function targetCandidateIcon(candidate: TargetCandidate): string {
@@ -264,7 +282,7 @@ export function WalkthroughPanel() {
 
               // Get target override if any
               const targetOverride = targetMap.get(node.id);
-              const chosenTargetIdx = targetOverride?.chosen_candidate_index ?? 0;
+              const chosenTargetIdx = targetOverride?.chosen_candidate_index ?? (action ? preferredTargetIndex(action.target_candidates) : 0);
 
               // Get variable promotion if any
               const variablePromo = varPromoMap.get(node.id);
