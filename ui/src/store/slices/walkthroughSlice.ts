@@ -105,7 +105,6 @@ export interface WalkthroughSlice {
   walkthroughAnnotations: WalkthroughAnnotations;
   walkthroughExpandedAction: string | null;
   walkthroughActionNodeMap: ActionNodeEntry[];
-  walkthroughUsedFallback: boolean;
 
   setWalkthroughStatus: (status: WalkthroughStatus) => void;
   setWalkthroughPanelOpen: (open: boolean) => void;
@@ -115,7 +114,6 @@ export interface WalkthroughSlice {
     draft: Workflow | null;
     warnings: string[];
     action_node_map: ActionNodeEntry[];
-    used_fallback: boolean;
   }) => void;
   fetchWalkthroughDraft: () => Promise<void>;
   startWalkthrough: () => Promise<void>;
@@ -147,7 +145,6 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   walkthroughAnnotations: { ...emptyAnnotations },
   walkthroughExpandedAction: null,
   walkthroughActionNodeMap: [],
-  walkthroughUsedFallback: false,
 
   setWalkthroughStatus: (status) => {
     set({ walkthroughStatus: status });
@@ -162,12 +159,11 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughEvents: [...s.walkthroughEvents, event],
   })),
 
-  setWalkthroughDraft: ({ actions, draft, warnings, action_node_map, used_fallback }) => set({
+  setWalkthroughDraft: ({ actions, draft, warnings, action_node_map }) => set({
     walkthroughActions: actions,
     walkthroughDraft: draft,
     walkthroughWarnings: warnings,
     walkthroughActionNodeMap: action_node_map,
-    walkthroughUsedFallback: used_fallback,
     walkthroughStatus: "Review",
     walkthroughPanelOpen: true,
     walkthroughAnnotations: { ...emptyAnnotations },
@@ -194,7 +190,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughExpandedAction: null,
       walkthroughActionNodeMap: [],
-      walkthroughUsedFallback: false,
+
       assistantOpen: false,
     });
     const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null);
@@ -244,7 +240,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughExpandedAction: null,
       walkthroughActionNodeMap: [],
-      walkthroughUsedFallback: false,
+
       walkthroughPanelOpen: false,
     });
     const result = await commands.cancelWalkthrough();
@@ -400,7 +396,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughExpandedAction: null,
       walkthroughEvents: [],
       walkthroughActionNodeMap: [],
-      walkthroughUsedFallback: false,
+
       isNewWorkflow: false,
     });
   },
@@ -420,7 +416,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughExpandedAction: null,
       walkthroughEvents: [],
       walkthroughActionNodeMap: [],
-      walkthroughUsedFallback: false,
+
       walkthroughError: null,
     });
   },

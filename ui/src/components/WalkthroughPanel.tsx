@@ -123,7 +123,6 @@ export function WalkthroughPanel() {
   const setWalkthroughExpandedAction = useStore((s) => s.setWalkthroughExpandedAction);
   const walkthroughDraft = useStore((s) => s.walkthroughDraft);
   const walkthroughActionNodeMap = useStore((s) => s.walkthroughActionNodeMap);
-  const walkthroughUsedFallback = useStore((s) => s.walkthroughUsedFallback);
   const deleteNode = useStore((s) => s.deleteNode);
   const restoreNode = useStore((s) => s.restoreNode);
   const renameNode = useStore((s) => s.renameNode);
@@ -257,7 +256,6 @@ export function WalkthroughPanel() {
               const isExpanded = walkthroughExpandedAction === node.id;
               const currentStep = stepNumbers.get(node.id) ?? null;
               const { icon, color } = action ? actionIcon(action.kind) : nodeTypeIcon(node.node_type);
-              const isLlmAdded = !action && !walkthroughUsedFallback;
 
               // Get rename if any
               const renameEntry = renameMap.get(node.id);
@@ -299,11 +297,6 @@ export function WalkthroughPanel() {
                     <span className={`flex-1 truncate text-xs text-[var(--text-secondary)] ${isDeleted ? "line-through" : ""}`}>
                       {displayLabel}
                     </span>
-
-                    {/* LLM-added badge */}
-                    {isLlmAdded && (
-                      <span className="rounded bg-purple-500/20 px-1 py-0.5 text-[9px] text-purple-400">LLM</span>
-                    )}
 
                     {/* Confidence dot (only for nodes with an action) */}
                     {action && (

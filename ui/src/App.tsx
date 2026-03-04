@@ -194,13 +194,12 @@ function App() {
         useStore.getState().pushWalkthroughEvent(e.payload.event);
       }),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      listen<{ actions: any[]; draft: any; warnings: string[]; action_node_map: any[]; used_fallback: boolean }>("walkthrough://draft_ready", (e) => {
+      listen<{ actions: any[]; draft: any; warnings: string[]; action_node_map: any[] }>("walkthrough://draft_ready", (e) => {
         useStore.getState().setWalkthroughDraft({
           actions: e.payload.actions,
           draft: e.payload.draft,
           warnings: e.payload.warnings,
           action_node_map: e.payload.action_node_map ?? [],
-          used_fallback: e.payload.used_fallback ?? true,
         });
       }),
       listen<{ action: string }>("recording-bar://action", (e) => {
