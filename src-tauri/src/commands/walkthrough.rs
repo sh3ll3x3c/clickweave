@@ -783,12 +783,21 @@ async fn process_capture_events(
         persist_and_emit(&app, &storage, &session_dir, &wt_event);
     }
 
-    // Await all in-flight enrichment tasks so their events are on disk before
-    // stop_walkthrough reads them. Each task is bounded by its own internal
-    // timeouts (10s MCP calls, 15s VLM), so this never hangs.
-    while let Some(result) = bg_tasks.join_next().await {
-        if let Err(e) = result {
-            tracing::warn!("Enrichment task panicked: {e}");
+    // Await in-flight enrichment tasks so their events are on disk before
+    // stop_walkthrough reads them. Bounded by a total drain timeout so a
+    // wedged MCP server can't block shutdown indefinitely.
+    let drain_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+    loop {
+        match tokio::time::timeout_at(drain_deadline, bg_tasks.join_next()).await {
+            Ok(Some(Ok(()))) => {} // task completed successfully
+            Ok(Some(Err(e))) => tracing::warn!("Enrichment task panicked: {e}"),
+            Ok(None) => break, // all tasks finished
+            Err(_) => {
+                let remaining = bg_tasks.len();
+                tracing::warn!("Drain timeout reached, aborting {remaining} enrichment task(s)");
+                bg_tasks.abort_all();
+                break;
+            }
         }
     }
 
