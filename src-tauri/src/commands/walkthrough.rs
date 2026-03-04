@@ -680,6 +680,7 @@ async fn process_capture_events(
                     y,
                     app_name.as_deref(),
                     capture.timestamp,
+                    &mut cancel,
                 )
                 .await;
 
@@ -875,6 +876,7 @@ async fn enrich_click(
     y: f64,
     app_name: Option<&str>,
     timestamp: u64,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Vec<WalkthroughEvent> {
     let mcp = match mcp.as_ref() {
         Some(m) => m,
@@ -897,17 +899,24 @@ async fn enrich_click(
         screenshot_args["app_name"] = val.clone();
     }
 
-    // Fire both MCP calls in parallel.
-    let (ax_result, screenshot_result) = tokio::join!(
-        tokio::time::timeout(
-            call_timeout,
-            mcp.call_tool("element_at_point", Some(ax_args))
-        ),
-        tokio::time::timeout(
-            call_timeout,
-            mcp.call_tool("take_screenshot", Some(screenshot_args))
-        ),
-    );
+    // Fire both MCP calls in parallel, cancellable.
+    let results = tokio::select! {
+        biased;
+        _ = cancel.changed() => return vec![],
+        result = async {
+            tokio::join!(
+                tokio::time::timeout(
+                    call_timeout,
+                    mcp.call_tool("element_at_point", Some(ax_args))
+                ),
+                tokio::time::timeout(
+                    call_timeout,
+                    mcp.call_tool("take_screenshot", Some(screenshot_args))
+                ),
+            )
+        } => result,
+    };
+    let (ax_result, screenshot_result) = results;
 
     // Process accessibility result.
     match ax_result {
