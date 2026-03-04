@@ -112,6 +112,9 @@ pub enum WalkthroughEventKind {
         label: String,
         role: Option<String>,
     },
+    VlmLabelResolved {
+        label: String,
+    },
     Paused,
     Resumed,
     Stopped,
@@ -698,7 +701,8 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             // so standalone occurrences are skipped.
             WalkthroughEventKind::OcrCaptured { .. }
             | WalkthroughEventKind::ScreenshotCaptured { .. }
-            | WalkthroughEventKind::AccessibilityElementCaptured { .. } => {}
+            | WalkthroughEventKind::AccessibilityElementCaptured { .. }
+            | WalkthroughEventKind::VlmLabelResolved { .. } => {}
 
             // Skip non-action events.
             WalkthroughEventKind::Paused
@@ -955,6 +959,9 @@ mod tests {
                 path: "/tmp/shot.png".to_string(),
                 kind: ScreenshotKind::BeforeClick,
                 meta: None,
+            },
+            WalkthroughEventKind::VlmLabelResolved {
+                label: "Submit".to_string(),
             },
             WalkthroughEventKind::Paused,
             WalkthroughEventKind::Resumed,
