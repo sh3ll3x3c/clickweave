@@ -1445,29 +1445,75 @@ fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<String> {
     let img = image::load_from_memory(png_bytes).ok()?;
     let (img_w, img_h) = (img.width(), img.height());
 
-    // Draw crosshair at full resolution.
-    let mut rgba = img.to_rgba8();
-    let cx = (px as u32).min(img_w.saturating_sub(1));
-    let cy = (py as u32).min(img_h.saturating_sub(1));
-    let red = image::Rgba([255, 0, 0, 255]);
-    let arm = 24u32;
-    let gap = 6u32;
+    // Scale crosshair dimensions so it remains visible after VLM downscaling.
+    // A 3152px Retina screenshot downscales ~0.4x to 1280px; a 1px line would
+    // become sub-pixel and vanish in Triangle filter + JPEG compression.
+    let longest = img_w.max(img_h) as f64;
+    let scale = (longest / clickweave_llm::DEFAULT_MAX_DIMENSION as f64).max(1.0);
+    let half_thickness = (2.0 * scale).round() as i64;
+    let arm_length = (20.0 * scale).round() as i64;
+    let gap = (4.0 * scale).round() as i64;
 
-    for dx in gap..=arm {
-        if cx + dx < img_w {
-            rgba.put_pixel(cx + dx, cy, red);
-        }
-        if let Some(x) = cx.checked_sub(dx) {
-            rgba.put_pixel(x, cy, red);
-        }
-    }
-    for dy in gap..=arm {
-        if cy + dy < img_h {
-            rgba.put_pixel(cx, cy + dy, red);
-        }
-        if let Some(y) = cy.checked_sub(dy) {
-            rgba.put_pixel(cx, y, red);
-        }
+    let mut rgba = img.into_rgba8();
+    let cx = (px as u32).min(img_w.saturating_sub(1)) as i64;
+    let cy = (py as u32).min(img_h.saturating_sub(1)) as i64;
+
+    let outline = image::Rgba([0, 0, 0, 200]);
+    let fill = image::Rgba([255, 0, 0, 255]);
+
+    // Draw a filled rectangle, clamped to image bounds.
+    let draw_rect =
+        |img: &mut image::RgbaImage, x0: i64, y0: i64, x1: i64, y1: i64, color: image::Rgba<u8>| {
+            let x_lo = x0.max(0) as u32;
+            let y_lo = y0.max(0) as u32;
+            let x_hi = (x1.min(img_w as i64 - 1)).max(0) as u32;
+            let y_hi = (y1.min(img_h as i64 - 1)).max(0) as u32;
+            for y in y_lo..=y_hi {
+                for x in x_lo..=x_hi {
+                    img.put_pixel(x, y, color);
+                }
+            }
+        };
+
+    // Draw 4 arms (left, right, top, bottom) in two passes:
+    // first a black outline (1px larger all around), then red fill on top.
+    for (color, expand) in [(outline, 1i64), (fill, 0i64)] {
+        // Left arm
+        draw_rect(
+            &mut rgba,
+            cx - arm_length - expand,
+            cy - half_thickness - expand,
+            cx - gap + expand,
+            cy + half_thickness + expand,
+            color,
+        );
+        // Right arm
+        draw_rect(
+            &mut rgba,
+            cx + gap - expand,
+            cy - half_thickness - expand,
+            cx + arm_length + expand,
+            cy + half_thickness + expand,
+            color,
+        );
+        // Top arm
+        draw_rect(
+            &mut rgba,
+            cx - half_thickness - expand,
+            cy - arm_length - expand,
+            cx + half_thickness + expand,
+            cy - gap + expand,
+            color,
+        );
+        // Bottom arm
+        draw_rect(
+            &mut rgba,
+            cx - half_thickness - expand,
+            cy + gap - expand,
+            cx + half_thickness + expand,
+            cy + arm_length + expand,
+            color,
+        );
     }
 
     let (b64, _mime) = clickweave_llm::prepare_dynimage_for_vlm(
