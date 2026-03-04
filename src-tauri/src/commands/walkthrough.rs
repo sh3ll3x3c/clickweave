@@ -612,7 +612,7 @@ async fn process_capture_events(
     let vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>> =
         planner.filter(|p| !p.is_empty()).map(|p| {
             let config = p
-                .into_llm_config(Some(0.1))
+                .into_llm_config(Some(0.0))
                 .with_max_tokens(2048)
                 .with_thinking(false);
             std::sync::Arc::new(clickweave_llm::LlmClient::new(config))

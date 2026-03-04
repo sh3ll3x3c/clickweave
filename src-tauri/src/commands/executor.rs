@@ -41,7 +41,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     let vlm_config = request
         .vlm
         .filter(|v| !v.is_empty())
-        .map(|v| v.into_llm_config(Some(0.1)));
+        .map(|v| v.into_llm_config(Some(0.0)));
     let supervision_config = request
         .planner
         .filter(|p| !p.is_empty())
