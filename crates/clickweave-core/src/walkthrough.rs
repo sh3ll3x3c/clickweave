@@ -565,6 +565,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let mut screenshot_meta: Option<ScreenshotMeta> = None;
                 let mut ocr_annotations: Option<&Vec<OcrAnnotation>> = None;
                 let mut ax_label: Option<(String, Option<String>)> = None;
+                let mut vlm_label: Option<String> = None;
                 let mut peek = i;
                 while peek < events.len() {
                     match &events[peek].kind {
@@ -577,6 +578,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                         }
                         WalkthroughEventKind::AccessibilityElementCaptured { label, role } => {
                             ax_label = Some((label.clone(), role.clone()));
+                        }
+                        WalkthroughEventKind::VlmLabelResolved { label } => {
+                            vlm_label = Some(label.clone());
                         }
                         // Stop at the next action event.
                         _ => break,
@@ -592,6 +596,11 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Accessibility label is the most reliable target.
                 if let Some((label, role)) = ax_label {
                     candidates.push(TargetCandidate::AccessibilityLabel { label, role });
+                }
+
+                // VLM label as second-best target (after actionable AX labels).
+                if let Some(label) = vlm_label {
+                    candidates.push(TargetCandidate::VlmLabel { label });
                 }
 
                 // OCR text as fallback.
@@ -616,10 +625,12 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
 
                 let confidence = if candidates.iter().any(|c| c.is_actionable_ax_label()) {
                     ActionConfidence::High
-                } else if candidates
-                    .iter()
-                    .any(|c| matches!(c, TargetCandidate::OcrText { .. }))
-                {
+                } else if candidates.iter().any(|c| {
+                    matches!(
+                        c,
+                        TargetCandidate::VlmLabel { .. } | TargetCandidate::OcrText { .. }
+                    )
+                }) {
                     ActionConfidence::Medium
                 } else {
                     ActionConfidence::Low
@@ -1448,6 +1459,81 @@ mod tests {
                     .iter()
                     .any(|c| matches!(c, TargetCandidate::Coordinates { .. }))
             );
+        }
+
+        #[test]
+        fn test_click_with_vlm_label_gets_medium_confidence() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 100.0,
+                        y: 200.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1000,
+                    WalkthroughEventKind::VlmLabelResolved {
+                        label: "Send".to_string(),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(
+                actions[0]
+                    .target_candidates
+                    .iter()
+                    .any(|c| matches!(c, TargetCandidate::VlmLabel { label } if label == "Send"))
+            );
+            // VLM label alone should be at least Medium confidence
+            assert!(actions[0].confidence != ActionConfidence::Low);
+        }
+
+        #[test]
+        fn test_click_with_ax_label_and_vlm_label_keeps_ax_first() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 100.0,
+                        y: 200.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: "Submit".to_string(),
+                        role: Some("AXButton".to_string()),
+                    },
+                ),
+                make_event(
+                    1000,
+                    WalkthroughEventKind::VlmLabelResolved {
+                        label: "Submit Button".to_string(),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            // AX label should be first candidate
+            assert!(matches!(
+                &actions[0].target_candidates[0],
+                TargetCandidate::AccessibilityLabel { label, .. } if label == "Submit"
+            ));
+            // VLM label should be second
+            assert!(matches!(
+                &actions[0].target_candidates[1],
+                TargetCandidate::VlmLabel { label } if label == "Submit Button"
+            ));
+            // Actionable AX label means High confidence
+            assert_eq!(actions[0].confidence, ActionConfidence::High);
         }
 
         #[test]
