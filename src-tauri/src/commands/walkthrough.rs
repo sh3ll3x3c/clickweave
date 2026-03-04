@@ -597,7 +597,7 @@ async fn process_capture_events(
     session_dir: std::path::PathBuf,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) {
-    use clickweave_core::walkthrough::{ScreenshotMeta, TargetCandidate};
+    use clickweave_core::walkthrough::ScreenshotMeta;
 
     const VLM_CALL_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(15);
 
@@ -625,9 +625,8 @@ async fn process_capture_events(
         populate_app_cache(mcp, &mut app_cache).await;
     }
 
-    loop {
-        // Drain completed VLM results (non-blocking).
-        while let Some(Ok(result)) = vlm_tasks.try_join_next() {
+    let drain_vlm = |tasks: &mut tokio::task::JoinSet<Option<(u64, String)>>| {
+        while let Some(Ok(result)) = tasks.try_join_next() {
             if let Some((timestamp, label)) = result {
                 let vlm_event = WalkthroughEvent {
                     id: Uuid::new_v4(),
@@ -637,14 +636,32 @@ async fn process_capture_events(
                 persist_and_emit(&app, &storage, &session_dir, &vlm_event);
             }
         }
+    };
 
-        let capture = tokio::select! {
-            biased;
-            _ = cancel.changed() => break,
-            msg = event_rx.recv() => match msg {
-                Some(c) => c,
-                None => break,
-            },
+    'event_loop: loop {
+        // Drain completed VLM results and wait for the next capture event.
+        // The join_next arm ensures VLM labels are emitted as soon as they
+        // resolve, even if no new capture events are arriving.
+        let capture = loop {
+            tokio::select! {
+                biased;
+                _ = cancel.changed() => break 'event_loop,
+                Some(Ok(result)) = vlm_tasks.join_next() => {
+                    if let Some((timestamp, label)) = result {
+                        let vlm_event = WalkthroughEvent {
+                            id: Uuid::new_v4(),
+                            timestamp,
+                            kind: WalkthroughEventKind::VlmLabelResolved { label },
+                        };
+                        persist_and_emit(&app, &storage, &session_dir, &vlm_event);
+                    }
+                    continue;
+                }
+                msg = event_rx.recv() => match msg {
+                    Some(c) => break c,
+                    None => break 'event_loop,
+                },
+            }
         };
         // Detect app focus changes.
         if capture.target_pid != 0 && capture.target_pid != last_pid {
@@ -734,11 +751,10 @@ async fn process_capture_events(
                                 screenshot_meta = *meta;
                             }
                             WalkthroughEventKind::AccessibilityElementCaptured { label, role } => {
-                                has_actionable_ax = TargetCandidate::AccessibilityLabel {
-                                    label: label.clone(),
-                                    role: role.clone(),
-                                }
-                                .is_actionable_ax_label();
+                                has_actionable_ax =
+                                    clickweave_core::walkthrough::is_actionable_ax_role(
+                                        role.as_deref(),
+                                    );
                                 ax_label_data = Some((label.clone(), role.clone()));
                             }
                             WalkthroughEventKind::OcrCaptured {
@@ -752,7 +768,8 @@ async fn process_capture_events(
                                         let dist = ((a.x - click_x).powi(2)
                                             + (a.y - click_y).powi(2))
                                         .sqrt();
-                                        (dist <= 100.0).then_some((a, dist))
+                                        (dist <= clickweave_core::walkthrough::OCR_PROXIMITY_PX)
+                                            .then_some((a, dist))
                                     })
                                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
                                 if let Some((ann, _)) = nearest {
@@ -764,47 +781,47 @@ async fn process_capture_events(
                     }
 
                     // Only fire VLM if we have a screenshot and no actionable AX label.
-                    if !has_actionable_ax {
-                        if let (Some(path), Some(meta)) = (screenshot_path, screenshot_meta) {
-                            let ax_ref = ax_label_data
-                                .as_ref()
-                                .map(|(l, r)| (l.as_str(), r.as_deref()));
-                            if let Some(req) = prepare_vlm_click_request(
-                                &path,
-                                x,
-                                y,
-                                meta,
-                                ax_ref,
-                                ocr_text.as_deref(),
-                                app_name.as_deref(),
-                            ) {
-                                let backend = backend.clone();
-                                let mut vlm_cancel = cancel.clone();
-                                let ts = capture.timestamp;
+                    if let (false, Some(path), Some(meta)) =
+                        (has_actionable_ax, screenshot_path, screenshot_meta)
+                    {
+                        let ax_ref = ax_label_data
+                            .as_ref()
+                            .map(|(l, r)| (l.as_str(), r.as_deref()));
+                        if let Some(req) = prepare_vlm_click_request(
+                            &path,
+                            x,
+                            y,
+                            meta,
+                            ax_ref,
+                            ocr_text.as_deref(),
+                            app_name.as_deref(),
+                        ) {
+                            let backend = backend.clone();
+                            let mut vlm_cancel = cancel.clone();
+                            let ts = capture.timestamp;
 
-                                vlm_tasks.spawn(async move {
-                                    tokio::select! {
-                                        biased;
-                                        _ = vlm_cancel.changed() => None,
-                                        result = tokio::time::timeout(
-                                            VLM_CALL_TIMEOUT,
-                                            execute_vlm_click_request(backend.as_ref(), &req),
-                                        ) => {
-                                            match result {
-                                                Ok(Some(label)) => {
-                                                    tracing::info!("VLM resolved click at ts={ts} → \"{label}\"");
-                                                    Some((ts, label))
-                                                }
-                                                Ok(None) => None,
-                                                Err(_) => {
-                                                    tracing::warn!("VLM timed out for click at ts={ts}");
-                                                    None
-                                                }
+                            vlm_tasks.spawn(async move {
+                                tokio::select! {
+                                    biased;
+                                    _ = vlm_cancel.changed() => None,
+                                    result = tokio::time::timeout(
+                                        VLM_CALL_TIMEOUT,
+                                        execute_vlm_click_request(backend.as_ref(), &req),
+                                    ) => {
+                                        match result {
+                                            Ok(Some(label)) => {
+                                                tracing::info!("VLM resolved click at ts={ts} → \"{label}\"");
+                                                Some((ts, label))
+                                            }
+                                            Ok(None) => None,
+                                            Err(_) => {
+                                                tracing::warn!("VLM timed out for click at ts={ts}");
+                                                None
                                             }
                                         }
                                     }
-                                });
-                            }
+                                }
+                            });
                         }
                     }
                 }
@@ -861,17 +878,8 @@ async fn process_capture_events(
     }
 
     // Final drain of completed VLM results after loop exit.
-    while let Some(Ok(result)) = vlm_tasks.try_join_next() {
-        if let Some((timestamp, label)) = result {
-            let vlm_event = WalkthroughEvent {
-                id: Uuid::new_v4(),
-                timestamp,
-                kind: WalkthroughEventKind::VlmLabelResolved { label },
-            };
-            persist_and_emit(&app, &storage, &session_dir, &vlm_event);
-        }
-    }
-    // Remaining in-flight VLM tasks are aborted when JoinSet drops.
+    // Remaining in-flight tasks are aborted when JoinSet drops.
+    drain_vlm(&mut vlm_tasks);
 
     tracing::info!("Walkthrough capture event loop ended");
 }

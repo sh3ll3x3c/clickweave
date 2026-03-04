@@ -273,8 +273,13 @@ impl TargetCandidate {
     /// (button, text field, menu item, etc.) as opposed to a container
     /// (window, group, application).
     pub fn is_actionable_ax_label(&self) -> bool {
-        matches!(self, Self::AccessibilityLabel { role: Some(r), .. } if ACTIONABLE_AX_ROLES.contains(&r.as_str()))
+        matches!(self, Self::AccessibilityLabel { role: Some(r), .. } if is_actionable_ax_role(Some(r.as_str())))
     }
+}
+
+/// Whether an accessibility role string represents an actionable UI element.
+pub fn is_actionable_ax_role(role: Option<&str>) -> bool {
+    role.is_some_and(|r| ACTIONABLE_AX_ROLES.contains(&r))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,7 +474,7 @@ impl WalkthroughStorage {
 const TEXT_IDLE_GAP_MS: u64 = 2000;
 
 /// Maximum distance (pixels) for matching OCR text to a click point.
-const OCR_PROXIMITY_PX: f64 = 50.0;
+pub const OCR_PROXIMITY_PX: f64 = 50.0;
 
 /// Maximum gap between scroll events to coalesce (milliseconds).
 const SCROLL_COALESCE_GAP_MS: u64 = 300;
