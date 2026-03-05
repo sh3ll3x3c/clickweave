@@ -18,13 +18,16 @@ use super::types::{
 use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 
 #[cfg(target_os = "macos")]
-use crate::platform::macos::{MacOSEventTap, NativeScreenshot};
+use crate::platform::macos::{CursorRegionCapture, MacOSEventTap};
 
-/// Shared buffer holding the most recent pre-hover screenshot captured during
-/// mouse movement. Used by click enrichment to generate crops without hover
-/// artifacts.
+/// Shared buffer holding the most recent cursor region capture (64×64pt around
+/// the cursor, polled every 100ms). Used as the click crop template — always
+/// reflects the screen before hover effects from the click itself.
+///
+/// Inner `Arc` avoids cloning the pixel data when reading on click — only an
+/// `Arc` pointer bump instead of a 64 KB memcpy.
 #[cfg(target_os = "macos")]
-type ScreenshotBuffer = Arc<RwLock<Option<NativeScreenshot>>>;
+type ScreenshotBuffer = Arc<RwLock<Option<Arc<CursorRegionCapture>>>>;
 
 const RECORDING_BAR_LABEL: &str = "recording-bar";
 const SELF_APP_NAME: &str = "clickweave-tauri";
@@ -629,14 +632,33 @@ async fn process_capture_events(
     // only needs to drain completions to detect errors.
     let mut bg_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
-    // Rolling screenshot buffer: updated on mouse-move events (throttled)
-    // so click enrichment can crop from a pre-hover screenshot.
+    // Screenshot buffer: a small (64pt / 128px on Retina) region around the
+    // cursor, captured every 100ms. Used as the crop source for clicks —
+    // always reflects what the user sees before hover effects from the click.
     #[cfg(target_os = "macos")]
     let screenshot_buffer: ScreenshotBuffer = Arc::new(RwLock::new(None));
+
+    // Spawn a background task that continuously captures the region under the
+    // cursor. Aborted when the event loop exits.
     #[cfg(target_os = "macos")]
-    let mut last_screenshot_time: u64 = 0;
-    /// Minimum interval between mouse-move screenshot captures (ms).
-    const SCREENSHOT_SAMPLE_INTERVAL_MS: u64 = 200;
+    let cursor_poll_handle = {
+        let buf = screenshot_buffer.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                let buf2 = buf.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let (cx, cy) = crate::platform::macos::get_cursor_position();
+                    if let Some(shot) = crate::platform::macos::capture_cursor_region(cx, cy) {
+                        if let Ok(mut guard) = buf2.write() {
+                            *guard = Some(Arc::new(shot));
+                        }
+                    }
+                })
+                .await;
+            }
+        })
+    };
 
     // Cache PID → app name to avoid repeated lookups.
     let mut app_cache: HashMap<i32, String> = HashMap::new();
@@ -693,29 +715,6 @@ async fn process_capture_events(
 
         // Skip events while our own app is focused.
         if self_focused {
-            continue;
-        }
-
-        // Update the rolling screenshot buffer on mouse movement (throttled).
-        // This captures the window in its resting state before hover effects.
-        #[cfg(target_os = "macos")]
-        if let CaptureEventKind::MouseMoved { .. } = &capture.kind {
-            if capture.timestamp.saturating_sub(last_screenshot_time)
-                >= SCREENSHOT_SAMPLE_INTERVAL_MS
-                && capture.target_pid != 0
-            {
-                last_screenshot_time = capture.timestamp;
-                let pid = capture.target_pid;
-                let buf = screenshot_buffer.clone();
-                // Spawn blocking — CGWindowListCreateImage is ~5-15ms.
-                tokio::task::spawn_blocking(move || {
-                    if let Some(shot) = crate::platform::macos::capture_window_for_pid(pid) {
-                        if let Ok(mut guard) = buf.write() {
-                            *guard = Some(shot);
-                        }
-                    }
-                });
-            }
             continue;
         }
 
@@ -820,10 +819,6 @@ async fn process_capture_events(
                     y: Some(y),
                 },
             },
-
-            // MouseMoved is handled above (screenshot sampling); should not
-            // reach here, but be defensive.
-            CaptureEventKind::MouseMoved { .. } => continue,
         };
 
         persist_and_emit(&app, &storage, &session_dir, &wt_event);
@@ -846,6 +841,10 @@ async fn process_capture_events(
             }
         }
     }
+
+    // Stop the cursor region polling task.
+    #[cfg(target_os = "macos")]
+    cursor_poll_handle.abort();
 
     tracing::info!("Walkthrough capture event loop ended");
 }
@@ -1094,7 +1093,7 @@ async fn enrich_click_background(
     y: f64,
     timestamp: u64,
     vlm_timeout: tokio::time::Duration,
-    #[cfg(target_os = "macos")] prehover_screenshot: Option<NativeScreenshot>,
+    #[cfg(target_os = "macos")] prehover_screenshot: Option<Arc<CursorRegionCapture>>,
 ) {
     // Run enrichment without checking the cancel token — we want MCP calls
     // to complete even after Stop is pressed so every click gets a screenshot.
@@ -1134,54 +1133,75 @@ async fn enrich_click_background(
 
     // Crop and VLM are independent — run them concurrently.
     //
-    // For the crop, prefer the pre-hover screenshot (captured during mouse
-    // movement before the hover transition) over the MCP screenshot (which
-    // captures the hover state). Fall back to the MCP screenshot if no
-    // pre-hover buffer is available.
+    // For the crop, the cursor region capture (polled every 100ms) IS the
+    // template — it's already the right size and shows the screen before
+    // hover effects. Just JPEG-encode and emit it. Fall back to the MCP
+    // screenshot + crop_click_region if the buffer was empty.
     //
     // VLM sends the screenshot to the vision model to identify the element.
     // Skipped when the click already has an actionable accessibility label.
-
-    // Determine which image bytes and metadata to use for cropping.
-    #[cfg(target_os = "macos")]
-    let crop_source: Option<(Vec<u8>, ScreenshotMeta)> = {
-        if let Some(ref shot) = prehover_screenshot {
-            Some((
-                shot.png_bytes.clone(),
-                ScreenshotMeta {
-                    origin_x: shot.origin_x,
-                    origin_y: shot.origin_y,
-                    scale: shot.scale,
-                },
-            ))
-        } else {
-            None
-        }
-    };
-    #[cfg(not(target_os = "macos"))]
-    let crop_source: Option<(Vec<u8>, ScreenshotMeta)> = None;
 
     let crop_app = app.clone();
     let crop_storage = storage.clone();
     let crop_dir = session_dir.clone();
     let crop_path = screenshot_path.clone();
     let crop_fut = async move {
-        let (image_bytes, crop_meta) = if let Some((bytes, meta)) = crop_source {
-            tracing::debug!("Using pre-hover screenshot for click crop");
-            (bytes, meta)
-        } else {
-            tracing::debug!("No pre-hover screenshot, falling back to MCP screenshot for crop");
-            let bytes = match tokio::fs::read(&crop_path).await {
-                Ok(b) => b,
-                Err(_) => return,
-            };
-            (bytes, screenshot_meta)
-        };
-        let (px, py) = crop_meta.screen_to_pixel(x, y);
-        let scale = crop_meta.scale;
         let artifacts_dir = crop_dir.join("artifacts");
+
+        let emit_crop = |b64: String, path: std::path::PathBuf| {
+            let ev = WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp,
+                kind: WalkthroughEventKind::ScreenshotCaptured {
+                    path: path.to_string_lossy().to_string(),
+                    kind: ScreenshotKind::ClickCrop,
+                    meta: None,
+                    image_b64: Some(b64),
+                },
+            };
+            persist_and_emit(&crop_app, &crop_storage, &crop_dir, &ev);
+        };
+
+        // Try the cursor region capture first (pre-hover, already cropped).
+        #[cfg(target_os = "macos")]
+        if let Some(shot) = prehover_screenshot {
+            tracing::debug!("Using cursor region capture for click crop");
+            let artifacts_for_capture = artifacts_dir.clone();
+            let crop_result = tokio::task::spawn_blocking(move || {
+                let img =
+                    image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba_bytes.clone())?;
+                let dynamic = image::DynamicImage::ImageRgba8(img);
+                let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+                dynamic
+                    .write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
+                    .ok()?;
+                let jpeg_bytes = jpeg_buf.into_inner();
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+                let filename = format!("crop_{timestamp}.jpg");
+                let path = artifacts_for_capture.join(&filename);
+                let _ = std::fs::write(&path, &jpeg_bytes);
+                Some((b64, path))
+            })
+            .await;
+            if let Ok(Some((crop_b64, crop_path))) = crop_result {
+                emit_crop(crop_b64, crop_path);
+                return;
+            }
+        }
+
+        // Fallback: crop from the MCP screenshot.
+        tracing::debug!("Falling back to MCP screenshot for crop");
+        let bytes = match tokio::fs::read(&crop_path).await {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let Ok(img) = image::load_from_memory(&bytes) else {
+            return;
+        };
+        let (px, py) = screenshot_meta.screen_to_pixel(x, y);
+        let scale = screenshot_meta.scale;
         let crop_result = tokio::task::spawn_blocking(move || {
-            crop_click_region(&image_bytes, px, py, scale).map(|(jpeg, b64)| {
+            crop_click_region(&img, px, py, scale).map(|(jpeg, b64)| {
                 let filename = format!("crop_{timestamp}.jpg");
                 let path = artifacts_dir.join(&filename);
                 let _ = std::fs::write(&path, &jpeg);
@@ -1190,17 +1210,7 @@ async fn enrich_click_background(
         })
         .await;
         if let Ok(Some((crop_b64, crop_path))) = crop_result {
-            let crop_event = WalkthroughEvent {
-                id: Uuid::new_v4(),
-                timestamp,
-                kind: WalkthroughEventKind::ScreenshotCaptured {
-                    path: crop_path.to_string_lossy().to_string(),
-                    kind: ScreenshotKind::ClickCrop,
-                    meta: None,
-                    image_b64: Some(crop_b64),
-                },
-            };
-            persist_and_emit(&crop_app, &crop_storage, &crop_dir, &crop_event);
+            emit_crop(crop_b64, crop_path);
         }
     };
 
@@ -1584,20 +1594,26 @@ async fn resolve_click_targets_with_vlm(
 }
 
 /// Half-size of the click crop in screen points. A 32pt radius yields a
-/// 64×64pt region → 128×128px at 2× Retina. Large enough for icon buttons,
-/// small enough for reliable template matching.
+/// Re-export the crop half-size from the platform module. Used by the fallback
+/// crop path when the cursor region buffer is empty.
+#[cfg(target_os = "macos")]
+use crate::platform::macos::CURSOR_REGION_HALF_PT as CROP_HALF_SIZE_PTS;
+#[cfg(not(target_os = "macos"))]
 const CROP_HALF_SIZE_PTS: f64 = 32.0;
 
 /// Crop a region around the click point from a screenshot and encode as JPEG.
 ///
-/// `png_bytes` — raw PNG of the full window screenshot.
+/// `img` — decoded screenshot (raw RGBA from pre-hover buffer or PNG from disk).
 /// `(px, py)` — click position in **image-pixel** coordinates.
 /// `scale` — display scale factor (e.g. 2.0 for Retina).
 ///
-/// Returns `(jpeg_bytes_for_disk, base64_jpeg)`, or `None` if the image can't
-/// be decoded.
-fn crop_click_region(png_bytes: &[u8], px: f64, py: f64, scale: f64) -> Option<(Vec<u8>, String)> {
-    let img = image::load_from_memory(png_bytes).ok()?;
+/// Returns `(jpeg_bytes_for_disk, base64_jpeg)`, or `None` on failure.
+fn crop_click_region(
+    img: &image::DynamicImage,
+    px: f64,
+    py: f64,
+    scale: f64,
+) -> Option<(Vec<u8>, String)> {
     let (img_w, img_h) = (img.width(), img.height());
 
     let half_px = (CROP_HALF_SIZE_PTS * scale).round() as u32;

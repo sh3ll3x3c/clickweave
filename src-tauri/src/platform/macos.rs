@@ -112,9 +112,6 @@ fn run_event_tap(
         CGEventType::RightMouseDown,
         CGEventType::KeyDown,
         CGEventType::ScrollWheel,
-        CGEventType::MouseMoved,
-        CGEventType::LeftMouseDragged,
-        CGEventType::RightMouseDragged,
     ];
 
     let stopped_for_check = stopped.clone();
@@ -238,16 +235,6 @@ fn translate_event(event_type: CGEventType, event: &CGEvent) -> Option<CaptureEv
                 key_name,
                 characters,
                 modifiers,
-            })
-        }
-
-        CGEventType::MouseMoved
-        | CGEventType::LeftMouseDragged
-        | CGEventType::RightMouseDragged => {
-            let location = event.location();
-            Some(CaptureEventKind::MouseMoved {
-                x: location.x,
-                y: location.y,
             })
         }
 
@@ -435,138 +422,86 @@ unsafe extern "C" {
 }
 
 // ---------------------------------------------------------------------------
-// Native window screenshot capture (bypasses MCP for low-overhead sampling)
+// Cursor region capture (bypasses MCP for low-overhead polling)
 // ---------------------------------------------------------------------------
 
-use core_graphics::display::{CGDisplay, CGRect, CGPoint, CGSize};
-use core_graphics::window::{
-    CGWindowID, CGWindowListCopyWindowInfo, kCGWindowListOptionOnScreenOnly,
-    kCGWindowListExcludeDesktopElements, kCGNullWindowID,
-};
-use core_foundation::array::CFArray;
-use core_foundation::dictionary::CFDictionary;
-use core_foundation::number::CFNumber;
-use core_foundation::string::CFString;
+use core_graphics::display::{CGDisplay, CGPoint, CGRect, CGSize};
+use core_graphics::window::{kCGNullWindowID, kCGWindowListOptionOnScreenOnly};
 
-/// Captured window screenshot with metadata needed for coordinate mapping.
+/// Half-size of the cursor region capture in screen points.
+/// 32pt → 64pt total → 128px on Retina.
+pub const CURSOR_REGION_HALF_PT: f64 = 32.0;
+
+/// A small screen region captured around the cursor position.
+///
+/// Stores raw RGBA pixels. The captured region IS the click crop template —
+/// no secondary crop step is needed.
 #[derive(Clone)]
-pub struct NativeScreenshot {
-    /// Raw PNG bytes.
-    pub png_bytes: Vec<u8>,
-    /// Window origin in screen coordinates.
-    pub origin_x: f64,
-    pub origin_y: f64,
-    /// Display scale factor (e.g. 2.0 for Retina).
-    pub scale: f64,
+pub struct CursorRegionCapture {
+    /// Raw RGBA pixel data (4 bytes per pixel, row-major).
+    pub rgba_bytes: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
 }
 
-/// Capture a screenshot of the frontmost window belonging to `pid`.
-///
-/// Uses CoreGraphics directly — no MCP round-trip. Returns `None` if the
-/// window can't be found or the capture fails.
-pub fn capture_window_for_pid(pid: i32) -> Option<NativeScreenshot> {
+/// Get the current cursor position in screen coordinates (points).
+pub fn get_cursor_position() -> (f64, f64) {
     unsafe {
-        let info_list = CGWindowListCopyWindowInfo(
-            kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-            kCGNullWindowID,
-        );
-        let windows: CFArray<CFDictionary> = CFArray::wrap_under_create_rule(info_list);
-
-        let pid_key = CFString::new("kCGWindowOwnerPID");
-        let id_key = CFString::new("kCGWindowNumber");
-        let bounds_key = CFString::new("kCGWindowBounds");
-        let layer_key = CFString::new("kCGWindowLayer");
-
-        // Find the frontmost (layer 0) window for this PID.
-        let mut best_window_id: Option<CGWindowID> = None;
-        let mut best_bounds: Option<CGRect> = None;
-
-        for i in 0..windows.len() {
-            let dict = windows.get(i).unwrap();
-            let dict_ref = dict.as_concrete_TypeRef();
-
-            // Check PID.
-            let owner_pid = get_dict_number(dict_ref, pid_key.as_concrete_TypeRef() as *const _)?;
-            if owner_pid != pid as i64 {
-                continue;
-            }
-
-            // Only layer 0 (normal windows, not menus/tooltips).
-            let layer = get_dict_number(dict_ref, layer_key.as_concrete_TypeRef() as *const _).unwrap_or(0);
-            if layer != 0 {
-                continue;
-            }
-
-            let window_id = get_dict_number(dict_ref, id_key.as_concrete_TypeRef() as *const _)? as CGWindowID;
-
-            // Parse bounds.
-            let bounds_dict_ref = CFDictionaryGetValue(
-                dict_ref,
-                bounds_key.as_concrete_TypeRef() as *const _,
-            );
-            if bounds_dict_ref.is_null() {
-                continue;
-            }
-            let mut rect = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(0.0, 0.0));
-            if !CGRectMakeWithDictionaryRepresentation(
-                bounds_dict_ref as core_foundation::dictionary::CFDictionaryRef,
-                &mut rect,
-            ) {
-                continue;
-            }
-
-            // Skip tiny windows (status bar items, etc.).
-            if rect.size.width < 50.0 || rect.size.height < 50.0 {
-                continue;
-            }
-
-            // First matching normal window is the frontmost (list is z-ordered).
-            best_window_id = Some(window_id);
-            best_bounds = Some(rect);
-            break;
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return (0.0, 0.0);
         }
-
-        let window_id = best_window_id?;
-        let bounds = best_bounds?;
-
-        // Capture just this window.
-        let image = CGDisplay::screenshot(
-            bounds,
-            kCGWindowListOptionOnScreenOnly,
-            window_id,
-            Default::default(),
-        )?;
-
-        let width = image.width();
-        let height = image.height();
-        if width == 0 || height == 0 {
-            return None;
-        }
-
-        // Compute scale from image pixels vs screen points.
-        let scale = width as f64 / bounds.size.width;
-
-        // Encode to PNG.
-        let png_bytes = cg_image_to_png(&image)?;
-
-        Some(NativeScreenshot {
-            png_bytes,
-            origin_x: bounds.origin.x,
-            origin_y: bounds.origin.y,
-            scale,
-        })
+        let loc = CGEventGetLocation(event);
+        CFRelease(event as *const _);
+        (loc.x, loc.y)
     }
 }
 
-/// Encode a CGImage to PNG bytes.
-fn cg_image_to_png(image: &core_graphics::image::CGImage) -> Option<Vec<u8>> {
-    let width = image.width() as u32;
-    let height = image.height() as u32;
-    let bytes_per_row = image.bytes_per_row();
-    let data = image.data();
+/// Capture a 64×64pt screen region centered on `(center_x, center_y)`.
+///
+/// Uses `CGDisplay::screenshot` with `kCGNullWindowID` to composite all
+/// on-screen windows (cursor is NOT included). Returns `None` if the
+/// capture fails.
+pub fn capture_cursor_region(center_x: f64, center_y: f64) -> Option<CursorRegionCapture> {
+    let rect = CGRect::new(
+        &CGPoint::new(
+            center_x - CURSOR_REGION_HALF_PT,
+            center_y - CURSOR_REGION_HALF_PT,
+        ),
+        &CGSize::new(CURSOR_REGION_HALF_PT * 2.0, CURSOR_REGION_HALF_PT * 2.0),
+    );
+
+    let image = CGDisplay::screenshot(
+        rect,
+        kCGWindowListOptionOnScreenOnly,
+        kCGNullWindowID,
+        Default::default(),
+    )?;
+
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let rgba_bytes = cg_image_to_rgba(&image)?;
+
+    Some(CursorRegionCapture {
+        rgba_bytes,
+        width: width as u32,
+        height: height as u32,
+    })
+}
+
+/// Convert a CGImage from BGRA to RGBA pixel bytes.
+fn cg_image_to_rgba(cg_img: &core_graphics::image::CGImage) -> Option<Vec<u8>> {
+    let width = cg_img.width() as u32;
+    let height = cg_img.height() as u32;
+    let bytes_per_row = cg_img.bytes_per_row();
+    let data = cg_img.data();
     let raw = data.bytes();
 
-    // CGImage uses BGRA; convert to RGBA for the PNG encoder.
+    // CGImage uses BGRA; swap to RGBA.
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height as usize {
         let row_start = y * bytes_per_row;
@@ -575,49 +510,22 @@ fn cg_image_to_png(image: &core_graphics::image::CGImage) -> Option<Vec<u8>> {
             if offset + 3 < raw.len() {
                 rgba.push(raw[offset + 2]); // R (from B)
                 rgba.push(raw[offset + 1]); // G
-                rgba.push(raw[offset]);     // B (from R)
+                rgba.push(raw[offset]); // B (from R)
                 rgba.push(raw[offset + 3]); // A
             }
         }
     }
 
-    let mut buf = Vec::new();
-    let encoder = image::codecs::png::PngEncoder::new(&mut buf);
-    image::ImageEncoder::write_image(
-        encoder,
-        &rgba,
-        width,
-        height,
-        image::ExtendedColorType::Rgba8,
-    )
-    .ok()?;
-
-    Some(buf)
-}
-
-unsafe fn get_dict_number(
-    dict: core_foundation::dictionary::CFDictionaryRef,
-    key: *const std::ffi::c_void,
-) -> Option<i64> {
-    unsafe {
-        let val = CFDictionaryGetValue(dict, key);
-        if val.is_null() {
-            return None;
-        }
-        let num: CFNumber = CFNumber::wrap_under_get_rule(val as _);
-        num.to_i64()
-    }
+    Some(rgba)
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
-    fn CFDictionaryGetValue(
-        dict: core_foundation::dictionary::CFDictionaryRef,
-        key: *const std::ffi::c_void,
-    ) -> *const std::ffi::c_void;
+    fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
+}
 
-    fn CGRectMakeWithDictionaryRepresentation(
-        dict: core_foundation::dictionary::CFDictionaryRef,
-        rect: *mut CGRect,
-    ) -> bool;
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRelease(cf: *const std::ffi::c_void);
 }
