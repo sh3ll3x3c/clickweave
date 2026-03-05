@@ -39,7 +39,7 @@ function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | und
   if (nt.type !== "Click") return undefined;
   if (nt.target) return nt.target;
   if (nt.template_image) return "image match";
-  if (nt.x != null && nt.y != null) return `(${nt.x}, ${nt.y})`;
+  if (nt.x != null && nt.y != null) return `at (${Math.round(nt.x)}, ${Math.round(nt.y)})`;
   return undefined;
 }
 

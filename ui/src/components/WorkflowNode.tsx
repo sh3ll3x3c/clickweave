@@ -197,8 +197,8 @@ export const WorkflowNode = memo(function WorkflowNode({
         >
           {icon}
         </div>
-        <div className="flex flex-col min-w-0">
-          <span className="text-xs font-medium text-[var(--text-primary)]">
+        <div className="flex flex-col min-w-0 max-w-[180px]">
+          <span className="text-xs font-medium text-[var(--text-primary)] truncate">
             {label}
           </span>
           {subtitle && (
