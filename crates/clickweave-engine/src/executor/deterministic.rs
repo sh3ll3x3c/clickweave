@@ -459,8 +459,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log("Resolving click target by image template".to_string());
 
+        // Take a screenshot first — find_image needs both a template and a
+        // screenshot to search within.
+        let app_name = self.focused_app.read().ok().and_then(|g| g.clone());
+        let screenshot_args = match &app_name {
+            Some(name) => serde_json::json!({ "app_name": name }),
+            None => serde_json::json!({}),
+        };
+        let screenshot_b64 = self
+            .extract_screenshot_image(mcp, screenshot_args)
+            .await
+            .ok_or("Failed to take screenshot for image template matching")?;
+
         let find_args = serde_json::json!({
             "template_image_base64": b64,
+            "screenshot_image_base64": screenshot_b64,
             "threshold": 0.75,
             "max_results": 1,
         });
