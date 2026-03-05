@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 
 use base64::Engine;
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    ScreenshotKind, WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent,
+    ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent,
     WalkthroughEventKind, WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
 };
 use clickweave_mcp::McpClient;
@@ -18,7 +18,13 @@ use super::types::{
 use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 
 #[cfg(target_os = "macos")]
-use crate::platform::macos::MacOSEventTap;
+use crate::platform::macos::{MacOSEventTap, NativeScreenshot};
+
+/// Shared buffer holding the most recent pre-hover screenshot captured during
+/// mouse movement. Used by click enrichment to generate crops without hover
+/// artifacts.
+#[cfg(target_os = "macos")]
+type ScreenshotBuffer = Arc<RwLock<Option<NativeScreenshot>>>;
 
 const RECORDING_BAR_LABEL: &str = "recording-bar";
 const SELF_APP_NAME: &str = "clickweave-tauri";
@@ -623,6 +629,15 @@ async fn process_capture_events(
     // only needs to drain completions to detect errors.
     let mut bg_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
+    // Rolling screenshot buffer: updated on mouse-move events (throttled)
+    // so click enrichment can crop from a pre-hover screenshot.
+    #[cfg(target_os = "macos")]
+    let screenshot_buffer: ScreenshotBuffer = Arc::new(RwLock::new(None));
+    #[cfg(target_os = "macos")]
+    let mut last_screenshot_time: u64 = 0;
+    /// Minimum interval between mouse-move screenshot captures (ms).
+    const SCREENSHOT_SAMPLE_INTERVAL_MS: u64 = 200;
+
     // Cache PID → app name to avoid repeated lookups.
     let mut app_cache: HashMap<i32, String> = HashMap::new();
     let mut last_pid: i32 = 0;
@@ -681,6 +696,29 @@ async fn process_capture_events(
             continue;
         }
 
+        // Update the rolling screenshot buffer on mouse movement (throttled).
+        // This captures the window in its resting state before hover effects.
+        #[cfg(target_os = "macos")]
+        if let CaptureEventKind::MouseMoved { .. } = &capture.kind {
+            if capture.timestamp.saturating_sub(last_screenshot_time)
+                >= SCREENSHOT_SAMPLE_INTERVAL_MS
+                && capture.target_pid != 0
+            {
+                last_screenshot_time = capture.timestamp;
+                let pid = capture.target_pid;
+                let buf = screenshot_buffer.clone();
+                // Spawn blocking — CGWindowListCreateImage is ~5-15ms.
+                tokio::task::spawn_blocking(move || {
+                    if let Some(shot) = crate::platform::macos::capture_window_for_pid(pid) {
+                        if let Ok(mut guard) = buf.write() {
+                            *guard = Some(shot);
+                        }
+                    }
+                });
+            }
+            continue;
+        }
+
         // Translate the capture event into a walkthrough event.
         let wt_event = match capture.kind {
             CaptureEventKind::MouseClick {
@@ -716,6 +754,8 @@ async fn process_capture_events(
                     let task_dir = session_dir.clone();
                     let task_app_name = app_cache.get(&capture.target_pid).cloned();
                     let ts = capture.timestamp;
+                    #[cfg(target_os = "macos")]
+                    let task_prehover = screenshot_buffer.read().ok().and_then(|g| g.clone());
 
                     bg_tasks.spawn(async move {
                         enrich_click_background(
@@ -729,6 +769,8 @@ async fn process_capture_events(
                             y,
                             ts,
                             VLM_CALL_TIMEOUT,
+                            #[cfg(target_os = "macos")]
+                            task_prehover,
                         )
                         .await;
                     });
@@ -778,6 +820,10 @@ async fn process_capture_events(
                     y: Some(y),
                 },
             },
+
+            // MouseMoved is handled above (screenshot sampling); should not
+            // reach here, but be defensive.
+            CaptureEventKind::MouseMoved { .. } => continue,
         };
 
         persist_and_emit(&app, &storage, &session_dir, &wt_event);
@@ -1048,9 +1094,8 @@ async fn enrich_click_background(
     y: f64,
     timestamp: u64,
     vlm_timeout: tokio::time::Duration,
+    #[cfg(target_os = "macos")] prehover_screenshot: Option<NativeScreenshot>,
 ) {
-    use clickweave_core::walkthrough::ScreenshotMeta;
-
     // Run enrichment without checking the cancel token — we want MCP calls
     // to complete even after Stop is pressed so every click gets a screenshot.
     // The drain timeout in the event loop bounds total shutdown time.
@@ -1089,23 +1134,51 @@ async fn enrich_click_background(
 
     // Crop and VLM are independent — run them concurrently.
     //
-    // The crop reads the screenshot from disk, extracts a region around the
-    // click point, and persists the result as a ClickCrop event.
+    // For the crop, prefer the pre-hover screenshot (captured during mouse
+    // movement before the hover transition) over the MCP screenshot (which
+    // captures the hover state). Fall back to the MCP screenshot if no
+    // pre-hover buffer is available.
     //
     // VLM sends the screenshot to the vision model to identify the element.
     // Skipped when the click already has an actionable accessibility label.
+
+    // Determine which image bytes and metadata to use for cropping.
+    #[cfg(target_os = "macos")]
+    let crop_source: Option<(Vec<u8>, ScreenshotMeta)> = {
+        if let Some(ref shot) = prehover_screenshot {
+            Some((
+                shot.png_bytes.clone(),
+                ScreenshotMeta {
+                    origin_x: shot.origin_x,
+                    origin_y: shot.origin_y,
+                    scale: shot.scale,
+                },
+            ))
+        } else {
+            None
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let crop_source: Option<(Vec<u8>, ScreenshotMeta)> = None;
 
     let crop_app = app.clone();
     let crop_storage = storage.clone();
     let crop_dir = session_dir.clone();
     let crop_path = screenshot_path.clone();
     let crop_fut = async move {
-        let image_bytes = match tokio::fs::read(&crop_path).await {
-            Ok(b) => b,
-            Err(_) => return,
+        let (image_bytes, crop_meta) = if let Some((bytes, meta)) = crop_source {
+            tracing::debug!("Using pre-hover screenshot for click crop");
+            (bytes, meta)
+        } else {
+            tracing::debug!("No pre-hover screenshot, falling back to MCP screenshot for crop");
+            let bytes = match tokio::fs::read(&crop_path).await {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+            (bytes, screenshot_meta)
         };
-        let (px, py) = screenshot_meta.screen_to_pixel(x, y);
-        let scale = screenshot_meta.scale;
+        let (px, py) = crop_meta.screen_to_pixel(x, y);
+        let scale = crop_meta.scale;
         let artifacts_dir = crop_dir.join("artifacts");
         let crop_result = tokio::task::spawn_blocking(move || {
             crop_click_region(&image_bytes, px, py, scale).map(|(jpeg, b64)| {

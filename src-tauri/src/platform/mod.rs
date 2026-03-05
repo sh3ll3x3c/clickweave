@@ -33,6 +33,10 @@ pub enum CaptureEventKind {
         characters: Option<String>,
         modifiers: Vec<String>,
     },
+    MouseMoved {
+        x: f64,
+        y: f64,
+    },
     ScrollWheel {
         delta_y: f64,
         x: f64,
