@@ -1022,28 +1022,6 @@ async fn enrich_click(
                                 image_b64: None,
                             },
                         });
-
-                        // Generate a click crop for image-based target matching.
-                        if let Some(meta) = screenshot_meta {
-                            let (px, py) = meta.screen_to_pixel(x, y);
-                            if let Some((crop_jpeg, crop_b64)) =
-                                crop_click_region(&image_bytes, px, py, meta.scale)
-                            {
-                                let crop_filename = format!("crop_{timestamp}.jpg");
-                                let crop_path = session_dir.join("artifacts").join(&crop_filename);
-                                let _ = std::fs::write(&crop_path, &crop_jpeg);
-                                events.push(WalkthroughEvent {
-                                    id: Uuid::new_v4(),
-                                    timestamp,
-                                    kind: WalkthroughEventKind::ScreenshotCaptured {
-                                        path: crop_path.to_string_lossy().to_string(),
-                                        kind: ScreenshotKind::ClickCrop,
-                                        meta: None,
-                                        image_b64: Some(crop_b64),
-                                    },
-                                });
-                            }
-                        }
                     }
                 }
             }
@@ -1053,10 +1031,12 @@ async fn enrich_click(
     events
 }
 
-/// Background task that enriches a click with MCP data and optionally spawns
-/// a VLM resolution request. Persists and emits all resulting events.
+/// Background task that enriches a click with MCP data, generates a click crop,
+/// and optionally resolves the target via VLM. Persists and emits all resulting
+/// events.
 ///
 /// Runs entirely off the main event loop so click capture is never blocked.
+/// The crop and VLM resolution run concurrently — neither depends on the other.
 async fn enrich_click_background(
     mcp: std::sync::Arc<McpClient>,
     vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>>,
@@ -1081,12 +1061,7 @@ async fn enrich_click_background(
         persist_and_emit(&app, &storage, &session_dir, ev);
     }
 
-    // Spawn VLM if we have a screenshot and no actionable AX label.
-    let backend = match vlm_backend {
-        Some(ref b) => b,
-        None => return,
-    };
-
+    // Extract screenshot info and AX label from enrichment events.
     let mut screenshot_path: Option<String> = None;
     let mut screenshot_meta: Option<ScreenshotMeta> = None;
     let mut ax_label_data: Option<(String, Option<String>)> = None;
@@ -1107,46 +1082,103 @@ async fn enrich_click_background(
         }
     }
 
-    if has_actionable_ax {
-        return;
-    }
-
-    let (Some(path), Some(meta)) = (screenshot_path, screenshot_meta) else {
+    // Both crop and VLM need a screenshot. Bail early if we don't have one.
+    let (Some(screenshot_path), Some(screenshot_meta)) = (screenshot_path, screenshot_meta) else {
         return;
     };
 
-    let ax_ref = ax_label_data
-        .as_ref()
-        .map(|(l, r)| (l.as_str(), r.as_deref()));
-    let req = match prepare_vlm_click_request(&path, x, y, meta, ax_ref, None, app_name.as_deref())
-    {
-        Some(r) => r,
-        None => return,
-    };
+    // Crop and VLM are independent — run them concurrently.
+    //
+    // The crop reads the screenshot from disk, extracts a region around the
+    // click point, and persists the result as a ClickCrop event.
+    //
+    // VLM sends the screenshot to the vision model to identify the element.
+    // Skipped when the click already has an actionable accessibility label.
 
-    // Run VLM inline (we're already in a background task).
-    // No cancel check — the drain timeout bounds shutdown time.
-    let vlm_result = tokio::time::timeout(
-        vlm_timeout,
-        execute_vlm_click_request(backend.as_ref(), &req),
-    )
-    .await;
-
-    match vlm_result {
-        Ok(Some(label)) => {
-            tracing::info!("VLM resolved click at ts={timestamp} → \"{label}\"");
-            let vlm_event = WalkthroughEvent {
+    let crop_app = app.clone();
+    let crop_storage = storage.clone();
+    let crop_dir = session_dir.clone();
+    let crop_path = screenshot_path.clone();
+    let crop_fut = async move {
+        let image_bytes = match tokio::fs::read(&crop_path).await {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let (px, py) = screenshot_meta.screen_to_pixel(x, y);
+        let scale = screenshot_meta.scale;
+        let artifacts_dir = crop_dir.join("artifacts");
+        let crop_result = tokio::task::spawn_blocking(move || {
+            crop_click_region(&image_bytes, px, py, scale).map(|(jpeg, b64)| {
+                let filename = format!("crop_{timestamp}.jpg");
+                let path = artifacts_dir.join(&filename);
+                let _ = std::fs::write(&path, &jpeg);
+                (b64, path)
+            })
+        })
+        .await;
+        if let Ok(Some((crop_b64, crop_path))) = crop_result {
+            let crop_event = WalkthroughEvent {
                 id: Uuid::new_v4(),
                 timestamp,
-                kind: WalkthroughEventKind::VlmLabelResolved { label },
+                kind: WalkthroughEventKind::ScreenshotCaptured {
+                    path: crop_path.to_string_lossy().to_string(),
+                    kind: ScreenshotKind::ClickCrop,
+                    meta: None,
+                    image_b64: Some(crop_b64),
+                },
             };
-            persist_and_emit(&app, &storage, &session_dir, &vlm_event);
+            persist_and_emit(&crop_app, &crop_storage, &crop_dir, &crop_event);
         }
-        Ok(None) => {}
-        Err(_) => {
-            tracing::warn!("VLM timed out for click at ts={timestamp}");
+    };
+
+    let vlm_fut = async {
+        if has_actionable_ax {
+            return;
         }
-    }
+        let backend = match vlm_backend {
+            Some(ref b) => b,
+            None => return,
+        };
+        let ax_ref = ax_label_data
+            .as_ref()
+            .map(|(l, r)| (l.as_str(), r.as_deref()));
+        let req = match prepare_vlm_click_request(
+            &screenshot_path,
+            x,
+            y,
+            screenshot_meta,
+            ax_ref,
+            None,
+            app_name.as_deref(),
+        ) {
+            Some(r) => r,
+            None => return,
+        };
+
+        let vlm_result = tokio::time::timeout(
+            vlm_timeout,
+            execute_vlm_click_request(backend.as_ref(), &req),
+        )
+        .await;
+
+        match vlm_result {
+            Ok(Some(label)) => {
+                tracing::info!("VLM resolved click at ts={timestamp} → \"{label}\"");
+                let vlm_event = WalkthroughEvent {
+                    id: Uuid::new_v4(),
+                    timestamp,
+                    kind: WalkthroughEventKind::VlmLabelResolved { label },
+                };
+                persist_and_emit(&app, &storage, &session_dir, &vlm_event);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                tracing::warn!("VLM timed out for click at ts={timestamp}");
+            }
+        }
+    };
+
+    tokio::join!(crop_fut, vlm_fut);
 }
 
 /// Find the first JSON object in MCP tool response content.
@@ -1300,8 +1332,8 @@ async fn execute_vlm_click_request(
 /// Use a VLM to identify click targets for all click actions (in parallel).
 ///
 /// For each Click action that has a screenshot artifact and screenshot metadata,
-/// crops a region around the click point and sends it to the VLM asking what UI
-/// element was clicked. All requests are fired concurrently.
+/// draws a crosshair on the screenshot and sends it to the VLM asking what UI
+/// element was clicked. Image prep and VLM calls all run concurrently.
 async fn resolve_click_targets_with_vlm(
     actions: &mut [WalkthroughAction],
     planner_cfg: &super::types::EndpointConfig,
@@ -1312,14 +1344,21 @@ async fn resolve_click_targets_with_vlm(
         return;
     }
 
-    // Prepare VLM requests: read screenshots and build prompts on the main thread,
-    // then fire all LLM calls in parallel.
-    struct IndexedRequest {
+    // Collect the data needed per eligible click. Image prep (PNG decode +
+    // crosshair draw + JPEG encode) moves inside each spawned task so all
+    // clicks are prepared concurrently instead of sequentially.
+    struct ClickInput {
         action_idx: usize,
-        request: VlmClickRequest,
+        screenshot_path: String,
+        click_x: f64,
+        click_y: f64,
+        meta: clickweave_core::walkthrough::ScreenshotMeta,
+        ax_label: Option<(String, Option<String>)>,
+        ocr_text: Option<String>,
+        app_name: Option<String>,
     }
 
-    let mut requests: Vec<IndexedRequest> = Vec::new();
+    let mut inputs: Vec<ClickInput> = Vec::new();
 
     for (idx, action) in actions.iter().enumerate() {
         let (click_x, click_y) = match &action.kind {
@@ -1346,7 +1385,7 @@ async fn resolve_click_targets_with_vlm(
         }
 
         let screenshot_path = match action.artifact_paths.first() {
-            Some(p) => p.as_str(),
+            Some(p) => p.clone(),
             None => continue,
         };
         let meta = match &action.screenshot_meta {
@@ -1354,47 +1393,34 @@ async fn resolve_click_targets_with_vlm(
             None => continue,
         };
 
-        // Extract hints from existing target candidates.
-        let ax_label_data: Option<(String, Option<String>)> =
-            action.target_candidates.iter().find_map(|c| match c {
-                TargetCandidate::AccessibilityLabel { label, role } => {
-                    Some((label.clone(), role.clone()))
-                }
-                _ => None,
-            });
-        let ocr_text: Option<String> = action.target_candidates.iter().find_map(|c| match c {
+        let ax_label = action.target_candidates.iter().find_map(|c| match c {
+            TargetCandidate::AccessibilityLabel { label, role } => {
+                Some((label.clone(), role.clone()))
+            }
+            _ => None,
+        });
+        let ocr_text = action.target_candidates.iter().find_map(|c| match c {
             TargetCandidate::OcrText { text } => Some(text.clone()),
             _ => None,
         });
 
-        let ax_ref = ax_label_data
-            .as_ref()
-            .map(|(l, r)| (l.as_str(), r.as_deref()));
-
-        if let Some(request) = prepare_vlm_click_request(
+        inputs.push(ClickInput {
+            action_idx: idx,
             screenshot_path,
             click_x,
             click_y,
             meta,
-            ax_ref,
-            ocr_text.as_deref(),
-            action.app_name.as_deref(),
-        ) {
-            requests.push(IndexedRequest {
-                action_idx: idx,
-                request,
-            });
-        }
+            ax_label,
+            ocr_text,
+            app_name: action.app_name.clone(),
+        });
     }
 
-    if requests.is_empty() {
+    if inputs.is_empty() {
         return;
     }
 
-    tracing::info!(
-        "VLM: resolving {} click targets in parallel",
-        requests.len()
-    );
+    tracing::info!("VLM: resolving {} click targets in parallel", inputs.len());
 
     let llm_config = planner_cfg
         .clone()
@@ -1403,27 +1429,53 @@ async fn resolve_click_targets_with_vlm(
         .with_thinking(false);
     let backend = std::sync::Arc::new(clickweave_llm::LlmClient::new(llm_config));
 
-    // Fire all VLM requests in parallel.
+    // Fire all tasks in parallel — each task prepares its own image on the
+    // blocking pool (PNG decode + crosshair draw + JPEG encode) and then
+    // sends the VLM request (async HTTP).
     let mut join_set = tokio::task::JoinSet::new();
 
-    for indexed in requests {
+    for input in inputs {
         let backend = backend.clone();
-        let action_idx = indexed.action_idx;
 
         join_set.spawn(async move {
+            // Image prep is CPU-heavy (PNG decode + draw + JPEG encode) plus
+            // blocking file I/O — run on the blocking pool.
+            let req = tokio::task::spawn_blocking(move || {
+                let ax_ref = input
+                    .ax_label
+                    .as_ref()
+                    .map(|(l, r)| (l.as_str(), r.as_deref()));
+                prepare_vlm_click_request(
+                    &input.screenshot_path,
+                    input.click_x,
+                    input.click_y,
+                    input.meta,
+                    ax_ref,
+                    input.ocr_text.as_deref(),
+                    input.app_name.as_deref(),
+                )
+            })
+            .await
+            .ok()
+            .flatten();
+
+            let Some(req) = req else {
+                return (input.action_idx, None);
+            };
+
             let label = match tokio::time::timeout(
                 VLM_CALL_TIMEOUT,
-                execute_vlm_click_request(backend.as_ref(), &indexed.request),
+                execute_vlm_click_request(backend.as_ref(), &req),
             )
             .await
             {
                 Ok(label) => label,
                 Err(_) => {
-                    tracing::warn!("Post-hoc VLM timed out for action {action_idx}");
+                    tracing::warn!("Post-hoc VLM timed out for action {}", input.action_idx);
                     None
                 }
             };
-            (action_idx, label)
+            (input.action_idx, label)
         });
     }
 

@@ -35,6 +35,14 @@ const nodeMetadata: Record<string, { color: string; icon: string }> = {
 
 const defaultMetadata = { color: "#666", icon: "??" };
 
+function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | undefined {
+  if (nt.type !== "Click") return undefined;
+  if (nt.target) return nt.target;
+  if (nt.template_image) return "image match";
+  if (nt.x != null && nt.y != null) return `(${nt.x}, ${nt.y})`;
+  return undefined;
+}
+
 function toRFNode(
   node: Workflow["nodes"][number],
   selectedNode: string | null,
@@ -65,6 +73,7 @@ function toRFNode(
         ? (node.node_type as { type: "Switch"; cases: { name: string }[] }).cases.map((c) => c.name)
         : [],
       role: node.role,
+      subtitle: clickSubtitle(node.node_type),
     },
   };
 }

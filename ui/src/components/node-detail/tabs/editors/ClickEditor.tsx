@@ -1,14 +1,16 @@
 import type { NodeType } from "../../../../bindings";
-import { FieldGroup, NumberField, SelectField, TextField } from "../../fields";
+import { FieldGroup, ImagePathField, NumberField, SelectField, TextField } from "../../fields";
 import { type NodeEditorProps, optionalString } from "./types";
 
-export function ClickEditor({ nodeType, onUpdate }: NodeEditorProps) {
+export function ClickEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "Click") return null;
 
   const updateType = (patch: Record<string, unknown>) => {
     onUpdate({ node_type: { ...nt, ...patch } as NodeType });
   };
+
+  const hasImage = !!nt.template_image;
 
   return (
     <FieldGroup title="Click">
@@ -18,6 +20,17 @@ export function ClickEditor({ nodeType, onUpdate }: NodeEditorProps) {
         onChange={(v) => updateType({ target: optionalString(v) })}
         placeholder="Text to find and click (auto-resolves coordinates)"
       />
+      <ImagePathField
+        label="Template Image"
+        value={nt.template_image ?? ""}
+        projectPath={projectPath}
+        onChange={(v) => updateType({ template_image: optionalString(v) })}
+      />
+      {hasImage && (
+        <p className="text-[10px] text-[var(--text-muted)]">
+          At runtime this node uses <strong>find_image</strong> to locate the template and click at the matched coordinates.
+        </p>
+      )}
       <NumberField
         label="X"
         value={nt.x ?? 0}

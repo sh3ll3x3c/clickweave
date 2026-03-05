@@ -14,6 +14,7 @@ interface WorkflowNodeData {
   role: NodeRole;
   bodyCount?: number;
   onToggleCollapse?: () => void;
+  subtitle?: string;
   [key: string]: unknown;
 }
 
@@ -144,6 +145,7 @@ export const WorkflowNode = memo(function WorkflowNode({
     role,
     bodyCount,
     onToggleCollapse,
+    subtitle,
   } = d;
   const isVerification = role === "Verification";
   const isCollapsedLoop = nodeType === "Loop";
@@ -195,9 +197,16 @@ export const WorkflowNode = memo(function WorkflowNode({
         >
           {icon}
         </div>
-        <span className="text-xs font-medium text-[var(--text-primary)]">
-          {label}
-        </span>
+        <div className="flex flex-col min-w-0">
+          <span className="text-xs font-medium text-[var(--text-primary)]">
+            {label}
+          </span>
+          {subtitle && (
+            <span className="text-[10px] text-[var(--text-muted)] truncate max-w-full">
+              {subtitle}
+            </span>
+          )}
+        </div>
         {isCollapsedLoop && bodyCount != null && (
           <span className="text-[10px] text-[var(--text-muted)] transition-opacity duration-150">
             {bodyCount} {bodyCount === 1 ? "step" : "steps"}
