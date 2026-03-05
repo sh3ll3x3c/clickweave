@@ -1,0 +1,8 @@
+name = "Redirect reply to earlier email"
+prompt = "Open Mail. Click on the email from Dave, then click on the email from Eve, then click on the email from Frank. Go back to Dave's email and click Reply, then type 'Got it, thanks' and click Send"
+
+[expect]
+valid = true
+min_nodes = 8
+max_nodes = 16
+required_tools = ["launch_app", "click", "type_text"]
