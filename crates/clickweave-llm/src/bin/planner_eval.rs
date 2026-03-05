@@ -1,12 +1,16 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use clickweave_core::{NodeType, Workflow};
+use clickweave_core::{NodeRole, NodeType, Workflow};
 use clickweave_llm::planner::plan_workflow_with_backend;
 use clickweave_llm::{LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
+use tokio::sync::Semaphore;
 
 // ── CLI ─────────────────────────────────────────────────────────
 
@@ -32,6 +36,10 @@ struct Cli {
     /// Override model name
     #[arg(long)]
     model: Option<String>,
+
+    /// Max concurrent LLM requests (default: 4)
+    #[arg(long, default_value = "4")]
+    concurrency: usize,
 }
 
 // ── Config types ────────────────────────────────────────────────
@@ -197,6 +205,9 @@ fn extract_patterns(workflow: &Workflow) -> HashSet<String> {
             }
             _ => {}
         }
+        if node.role == NodeRole::Verification {
+            patterns.insert("verification".to_string());
+        }
     }
     patterns
 }
@@ -216,6 +227,52 @@ fn short_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     format!("{:x}", hasher.finalize())[..8].to_string()
+}
+
+// ── Progress tracking ───────────────────────────────────────────
+
+struct Progress {
+    completed: AtomicU32,
+    total: u32,
+    start: Instant,
+}
+
+impl Progress {
+    fn new(total: u32) -> Self {
+        Self {
+            completed: AtomicU32::new(0),
+            total,
+            start: Instant::now(),
+        }
+    }
+
+    fn tick(&self) {
+        let done = self.completed.fetch_add(1, Ordering::Relaxed) + 1;
+        let elapsed = self.start.elapsed().as_secs_f64();
+        let runs_per_min = if elapsed > 0.0 {
+            done as f64 / elapsed * 60.0
+        } else {
+            0.0
+        };
+        eprint!(
+            "\r  [{}/{}] {:.0}s elapsed, {:.1} runs/min    ",
+            done, self.total, elapsed, runs_per_min,
+        );
+    }
+
+    fn finish(&self) {
+        let elapsed = self.start.elapsed().as_secs_f64();
+        let done = self.completed.load(Ordering::Relaxed);
+        let runs_per_min = if elapsed > 0.0 {
+            done as f64 / elapsed * 60.0
+        } else {
+            0.0
+        };
+        eprintln!(
+            "\r  [{}/{}] done in {:.0}s ({:.1} runs/min)        ",
+            done, self.total, elapsed, runs_per_min,
+        );
+    }
 }
 
 // ── Results output ──────────────────────────────────────────────
@@ -305,8 +362,10 @@ async fn main() -> Result<()> {
         anyhow::bail!("No cases found");
     }
 
-    // Create LLM client
-    let llm = LlmClient::new(LlmConfig {
+    let total_runs = cases.len() as u32 * runs_per_case;
+
+    // Create LLM client (shared across all concurrent tasks)
+    let llm = Arc::new(LlmClient::new(LlmConfig {
         base_url: config
             .llm
             .endpoint
@@ -318,77 +377,118 @@ async fn main() -> Result<()> {
         temperature: config.llm.temperature,
         max_tokens: Some(4096),
         ..LlmConfig::default()
-    });
+    }));
 
-    println!("planner-eval — model: {model}, prompt: {prompt_rel} ({prompt_hash})\n");
+    println!(
+        "planner-eval — model: {model}, prompt: {prompt_rel} ({prompt_hash}), {total_runs} runs ({}x{})\n",
+        cases.len(),
+        runs_per_case,
+    );
 
+    // Spawn runs with bounded concurrency
+    let semaphore = Arc::new(Semaphore::new(cli.concurrency));
+    let tools_json = Arc::new(tools_json);
+    let prompt_template = Arc::new(prompt_template);
+    let progress = Arc::new(Progress::new(total_runs));
+
+    let mut handles = Vec::new();
+    for (case_idx, case) in cases.iter().enumerate() {
+        for run_idx in 0..runs_per_case {
+            let llm = Arc::clone(&llm);
+            let tools = Arc::clone(&tools_json);
+            let template = Arc::clone(&prompt_template);
+            let sem = Arc::clone(&semaphore);
+            let prog = Arc::clone(&progress);
+            let prompt = case.prompt.clone();
+
+            handles.push((
+                case_idx,
+                run_idx,
+                tokio::spawn(async move {
+                    let _permit = sem.acquire().await.unwrap();
+                    let result = match plan_workflow_with_backend(
+                        llm.as_ref(),
+                        &prompt,
+                        &tools,
+                        false,
+                        false,
+                        Some(&template),
+                    )
+                    .await
+                    {
+                        Ok(plan_result) => {
+                            let mut tools_found: Vec<_> =
+                                extract_tools(&plan_result.workflow).into_iter().collect();
+                            tools_found.sort();
+                            let mut patterns_found: Vec<_> =
+                                extract_patterns(&plan_result.workflow)
+                                    .into_iter()
+                                    .collect();
+                            patterns_found.sort();
+                            RunResult {
+                                valid: true,
+                                node_count: plan_result.workflow.nodes.len(),
+                                tools_found,
+                                patterns_found,
+                                warnings: plan_result.warnings,
+                                workflow: Some(plan_result.workflow),
+                                error: None,
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("\r  [error] {:#}                              ", e);
+                            RunResult {
+                                valid: false,
+                                node_count: 0,
+                                tools_found: vec![],
+                                patterns_found: vec![],
+                                warnings: vec![],
+                                workflow: None,
+                                error: Some(e.to_string()),
+                            }
+                        }
+                    };
+                    prog.tick();
+                    result
+                }),
+            ));
+        }
+    }
+
+    // Collect results back into per-case groups
+    let mut case_runs: Vec<Vec<RunResult>> = cases.iter().map(|_| Vec::new()).collect();
+    for (case_idx, _run_idx, handle) in handles {
+        let result = handle.await.context("eval task panicked")?;
+        case_runs[case_idx].push(result);
+    }
+
+    progress.finish();
+    println!();
+
+    // Score and print
     let mut all_results = Vec::new();
     let mut total_passed = 0u32;
     let mut total_runs = 0u32;
 
-    for case in &cases {
-        let mut case_runs = Vec::new();
-        let mut case_passed = 0u32;
-
-        for _ in 0..runs_per_case {
-            let run_result = match plan_workflow_with_backend(
-                &llm,
-                &case.prompt,
-                &tools_json,
-                false,
-                false,
-                Some(&prompt_template),
-            )
-            .await
-            {
-                Ok(plan_result) => {
-                    if score_run(&plan_result.workflow, &case.expect) {
-                        case_passed += 1;
-                    }
-                    let mut tools_found: Vec<_> =
-                        extract_tools(&plan_result.workflow).into_iter().collect();
-                    tools_found.sort();
-                    let mut patterns_found: Vec<_> = extract_patterns(&plan_result.workflow)
-                        .into_iter()
-                        .collect();
-                    patterns_found.sort();
-                    RunResult {
-                        valid: true,
-                        node_count: plan_result.workflow.nodes.len(),
-                        tools_found,
-                        patterns_found,
-                        warnings: plan_result.warnings,
-                        workflow: Some(plan_result.workflow),
-                        error: None,
-                    }
-                }
-                Err(e) => RunResult {
-                    valid: false,
-                    node_count: 0,
-                    tools_found: vec![],
-                    patterns_found: vec![],
-                    warnings: vec![],
-                    workflow: None,
-                    error: Some(e.to_string()),
-                },
-            };
-            case_runs.push(run_result);
-        }
+    for (case, runs) in cases.iter().zip(case_runs.iter()) {
+        let case_passed = runs
+            .iter()
+            .filter(|r| r.valid && score_run(r.workflow.as_ref().unwrap(), &case.expect))
+            .count() as u32;
 
         total_passed += case_passed;
         total_runs += runs_per_case;
 
-        // Print scorecard line
-        let node_counts: Vec<String> = case_runs.iter().map(|r| r.node_count.to_string()).collect();
+        let node_counts: Vec<String> = runs.iter().map(|r| r.node_count.to_string()).collect();
         let tools_ok = case.expect.required_tools.is_empty()
-            || case_runs.iter().all(|r| {
+            || runs.iter().all(|r| {
                 case.expect
                     .required_tools
                     .iter()
                     .all(|t| r.tools_found.contains(t))
             });
         let patterns_ok = case.expect.required_patterns.is_empty()
-            || case_runs.iter().all(|r| {
+            || runs.iter().all(|r| {
                 case.expect
                     .required_patterns
                     .iter()
@@ -414,10 +514,10 @@ async fn main() -> Result<()> {
 
         all_results.push(serde_json::json!({
             "name": case.name,
-            "runs": case_runs,
+            "runs": runs,
             "score": {
                 "pass_rate": format!("{}/{}", case_passed, runs_per_case),
-                "valid": case_runs.iter().all(|r| r.valid),
+                "valid": runs.iter().all(|r| r.valid),
                 "structure_match": case_passed == runs_per_case,
             }
         }));
