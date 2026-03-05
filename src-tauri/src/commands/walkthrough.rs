@@ -7,7 +7,7 @@ use clickweave_core::walkthrough::{
     ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent,
     WalkthroughEventKind, WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
 };
-use clickweave_mcp::McpClient;
+use clickweave_mcp::McpRouter;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
@@ -614,7 +614,7 @@ async fn process_capture_events(
 ) {
     // Spawn the MCP server for enrichment (screenshots + OCR).
     // Wrapped in Arc so background enrichment tasks can share it.
-    let mcp: Option<std::sync::Arc<McpClient>> =
+    let mcp: Option<std::sync::Arc<McpRouter>> =
         spawn_mcp(&mcp_command).await.map(std::sync::Arc::new);
 
     // Initialize VLM backend if planner config is available.
@@ -903,28 +903,27 @@ fn persist_and_emit(
 // MCP helpers
 // ---------------------------------------------------------------------------
 
-async fn spawn_mcp(mcp_command: &str) -> Option<McpClient> {
-    let result = if mcp_command == "npx" {
-        McpClient::spawn_npx().await
-    } else {
-        McpClient::spawn(mcp_command, &[]).await
-    };
-
-    match result {
-        Ok(client) => {
-            tracing::info!("MCP server spawned for walkthrough enrichment");
-            Some(client)
+async fn spawn_mcp(mcp_command: &str) -> Option<McpRouter> {
+    let configs = clickweave_mcp::default_server_configs(mcp_command);
+    match McpRouter::spawn(&configs).await {
+        Ok(router) => {
+            tracing::info!(
+                "MCP router spawned for walkthrough enrichment: {} servers, {} tools",
+                router.server_count(),
+                router.tools().len()
+            );
+            Some(router)
         }
         Err(e) => {
             tracing::warn!(
-                "Failed to spawn MCP server for walkthrough: {e}. Continuing without enrichment."
+                "Failed to spawn MCP servers for walkthrough: {e}. Continuing without enrichment."
             );
             None
         }
     }
 }
 
-async fn populate_app_cache(mcp: &McpClient, cache: &mut HashMap<i32, String>) {
+async fn populate_app_cache(mcp: &McpRouter, cache: &mut HashMap<i32, String>) {
     let result = mcp
         .call_tool(
             "list_apps",
@@ -954,7 +953,7 @@ async fn populate_app_cache(mcp: &McpClient, cache: &mut HashMap<i32, String>) {
 
 async fn resolve_app_name(
     pid: i32,
-    mcp: &Option<std::sync::Arc<McpClient>>,
+    mcp: &Option<std::sync::Arc<McpRouter>>,
     cache: &mut HashMap<i32, String>,
 ) -> String {
     if let Some(name) = cache.get(&pid) {
@@ -979,7 +978,7 @@ async fn resolve_app_name(
 ///
 /// Returns accessibility, screenshot, and OCR events if successful.
 async fn enrich_click(
-    mcp: &McpClient,
+    mcp: &McpRouter,
     session_dir: &std::path::Path,
     x: f64,
     y: f64,
@@ -1083,7 +1082,7 @@ async fn enrich_click(
 /// Runs entirely off the main event loop so click capture is never blocked.
 /// The crop and VLM resolution run concurrently — neither depends on the other.
 async fn enrich_click_background(
-    mcp: std::sync::Arc<McpClient>,
+    mcp: std::sync::Arc<McpRouter>,
     vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>>,
     app: tauri::AppHandle,
     storage: WalkthroughStorage,
