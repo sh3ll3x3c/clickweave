@@ -212,9 +212,11 @@ export function ImagePathField({
 function ImagePreview({ value }: { value: string }) {
   const src = useMemo(() => {
     if (!value || value.length < 64) return null;
-    // Skip if it looks like a file path
-    if (value.includes("/") || value.includes("\\") || value.includes(".")) return null;
-    return `data:image/png;base64,${value}`;
+    // Skip if it looks like a file path (e.g. "assets/icon.png")
+    if (/\.\w{1,5}$/.test(value) || value.startsWith("./") || value.startsWith("../")) return null;
+    // Detect JPEG (/9j/) or PNG (iVBOR) base64 headers
+    const mime = value.startsWith("/9j/") ? "image/jpeg" : "image/png";
+    return `data:${mime};base64,${value}`;
   }, [value]);
 
   if (!src) return null;
