@@ -670,7 +670,7 @@ async fn process_capture_events(
 
     // Cache PID → app info to avoid repeated lookups.
     let mut app_cache: HashMap<i32, CachedApp> = HashMap::new();
-    let mut app_kind_cache: HashMap<i32, AppKind> = HashMap::new();
+    let app_kind_cache: Arc<Mutex<HashMap<i32, AppKind>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut last_pid: i32 = 0;
     let mut self_focused = false;
 
@@ -709,24 +709,27 @@ async fn process_capture_events(
             }
 
             // Classify the app's UI framework (Chrome, Electron, or Native).
-            let app_kind = if let Some(&cached_kind) = app_kind_cache.get(&capture.target_pid) {
-                cached_kind
-            } else {
-                let bundle_id = app_cache
-                    .get(&capture.target_pid)
-                    .and_then(|c| c.bundle_id.as_deref());
-                let bundle_path = bundle_path_from_pid(capture.target_pid);
-                let kind = classify_app(bundle_id, bundle_path.as_deref());
-                if kind != AppKind::Native {
-                    tracing::info!(
-                        "App '{}' (PID {}) classified as {:?}",
-                        app_name,
-                        capture.target_pid,
-                        kind,
-                    );
+            let app_kind = {
+                let mut cache = app_kind_cache.lock().unwrap();
+                if let Some(&cached_kind) = cache.get(&capture.target_pid) {
+                    cached_kind
+                } else {
+                    let bundle_id = app_cache
+                        .get(&capture.target_pid)
+                        .and_then(|c| c.bundle_id.as_deref());
+                    let bundle_path = bundle_path_from_pid(capture.target_pid);
+                    let kind = classify_app(bundle_id, bundle_path.as_deref());
+                    if kind != AppKind::Native {
+                        tracing::info!(
+                            "App '{}' (PID {}) classified as {:?}",
+                            app_name,
+                            capture.target_pid,
+                            kind,
+                        );
+                    }
+                    cache.insert(capture.target_pid, kind);
+                    kind
                 }
-                app_kind_cache.insert(capture.target_pid, kind);
-                kind
             };
 
             let focus_event = WalkthroughEvent {
@@ -784,6 +787,8 @@ async fn process_capture_events(
                     let task_dir = session_dir.clone();
                     let task_app_name = app_cache.get(&capture.target_pid).map(|c| c.name.clone());
                     let ts = capture.timestamp;
+                    let task_kind_cache = app_kind_cache.clone();
+                    let task_pid = capture.target_pid;
                     #[cfg(target_os = "macos")]
                     let task_prehover = screenshot_buffer.read().ok().and_then(|g| g.clone());
 
@@ -799,6 +804,8 @@ async fn process_capture_events(
                             y,
                             ts,
                             VLM_CALL_TIMEOUT,
+                            task_kind_cache,
+                            task_pid,
                             #[cfg(target_os = "macos")]
                             task_prehover,
                         )
@@ -1135,6 +1142,8 @@ async fn enrich_click_background(
     y: f64,
     timestamp: u64,
     vlm_timeout: tokio::time::Duration,
+    app_kind_cache: Arc<Mutex<HashMap<i32, AppKind>>>,
+    target_pid: i32,
     #[cfg(target_os = "macos")] prehover_screenshot: Option<Arc<CursorRegionCapture>>,
 ) {
     // Run enrichment without checking the cancel token — we want MCP calls
@@ -1165,6 +1174,26 @@ async fn enrich_click_background(
                 ax_label_data = Some((label.clone(), role.clone()));
             }
             _ => {}
+        }
+    }
+
+    // Reactive Electron detection: if native AX returned nothing useful
+    // and the app is still classified as Native, recheck for Electron
+    // framework. This catches apps with unusual bundle structures that
+    // slipped past proactive detection.
+    if !has_actionable_ax {
+        let current_kind = app_kind_cache.lock().unwrap().get(&target_pid).copied();
+        if current_kind == Some(AppKind::Native) {
+            if let Some(bundle_path) = bundle_path_from_pid(target_pid) {
+                let rechecked = classify_app(None, Some(&bundle_path));
+                if rechecked == AppKind::ElectronApp {
+                    tracing::info!(
+                        "Reactive detection: PID {} reclassified as ElectronApp (empty AX triggered recheck)",
+                        target_pid,
+                    );
+                    app_kind_cache.lock().unwrap().insert(target_pid, rechecked);
+                }
+            }
         }
     }
 
