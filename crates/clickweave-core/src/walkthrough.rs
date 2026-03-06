@@ -1090,6 +1090,19 @@ mod tests {
     }
 
     #[test]
+    fn test_app_focused_backward_compat_without_app_kind() {
+        let json =
+            r#"{"type":"AppFocused","app_name":"Calculator","pid":1234,"window_title":null}"#;
+        let kind: WalkthroughEventKind = serde_json::from_str(json).unwrap();
+        match kind {
+            WalkthroughEventKind::AppFocused { app_kind, .. } => {
+                assert_eq!(app_kind, AppKind::Native);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
     fn test_action_kind_serialization_roundtrip() {
         let kinds = vec![
             WalkthroughActionKind::LaunchApp {

@@ -29,10 +29,10 @@ pub fn classify_app(bundle_id: Option<&str>, app_path: Option<&Path>) -> AppKind
     if is_chrome_family(bundle_id) {
         return AppKind::ChromeBrowser;
     }
-    if let Some(path) = app_path {
-        if is_electron_app(path) {
-            return AppKind::ElectronApp;
-        }
+    if let Some(path) = app_path
+        && is_electron_app(path)
+    {
+        return AppKind::ElectronApp;
     }
     AppKind::Native
 }

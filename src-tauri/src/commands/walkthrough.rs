@@ -1183,16 +1183,16 @@ async fn enrich_click_background(
     // slipped past proactive detection.
     if !has_actionable_ax {
         let current_kind = app_kind_cache.lock().unwrap().get(&target_pid).copied();
-        if current_kind == Some(AppKind::Native) {
-            if let Some(bundle_path) = bundle_path_from_pid(target_pid) {
-                let rechecked = classify_app(None, Some(&bundle_path));
-                if rechecked == AppKind::ElectronApp {
-                    tracing::info!(
-                        "Reactive detection: PID {} reclassified as ElectronApp (empty AX triggered recheck)",
-                        target_pid,
-                    );
-                    app_kind_cache.lock().unwrap().insert(target_pid, rechecked);
-                }
+        if current_kind == Some(AppKind::Native)
+            && let Some(bundle_path) = bundle_path_from_pid(target_pid)
+        {
+            let rechecked = classify_app(None, Some(&bundle_path));
+            if rechecked == AppKind::ElectronApp {
+                tracing::info!(
+                    "Reactive detection: PID {} reclassified as ElectronApp (empty AX triggered recheck)",
+                    target_pid,
+                );
+                app_kind_cache.lock().unwrap().insert(target_pid, rechecked);
             }
         }
     }
