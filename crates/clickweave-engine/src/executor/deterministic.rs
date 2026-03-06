@@ -728,6 +728,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ));
         }
 
+        // Validate that the UID actually appears in the snapshot.
+        if !snapshot_text.contains(&format!("uid=\"{}\"", uid)) {
+            return Err(format!(
+                "LLM returned uid '{}' which does not exist in the CDP snapshot",
+                uid
+            ));
+        }
+
         self.log(format!("CDP: LLM resolved '{}' -> uid='{}'", target, uid));
         Ok(uid)
     }
@@ -738,6 +746,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         matches: &[(String, String)],
     ) -> Result<String, String> {
+        let valid_uids: std::collections::HashSet<&str> =
+            matches.iter().map(|(uid, _)| uid.as_str()).collect();
+
         let options: Vec<String> = matches
             .iter()
             .enumerate()
@@ -763,11 +774,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or_default();
 
         let uid = raw_text.trim().trim_matches('"').to_string();
-        if uid.is_empty() {
-            // Fall back to first match
-            return Ok(matches[0].0.clone());
+        if valid_uids.contains(uid.as_str()) {
+            Ok(uid)
+        } else {
+            self.log(format!(
+                "CDP: LLM returned '{}' which is not in candidate set, using first match",
+                uid
+            ));
+            Ok(matches[0].0.clone())
         }
-        Ok(uid)
     }
 }
 
