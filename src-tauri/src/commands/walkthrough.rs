@@ -5,9 +5,9 @@ use base64::Engine;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    AppKind, ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughAnnotations,
-    WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
-    WalkthroughStorage,
+    AppKind, ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughActionKind,
+    WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind, WalkthroughSession,
+    WalkthroughStatus, WalkthroughStorage,
 };
 use clickweave_mcp::McpRouter;
 use tauri::{Emitter, Manager};
@@ -298,7 +298,7 @@ pub async fn stop_walkthrough(
     app: tauri::AppHandle,
     planner: Option<super::types::EndpointConfig>,
 ) -> Result<(), String> {
-    let (task, storage, session_dir, workflow_id, session_id) = {
+    let (task, storage, session_dir, workflow_id, session_id, mcp_command) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
@@ -326,6 +326,7 @@ pub async fn stop_walkthrough(
             guard.session_dir.clone(),
             sess.workflow_id,
             sess.id,
+            guard.mcp_command.clone(),
         )
     };
     emit_state(&app, WalkthroughStatus::Processing);
@@ -358,6 +359,14 @@ pub async fn stop_walkthrough(
             // VLM: resolve click targets using vision (parallel).
             if let Some(ref planner_cfg) = planner {
                 resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
+            }
+
+            // CDP: verify click targets for Electron/Chrome apps.
+            if let Some(ref mcp_cmd) = mcp_command {
+                if let Some(mut mcp) = spawn_mcp(mcp_cmd).await {
+                    enrich_actions_with_cdp(&mut actions, &mcp).await;
+                    mcp.kill_all();
+                }
             }
 
             // Save actions.
@@ -959,6 +968,146 @@ async fn spawn_mcp(mcp_command: &str) -> Option<McpRouter> {
             None
         }
     }
+}
+
+/// Enrich walkthrough actions with CDP-verified element targets.
+///
+/// For Electron/Chrome apps: takes a CDP snapshot via the chrome-devtools MCP
+/// and matches click actions against DOM elements by text.
+async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRouter) {
+    use clickweave_core::walkthrough::TargetCandidate;
+
+    const CDP_SERVER: &str = "chrome-devtools";
+
+    if !mcp.has_server(CDP_SERVER) {
+        tracing::debug!("CDP verification skipped: chrome-devtools server not available");
+        return;
+    }
+
+    // Find CDM apps in the actions.
+    let cdm_apps: Vec<String> = actions
+        .iter()
+        .filter_map(|a| match &a.kind {
+            WalkthroughActionKind::LaunchApp {
+                app_name, app_kind, ..
+            }
+            | WalkthroughActionKind::FocusWindow {
+                app_name, app_kind, ..
+            } if *app_kind != AppKind::Native => Some(app_name.clone()),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    if cdm_apps.is_empty() {
+        return;
+    }
+
+    for app_name in &cdm_apps {
+        tracing::info!(
+            "CDP verification: relaunching '{}' with debug port",
+            app_name
+        );
+
+        // 1. Quit the app first (it may be running without debug port).
+        let quit_args = serde_json::json!({ "app_name": app_name });
+        let _ = mcp.call_tool("quit_app", Some(quit_args)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // 2. Relaunch with debug port.
+        let launch_args = serde_json::json!({
+            "app_name": app_name,
+            "args": ["--remote-debugging-port=9222"],
+        });
+        if let Err(e) = mcp.call_tool("launch_app", Some(launch_args)).await {
+            tracing::warn!("CDP verification: failed to relaunch '{}': {}", app_name, e);
+            continue;
+        }
+
+        // Give the app time to start and open the debug port.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // 3. Take CDP snapshot.
+        let snapshot_text = match mcp.call_tool_on(CDP_SERVER, "take_snapshot", None).await {
+            Ok(r) if r.is_error != Some(true) => r
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Ok(_) => {
+                tracing::warn!(
+                    "CDP verification: take_snapshot returned error for '{}'",
+                    app_name
+                );
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "CDP verification: take_snapshot failed for '{}': {}",
+                    app_name,
+                    e
+                );
+                continue;
+            }
+        };
+
+        // 4. Enrich click actions for this app.
+        for action in actions.iter_mut() {
+            if action.app_name.as_deref() != Some(app_name) {
+                continue;
+            }
+            if !matches!(action.kind, WalkthroughActionKind::Click { .. }) {
+                continue;
+            }
+
+            // Use existing VLM/AX label as search hint.
+            let search_hint = action
+                .target_candidates
+                .iter()
+                .find_map(|c| c.preferred_label())
+                .map(|s| s.to_string());
+
+            if let Some(hint) = search_hint {
+                let matches = find_elements_in_cdp_snapshot(&snapshot_text, &hint);
+                if let Some((uid, text)) = matches.first() {
+                    action.target_candidates.insert(
+                        0,
+                        TargetCandidate::CdpElement {
+                            text: text.clone(),
+                            uid: uid.clone(),
+                        },
+                    );
+                    tracing::info!(
+                        "CDP verification: enriched click '{}' -> uid='{}' text='{}'",
+                        hint,
+                        uid,
+                        text
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Parse a CDP snapshot and find elements whose text contains the target.
+/// Returns a vec of (uid, matched_line) tuples.
+fn find_elements_in_cdp_snapshot(snapshot_text: &str, target: &str) -> Vec<(String, String)> {
+    let target_lower = target.to_lowercase();
+    let mut matches = Vec::new();
+    for line in snapshot_text.lines() {
+        if let Some(uid_start) = line.find("uid=\"") {
+            let uid_rest = &line[uid_start + 5..];
+            if let Some(uid_end) = uid_rest.find('"') {
+                let uid = &uid_rest[..uid_end];
+                if line.to_lowercase().contains(&target_lower) {
+                    matches.push((uid.to_string(), line.trim().to_string()));
+                }
+            }
+        }
+    }
+    matches
 }
 
 async fn populate_app_cache(mcp: &McpRouter, cache: &mut HashMap<i32, CachedApp>) {
