@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
-import type { WalkthroughAction, TargetCandidate, Node } from "../bindings";
+import type { WalkthroughAction, TargetCandidate, Node, AppKind } from "../bindings";
 import { buildActionByNodeId } from "../store/slices/walkthroughSlice";
 import { ImageLightbox, CrosshairOverlay, type LightboxImage } from "./ImageLightbox";
 
@@ -184,6 +184,15 @@ export function WalkthroughPanel() {
   // Build action lookup by node_id for metadata (screenshots, candidates, confidence).
   const actionByNodeId = buildActionByNodeId(walkthroughActionNodeMap, walkthroughActions);
 
+  // Build app_kind map from LaunchApp/FocusWindow actions so Click nodes can
+  // know whether they're targeting an Electron/Chrome app.
+  const appKindMap = new Map<string, AppKind>();
+  for (const a of walkthroughActions) {
+    if (a.kind.type === "LaunchApp" || a.kind.type === "FocusWindow") {
+      appKindMap.set(a.kind.app_name, a.kind.app_kind);
+    }
+  }
+
   const draftNodes = walkthroughDraft?.nodes ?? [];
   const deletedSet = new Set(walkthroughAnnotations.deleted_node_ids);
   const renameMap = new Map(walkthroughAnnotations.renamed_nodes.map((r) => [r.node_id, r]));
@@ -358,54 +367,72 @@ export function WalkthroughPanel() {
                       </div>
 
                       {/* Target candidates (Click nodes with action metadata) */}
-                      {action && action.kind.type === "Click" && action.target_candidates.length > 0 && (
-                        <div>
-                          <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Click Target</label>
-                          <div className="space-y-1">
-                            {action.target_candidates.map((candidate, ci) => (
-                              <label
-                                key={ci}
-                                className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs transition-colors ${
-                                  ci === chosenTargetIdx
-                                    ? "bg-[var(--accent-coral)]/10 text-[var(--text-primary)]"
-                                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
-                                }`}
-                              >
-                                <input
-                                  type="radio"
-                                  name={`target-${node.id}`}
-                                  checked={ci === chosenTargetIdx}
-                                  onChange={() => overrideTarget(node.id, ci)}
-                                  className="accent-[var(--accent-coral)]"
-                                />
-                                <span>{targetCandidateIcon(candidate)}</span>
-                                <span className="truncate">{targetCandidateLabel(candidate)}</span>
-                              </label>
-                            ))}
+                      {action && action.kind.type === "Click" && action.target_candidates.length > 0 && (() => {
+                        const actionAppKind = action.app_name ? appKindMap.get(action.app_name) : undefined;
+                        const isCdmApp = actionAppKind === "ElectronApp" || actionAppKind === "ChromeBrowser";
+                        // For Electron/Chrome apps, hide non-actionable AX labels (e.g. AXWindow)
+                        // since native accessibility is unreliable — DevTools is used at runtime instead.
+                        const displayCandidates = action.target_candidates
+                          .map((candidate, i) => ({ candidate, originalIndex: i }))
+                          .filter(({ candidate }) => {
+                            if (!isCdmApp) return true;
+                            if (candidate.type === "AccessibilityLabel" && !ACTIONABLE_AX_ROLES.has(candidate.role ?? "")) return false;
+                            return true;
+                          });
+                        return (
+                          <div>
+                            <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Click Target</label>
+                            <div className="space-y-1">
+                              {displayCandidates.map(({ candidate, originalIndex }) => (
+                                <label
+                                  key={originalIndex}
+                                  className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs transition-colors ${
+                                    originalIndex === chosenTargetIdx
+                                      ? "bg-[var(--accent-coral)]/10 text-[var(--text-primary)]"
+                                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+                                  }`}
+                                >
+                                  <input
+                                    type="radio"
+                                    name={`target-${node.id}`}
+                                    checked={originalIndex === chosenTargetIdx}
+                                    onChange={() => overrideTarget(node.id, originalIndex)}
+                                    className="accent-[var(--accent-coral)]"
+                                  />
+                                  <span>{targetCandidateIcon(candidate)}</span>
+                                  <span className="truncate">{targetCandidateLabel(candidate)}</span>
+                                </label>
+                              ))}
+                            </div>
+                            {isCdmApp && (
+                              <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
+                                {actionAppKind === "ElectronApp" ? "Electron" : "Chrome"} app — DevTools targeting used at runtime
+                              </p>
+                            )}
+                            {/* Crop thumbnail for selected ImageCrop candidate */}
+                            {(() => {
+                              const chosen = action.target_candidates[chosenTargetIdx];
+                              if (chosen?.type === "ImageCrop") {
+                                return (
+                                  <img
+                                    src={convertFileSrc(chosen.path)}
+                                    alt="Click crop"
+                                    className="mt-1 h-16 w-16 rounded border border-[var(--border)] object-contain"
+                                    onError={(e) => {
+                                      // Fall back to inline base64 if the artifact file is missing.
+                                      if (chosen.image_b64) {
+                                        (e.target as HTMLImageElement).src =
+                                          `data:image/jpeg;base64,${chosen.image_b64}`;
+                                      }
+                                    }}
+                                  />
+                                );
+                              }
+                              return null;
+                            })()}
                           </div>
-                          {/* Crop thumbnail for selected ImageCrop candidate */}
-                          {(() => {
-                            const chosen = action.target_candidates[chosenTargetIdx];
-                            if (chosen?.type === "ImageCrop") {
-                              return (
-                                <img
-                                  src={convertFileSrc(chosen.path)}
-                                  alt="Click crop"
-                                  className="mt-1 h-16 w-16 rounded border border-[var(--border)] object-contain"
-                                  onError={(e) => {
-                                    // Fall back to inline base64 if the artifact file is missing.
-                                    if (chosen.image_b64) {
-                                      (e.target as HTMLImageElement).src =
-                                        `data:image/jpeg;base64,${chosen.image_b64}`;
-                                    }
-                                  }}
-                                />
-                              );
-                            }
-                            return null;
-                          })()}
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       {/* Variable promotion (TypeText nodes) */}
                       {(action ? action.kind.type === "TypeText" : node.node_type.type === "TypeText") && (
