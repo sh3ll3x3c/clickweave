@@ -114,9 +114,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .await?;
             // Upgrade app_kind if the node says Native but detection disagrees.
             let app_kind = if p.app_kind == AppKind::Native {
+                let bundle_id = clickweave_core::app_detection::bundle_id_from_pid(app.pid);
                 let bundle_path = clickweave_core::app_detection::bundle_path_from_pid(app.pid);
-                let detected =
-                    clickweave_core::app_detection::classify_app(None, bundle_path.as_deref());
+                let detected = clickweave_core::app_detection::classify_app(
+                    bundle_id.as_deref(),
+                    bundle_path.as_deref(),
+                );
                 if detected != AppKind::Native {
                     self.log(format!(
                         "Upgraded app_kind for '{}' from Native to {:?}",

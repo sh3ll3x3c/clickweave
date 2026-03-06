@@ -62,6 +62,34 @@ fn is_electron_app(_path: &Path) -> bool {
     false
 }
 
+/// Resolve the app's bundle identifier from a process ID.
+///
+/// On macOS, resolves the `.app` bundle via `bundle_path_from_pid`,
+/// then reads `CFBundleIdentifier` from `Contents/Info.plist`.
+#[cfg(target_os = "macos")]
+pub fn bundle_id_from_pid(pid: i32) -> Option<String> {
+    let bundle = bundle_path_from_pid(pid)?;
+    let plist_path = bundle.join("Contents/Info.plist");
+    let data = std::fs::read(&plist_path).ok()?;
+    let cursor = std::io::Cursor::new(data);
+    let plist_val: plist::Value = plist::Value::from_reader(cursor).ok()?;
+    plist_val
+        .as_dictionary()
+        .and_then(|d| d.get("CFBundleIdentifier"))
+        .and_then(|v| v.as_string())
+        .map(|s| s.to_string())
+}
+
+#[cfg(target_os = "windows")]
+pub fn bundle_id_from_pid(_pid: i32) -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn bundle_id_from_pid(_pid: i32) -> Option<String> {
+    None
+}
+
 /// Resolve the app bundle path from a process ID.
 ///
 /// On macOS, uses `proc_pidpath` to get the executable path, then walks

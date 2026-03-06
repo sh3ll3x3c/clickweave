@@ -1004,36 +1004,14 @@ async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRou
     }
 
     for app_name in &cdm_apps {
-        tracing::info!(
-            "CDP verification: relaunching '{}' with debug port",
-            app_name
-        );
+        tracing::info!("CDP verification: attempting snapshot for '{}'", app_name);
 
-        // 1. Quit the app first (it may be running without debug port).
-        let quit_args = serde_json::json!({ "app_name": app_name });
-        if let Err(e) = mcp.call_tool("quit_app", Some(quit_args)).await {
-            tracing::warn!(
-                "CDP verification: quit_app for '{}' failed: {}",
-                app_name,
-                e
-            );
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        // Try to take a CDP snapshot directly — the app may already have
+        // a debug port open (e.g. Electron apps launched with the flag
+        // earlier, or Chrome with remote debugging enabled). We never
+        // quit/relaunch user apps here because that destroys live sessions.
 
-        // 2. Relaunch with debug port.
-        let launch_args = serde_json::json!({
-            "app_name": app_name,
-            "args": ["--remote-debugging-port=9222"],
-        });
-        if let Err(e) = mcp.call_tool("launch_app", Some(launch_args)).await {
-            tracing::warn!("CDP verification: failed to relaunch '{}': {}", app_name, e);
-            continue;
-        }
-
-        // Give the app time to start and open the debug port.
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-        // 3. Take CDP snapshot.
+        // Take CDP snapshot (requires debug port already open).
         let snapshot_text = match mcp.call_tool_on(CDP_SERVER, "take_snapshot", None).await {
             Ok(r) if r.is_error != Some(true) => r
                 .content

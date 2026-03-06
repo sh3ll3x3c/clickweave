@@ -48,11 +48,18 @@ function buildAppKindMap(workflow: Workflow): Map<string, AppKind> {
   const result = new Map<string, AppKind>();
   const nodeById = new Map(workflow.nodes.map((n) => [n.id, n]));
 
-  // Build outgoing adjacency and in-degree for topological walk
+  // Collect EndLoop node IDs so we can exclude their back-edges (EndLoop→Loop)
+  const endLoopNodeIds = new Set(
+    workflow.nodes.filter((n) => n.node_type.type === "EndLoop").map((n) => n.id),
+  );
+
+  // Build outgoing adjacency and in-degree for topological walk.
+  // Exclude EndLoop back-edges to avoid cycles breaking the algorithm.
   const outgoing = new Map<string, string[]>();
   const inDegree = new Map<string, number>();
   for (const node of workflow.nodes) inDegree.set(node.id, 0);
   for (const edge of workflow.edges) {
+    if (endLoopNodeIds.has(edge.from)) continue;
     const list = outgoing.get(edge.from) ?? [];
     list.push(edge.to);
     outgoing.set(edge.from, list);
