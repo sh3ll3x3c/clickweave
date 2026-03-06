@@ -1,3 +1,4 @@
+pub mod app_detection;
 pub mod decision_cache;
 pub mod runtime;
 pub mod storage;

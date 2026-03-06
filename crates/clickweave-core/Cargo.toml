@@ -12,6 +12,9 @@ thiserror.workspace = true
 uuid.workspace = true
 specta = { version = "2.0.0-rc", features = ["derive", "uuid", "serde_json"], optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [features]
 default = []
 specta = ["dep:specta"]
