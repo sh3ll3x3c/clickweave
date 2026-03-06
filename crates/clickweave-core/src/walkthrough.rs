@@ -82,6 +82,19 @@ pub enum AppKind {
     ElectronApp,
 }
 
+impl AppKind {
+    /// Parse from a string value (e.g. from JSON tool arguments).
+    /// Returns `None` for unrecognized values.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "Native" => Some(Self::Native),
+            "ChromeBrowser" => Some(Self::ChromeBrowser),
+            "ElectronApp" => Some(Self::ElectronApp),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]

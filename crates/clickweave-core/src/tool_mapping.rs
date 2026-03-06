@@ -156,6 +156,9 @@ pub fn node_type_to_tool_invocation(
                     }
                 }
             }
+            if p.app_kind != AppKind::Native {
+                args["app_kind"] = serde_json::to_value(&p.app_kind).unwrap();
+            }
             ("focus_window", args)
         }
         NodeType::McpToolCall(p) => {
@@ -301,7 +304,7 @@ pub fn tool_invocation_to_node_type(
             let app_kind = args
                 .get("app_kind")
                 .and_then(|v| v.as_str())
-                .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok())
+                .and_then(AppKind::parse)
                 .unwrap_or(AppKind::Native);
             Ok(NodeType::FocusWindow(FocusWindowParams {
                 method,
@@ -614,6 +617,35 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(result, NodeType::McpToolCall(p) if p.tool_name == "custom_tool"));
+    }
+
+    #[test]
+    fn roundtrip_focus_window_preserves_app_kind() {
+        let nt = NodeType::FocusWindow(FocusWindowParams {
+            method: FocusMethod::AppName,
+            value: Some("Chrome".into()),
+            bring_to_front: true,
+            app_kind: AppKind::ChromeBrowser,
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert_eq!(inv.arguments["app_kind"], "ChromeBrowser");
+        let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
+        match back {
+            NodeType::FocusWindow(p) => assert_eq!(p.app_kind, AppKind::ChromeBrowser),
+            _ => panic!("expected FocusWindow"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_focus_window_omits_native_app_kind() {
+        let nt = NodeType::FocusWindow(FocusWindowParams {
+            method: FocusMethod::AppName,
+            value: Some("Calculator".into()),
+            bring_to_front: true,
+            app_kind: AppKind::Native,
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert!(inv.arguments.get("app_kind").is_none());
     }
 
     #[test]

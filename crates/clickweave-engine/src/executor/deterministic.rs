@@ -175,9 +175,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             args.as_ref()
                 .and_then(|a| a.get("app_kind"))
                 .and_then(|v| v.as_str())
-                .and_then(|s| {
-                    serde_json::from_value::<AppKind>(serde_json::Value::String(s.to_string())).ok()
-                })
+                .and_then(AppKind::parse)
                 .unwrap_or(AppKind::Native)
         } else {
             AppKind::Native
