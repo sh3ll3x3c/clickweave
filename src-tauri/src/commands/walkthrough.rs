@@ -37,6 +37,12 @@ const SELF_APP_NAME: &str = "clickweave-tauri";
 /// are likely full sentences rather than a concise element name.
 const VLM_LABEL_MAX_LEN: usize = 80;
 
+/// Cached info about a running app, populated from MCP's `list_apps` response.
+struct CachedApp {
+    name: String,
+    bundle_id: Option<String>,
+}
+
 /// Manages the walkthrough recording lifecycle.
 pub struct WalkthroughHandle {
     pub session: Option<WalkthroughSession>,
@@ -661,8 +667,8 @@ async fn process_capture_events(
         })
     };
 
-    // Cache PID → app name to avoid repeated lookups.
-    let mut app_cache: HashMap<i32, String> = HashMap::new();
+    // Cache PID → app info to avoid repeated lookups.
+    let mut app_cache: HashMap<i32, CachedApp> = HashMap::new();
     let mut last_pid: i32 = 0;
     let mut self_focused = false;
 
@@ -753,7 +759,7 @@ async fn process_capture_events(
                     let task_app = app.clone();
                     let task_storage = storage.clone();
                     let task_dir = session_dir.clone();
-                    let task_app_name = app_cache.get(&capture.target_pid).cloned();
+                    let task_app_name = app_cache.get(&capture.target_pid).map(|c| c.name.clone());
                     let ts = capture.timestamp;
                     #[cfg(target_os = "macos")]
                     let task_prehover = screenshot_buffer.read().ok().and_then(|g| g.clone());
@@ -925,7 +931,7 @@ async fn spawn_mcp(mcp_command: &str) -> Option<McpRouter> {
     }
 }
 
-async fn populate_app_cache(mcp: &McpRouter, cache: &mut HashMap<i32, String>) {
+async fn populate_app_cache(mcp: &McpRouter, cache: &mut HashMap<i32, CachedApp>) {
     let result = mcp
         .call_tool(
             "list_apps",
@@ -943,7 +949,13 @@ async fn populate_app_cache(mcp: &McpRouter, cache: &mut HashMap<i32, String>) {
                     for app in arr {
                         if let (Some(name), Some(pid)) = (app["name"].as_str(), app["pid"].as_i64())
                         {
-                            cache.insert(pid as i32, name.to_string());
+                            cache.insert(
+                                pid as i32,
+                                CachedApp {
+                                    name: name.to_string(),
+                                    bundle_id: app["bundle_id"].as_str().map(|s| s.to_string()),
+                                },
+                            );
                         }
                     }
                 }
@@ -956,23 +968,29 @@ async fn populate_app_cache(mcp: &McpRouter, cache: &mut HashMap<i32, String>) {
 async fn resolve_app_name(
     pid: i32,
     mcp: &Option<std::sync::Arc<McpRouter>>,
-    cache: &mut HashMap<i32, String>,
+    cache: &mut HashMap<i32, CachedApp>,
 ) -> String {
-    if let Some(name) = cache.get(&pid) {
-        return name.clone();
+    if let Some(cached) = cache.get(&pid) {
+        return cached.name.clone();
     }
 
     // Re-fetch the app list from MCP to find the new PID.
     if let Some(mcp) = mcp {
         populate_app_cache(mcp.as_ref(), cache).await;
-        if let Some(name) = cache.get(&pid) {
-            return name.clone();
+        if let Some(cached) = cache.get(&pid) {
+            return cached.name.clone();
         }
     }
 
     // Insert negative-cache entry to avoid repeated MCP calls for unknown PIDs.
     let fallback = format!("PID:{pid}");
-    cache.insert(pid, fallback.clone());
+    cache.insert(
+        pid,
+        CachedApp {
+            name: fallback.clone(),
+            bundle_id: None,
+        },
+    );
     fallback
 }
 
