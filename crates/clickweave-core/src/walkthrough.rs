@@ -567,6 +567,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             WalkthroughEventKind::AppFocused {
                 app_name,
                 window_title,
+                app_kind,
                 ..
             } => {
                 flush_text(&mut text_buffer, &mut actions, &last_app);
@@ -580,13 +581,13 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let kind = if is_new {
                     WalkthroughActionKind::LaunchApp {
                         app_name: app_name.clone(),
-                        app_kind: AppKind::Native,
+                        app_kind: *app_kind,
                     }
                 } else {
                     WalkthroughActionKind::FocusWindow {
                         app_name: app_name.clone(),
                         window_title: window_title.clone(),
-                        app_kind: AppKind::Native,
+                        app_kind: *app_kind,
                     }
                 };
 
@@ -1761,6 +1762,27 @@ mod tests {
             let (actions, _) = normalize_events(&events);
             assert!(actions.is_empty());
         }
+
+        #[test]
+        fn test_app_kind_propagated_to_actions() {
+            let events = vec![make_event(
+                1000,
+                WalkthroughEventKind::AppFocused {
+                    app_name: "Discord".into(),
+                    pid: 100,
+                    window_title: None,
+                    app_kind: AppKind::ElectronApp,
+                },
+            )];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            match &actions[0].kind {
+                WalkthroughActionKind::LaunchApp { app_kind, .. } => {
+                    assert_eq!(*app_kind, AppKind::ElectronApp);
+                }
+                _ => panic!("expected LaunchApp"),
+            }
+        }
     }
 
     mod synthesis_tests {
@@ -1802,6 +1824,22 @@ mod tests {
                 NodeType::FocusWindow(p) if p.method == FocusMethod::AppName && p.value.as_deref() == Some("Calculator")
             ));
             assert_eq!(wf.nodes[0].name, "Launch Calculator");
+        }
+
+        #[test]
+        fn test_app_kind_propagated_to_focus_window_node() {
+            let actions = vec![make_action(WalkthroughActionKind::LaunchApp {
+                app_name: "Discord".into(),
+                app_kind: AppKind::ElectronApp,
+            })];
+            let wf = synthesize_draft(&actions, Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes.len(), 1);
+            match &wf.nodes[0].node_type {
+                NodeType::FocusWindow(p) => {
+                    assert_eq!(p.app_kind, AppKind::ElectronApp);
+                }
+                _ => panic!("expected FocusWindow"),
+            }
         }
 
         #[test]
