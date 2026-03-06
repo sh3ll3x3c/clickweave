@@ -56,12 +56,32 @@ struct EvalConfig {
 
 #[derive(Deserialize)]
 struct LlmSection {
-    endpoint: String,
+    /// Single endpoint (backwards-compatible).
+    #[serde(default)]
+    endpoint: Option<String>,
+    /// Multiple endpoints for round-robin distribution.
+    #[serde(default)]
+    endpoints: Vec<String>,
     model: String,
     #[serde(default)]
     api_key: Option<String>,
     #[serde(default)]
     temperature: Option<f32>,
+}
+
+impl LlmSection {
+    fn resolved_endpoints(&self) -> Result<Vec<String>> {
+        let mut eps = self.endpoints.clone();
+        if let Some(ep) = &self.endpoint {
+            if !eps.contains(ep) {
+                eps.insert(0, ep.clone());
+            }
+        }
+        if eps.is_empty() {
+            anyhow::bail!("No LLM endpoints configured — set 'endpoint' or 'endpoints' in [llm]");
+        }
+        Ok(eps)
+    }
 }
 
 #[derive(Deserialize)]
@@ -142,6 +162,7 @@ impl TurnResult {
 
 #[derive(Serialize)]
 struct RunResult {
+    endpoint: String,
     turn_results: Vec<TurnResult>,
 }
 
@@ -440,23 +461,32 @@ async fn main() -> Result<()> {
 
     let total_runs = cases.len() as u32 * runs_per_case;
 
-    // Create LLM client (shared across all concurrent tasks)
-    let llm = Arc::new(LlmClient::new(LlmConfig {
-        base_url: config
-            .llm
-            .endpoint
-            .trim_end_matches('/')
-            .trim_end_matches("/chat/completions")
-            .to_string(),
-        api_key: config.llm.api_key.clone(),
-        model: model.to_string(),
-        temperature: config.llm.temperature,
-        max_tokens: Some(4096),
-        ..LlmConfig::default()
-    }));
+    // Create LLM clients — one per endpoint, round-robin assigned to tasks.
+    let endpoints = config.llm.resolved_endpoints()?;
+    let clients: Vec<Arc<LlmClient>> = endpoints
+        .iter()
+        .map(|ep| {
+            Arc::new(LlmClient::new(LlmConfig {
+                base_url: ep
+                    .trim_end_matches('/')
+                    .trim_end_matches("/chat/completions")
+                    .to_string(),
+                api_key: config.llm.api_key.clone(),
+                model: model.to_string(),
+                temperature: config.llm.temperature,
+                max_tokens: Some(4096),
+                ..LlmConfig::default()
+            }))
+        })
+        .collect();
 
+    let ep_label = if endpoints.len() == 1 {
+        endpoints[0].clone()
+    } else {
+        format!("{} endpoints", endpoints.len())
+    };
     println!(
-        "planner-eval — model: {model}, prompt: {prompt_rel} ({prompt_hash}), {total_runs} runs ({}x{})\n",
+        "planner-eval — model: {model}, {ep_label}, prompt: {prompt_rel} ({prompt_hash}), {total_runs} runs ({}x{})\n",
         cases.len(),
         runs_per_case,
     );
@@ -470,9 +500,13 @@ async fn main() -> Result<()> {
     let progress = Arc::new(Progress::new(total_runs));
 
     let mut handles = Vec::new();
+    let num_clients = clients.len();
     for (case_idx, case) in cases.iter().enumerate() {
         for run_idx in 0..runs_per_case {
-            let llm = Arc::clone(&llm);
+            let task_idx = case_idx * runs_per_case as usize + run_idx as usize;
+            let client_idx = task_idx % num_clients;
+            let llm = Arc::clone(&clients[client_idx]);
+            let endpoint = endpoints[client_idx].clone();
             let tools = Arc::clone(&tools_json);
             let template = Arc::clone(&prompt_template);
             let sem = Arc::clone(&semaphore);
@@ -567,7 +601,10 @@ async fn main() -> Result<()> {
                     }
 
                     prog.tick();
-                    RunResult { turn_results }
+                    RunResult {
+                        endpoint,
+                        turn_results,
+                    }
                 }),
             ));
         }
