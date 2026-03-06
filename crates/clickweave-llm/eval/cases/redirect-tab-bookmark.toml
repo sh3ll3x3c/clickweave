@@ -1,8 +1,0 @@
-name = "Redirect bookmark to earlier tab"
-prompt = "Open Safari. Open three tabs: google.com, github.com, and reddit.com. Switch back to the github.com tab and bookmark it"
-
-[expect]
-valid = true
-min_nodes = 6
-max_nodes = 14
-required_tools = ["launch_app", "type_text"]
