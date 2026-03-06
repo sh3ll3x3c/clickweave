@@ -26,7 +26,7 @@ function actionLabel(action: WalkthroughAction): string {
       const idx = preferredTargetIndex(action.target_candidates);
       const best = action.target_candidates[idx];
       if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
-        const label = best.type === "OcrText" ? best.text : best.type === "CdpElement" ? best.text : best.label;
+        const label = (best.type === "OcrText" || best.type === "CdpElement") ? best.text : best.label;
         return `Click '${label.length > 25 ? label.slice(0, 25) + "…" : label}'`;
       }
       return `Click (${k.x}, ${k.y})`;

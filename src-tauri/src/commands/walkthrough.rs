@@ -975,9 +975,8 @@ async fn spawn_mcp(mcp_command: &str) -> Option<McpRouter> {
 /// For Electron/Chrome apps: takes a CDP snapshot via the chrome-devtools MCP
 /// and matches click actions against DOM elements by text.
 async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRouter) {
+    use clickweave_core::cdp::{CDP_SERVER, find_elements_in_snapshot};
     use clickweave_core::walkthrough::TargetCandidate;
-
-    const CDP_SERVER: &str = "chrome-devtools";
 
     if !mcp.has_server(CDP_SERVER) {
         tracing::debug!("CDP verification skipped: chrome-devtools server not available");
@@ -1012,7 +1011,13 @@ async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRou
 
         // 1. Quit the app first (it may be running without debug port).
         let quit_args = serde_json::json!({ "app_name": app_name });
-        let _ = mcp.call_tool("quit_app", Some(quit_args)).await;
+        if let Err(e) = mcp.call_tool("quit_app", Some(quit_args)).await {
+            tracing::warn!(
+                "CDP verification: quit_app for '{}' failed: {}",
+                app_name,
+                e
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         // 2. Relaunch with debug port.
@@ -1070,7 +1075,7 @@ async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRou
                 .map(|s| s.to_string());
 
             if let Some(hint) = search_hint {
-                let matches = find_elements_in_cdp_snapshot(&snapshot_text, &hint);
+                let matches = find_elements_in_snapshot(&snapshot_text, &hint);
                 if let Some((uid, text)) = matches.first() {
                     action.target_candidates.insert(
                         0,
@@ -1089,25 +1094,6 @@ async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRou
             }
         }
     }
-}
-
-/// Parse a CDP snapshot and find elements whose text contains the target.
-/// Returns a vec of (uid, matched_line) tuples.
-fn find_elements_in_cdp_snapshot(snapshot_text: &str, target: &str) -> Vec<(String, String)> {
-    let target_lower = target.to_lowercase();
-    let mut matches = Vec::new();
-    for line in snapshot_text.lines() {
-        if let Some(uid_start) = line.find("uid=\"") {
-            let uid_rest = &line[uid_start + 5..];
-            if let Some(uid_end) = uid_rest.find('"') {
-                let uid = &uid_rest[..uid_end];
-                if line.to_lowercase().contains(&target_lower) {
-                    matches.push((uid.to_string(), line.trim().to_string()));
-                }
-            }
-        }
-    }
-    matches
 }
 
 async fn populate_app_cache(mcp: &McpRouter, cache: &mut HashMap<i32, CachedApp>) {
