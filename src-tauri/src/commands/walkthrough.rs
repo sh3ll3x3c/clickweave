@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use base64::Engine;
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent,
-    WalkthroughEventKind, WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
+    AppKind, ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughAnnotations,
+    WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
+    WalkthroughStorage,
 };
 use clickweave_mcp::McpRouter;
 use tauri::{Emitter, Manager};
@@ -706,6 +707,7 @@ async fn process_capture_events(
                     app_name: app_name.clone(),
                     pid: capture.target_pid,
                     window_title: None,
+                    app_kind: AppKind::Native,
                 },
             };
             persist_and_emit(&app, &storage, &session_dir, &focus_event);

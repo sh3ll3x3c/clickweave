@@ -67,6 +67,21 @@ pub struct WalkthroughEvent {
     pub kind: WalkthroughEventKind,
 }
 
+/// Classification of an app's UI framework, used to decide whether
+/// Chrome DevTools Protocol (CDM) tools can provide better automation.
+///
+/// - `Native`: standard native app — use accessibility-based automation
+/// - `ChromeBrowser`: Chrome-family browser — CDM gives DOM access
+/// - `ElectronApp`: Electron-based app — native AX is unreliable, CDM preferred
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum AppKind {
+    #[default]
+    Native,
+    ChromeBrowser,
+    ElectronApp,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]
@@ -75,6 +90,8 @@ pub enum WalkthroughEventKind {
         app_name: String,
         pid: i32,
         window_title: Option<String>,
+        #[serde(default)]
+        app_kind: AppKind,
     },
     MouseClicked {
         x: f64,
@@ -1025,6 +1042,7 @@ mod tests {
                 app_name: "Calculator".to_string(),
                 pid: 1234,
                 window_title: Some("Calculator".to_string()),
+                app_kind: AppKind::Native,
             },
             WalkthroughEventKind::MouseClicked {
                 x: 100.0,
@@ -1197,6 +1215,7 @@ mod tests {
                 app_name: "Calculator".to_string(),
                 pid: 1234,
                 window_title: Some("Calculator".to_string()),
+                app_kind: AppKind::Native,
             },
         };
 
@@ -1227,6 +1246,7 @@ mod tests {
                 app_name: "Calculator".into(),
                 pid: 100,
                 window_title: None,
+                app_kind: AppKind::Native,
             },
         };
         let ev2 = WalkthroughEvent {
@@ -1318,6 +1338,7 @@ mod tests {
                     app_name: "Calculator".into(),
                     pid: 100,
                     window_title: Some("Calculator".into()),
+                    app_kind: AppKind::Native,
                 },
             )];
             let (actions, _warnings) = normalize_events(&events);
@@ -1338,6 +1359,7 @@ mod tests {
                         app_name: "Calculator".into(),
                         pid: 100,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
                 make_event(
@@ -1346,6 +1368,7 @@ mod tests {
                         app_name: "Calculator".into(),
                         pid: 100,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
             ];
@@ -1362,6 +1385,7 @@ mod tests {
                         app_name: "Calculator".into(),
                         pid: 100,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
                 make_event(
@@ -1370,6 +1394,7 @@ mod tests {
                         app_name: "Notes".into(),
                         pid: 200,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
                 make_event(
@@ -1378,6 +1403,7 @@ mod tests {
                         app_name: "Calculator".into(),
                         pid: 100,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
             ];
