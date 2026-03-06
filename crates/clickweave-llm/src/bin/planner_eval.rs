@@ -59,9 +59,9 @@ struct LlmSection {
     /// Single endpoint (backwards-compatible).
     #[serde(default)]
     endpoint: Option<String>,
-    /// Multiple endpoints for round-robin distribution.
+    /// Multiple weighted endpoints.
     #[serde(default)]
-    endpoints: Vec<String>,
+    endpoints: Vec<EndpointEntry>,
     model: String,
     #[serde(default)]
     api_key: Option<String>,
@@ -69,18 +69,62 @@ struct LlmSection {
     temperature: Option<f32>,
 }
 
+/// An endpoint entry — accepts either a plain string or a table with url + weight.
+#[derive(Deserialize, Clone)]
+#[serde(untagged)]
+enum EndpointEntry {
+    Url(String),
+    Weighted {
+        url: String,
+        #[serde(default = "default_weight")]
+        weight: u32,
+    },
+}
+
+fn default_weight() -> u32 {
+    1
+}
+
+impl EndpointEntry {
+    fn url(&self) -> &str {
+        match self {
+            Self::Url(u) => u,
+            Self::Weighted { url, .. } => url,
+        }
+    }
+    fn weight(&self) -> u32 {
+        match self {
+            Self::Url(_) => 1,
+            Self::Weighted { weight, .. } => *weight,
+        }
+    }
+}
+
 impl LlmSection {
-    fn resolved_endpoints(&self) -> Result<Vec<String>> {
-        let mut eps = self.endpoints.clone();
+    /// Build a weighted assignment schedule. Each entry maps to a client index,
+    /// repeated by weight. E.g. weights [2, 1] → [0, 0, 1].
+    fn resolve(&self) -> Result<(Vec<String>, Vec<usize>)> {
+        let mut entries: Vec<(String, u32)> = self
+            .endpoints
+            .iter()
+            .map(|e| (e.url().to_string(), e.weight()))
+            .collect();
         if let Some(ep) = &self.endpoint {
-            if !eps.contains(ep) {
-                eps.insert(0, ep.clone());
+            if !entries.iter().any(|(u, _)| u == ep) {
+                entries.insert(0, (ep.clone(), 1));
             }
         }
-        if eps.is_empty() {
+        if entries.is_empty() {
             anyhow::bail!("No LLM endpoints configured — set 'endpoint' or 'endpoints' in [llm]");
         }
-        Ok(eps)
+        let urls: Vec<String> = entries.iter().map(|(u, _)| u.clone()).collect();
+        let mut schedule: Vec<usize> = Vec::new();
+        for (idx, (_, weight)) in entries.iter().enumerate() {
+            for _ in 0..*weight {
+                schedule.push(idx);
+            }
+        }
+        Ok((urls, schedule))
     }
 }
 
@@ -461,9 +505,9 @@ async fn main() -> Result<()> {
 
     let total_runs = cases.len() as u32 * runs_per_case;
 
-    // Create LLM clients — one per endpoint, round-robin assigned to tasks.
-    let endpoints = config.llm.resolved_endpoints()?;
-    let clients: Vec<Arc<LlmClient>> = endpoints
+    // Create LLM clients — one per endpoint, weighted round-robin assigned to tasks.
+    let (urls, schedule) = config.llm.resolve()?;
+    let clients: Vec<Arc<LlmClient>> = urls
         .iter()
         .map(|ep| {
             Arc::new(LlmClient::new(LlmConfig {
@@ -480,10 +524,17 @@ async fn main() -> Result<()> {
         })
         .collect();
 
-    let ep_label = if endpoints.len() == 1 {
-        endpoints[0].clone()
+    let ep_label = if urls.len() == 1 {
+        urls[0].clone()
     } else {
-        format!("{} endpoints", endpoints.len())
+        let weights: Vec<String> = urls
+            .iter()
+            .map(|u| {
+                let w = schedule.iter().filter(|&&i| urls[i] == *u).count();
+                format!("{}(w={})", u, w)
+            })
+            .collect();
+        format!("{} endpoints: {}", urls.len(), weights.join(", "))
     };
     println!(
         "planner-eval — model: {model}, {ep_label}, prompt: {prompt_rel} ({prompt_hash}), {total_runs} runs ({}x{})\n",
@@ -500,13 +551,13 @@ async fn main() -> Result<()> {
     let progress = Arc::new(Progress::new(total_runs));
 
     let mut handles = Vec::new();
-    let num_clients = clients.len();
+    let schedule_len = schedule.len();
     for (case_idx, case) in cases.iter().enumerate() {
         for run_idx in 0..runs_per_case {
             let task_idx = case_idx * runs_per_case as usize + run_idx as usize;
-            let client_idx = task_idx % num_clients;
+            let client_idx = schedule[task_idx % schedule_len];
             let llm = Arc::clone(&clients[client_idx]);
-            let endpoint = endpoints[client_idx].clone();
+            let endpoint = urls[client_idx].clone();
             let tools = Arc::clone(&tools_json);
             let template = Arc::clone(&prompt_template);
             let sem = Arc::clone(&semaphore);
