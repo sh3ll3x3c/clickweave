@@ -219,7 +219,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       : null;
     const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner, cdpApps);
     if (result.status === "error") {
-      set({ walkthroughError: result.error });
+      set({ walkthroughError: result.error, walkthroughCdpModalOpen: false });
       pushLog(`Walkthrough start failed: ${result.error}`);
     } else {
       openRecordingBarWindow();

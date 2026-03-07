@@ -715,6 +715,15 @@ async fn process_capture_events(
             setup_cdp_apps(&cdp_apps, mcp, &app, &mut cancel).await
         } else {
             tracing::warn!("No MCP server available for CDP setup");
+            for cdp_app in &cdp_apps {
+                emit_cdp_progress(
+                    &app,
+                    &cdp_app.name,
+                    CdpSetupStatus::Failed {
+                        reason: "MCP server unavailable".to_string(),
+                    },
+                );
+            }
             HashMap::new()
         }
     } else {
