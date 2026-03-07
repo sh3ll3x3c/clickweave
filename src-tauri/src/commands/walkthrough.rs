@@ -727,8 +727,9 @@ async fn process_capture_events(
     }
 
     // Drain any events captured during CDP setup (app restarts generate
-    // focus/input events that are not user-initiated).
-    if !cdp_state.is_empty() {
+    // focus/input events that are not user-initiated). Drain even if all
+    // setups failed — the quit/relaunch attempt still produces events.
+    if !cdp_apps.is_empty() {
         while event_rx.try_recv().is_ok() {}
     }
 
