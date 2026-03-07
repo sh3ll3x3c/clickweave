@@ -5,6 +5,7 @@ import {
   applyNodeChanges,
 } from "@xyflow/react";
 import type { AppKind, Workflow } from "../bindings";
+import { usesCdp } from "../utils/appKind";
 
 // Layout constants for loop group positioning
 const LOOP_HEADER_HEIGHT = 40;
@@ -72,8 +73,9 @@ export function buildAppKindMap(workflow: Workflow): Map<string, AppKind> {
     if (deg === 0) queue.push(id);
   }
 
-  while (queue.length > 0) {
-    const id = queue.shift()!;
+  let head = 0;
+  while (head < queue.length) {
+    const id = queue[head++];
     const node = nodeById.get(id);
 
     // FocusWindow nodes set the app_kind for their downstream chain
@@ -104,11 +106,11 @@ function nodeSubtitle(
   const click = clickSubtitle(nt);
   if (click) {
     // Append DevTools context if applicable
-    if (appKind && appKind !== "Native") return `${click} · via DevTools`;
+    if (appKind && usesCdp(appKind)) return `${click} · via DevTools`;
     return click;
   }
   // Non-FocusWindow nodes: show DevTools context if inherited from upstream
-  if (nt.type !== "FocusWindow" && appKind && appKind !== "Native") {
+  if (nt.type !== "FocusWindow" && appKind && usesCdp(appKind)) {
     return "via DevTools";
   }
   return undefined;

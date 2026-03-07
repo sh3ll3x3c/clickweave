@@ -708,7 +708,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         snapshot_text: &str,
     ) -> Result<String, String> {
-        let truncated = &snapshot_text[..Self::truncate_byte_boundary(snapshot_text, 4000)];
+        let truncated = &snapshot_text[..snapshot_text.floor_char_boundary(4000)];
 
         let prompt = format!(
             "Find the element in this page snapshot that best matches the target '{target}'.\n\

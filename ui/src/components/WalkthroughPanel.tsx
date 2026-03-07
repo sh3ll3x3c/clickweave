@@ -2,7 +2,8 @@ import { useState, useCallback } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
-import type { WalkthroughAction, TargetCandidate, Node, AppKind } from "../bindings";
+import type { AppKind, WalkthroughAction, TargetCandidate, Node } from "../bindings";
+import { APP_KIND_LABELS, usesCdp } from "../utils/appKind";
 import { buildActionByNodeId } from "../store/slices/walkthroughSlice";
 import { ImageLightbox, CrosshairOverlay, type LightboxImage } from "./ImageLightbox";
 
@@ -374,13 +375,13 @@ export function WalkthroughPanel() {
                       {/* Target candidates (Click nodes with action metadata) */}
                       {action && action.kind.type === "Click" && action.target_candidates.length > 0 && (() => {
                         const actionAppKind = action.app_name ? appKindMap.get(action.app_name) : undefined;
-                        const isCdmApp = actionAppKind === "ElectronApp" || actionAppKind === "ChromeBrowser";
+                        const isCdpApp = actionAppKind ? usesCdp(actionAppKind) : false;
                         // For Electron/Chrome apps, hide non-actionable AX labels (e.g. AXWindow)
                         // since native accessibility is unreliable — DevTools is used at runtime instead.
                         const displayCandidates = action.target_candidates
                           .map((candidate, i) => ({ candidate, originalIndex: i }))
                           .filter(({ candidate }) => {
-                            if (!isCdmApp) return true;
+                            if (!isCdpApp) return true;
                             if (candidate.type === "AccessibilityLabel" && !ACTIONABLE_AX_ROLES.has(candidate.role ?? "")) return false;
                             return true;
                           });
@@ -409,9 +410,9 @@ export function WalkthroughPanel() {
                                 </label>
                               ))}
                             </div>
-                            {isCdmApp && (
+                            {isCdpApp && (
                               <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
-                                {actionAppKind === "ElectronApp" ? "Electron" : "Chrome"} app — DevTools targeting used at runtime
+                                {actionAppKind ? APP_KIND_LABELS[actionAppKind] : "DevTools"} — targeting used at runtime
                               </p>
                             )}
                             {/* Crop thumbnail for selected ImageCrop candidate */}

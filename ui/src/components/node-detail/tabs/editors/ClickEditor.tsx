@@ -1,13 +1,7 @@
 import { useMemo } from "react";
-import type { AppKind, NodeType } from "../../../../bindings";
+import type { NodeType } from "../../../../bindings";
 import { FieldGroup, NumberField, SelectField, TextField } from "../../fields";
-import { type NodeEditorProps, optionalString } from "./types";
-
-const APP_KIND_LABELS: Record<AppKind, string> = {
-  Native: "Native (Accessibility)",
-  ChromeBrowser: "Chrome DevTools",
-  ElectronApp: "Electron (DevTools)",
-};
+import { APP_KIND_LABELS, type NodeEditorProps, optionalString, usesCdp } from "./types";
 
 export function ClickEditor({ nodeType, onUpdate, projectPath, appKind }: NodeEditorProps) {
   const nt = nodeType;
@@ -18,7 +12,7 @@ export function ClickEditor({ nodeType, onUpdate, projectPath, appKind }: NodeEd
   };
 
   const hasImage = !!nt.template_image;
-  const isCdm = appKind && appKind !== "Native";
+  const isCdp = appKind && usesCdp(appKind);
 
   return (
     <FieldGroup title="Click">
@@ -60,7 +54,7 @@ export function ClickEditor({ nodeType, onUpdate, projectPath, appKind }: NodeEd
         max={3}
         onChange={(v) => updateType({ click_count: v })}
       />
-      {isCdm && (
+      {isCdp && (
         <div>
           <label className="mb-1 block text-xs text-[var(--text-secondary)]">
             Automation

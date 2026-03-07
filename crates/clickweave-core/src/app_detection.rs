@@ -37,6 +37,16 @@ pub fn classify_app(bundle_id: Option<&str>, app_path: Option<&Path>) -> AppKind
     AppKind::Native
 }
 
+/// Classify an app by PID using a single `proc_pidpath` syscall.
+///
+/// Resolves the bundle path once, then derives both bundle ID and
+/// Electron detection from it.
+pub fn classify_app_by_pid(pid: i32) -> AppKind {
+    let bundle_path = bundle_path_from_pid(pid);
+    let bundle_id = bundle_path.as_deref().and_then(bundle_id_from_path);
+    classify_app(bundle_id.as_deref(), bundle_path.as_deref())
+}
+
 fn is_chrome_family(bundle_id: Option<&str>) -> bool {
     bundle_id.is_some_and(|id| CHROME_BUNDLE_IDS.contains(&id))
 }
@@ -62,13 +72,9 @@ fn is_electron_app(_path: &Path) -> bool {
     false
 }
 
-/// Resolve the app's bundle identifier from a process ID.
-///
-/// On macOS, resolves the `.app` bundle via `bundle_path_from_pid`,
-/// then reads `CFBundleIdentifier` from `Contents/Info.plist`.
+/// Read `CFBundleIdentifier` from a resolved `.app` bundle path.
 #[cfg(target_os = "macos")]
-pub fn bundle_id_from_pid(pid: i32) -> Option<String> {
-    let bundle = bundle_path_from_pid(pid)?;
+pub fn bundle_id_from_path(bundle: &Path) -> Option<String> {
     let plist_path = bundle.join("Contents/Info.plist");
     let data = std::fs::read(&plist_path).ok()?;
     let cursor = std::io::Cursor::new(data);
@@ -80,14 +86,18 @@ pub fn bundle_id_from_pid(pid: i32) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-#[cfg(target_os = "windows")]
-pub fn bundle_id_from_pid(_pid: i32) -> Option<String> {
+#[cfg(not(target_os = "macos"))]
+pub fn bundle_id_from_path(_bundle: &Path) -> Option<String> {
     None
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn bundle_id_from_pid(_pid: i32) -> Option<String> {
-    None
+/// Resolve the app's bundle identifier from a process ID.
+///
+/// On macOS, resolves the `.app` bundle via `bundle_path_from_pid`,
+/// then reads `CFBundleIdentifier` from `Contents/Info.plist`.
+pub fn bundle_id_from_pid(pid: i32) -> Option<String> {
+    let bundle = bundle_path_from_pid(pid)?;
+    bundle_id_from_path(&bundle)
 }
 
 /// Resolve the app bundle path from a process ID.

@@ -1,5 +1,7 @@
 import type { AppKind, Node, NodeType } from "../../../../bindings";
 
+export { APP_KIND_LABELS, usesCdp } from "../../../../utils/appKind";
+
 export interface NodeEditorProps {
   nodeType: NodeType;
   onUpdate: (u: Partial<Node>) => void;

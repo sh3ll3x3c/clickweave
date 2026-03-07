@@ -150,22 +150,6 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, st
     else return { status: "error", error: e  as any };
 }
 },
-async detectCdpApps(mcpCommand: string) : Promise<Result<DetectedCdpApp[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("detect_cdp_apps", { mcpCommand }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async validateAppPath(path: string) : Promise<Result<DetectedCdpApp, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("validate_app_path", { path }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[]) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner, cdpApps }) };
@@ -229,6 +213,22 @@ async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async detectCdpApps(mcpCommand: string) : Promise<Result<DetectedCdpApp[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("detect_cdp_apps", { mcpCommand }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async validateAppPath(path: string) : Promise<Result<DetectedCdpApp, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("validate_app_path", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -247,32 +247,26 @@ export type AiStepParams = { prompt: string; button_text: string | null; templat
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**
  * Classification of an app's UI framework, used to decide whether
- * Chrome DevTools Protocol (CDM) tools can provide better automation.
+ * Chrome DevTools Protocol (CDP) tools can provide better automation.
  * 
  * - `Native`: standard native app — use accessibility-based automation
- * - `ChromeBrowser`: Chrome-family browser — CDM gives DOM access
- * - `ElectronApp`: Electron-based app — native AX is unreliable, CDM preferred
+ * - `ChromeBrowser`: Chrome-family browser — CDP gives DOM access
+ * - `ElectronApp`: Electron-based app — native AX is unreliable, CDP preferred
  */
 export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
-/**
- * User-selected app for CDP during walkthrough.
- */
-export type CdpAppConfig = { name: string; binary_path: string | null; app_kind: AppKind }
-/**
- * CDP element data captured during walkthrough recording.
- * Attached to MouseClicked events for clicks in CDP-enabled apps.
- */
-export type CdpClickAnnotation = { uid: string; label: string; role: string }
-/**
- * Status updates emitted during CDP setup.
- */
-export type CdpSetupProgress = { app_name: string; status: CdpSetupStatus }
-export type CdpSetupStatus = "Restarting" | "Launching" | "Connecting" | "Ready" | "Done" | { Failed: { reason: string } }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
 export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string; max_repair_attempts: number }
 export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[] }
+/**
+ * User-selected app for CDP during walkthrough.
+ */
+export type CdpAppConfig = { name: string; 
+/**
+ * Path to the app binary (from file picker). None for already-running apps.
+ */
+binary_path: string | null; app_kind: AppKind }
 /**
  * A single entry in the assistant conversation.
  */

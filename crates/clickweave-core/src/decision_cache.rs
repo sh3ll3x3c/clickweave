@@ -45,7 +45,6 @@ pub struct AppResolution {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CdpPort {
-    pub app_name: String,
     pub port: u16,
 }
 
@@ -158,13 +157,7 @@ mod tests {
 
         let mut cache = DecisionCache::new(Uuid::new_v4());
         let key = "Discord".to_string();
-        cache.cdp_port.insert(
-            key.clone(),
-            CdpPort {
-                app_name: "Discord".to_string(),
-                port: 52341,
-            },
-        );
+        cache.cdp_port.insert(key.clone(), CdpPort { port: 52341 });
 
         cache.save(&path).expect("save");
         let loaded = DecisionCache::load(&path).expect("load");
