@@ -1148,10 +1148,46 @@ async fn setup_cdp_apps(
             emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Restarting);
         }
 
-        // Quit existing instance (best-effort).
+        // Quit existing instance and wait for it to exit.
         let quit_args = serde_json::json!({ "app_name": &cdp_app.name });
-        let _ = mcp.call_tool("quit_app", Some(quit_args)).await;
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        match mcp.call_tool("quit_app", Some(quit_args)).await {
+            Ok(r) if r.is_error == Some(true) => {
+                tracing::debug!(
+                    "quit_app for '{}' returned error (may not be running)",
+                    cdp_app.name
+                );
+            }
+            Err(e) => {
+                tracing::debug!("quit_app for '{}' failed: {e}", cdp_app.name);
+            }
+            _ => {}
+        }
+
+        // Poll until the app is no longer in list_apps (up to 8s).
+        // Electron apps like Discord can take several seconds to quit.
+        let mut quit_confirmed = false;
+        for _ in 0..16 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if let Ok(r) = mcp.call_tool("list_apps", None).await {
+                let text = r
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text())
+                    .collect::<String>();
+                if !text.contains(&cdp_app.name) {
+                    quit_confirmed = true;
+                    break;
+                }
+            }
+        }
+
+        if !quit_confirmed {
+            // Force-kill as fallback.
+            tracing::warn!("'{}' did not quit gracefully, force-killing", cdp_app.name);
+            let force_args = serde_json::json!({ "app_name": &cdp_app.name, "force": true });
+            let _ = mcp.call_tool("quit_app", Some(force_args)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
 
         // Relaunch with debug port.
         let launch_args = if let Some(ref binary_path) = cdp_app.binary_path {
