@@ -70,9 +70,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // For Electron/Chrome apps, try CDP click first (snapshot + uid click).
             let target = p.target.as_deref().unwrap();
             let app_kind = self.focused_app_kind();
-            let is_cdm = app_kind == AppKind::ElectronApp || app_kind == AppKind::ChromeBrowser;
 
-            if is_cdm && let Some(cdp_server) = self.focused_cdp_server() {
+            if app_kind.uses_cdp()
+                && let Some(cdp_server) = self.focused_cdp_server()
+            {
                 match self
                     .resolve_and_click_cdp(node_id, target, &cdp_server, mcp, node_run.as_deref())
                     .await
@@ -114,12 +115,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .await?;
             // Upgrade app_kind if the node says Native but detection disagrees.
             let app_kind = if p.app_kind == AppKind::Native {
-                let bundle_id = clickweave_core::app_detection::bundle_id_from_pid(app.pid);
-                let bundle_path = clickweave_core::app_detection::bundle_path_from_pid(app.pid);
-                let detected = clickweave_core::app_detection::classify_app(
-                    bundle_id.as_deref(),
-                    bundle_path.as_deref(),
-                );
+                let detected = clickweave_core::app_detection::classify_app_by_pid(app.pid);
                 if detected != AppKind::Native {
                     self.log(format!(
                         "Upgraded app_kind for '{}' from Native to {:?}",
@@ -132,7 +128,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             };
 
             // Lazy CDP spawn for Electron/Chrome apps.
-            if app_kind == AppKind::ElectronApp || app_kind == AppKind::ChromeBrowser {
+            if app_kind.uses_cdp() {
                 self.ensure_cdp_server(node_id, &app.name, mcp, node_run.as_deref())
                     .await?;
                 // Re-resolve PID — it may have changed if the app was relaunched.
@@ -239,6 +235,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "App '{}' has app_kind: {:?}",
                     name, launch_app_kind
                 ));
+            }
+
+            // Lazy CDP spawn for Electron/Chrome apps (same as FocusWindow path).
+            if launch_app_kind.uses_cdp() {
+                self.ensure_cdp_server(node_id, name, mcp, node_run.as_deref())
+                    .await?;
             }
         }
 
@@ -706,11 +708,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         snapshot_text: &str,
     ) -> Result<String, String> {
-        let truncated = if snapshot_text.len() > 4000 {
-            &snapshot_text[..4000]
-        } else {
-            snapshot_text
-        };
+        let truncated = &snapshot_text[..Self::truncate_byte_boundary(snapshot_text, 4000)];
 
         let prompt = format!(
             "Find the element in this page snapshot that best matches the target '{target}'.\n\
@@ -868,13 +866,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .write()
                 .unwrap_or_else(|e| e.into_inner())
                 .cdp_port
-                .insert(
-                    app_name.to_string(),
-                    CdpPort {
-                        app_name: app_name.to_string(),
-                        port,
-                    },
-                );
+                .insert(app_name.to_string(), CdpPort { port });
             port
         } else {
             // Run mode: read cached port, try connecting, relaunch if needed.

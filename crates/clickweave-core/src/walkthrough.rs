@@ -68,11 +68,11 @@ pub struct WalkthroughEvent {
 }
 
 /// Classification of an app's UI framework, used to decide whether
-/// Chrome DevTools Protocol (CDM) tools can provide better automation.
+/// Chrome DevTools Protocol (CDP) tools can provide better automation.
 ///
 /// - `Native`: standard native app — use accessibility-based automation
-/// - `ChromeBrowser`: Chrome-family browser — CDM gives DOM access
-/// - `ElectronApp`: Electron-based app — native AX is unreliable, CDM preferred
+/// - `ChromeBrowser`: Chrome-family browser — CDP gives DOM access
+/// - `ElectronApp`: Electron-based app — native AX is unreliable, CDP preferred
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum AppKind {
@@ -92,6 +92,11 @@ impl AppKind {
             "ElectronApp" => Some(Self::ElectronApp),
             _ => None,
         }
+    }
+
+    /// Whether this app kind uses Chrome DevTools Protocol for automation.
+    pub fn uses_cdp(self) -> bool {
+        matches!(self, Self::ChromeBrowser | Self::ElectronApp)
     }
 }
 
@@ -591,8 +596,24 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             } => {
                 flush_text(&mut text_buffer, &mut actions, &last_app);
 
-                // Collapse repeated focus on same app.
+                // Collapse repeated focus on same app, but update app_kind
+                // if it changed (e.g. reactive Electron reclassification).
                 if last_app.as_ref() == Some(app_name) {
+                    if let Some(prev_action) = actions.last_mut() {
+                        match &mut prev_action.kind {
+                            WalkthroughActionKind::LaunchApp {
+                                app_kind: prev_kind,
+                                ..
+                            }
+                            | WalkthroughActionKind::FocusWindow {
+                                app_kind: prev_kind,
+                                ..
+                            } if *prev_kind != *app_kind => {
+                                *prev_kind = *app_kind;
+                            }
+                            _ => {}
+                        }
+                    }
                     continue;
                 }
 
