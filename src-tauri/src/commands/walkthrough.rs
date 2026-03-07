@@ -5,9 +5,9 @@ use base64::Engine;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app, classify_app_by_pid};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    AppKind, ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughActionKind,
-    WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind, WalkthroughSession,
-    WalkthroughStatus, WalkthroughStorage,
+    AppKind, ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughAnnotations,
+    WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
+    WalkthroughStorage,
 };
 use clickweave_mcp::McpRouter;
 use tauri::{Emitter, Manager};
@@ -298,7 +298,7 @@ pub async fn stop_walkthrough(
     app: tauri::AppHandle,
     planner: Option<super::types::EndpointConfig>,
 ) -> Result<(), String> {
-    let (task, storage, session_dir, workflow_id, session_id, mcp_command) = {
+    let (task, storage, session_dir, workflow_id, session_id) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
@@ -326,7 +326,6 @@ pub async fn stop_walkthrough(
             guard.session_dir.clone(),
             sess.workflow_id,
             sess.id,
-            guard.mcp_command.clone(),
         )
     };
     emit_state(&app, WalkthroughStatus::Processing);
@@ -359,14 +358,6 @@ pub async fn stop_walkthrough(
             // VLM: resolve click targets using vision (parallel).
             if let Some(ref planner_cfg) = planner {
                 resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
-            }
-
-            // CDP: verify click targets for Electron/Chrome apps.
-            if let Some(ref mcp_cmd) = mcp_command
-                && let Some(mut mcp) = spawn_mcp(mcp_cmd).await
-            {
-                enrich_actions_with_cdp(&mut actions, &mut mcp).await;
-                mcp.kill_all();
             }
 
             // Save actions.
@@ -968,149 +959,6 @@ async fn spawn_mcp(mcp_command: &str) -> Option<McpRouter> {
                 "Failed to spawn MCP servers for walkthrough: {e}. Continuing without enrichment."
             );
             None
-        }
-    }
-}
-
-/// Enrich walkthrough actions with CDP-verified element targets.
-///
-/// For Electron/Chrome apps: takes a CDP snapshot via the chrome-devtools MCP
-/// and matches click actions against DOM elements by text.
-async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &mut McpRouter) {
-    use clickweave_core::cdp::cdp_server_name;
-    use clickweave_core::cdp::find_elements_in_snapshot;
-    use clickweave_core::walkthrough::TargetCandidate;
-
-    // Find CDP apps in the actions.
-    let cdp_apps: Vec<String> = actions
-        .iter()
-        .filter_map(|a| match &a.kind {
-            WalkthroughActionKind::LaunchApp {
-                app_name, app_kind, ..
-            }
-            | WalkthroughActionKind::FocusWindow {
-                app_name, app_kind, ..
-            } if app_kind.uses_cdp() => Some(app_name.clone()),
-            _ => None,
-        })
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    if cdp_apps.is_empty() {
-        return;
-    }
-
-    /// Default Chrome DevTools Protocol port to try when the debug port is
-    /// unknown (best-effort: the app may already be listening on this port).
-    const DEFAULT_CDP_PORT: u16 = 9222;
-
-    for app_name in &cdp_apps {
-        let server_name = cdp_server_name(app_name);
-
-        // Try to spawn a CDP server if one isn't already registered.
-        if !mcp.has_server(&server_name) {
-            let config = clickweave_mcp::McpServerConfig {
-                name: server_name.clone(),
-                command: "npx".into(),
-                args: vec![
-                    "-y".into(),
-                    "chrome-devtools-mcp".into(),
-                    format!("--browserUrl=http://127.0.0.1:{}", DEFAULT_CDP_PORT),
-                ],
-            };
-            match mcp.spawn_server(&config).await {
-                Ok(()) => {
-                    tracing::info!(
-                        "CDP server '{}' spawned for walkthrough enrichment (port {})",
-                        server_name,
-                        DEFAULT_CDP_PORT
-                    );
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        "CDP verification skipped for '{}': could not spawn server: {}",
-                        app_name,
-                        e
-                    );
-                    continue;
-                }
-            }
-        }
-
-        tracing::info!("CDP verification: attempting snapshot for '{}'", app_name);
-
-        // Try to take a CDP snapshot directly — the app may already have
-        // a debug port open (e.g. Electron apps launched with the flag
-        // earlier, or Chrome with remote debugging enabled). We never
-        // quit/relaunch user apps here because that destroys live sessions.
-
-        // Take CDP snapshot (requires debug port already open).
-        let snapshot_text = match mcp.call_tool_on(&server_name, "take_snapshot", None).await {
-            Ok(r) if r.is_error != Some(true) => r
-                .content
-                .iter()
-                .filter_map(|c| c.as_text())
-                .collect::<Vec<_>>()
-                .join("\n"),
-            Ok(_) => {
-                tracing::warn!(
-                    "CDP verification: take_snapshot returned error for '{}'",
-                    app_name
-                );
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "CDP verification: take_snapshot failed for '{}': {}",
-                    app_name,
-                    e
-                );
-                continue;
-            }
-        };
-
-        // 4. Enrich click actions for this app.
-        for action in actions.iter_mut() {
-            if action.app_name.as_deref() != Some(app_name) {
-                continue;
-            }
-            if !matches!(action.kind, WalkthroughActionKind::Click { .. }) {
-                continue;
-            }
-
-            // Use existing VLM/AX label as search hint.
-            let search_hint = action
-                .target_candidates
-                .iter()
-                .find_map(|c| c.preferred_label())
-                .map(|s| s.to_string());
-
-            if let Some(hint) = search_hint {
-                let matches = find_elements_in_snapshot(&snapshot_text, &hint);
-                if matches.len() == 1 {
-                    let (uid, text) = &matches[0];
-                    action.target_candidates.insert(
-                        0,
-                        TargetCandidate::CdpElement {
-                            text: text.clone(),
-                            uid: uid.clone(),
-                        },
-                    );
-                    tracing::info!(
-                        "CDP verification: enriched click '{}' -> uid='{}' text='{}'",
-                        hint,
-                        uid,
-                        text
-                    );
-                } else if matches.len() > 1 {
-                    tracing::debug!(
-                        "CDP verification: skipping ambiguous match for '{}' ({} candidates)",
-                        hint,
-                        matches.len(),
-                    );
-                }
-            }
         }
     }
 }
