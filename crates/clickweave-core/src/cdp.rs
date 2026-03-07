@@ -1,6 +1,3 @@
-/// Deprecated — use `cdp_server_name()` for per-app servers.
-pub const CDP_SERVER: &str = "chrome-devtools";
-
 /// Build the CDP server name for a given app.
 /// Each Electron/Chrome app gets its own named server: `"cdp:<app_name>"`.
 pub fn cdp_server_name(app_name: &str) -> String {

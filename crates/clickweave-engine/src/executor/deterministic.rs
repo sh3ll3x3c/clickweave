@@ -72,25 +72,33 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let app_kind = self.focused_app_kind();
             let is_cdm = app_kind == AppKind::ElectronApp || app_kind == AppKind::ChromeBrowser;
 
-            if is_cdm && mcp.has_server(CDP_SERVER) {
-                match self
-                    .resolve_and_click_cdp(node_id, target, mcp, node_run.as_deref())
-                    .await
-                {
-                    Ok(result_text) => {
-                        self.record_event(
+            if is_cdm {
+                if let Some(cdp_server) = self.focused_cdp_server() {
+                    match self
+                        .resolve_and_click_cdp(
+                            node_id,
+                            target,
+                            &cdp_server,
+                            mcp,
                             node_run.as_deref(),
-                            "tool_result",
-                            serde_json::json!({
-                                "tool": "click",
-                                "method": "cdp",
-                                "result": Self::truncate_for_trace(&result_text, 8192),
-                            }),
-                        );
-                        return Ok(Self::parse_result_text(&result_text));
-                    }
-                    Err(e) => {
-                        self.log(format!("CDP click failed, falling back to native: {e}"));
+                        )
+                        .await
+                    {
+                        Ok(result_text) => {
+                            self.record_event(
+                                node_run.as_deref(),
+                                "tool_result",
+                                serde_json::json!({
+                                    "tool": "click",
+                                    "method": "cdp",
+                                    "result": Self::truncate_for_trace(&result_text, 8192),
+                                }),
+                            );
+                            return Ok(Self::parse_result_text(&result_text));
+                        }
+                        Err(e) => {
+                            self.log(format!("CDP click failed, falling back to native: {e}"));
+                        }
                     }
                 }
             }
@@ -109,7 +117,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             && p.value.is_some()
         {
             let user_input = p.value.as_deref().unwrap();
-            let app = self
+            let mut app = self
                 .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
                 .await?;
             // Upgrade app_kind if the node says Native but detection disagrees.
@@ -130,6 +138,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             } else {
                 p.app_kind
             };
+
+            // Lazy CDP spawn for Electron/Chrome apps.
+            if app_kind == AppKind::ElectronApp || app_kind == AppKind::ChromeBrowser {
+                self.ensure_cdp_server(node_id, &app.name, mcp, node_run.as_deref())
+                    .await?;
+                // Re-resolve PID — it may have changed if the app was relaunched.
+                app = self
+                    .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
+                    .await?;
+            }
 
             *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) =
                 Some((app.name.clone(), app_kind));
@@ -617,7 +635,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 }
 
-use clickweave_core::cdp::{CDP_SERVER, find_elements_in_snapshot};
+use clickweave_core::cdp::find_elements_in_snapshot;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Try to resolve and click a text target via CDP (chrome-devtools).
@@ -629,13 +647,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         _node_id: Uuid,
         target: &str,
+        cdp_server: &str,
         mcp: &McpRouter,
         node_run: Option<&NodeRun>,
     ) -> Result<String, String> {
         // 1. Take CDP snapshot
         self.log(format!("CDP: taking snapshot to find '{}'", target));
         let snapshot_result = mcp
-            .call_tool_on(CDP_SERVER, "take_snapshot", None)
+            .call_tool_on(cdp_server, "take_snapshot", None)
             .await
             .map_err(|e| format!("CDP take_snapshot failed: {e}"))?;
 
@@ -670,7 +689,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         self.log(format!("CDP: clicking element uid='{}'", uid));
         let click_args = serde_json::json!({ "uid": uid });
         let click_result = mcp
-            .call_tool_on(CDP_SERVER, "click", Some(click_args))
+            .call_tool_on(cdp_server, "click", Some(click_args))
             .await
             .map_err(|e| format!("CDP click failed: {e}"))?;
 
@@ -790,5 +809,214 @@ fn truncate_for_error(s: &str, max_len: usize) -> &str {
     match s.char_indices().nth(max_len) {
         Some((idx, _)) => &s[..idx],
         None => s,
+    }
+}
+
+/// Pick a random port in the ephemeral range (49152–65535).
+fn rand_ephemeral_port() -> u16 {
+    use std::time::SystemTime;
+    let seed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let raw = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+    let range = 65535 - 49152;
+    49152 + (raw % range) as u16
+}
+
+/// Build the McpServerConfig for a chrome-devtools-mcp connected to a specific port.
+fn cdp_server_config(server_name: &str, port: u16) -> clickweave_mcp::McpServerConfig {
+    clickweave_mcp::McpServerConfig {
+        name: server_name.to_string(),
+        command: "npx".into(),
+        args: vec![
+            "-y".into(),
+            "chrome-devtools-mcp".into(),
+            format!("--browserUrl=http://127.0.0.1:{}", port),
+        ],
+    }
+}
+
+impl<C: ChatBackend> WorkflowExecutor<C> {
+    /// Ensure a CDP server is available for the given Electron/Chrome app.
+    ///
+    /// If no CDP server is registered for this app:
+    /// - Test mode: quit the app, relaunch with --remote-debugging-port, spawn
+    ///   a chrome-devtools-mcp server, poll until ready, store port in cache.
+    /// - Run mode: read port from decision cache, try connecting, relaunch if needed.
+    ///
+    /// Returns the CDP server name on success.
+    async fn ensure_cdp_server(
+        &mut self,
+        _node_id: Uuid,
+        app_name: &str,
+        mcp: &mut McpRouter,
+        node_run: Option<&NodeRun>,
+    ) -> Result<String, String> {
+        use clickweave_core::ExecutionMode;
+        use clickweave_core::cdp::cdp_server_name;
+        use clickweave_core::decision_cache::CdpPort;
+
+        let server_name = cdp_server_name(app_name);
+
+        // Already have a CDP server for this app — nothing to do.
+        if self.cdp_servers.contains_key(app_name) {
+            return Ok(server_name);
+        }
+
+        let port = if self.execution_mode == ExecutionMode::Test {
+            // Test mode: pick a random port, relaunch the app.
+            let port = rand_ephemeral_port();
+            self.log(format!(
+                "Restarting '{}' with DevTools enabled (port {})...",
+                app_name, port
+            ));
+            self.relaunch_with_debug_port(app_name, port, mcp).await?;
+            // Store in decision cache for Run mode replay.
+            self.decision_cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .cdp_port
+                .insert(
+                    app_name.to_string(),
+                    CdpPort {
+                        app_name: app_name.to_string(),
+                        port,
+                    },
+                );
+            port
+        } else {
+            // Run mode: read cached port, try connecting, relaunch if needed.
+            let cached = self
+                .decision_cache
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .cdp_port
+                .get(app_name)
+                .map(|e| e.port);
+
+            let port = cached.ok_or_else(|| {
+                format!(
+                    "No cached CDP port for '{}'. Run in Test mode first.",
+                    app_name
+                )
+            })?;
+
+            // Try spawning CDP server with cached port (app may still be running).
+            let config = cdp_server_config(&server_name, port);
+            let connect_ok = mcp.spawn_server(&config).await.is_ok()
+                && self.poll_cdp_ready(&server_name, mcp, 5).await.is_ok();
+
+            if !connect_ok {
+                self.log(format!(
+                    "CDP connection failed for '{}', relaunching with port {}...",
+                    app_name, port
+                ));
+                self.relaunch_with_debug_port(app_name, port, mcp).await?;
+            }
+            port
+        };
+
+        // Spawn the CDP server if not already connected.
+        if !mcp.has_server(&server_name) {
+            let config = cdp_server_config(&server_name, port);
+            mcp.spawn_server(&config)
+                .await
+                .map_err(|e| format!("Failed to start CDP server for '{}': {}", app_name, e))?;
+        }
+
+        // Poll until the app is ready for CDP.
+        self.poll_cdp_ready(&server_name, mcp, 30).await?;
+
+        self.log(format!(
+            "CDP connected to '{}' (port {}, server '{}')",
+            app_name, port, server_name
+        ));
+        self.record_event(
+            node_run,
+            "cdp_connected",
+            serde_json::json!({
+                "app_name": app_name,
+                "port": port,
+                "server_name": server_name,
+            }),
+        );
+
+        self.cdp_servers
+            .insert(app_name.to_string(), server_name.clone());
+        Ok(server_name)
+    }
+
+    /// Quit the app, relaunch with --remote-debugging-port, wait briefly.
+    async fn relaunch_with_debug_port(
+        &self,
+        app_name: &str,
+        port: u16,
+        mcp: &McpRouter,
+    ) -> Result<(), String> {
+        // Quit (best-effort — app might not be running).
+        let quit_args = serde_json::json!({ "app_name": app_name });
+        if let Err(e) = mcp.call_tool("quit_app", Some(quit_args)).await {
+            self.log(format!(
+                "quit_app for '{}' failed (continuing): {}",
+                app_name, e
+            ));
+        }
+
+        // Brief wait for the app to fully exit.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Relaunch with debug port.
+        let launch_args = serde_json::json!({
+            "app_name": app_name,
+            "args": [format!("--remote-debugging-port={}", port)],
+        });
+        let result = mcp
+            .call_tool("launch_app", Some(launch_args))
+            .await
+            .map_err(|e| format!("Failed to launch '{}' with debug port: {}", app_name, e))?;
+
+        if result.is_error == Some(true) {
+            return Err(format!(
+                "launch_app error for '{}': {}",
+                app_name,
+                Self::extract_result_text(&result)
+            ));
+        }
+
+        // Wait for the app to start up.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        Ok(())
+    }
+
+    /// Poll `list_pages` on a CDP server until it returns at least one page.
+    async fn poll_cdp_ready(
+        &self,
+        server_name: &str,
+        mcp: &McpRouter,
+        timeout_secs: u64,
+    ) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+
+        loop {
+            match mcp.call_tool_on(server_name, "list_pages", None).await {
+                Ok(result) if result.is_error != Some(true) => {
+                    let text = Self::extract_result_text(&result);
+                    if text.contains("1:") {
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "Timed out waiting for CDP server '{}' to be ready ({}s)",
+                    server_name, timeout_secs
+                ));
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
     }
 }
