@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use base64::Engine;
-use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
+use clickweave_core::app_detection::{bundle_path_from_pid, classify_app, classify_app_by_pid};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
     AppKind, ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughActionKind,
@@ -365,7 +365,7 @@ pub async fn stop_walkthrough(
             if let Some(ref mcp_cmd) = mcp_command
                 && let Some(mut mcp) = spawn_mcp(mcp_cmd).await
             {
-                enrich_actions_with_cdp(&mut actions, &mcp).await;
+                enrich_actions_with_cdp(&mut actions, &mut mcp).await;
                 mcp.kill_all();
             }
 
@@ -976,12 +976,13 @@ async fn spawn_mcp(mcp_command: &str) -> Option<McpRouter> {
 ///
 /// For Electron/Chrome apps: takes a CDP snapshot via the chrome-devtools MCP
 /// and matches click actions against DOM elements by text.
-async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRouter) {
-    use clickweave_core::cdp::{cdp_server_name, find_elements_in_snapshot};
+async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &mut McpRouter) {
+    use clickweave_core::cdp::cdp_server_name;
+    use clickweave_core::cdp::find_elements_in_snapshot;
     use clickweave_core::walkthrough::TargetCandidate;
 
-    // Find CDM apps in the actions.
-    let cdm_apps: Vec<String> = actions
+    // Find CDP apps in the actions.
+    let cdp_apps: Vec<String> = actions
         .iter()
         .filter_map(|a| match &a.kind {
             WalkthroughActionKind::LaunchApp {
@@ -989,26 +990,52 @@ async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRou
             }
             | WalkthroughActionKind::FocusWindow {
                 app_name, app_kind, ..
-            } if *app_kind != AppKind::Native => Some(app_name.clone()),
+            } if app_kind.uses_cdp() => Some(app_name.clone()),
             _ => None,
         })
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
 
-    if cdm_apps.is_empty() {
+    if cdp_apps.is_empty() {
         return;
     }
 
-    for app_name in &cdm_apps {
+    /// Default Chrome DevTools Protocol port to try when the debug port is
+    /// unknown (best-effort: the app may already be listening on this port).
+    const DEFAULT_CDP_PORT: u16 = 9222;
+
+    for app_name in &cdp_apps {
         let server_name = cdp_server_name(app_name);
+
+        // Try to spawn a CDP server if one isn't already registered.
         if !mcp.has_server(&server_name) {
-            tracing::debug!(
-                "CDP verification skipped for '{}': server '{}' not available",
-                app_name,
-                server_name
-            );
-            continue;
+            let config = clickweave_mcp::McpServerConfig {
+                name: server_name.clone(),
+                command: "npx".into(),
+                args: vec![
+                    "-y".into(),
+                    "chrome-devtools-mcp".into(),
+                    format!("--browserUrl=http://127.0.0.1:{}", DEFAULT_CDP_PORT),
+                ],
+            };
+            match mcp.spawn_server(&config).await {
+                Ok(()) => {
+                    tracing::info!(
+                        "CDP server '{}' spawned for walkthrough enrichment (port {})",
+                        server_name,
+                        DEFAULT_CDP_PORT
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "CDP verification skipped for '{}': could not spawn server: {}",
+                        app_name,
+                        e
+                    );
+                    continue;
+                }
+            }
         }
 
         tracing::info!("CDP verification: attempting snapshot for '{}'", app_name);
@@ -1311,11 +1338,8 @@ async fn enrich_click_background(
     // slipped past proactive detection.
     if !has_actionable_ax {
         let current_kind = app_kind_cache.lock().unwrap().get(&target_pid).copied();
-        if current_kind == Some(AppKind::Native)
-            && let Some(bundle_path) = bundle_path_from_pid(target_pid)
-        {
-            let bundle_id = clickweave_core::app_detection::bundle_id_from_pid(target_pid);
-            let rechecked = classify_app(bundle_id.as_deref(), Some(&bundle_path));
+        if current_kind == Some(AppKind::Native) {
+            let rechecked = classify_app_by_pid(target_pid);
             if rechecked != AppKind::Native {
                 tracing::info!(
                     "Reactive detection: PID {} reclassified as {:?} (empty AX triggered recheck)",
