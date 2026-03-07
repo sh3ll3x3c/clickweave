@@ -360,7 +360,7 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
 /**
  * Label identified by a vision language model from a screenshot crop.
  */
-{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number } |
+{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number } | 
 /**
  * Element verified via Chrome DevTools Protocol snapshot.
  */

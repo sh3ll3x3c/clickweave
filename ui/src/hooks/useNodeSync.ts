@@ -44,7 +44,7 @@ function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | und
 }
 
 /** Forward-propagate app_kind from FocusWindow nodes to all downstream nodes. */
-function buildAppKindMap(workflow: Workflow): Map<string, AppKind> {
+export function buildAppKindMap(workflow: Workflow): Map<string, AppKind> {
   const result = new Map<string, AppKind>();
   const nodeById = new Map(workflow.nodes.map((n) => [n.id, n]));
 

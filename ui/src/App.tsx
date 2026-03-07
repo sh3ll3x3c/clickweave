@@ -17,6 +17,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 import { useWorkflowActions } from "./hooks/useWorkflowActions";
+import { buildAppKindMap } from "./hooks/useNodeSync";
 
 function App() {
   // ── One-time loaders ─────────────────────────────────────────────
@@ -104,6 +105,13 @@ function App() {
         : null,
     [selectedNode, workflow.nodes],
   );
+
+  const selectedNodeAppKind = useMemo(() => {
+    if (!selectedNode) return undefined;
+    const map = buildAppKindMap(workflow);
+    const kind = map.get(selectedNode);
+    return kind && kind !== "Native" ? kind : undefined;
+  }, [selectedNode, workflow]);
 
   useEscapeKey();
   useUndoRedoKeyboard(undo, redo);
@@ -329,6 +337,7 @@ function App() {
                 onTabChange={setDetailTab}
                 onUpdate={updateNode}
                 onClose={() => selectNode(null)}
+                appKind={selectedNodeAppKind}
               />
             </>
           )}
