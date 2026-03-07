@@ -726,10 +726,15 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Build target candidates: CDP > accessibility label > OCR text > coordinates.
                 let mut candidates = Vec::new();
 
-                // CDP element is the highest-priority target (uses AX label as hint).
+                // CDP element is the highest-priority target.
+                // Try AX label first, then VLM label as hint for matching.
                 if let Some(ref snapshot) = cdp_snapshot {
-                    let hint = ax_label.as_ref().map(|(label, _)| label.as_str());
-                    if let Some(hint) = hint {
+                    let hints = ax_label
+                        .as_ref()
+                        .map(|(label, _)| label.as_str())
+                        .into_iter()
+                        .chain(vlm_label.as_deref());
+                    for hint in hints {
                         let matches = crate::cdp::find_elements_in_snapshot(snapshot, hint);
                         if matches.len() == 1 {
                             let (uid, label) = &matches[0];
@@ -737,6 +742,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                                 text: label.clone(),
                                 uid: uid.clone(),
                             });
+                            break;
                         }
                     }
                 }
@@ -1760,6 +1766,67 @@ mod tests {
                 TargetCandidate::VlmLabel { label } if label == "Submit Button"
             ));
             // Actionable AX label means High confidence
+            assert_eq!(actions[0].confidence, ActionConfidence::High);
+        }
+
+        #[test]
+        fn test_cdp_element_resolved_via_vlm_hint_when_ax_is_window_title() {
+            let click_id = Uuid::new_v4();
+            let events = vec![
+                WalkthroughEvent {
+                    id: click_id,
+                    timestamp: 1000,
+                    kind: WalkthroughEventKind::MouseClicked {
+                        x: 45.0,
+                        y: 473.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                        cdp_element: None,
+                    },
+                },
+                make_event(
+                    1000,
+                    WalkthroughEventKind::CdpSnapshotCaptured {
+                        snapshot_text: concat!(
+                            "uid=1_0 RootWebArea \"MyApp\"\n",
+                            "  uid=1_1 button \"Go back\"\n",
+                            "  uid=1_2 treeitem \"Direct Messages\" level=\"1\" selectable\n",
+                            "  uid=1_3 button \"Settings\"\n",
+                        )
+                        .to_string(),
+                        click_event_id: click_id,
+                    },
+                ),
+                // AX label is the window title — won't match any single CDP element.
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: "MyApp - Main Window".to_string(),
+                        role: Some("AXWindow".to_string()),
+                    },
+                ),
+                // VLM label matches the specific element.
+                make_event(
+                    1000,
+                    WalkthroughEventKind::VlmLabelResolved {
+                        label: "Direct Messages".to_string(),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            // CDP element should be the first candidate (highest priority).
+            assert!(
+                matches!(
+                    &actions[0].target_candidates[0],
+                    TargetCandidate::CdpElement { text, uid }
+                        if text == "Direct Messages" && uid == "1_2"
+                ),
+                "Expected CdpElement as first candidate, got: {:?}",
+                &actions[0].target_candidates
+            );
+            // CDP element presence means High confidence.
             assert_eq!(actions[0].confidence, ActionConfidence::High);
         }
 

@@ -687,6 +687,9 @@ pub async fn seed_walkthrough_cache(
 /// Timeout for individual VLM resolution requests (during and after recording).
 const VLM_CALL_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
 
+/// Timeout for CDP take_snapshot calls.
+const CDP_SNAPSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 // ---------------------------------------------------------------------------
 // Async event processing loop
 // ---------------------------------------------------------------------------
@@ -937,6 +940,11 @@ async fn process_capture_events(
                     let focused_app = app_cache.get(&capture.target_pid).map(|c| c.name.as_str());
                     if let Some(app_name) = focused_app {
                         if let Some(server_name) = cdp_state.get(app_name) {
+                            tracing::debug!(
+                                "CDP snapshot: dispatching for '{}' (server '{}')",
+                                app_name,
+                                server_name
+                            );
                             let task_mcp = mcp_arc.clone();
                             let task_app = app.clone();
                             let task_storage = storage.clone();
@@ -957,7 +965,18 @@ async fn process_capture_events(
                                 )
                                 .await;
                             });
+                        } else {
+                            tracing::debug!(
+                                "CDP snapshot: no server for app '{}', cdp_state keys: {:?}",
+                                app_name,
+                                cdp_state.keys().collect::<Vec<_>>()
+                            );
                         }
+                    } else {
+                        tracing::debug!(
+                            "CDP snapshot: PID {} not in app_cache",
+                            capture.target_pid
+                        );
                     }
                 }
 
@@ -1403,20 +1422,32 @@ async fn cdp_snapshot_for_click(
     click_event_id: Uuid,
     click_timestamp: u64,
 ) {
-    let snapshot = match mcp.call_tool_on(server_name, "take_snapshot", None).await {
-        Ok(r) if r.is_error != Some(true) => r
+    let call_fut = mcp.call_tool_on(server_name, "take_snapshot", Some(serde_json::json!({})));
+    let snapshot = match tokio::time::timeout(CDP_SNAPSHOT_TIMEOUT, call_fut).await {
+        Ok(Ok(r)) if r.is_error != Some(true) => r
             .content
             .iter()
             .filter_map(|c| c.as_text())
             .collect::<Vec<_>>()
             .join("\n"),
-        Ok(r) => {
-            tracing::debug!("CDP take_snapshot returned error for click {click_event_id}");
-            let _ = r;
+        Ok(Ok(r)) => {
+            let err_text: String = r
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .collect::<Vec<_>>()
+                .join("\n");
+            tracing::debug!(
+                "CDP take_snapshot returned error for click {click_event_id}: {err_text}"
+            );
             return;
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::debug!("CDP take_snapshot failed for click {click_event_id}: {e}");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!("CDP take_snapshot timed out for click {click_event_id}");
             return;
         }
     };

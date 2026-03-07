@@ -46,12 +46,23 @@ function actionLabel(action: WalkthroughAction): string {
 
 function targetCandidateLabel(candidate: TargetCandidate): string {
   switch (candidate.type) {
-    case "AccessibilityLabel": return `"${candidate.label}"${candidate.role ? ` (${candidate.role})` : ""}`;
+    case "AccessibilityLabel": return `"${candidate.label}"`;
     case "VlmLabel": return `"${candidate.label}"`;
     case "OcrText": return `"${candidate.text}"`;
     case "ImageCrop": return "Image crop";
     case "Coordinates": return `(${candidate.x}, ${candidate.y})`;
-    case "CdpElement": return `"${candidate.text}" (DevTools)`;
+    case "CdpElement": return `"${candidate.text}"`;
+  }
+}
+
+function targetCandidateMethod(candidate: TargetCandidate): string {
+  switch (candidate.type) {
+    case "AccessibilityLabel": return "Accessibility";
+    case "VlmLabel": return "Vision model";
+    case "OcrText": return "OCR";
+    case "ImageCrop": return "Image template";
+    case "Coordinates": return "Screen coordinates";
+    case "CdpElement": return "DevTools DOM";
   }
 }
 
@@ -407,6 +418,7 @@ export function WalkthroughPanel() {
                                   />
                                   <span>{targetCandidateIcon(candidate)}</span>
                                   <span className="truncate">{targetCandidateLabel(candidate)}</span>
+                                  <span className="ml-auto shrink-0 text-[10px] text-[var(--text-muted)]">{targetCandidateMethod(candidate)}</span>
                                 </label>
                               ))}
                             </div>
