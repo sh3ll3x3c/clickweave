@@ -161,6 +161,44 @@ impl McpRouter {
         self.servers.iter().any(|(name, _)| name == server_name)
     }
 
+    /// Spawn a single MCP server at runtime and add it to the routing table.
+    ///
+    /// If a server with the same name already exists, this is a no-op.
+    /// Tools from the new server are added to the merged list; existing
+    /// servers win on tool-name conflicts (same first-wins policy as spawn).
+    pub async fn spawn_server(&mut self, config: &McpServerConfig) -> Result<()> {
+        if self.has_server(&config.name) {
+            return Ok(());
+        }
+
+        let args_ref: Vec<&str> = config.args.iter().map(|s| s.as_str()).collect();
+        let client = McpClient::spawn(&config.command, &args_ref)
+            .await
+            .with_context(|| format!("Failed to spawn MCP server '{}'", config.name))?;
+
+        info!(
+            "MCP server '{}' spawned dynamically with {} tools",
+            config.name,
+            client.tools().len()
+        );
+
+        let server_idx = self.servers.len();
+        for tool in client.tools() {
+            if !self.tool_ownership.contains_key(&tool.name) {
+                self.tool_ownership.insert(tool.name.clone(), server_idx);
+                self.merged_tools.push(tool.clone());
+            } else {
+                warn!(
+                    "Tool '{}' from '{}' conflicts with existing — skipping",
+                    tool.name, config.name
+                );
+            }
+        }
+
+        self.servers.push((config.name.clone(), client));
+        Ok(())
+    }
+
     /// Kill all MCP server processes.
     pub fn kill_all(&mut self) {
         for (name, client) in &mut self.servers {
@@ -177,7 +215,7 @@ impl McpRouter {
 /// - `"npx"` spawns via `npx -y native-devtools-mcp`
 /// - Any other value is used as a direct command path
 ///
-/// Chrome DevTools MCP is always added as a secondary server via npx.
+/// CDP servers are spawned lazily per-app by the executor.
 pub fn default_server_configs(mcp_command: &str) -> Vec<McpServerConfig> {
     let native = if mcp_command == "npx" {
         McpServerConfig {
@@ -193,14 +231,7 @@ pub fn default_server_configs(mcp_command: &str) -> Vec<McpServerConfig> {
         }
     };
 
-    vec![
-        native,
-        McpServerConfig {
-            name: "chrome-devtools".into(),
-            command: "npx".into(),
-            args: vec!["-y".into(), "chrome-devtools-mcp".into()],
-        },
-    ]
+    vec![native]
 }
 
 #[cfg(test)]
@@ -286,12 +317,11 @@ mod tests {
     #[test]
     fn default_configs_npx() {
         let configs = default_server_configs("npx");
-        assert_eq!(configs.len(), 2);
+        assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "native-devtools");
         assert_eq!(configs[0].command, "npx");
         assert!(configs[0].args.contains(&"-y".to_string()));
         assert!(configs[0].args.contains(&"native-devtools-mcp".to_string()));
-        assert_eq!(configs[1].name, "chrome-devtools");
     }
 
     #[test]
@@ -323,9 +353,8 @@ mod tests {
     #[test]
     fn default_configs_custom_command() {
         let configs = default_server_configs("/usr/local/bin/native-devtools");
+        assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].command, "/usr/local/bin/native-devtools");
         assert!(configs[0].args.is_empty());
-        // Chrome DevTools still uses npx
-        assert_eq!(configs[1].command, "npx");
     }
 }
