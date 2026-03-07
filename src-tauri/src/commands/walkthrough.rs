@@ -705,9 +705,23 @@ async fn process_capture_events(
     cdp_apps: Vec<CdpAppConfig>,
 ) {
     // Spawn the MCP server for enrichment (screenshots + OCR).
-    // Wrapped in Arc so background enrichment tasks can share it.
-    let mcp: Option<std::sync::Arc<McpRouter>> =
-        spawn_mcp(&mcp_command).await.map(std::sync::Arc::new);
+    let mut mcp_raw = spawn_mcp(&mcp_command).await;
+
+    // Set up CDP servers for selected apps before wrapping in Arc
+    // (spawn_server requires &mut).
+    let cdp_state: HashMap<String, String> = if !cdp_apps.is_empty() {
+        if let Some(ref mut mcp) = mcp_raw {
+            setup_cdp_apps(&cdp_apps, mcp, &app, &mut cancel).await
+        } else {
+            tracing::warn!("No MCP server available for CDP setup");
+            HashMap::new()
+        }
+    } else {
+        HashMap::new()
+    };
+
+    // Wrap in Arc so background enrichment tasks can share it.
+    let mcp: Option<std::sync::Arc<McpRouter>> = mcp_raw.map(std::sync::Arc::new);
 
     // Initialize VLM backend if planner config is available.
     let vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>> =
@@ -896,6 +910,31 @@ async fn process_capture_events(
                         )
                         .await;
                     });
+
+                    // CDP snapshot (async, independent of AX/VLM enrichment).
+                    let focused_app = app_cache.get(&capture.target_pid).map(|c| c.name.as_str());
+                    if let Some(app_name) = focused_app {
+                        if let Some(server_name) = cdp_state.get(app_name) {
+                            let task_mcp = mcp_arc.clone();
+                            let task_app = app.clone();
+                            let task_storage = storage.clone();
+                            let task_dir = session_dir.clone();
+                            let server = server_name.clone();
+                            let click_id = click_event.id;
+
+                            bg_tasks.spawn(async move {
+                                cdp_snapshot_for_click(
+                                    &task_mcp,
+                                    &server,
+                                    &task_app,
+                                    &task_storage,
+                                    &task_dir,
+                                    click_id,
+                                )
+                                .await;
+                            });
+                        }
+                    }
                 }
 
                 continue;
@@ -1022,6 +1061,235 @@ fn persist_and_emit(
 ) {
     let _ = storage.append_event(session_dir, event);
     emit_event(app, event);
+}
+
+// ---------------------------------------------------------------------------
+// CDP helpers
+// ---------------------------------------------------------------------------
+
+/// Pick a random port in the ephemeral range (49152–65535).
+fn rand_ephemeral_port() -> u16 {
+    use std::time::SystemTime;
+    let seed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let raw = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+    let range = 65535 - 49152;
+    49152 + (raw % range) as u16
+}
+
+/// Build the McpServerConfig for a chrome-devtools-mcp connected to a specific port.
+fn cdp_server_config(server_name: &str, port: u16) -> clickweave_mcp::McpServerConfig {
+    clickweave_mcp::McpServerConfig {
+        name: server_name.to_string(),
+        command: "npx".into(),
+        args: vec![
+            "-y".into(),
+            "chrome-devtools-mcp".into(),
+            format!("--browserUrl=http://127.0.0.1:{}", port),
+        ],
+    }
+}
+
+/// Set up CDP servers for user-selected apps.
+///
+/// For each app: quit the running instance, relaunch with
+/// `--remote-debugging-port`, spawn a chrome-devtools-mcp server, and
+/// poll until ready. Returns a map of app_name → CDP server name.
+async fn setup_cdp_apps(
+    cdp_apps: &[CdpAppConfig],
+    mcp: &mut McpRouter,
+    app: &tauri::AppHandle,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+) -> HashMap<String, String> {
+    use clickweave_core::cdp::cdp_server_name;
+
+    let mut state: HashMap<String, String> = HashMap::new();
+
+    for cdp_app in cdp_apps {
+        // Check for cancellation between apps.
+        if *cancel.borrow() {
+            break;
+        }
+
+        let port = rand_ephemeral_port();
+        let server_name = cdp_server_name(&cdp_app.name);
+
+        if cdp_app.binary_path.is_some() {
+            // File-picker path: launch from binary path.
+            emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Launching);
+        } else {
+            // Already-running app: quit and relaunch.
+            emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Restarting);
+        }
+
+        // Quit existing instance (best-effort).
+        let quit_args = serde_json::json!({ "app_name": &cdp_app.name });
+        let _ = mcp.call_tool("quit_app", Some(quit_args)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Relaunch with debug port.
+        let launch_args = if let Some(ref binary_path) = cdp_app.binary_path {
+            serde_json::json!({
+                "app_name": binary_path,
+                "args": [format!("--remote-debugging-port={}", port)],
+            })
+        } else {
+            serde_json::json!({
+                "app_name": &cdp_app.name,
+                "args": [format!("--remote-debugging-port={}", port)],
+            })
+        };
+
+        let launch_result = mcp.call_tool("launch_app", Some(launch_args)).await;
+        if let Err(e) = &launch_result {
+            tracing::warn!("Failed to launch '{}' with CDP: {}", cdp_app.name, e);
+            emit_cdp_progress(
+                app,
+                &cdp_app.name,
+                CdpSetupStatus::Failed {
+                    reason: e.to_string(),
+                },
+            );
+            continue;
+        }
+
+        // Wait for the app to start.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Connecting);
+
+        // Spawn the CDP server.
+        let config = cdp_server_config(&server_name, port);
+        if let Err(e) = mcp.spawn_server(&config).await {
+            tracing::warn!("Failed to spawn CDP server for '{}': {}", cdp_app.name, e);
+            emit_cdp_progress(
+                app,
+                &cdp_app.name,
+                CdpSetupStatus::Failed {
+                    reason: e.to_string(),
+                },
+            );
+            continue;
+        }
+
+        // Poll until ready (10s timeout), with cancellation.
+        let ready = tokio::select! {
+            biased;
+            _ = cancel.changed() => {
+                tracing::info!("CDP setup cancelled during poll for '{}'", cdp_app.name);
+                break;
+            }
+            result = poll_cdp_ready(mcp, &server_name, 10) => result,
+        };
+
+        match ready {
+            Ok(()) => {
+                tracing::info!(
+                    "CDP connected to '{}' (port {}, server '{}')",
+                    cdp_app.name,
+                    port,
+                    server_name,
+                );
+                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Ready);
+                state.insert(cdp_app.name.clone(), server_name);
+            }
+            Err(e) => {
+                tracing::warn!("CDP poll failed for '{}': {}", cdp_app.name, e);
+                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason: e });
+            }
+        }
+    }
+
+    state
+}
+
+/// Poll `list_pages` on a CDP server until it returns at least one page.
+async fn poll_cdp_ready(
+    mcp: &McpRouter,
+    server_name: &str,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        match mcp.call_tool_on(server_name, "list_pages", None).await {
+            Ok(result) if result.is_error != Some(true) => {
+                let text: String = result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.contains("1:") {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Timed out waiting for CDP server '{}' to be ready ({}s)",
+                server_name, timeout_secs
+            ));
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+fn emit_cdp_progress(app: &tauri::AppHandle, app_name: &str, status: CdpSetupStatus) {
+    let _ = app.emit(
+        "walkthrough://cdp-setup",
+        CdpSetupProgress {
+            app_name: app_name.to_string(),
+            status,
+        },
+    );
+}
+
+/// Capture a CDP snapshot for a click and persist as a CdpSnapshotCaptured event.
+async fn cdp_snapshot_for_click(
+    mcp: &McpRouter,
+    server_name: &str,
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+    click_event_id: Uuid,
+) {
+    let snapshot = match mcp.call_tool_on(server_name, "take_snapshot", None).await {
+        Ok(r) if r.is_error != Some(true) => r
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Ok(r) => {
+            tracing::debug!("CDP take_snapshot returned error for click {click_event_id}");
+            let _ = r;
+            return;
+        }
+        Err(e) => {
+            tracing::debug!("CDP take_snapshot failed for click {click_event_id}: {e}");
+            return;
+        }
+    };
+
+    if snapshot.is_empty() {
+        return;
+    }
+
+    let event = WalkthroughEvent {
+        id: Uuid::new_v4(),
+        timestamp: clickweave_core::storage::now_millis(),
+        kind: WalkthroughEventKind::CdpSnapshotCaptured {
+            snapshot_text: snapshot,
+            click_event_id,
+        },
+    };
+    persist_and_emit(app, storage, session_dir, &event);
 }
 
 // ---------------------------------------------------------------------------

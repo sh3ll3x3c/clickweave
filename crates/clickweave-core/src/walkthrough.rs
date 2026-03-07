@@ -681,6 +681,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let mut ax_label: Option<(String, Option<String>)> = None;
                 let mut vlm_label: Option<String> = None;
                 let mut crop_candidate: Option<(String, String)> = None;
+                let mut cdp_snapshot: Option<String> = None;
                 let mut peek = i;
                 while peek < events.len() {
                     match &events[peek].kind {
@@ -705,6 +706,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                         WalkthroughEventKind::VlmLabelResolved { label } => {
                             vlm_label = Some(label.clone());
                         }
+                        WalkthroughEventKind::CdpSnapshotCaptured { snapshot_text, .. } => {
+                            cdp_snapshot = Some(snapshot_text.clone());
+                        }
                         // Stop at the next action event.
                         _ => break,
                     }
@@ -713,8 +717,23 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Advance past consumed enrichment events.
                 i = peek;
 
-                // Build target candidates: accessibility label > OCR text > coordinates.
+                // Build target candidates: CDP > accessibility label > OCR text > coordinates.
                 let mut candidates = Vec::new();
+
+                // CDP element is the highest-priority target (uses AX label as hint).
+                if let Some(ref snapshot) = cdp_snapshot {
+                    let hint = ax_label.as_ref().map(|(label, _)| label.as_str());
+                    if let Some(hint) = hint {
+                        let matches = crate::cdp::find_elements_in_snapshot(snapshot, hint);
+                        if matches.len() == 1 {
+                            let (uid, label) = &matches[0];
+                            candidates.push(TargetCandidate::CdpElement {
+                                text: label.clone(),
+                                uid: uid.clone(),
+                            });
+                        }
+                    }
+                }
 
                 // Accessibility label is the most reliable target.
                 if let Some((label, role)) = ax_label {
