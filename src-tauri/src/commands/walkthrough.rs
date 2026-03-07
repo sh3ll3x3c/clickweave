@@ -1091,6 +1091,40 @@ fn persist_and_emit(
 // CDP helpers
 // ---------------------------------------------------------------------------
 
+/// Check if an app is already running with `--remote-debugging-port=<N>`.
+/// Returns the port if found, so we can skip the quit/relaunch cycle.
+async fn existing_debug_port(app_name: &str) -> Option<u16> {
+    let output = tokio::process::Command::new("pgrep")
+        .args(["-x", app_name])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let pids = String::from_utf8_lossy(&output.stdout);
+    for pid_str in pids.split_whitespace() {
+        let pid: u32 = pid_str.parse().ok()?;
+        let args_output = tokio::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "args="])
+            .output()
+            .await
+            .ok()?;
+        let args = String::from_utf8_lossy(&args_output.stdout);
+        if let Some(flag) = args
+            .split_whitespace()
+            .find(|a| a.starts_with("--remote-debugging-port="))
+        {
+            if let Some(port_str) = flag.strip_prefix("--remote-debugging-port=") {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    return Some(port);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Pick a random port in the ephemeral range (49152–65535).
 fn rand_ephemeral_port() -> u16 {
     use std::time::SystemTime;
@@ -1137,100 +1171,121 @@ async fn setup_cdp_apps(
             break;
         }
 
-        let port = rand_ephemeral_port();
         let server_name = cdp_server_name(&cdp_app.name);
 
-        if cdp_app.binary_path.is_some() {
-            // File-picker path: launch from binary path.
-            emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Launching);
-        } else {
-            // Already-running app: quit and relaunch.
-            emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Restarting);
-        }
-
-        // Quit existing instance and wait for it to exit.
-        let quit_args = serde_json::json!({ "app_name": &cdp_app.name });
-        match mcp.call_tool("quit_app", Some(quit_args)).await {
-            Ok(r) if r.is_error == Some(true) => {
-                tracing::debug!(
-                    "quit_app for '{}' returned error (may not be running)",
-                    cdp_app.name
+        // Check if the app is already running with a debug port — if so, skip
+        // the quit/relaunch cycle and reuse the existing port.
+        let port = match existing_debug_port(&cdp_app.name).await {
+            Some(p) => {
+                tracing::info!(
+                    "'{}' already running with --remote-debugging-port={}, reusing",
+                    cdp_app.name,
+                    p
                 );
+                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Connecting);
+                p
             }
-            Err(e) => {
-                tracing::debug!("quit_app for '{}' failed: {e}", cdp_app.name);
-            }
-            _ => {}
-        }
+            None => {
+                let port = rand_ephemeral_port();
 
-        // Poll until the app is no longer in list_apps (up to 8s).
-        // Electron apps like Discord can take several seconds to quit.
-        let mut quit_confirmed = false;
-        for _ in 0..16 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            if let Ok(r) = mcp.call_tool("list_apps", None).await {
-                let text = r
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_text())
-                    .collect::<String>();
-                if !text.contains(&cdp_app.name) {
-                    quit_confirmed = true;
-                    break;
+                if cdp_app.binary_path.is_some() {
+                    emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Launching);
+                } else {
+                    emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Restarting);
                 }
+
+                // Quit existing instance and wait for it to exit.
+                let quit_args = serde_json::json!({ "app_name": &cdp_app.name });
+                match mcp.call_tool("quit_app", Some(quit_args)).await {
+                    Ok(r) if r.is_error == Some(true) => {
+                        tracing::debug!(
+                            "quit_app for '{}' returned error (may not be running)",
+                            cdp_app.name
+                        );
+                    }
+                    Err(e) => {
+                        tracing::debug!("quit_app for '{}' failed: {e}", cdp_app.name);
+                    }
+                    _ => {}
+                }
+
+                // Poll until the app is no longer reported as running (up to 10s).
+                let poll_args =
+                    serde_json::json!({ "app_name": &cdp_app.name, "user_apps_only": true });
+                let mut quit_confirmed = false;
+                for _ in 0..20 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if let Ok(r) = mcp.call_tool("list_apps", Some(poll_args.clone())).await {
+                        let text = r
+                            .content
+                            .iter()
+                            .filter_map(|c| c.as_text())
+                            .collect::<String>();
+                        if text.trim() == "[]" {
+                            quit_confirmed = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !quit_confirmed {
+                    tracing::warn!("'{}' did not quit within 10s, force-killing", cdp_app.name);
+                    let force_args =
+                        serde_json::json!({ "app_name": &cdp_app.name, "force": true });
+                    let _ = mcp.call_tool("quit_app", Some(force_args)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+
+                // Relaunch with debug port.
+                let launch_args = if let Some(ref binary_path) = cdp_app.binary_path {
+                    serde_json::json!({
+                        "app_name": binary_path,
+                        "args": [format!("--remote-debugging-port={}", port)],
+                    })
+                } else {
+                    serde_json::json!({
+                        "app_name": &cdp_app.name,
+                        "args": [format!("--remote-debugging-port={}", port)],
+                    })
+                };
+
+                let launch_result = mcp.call_tool("launch_app", Some(launch_args)).await;
+
+                match &launch_result {
+                    Err(e) => {
+                        tracing::warn!("Failed to launch '{}' with CDP: {}", cdp_app.name, e);
+                        emit_cdp_progress(
+                            app,
+                            &cdp_app.name,
+                            CdpSetupStatus::Failed {
+                                reason: e.to_string(),
+                            },
+                        );
+                        continue;
+                    }
+                    Ok(r) if r.is_error == Some(true) => {
+                        let reason = r
+                            .content
+                            .iter()
+                            .filter_map(|c| c.as_text())
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        tracing::warn!(
+                            "launch_app for '{}' returned error: {reason}",
+                            cdp_app.name
+                        );
+                        emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason });
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                // Wait for the app to start.
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                port
             }
-        }
-
-        if !quit_confirmed {
-            // Force-kill as fallback.
-            tracing::warn!("'{}' did not quit gracefully, force-killing", cdp_app.name);
-            let force_args = serde_json::json!({ "app_name": &cdp_app.name, "force": true });
-            let _ = mcp.call_tool("quit_app", Some(force_args)).await;
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-
-        // Relaunch with debug port.
-        let launch_args = if let Some(ref binary_path) = cdp_app.binary_path {
-            serde_json::json!({
-                "app_name": binary_path,
-                "args": [format!("--remote-debugging-port={}", port)],
-            })
-        } else {
-            serde_json::json!({
-                "app_name": &cdp_app.name,
-                "args": [format!("--remote-debugging-port={}", port)],
-            })
         };
-
-        let launch_result = mcp.call_tool("launch_app", Some(launch_args)).await;
-        match &launch_result {
-            Err(e) => {
-                tracing::warn!("Failed to launch '{}' with CDP: {}", cdp_app.name, e);
-                emit_cdp_progress(
-                    app,
-                    &cdp_app.name,
-                    CdpSetupStatus::Failed {
-                        reason: e.to_string(),
-                    },
-                );
-                continue;
-            }
-            Ok(r) if r.is_error == Some(true) => {
-                let reason = r
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_text())
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                tracing::warn!("launch_app for '{}' returned error: {reason}", cdp_app.name);
-                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason });
-                continue;
-            }
-            _ => {}
-        }
-
-        // Wait for the app to start.
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
         emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Connecting);
 
@@ -1288,7 +1343,10 @@ async fn poll_cdp_ready(
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 
     loop {
-        match mcp.call_tool_on(server_name, "list_pages", None).await {
+        match mcp
+            .call_tool_on(server_name, "list_pages", Some(serde_json::json!({})))
+            .await
+        {
             Ok(result) if result.is_error != Some(true) => {
                 let text: String = result
                     .content
@@ -1300,7 +1358,18 @@ async fn poll_cdp_ready(
                     return Ok(());
                 }
             }
-            _ => {}
+            Ok(result) => {
+                let text: String = result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                tracing::debug!("CDP list_pages error for '{}': {}", server_name, text);
+            }
+            Err(e) => {
+                tracing::debug!("CDP list_pages call failed for '{}': {}", server_name, e);
+            }
         }
 
         if tokio::time::Instant::now() >= deadline {
