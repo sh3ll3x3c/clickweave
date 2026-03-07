@@ -1,5 +1,11 @@
-/// MCP server name for the Chrome DevTools Protocol server.
+/// Deprecated — use `cdp_server_name()` for per-app servers.
 pub const CDP_SERVER: &str = "chrome-devtools";
+
+/// Build the CDP server name for a given app.
+/// Each Electron/Chrome app gets its own named server: `"cdp:<app_name>"`.
+pub fn cdp_server_name(app_name: &str) -> String {
+    format!("cdp:{app_name}")
+}
 
 /// Parse a CDP snapshot and find elements whose text contains the target.
 /// Returns a vec of (uid, matched_line) tuples.
@@ -49,7 +55,7 @@ fn extract_label(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::find_elements_in_snapshot;
+    use super::{cdp_server_name, find_elements_in_snapshot};
 
     const SNAPSHOT: &str = r#"
 [uid="e1"] button "Submit"
@@ -57,6 +63,12 @@ mod tests {
 [uid="e3"] heading "Settings"
 [uid="e4"] button "Submit Form"
 "#;
+
+    #[test]
+    fn server_name_format() {
+        assert_eq!(cdp_server_name("Discord"), "cdp:Discord");
+        assert_eq!(cdp_server_name("Google Chrome"), "cdp:Google Chrome");
+    }
 
     #[test]
     fn single_match() {
