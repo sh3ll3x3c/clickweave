@@ -1,4 +1,4 @@
-use super::WorkflowExecutor;
+use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::decision_cache::cache_key;
 use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{
@@ -17,7 +17,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_type: &NodeType,
         mcp: &mut McpRouter,
         mut node_run: Option<&mut NodeRun>,
-    ) -> Result<Value, String> {
+    ) -> ExecutorResult<Value> {
         if let NodeType::AppDebugKitOp(p) = node_type {
             self.log(format!("AppDebugKit operation: {}", p.operation_name));
             let args = if p.parameters.is_null() {
@@ -30,10 +30,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "tool_call",
                 serde_json::json!({"name": p.operation_name, "args": args}),
             );
-            let result = mcp
-                .call_tool(&p.operation_name, args)
-                .await
-                .map_err(|e| format!("AppDebugKit op {} failed: {}", p.operation_name, e))?;
+            let result = mcp.call_tool(&p.operation_name, args).await.map_err(|e| {
+                ExecutorError::ToolCall {
+                    tool: p.operation_name.clone(),
+                    message: e.to_string(),
+                }
+            })?;
             Self::check_tool_error(&result, &p.operation_name)?;
             let result_text = Self::extract_result_text(&result);
             self.record_event(
@@ -51,7 +53,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if let NodeType::McpToolCall(p) = node_type
             && p.tool_name.is_empty()
         {
-            return Err("McpToolCall has empty tool_name".to_string());
+            return Err(ExecutorError::Validation(
+                "McpToolCall has empty tool_name".to_string(),
+            ));
         }
 
         let resolved_click;
@@ -171,7 +175,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         };
 
         let invocation = tool_mapping::node_type_to_tool_invocation(effective)
-            .map_err(|e| format!("Tool mapping failed: {}", e))?;
+            .map_err(|e| ExecutorError::Validation(format!("Tool mapping failed: {}", e)))?;
         let tool_name = &invocation.name;
 
         self.log(format!("Calling MCP tool: {}", tool_name));
@@ -221,7 +225,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let result = mcp
             .call_tool(tool_name, args)
             .await
-            .map_err(|e| format!("MCP tool {} failed: {}", tool_name, e))?;
+            .map_err(|e| ExecutorError::ToolCall {
+                tool: tool_name.to_string(),
+                message: e.to_string(),
+            })?;
 
         Self::check_tool_error(&result, tool_name)?;
 
@@ -298,13 +305,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok(Self::parse_result_text(&result_text))
     }
 
-    fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> Result<(), String> {
+    fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> ExecutorResult<()> {
         if result.is_error == Some(true) {
             let error_text = Self::extract_result_text(result);
-            return Err(format!(
-                "MCP tool {} returned error: {}",
-                tool_name, error_text
-            ));
+            return Err(ExecutorError::ToolCall {
+                tool: tool_name.to_string(),
+                message: error_text,
+            });
         }
         Ok(())
     }
@@ -385,11 +392,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &McpRouter,
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
-    ) -> Result<NodeType, String> {
-        let target = params
-            .target
-            .as_deref()
-            .ok_or("resolve_click_target called with no target")?;
+    ) -> ExecutorResult<NodeType> {
+        let target = params.target.as_deref().ok_or_else(|| {
+            ExecutorError::ClickTarget("resolve_click_target called with no target".to_string())
+        })?;
 
         let scoped_app = self.focused_app_name();
 
@@ -420,7 +426,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let find_result = mcp
             .call_tool("find_text", Some(find_args.clone()))
             .await
-            .map_err(|e| format!("find_text for '{}' failed: {}", target, e))?;
+            .map_err(|e| {
+                ExecutorError::ClickTarget(format!("find_text for '{}' failed: {}", target, e))
+            })?;
 
         Self::check_tool_error(&find_result, "find_text")?;
 
@@ -437,11 +445,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         let best = if matches.is_empty() {
-            return Err(format!(
+            return Err(ExecutorError::ClickTarget(format!(
                 "Could not find text '{}' on screen (find_text returned: {})",
                 target,
                 truncate_for_error(&result_text, 120),
-            ));
+            )));
         } else if matches.len() == 1 {
             &matches[0]
         } else {
@@ -476,12 +484,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             &matches[idx]
         };
 
-        let x = best["x"]
-            .as_f64()
-            .ok_or_else(|| format!("find_text match for '{}' missing 'x' coordinate", target))?;
-        let y = best["y"]
-            .as_f64()
-            .ok_or_else(|| format!("find_text match for '{}' missing 'y' coordinate", target))?;
+        let x = best["x"].as_f64().ok_or_else(|| {
+            ExecutorError::ClickTarget(format!(
+                "find_text match for '{}' missing 'x' coordinate",
+                target
+            ))
+        })?;
+        let y = best["y"].as_f64().ok_or_else(|| {
+            ExecutorError::ClickTarget(format!(
+                "find_text match for '{}' missing 'y' coordinate",
+                target
+            ))
+        })?;
         let matched_text = best["text"].as_str().unwrap_or(target);
 
         self.log(format!(
@@ -517,11 +531,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &McpRouter,
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
-    ) -> Result<NodeType, String> {
-        let b64 = params
-            .template_image
-            .as_deref()
-            .ok_or("resolve_click_target_by_image called without template_image")?;
+    ) -> ExecutorResult<NodeType> {
+        let b64 = params.template_image.as_deref().ok_or_else(|| {
+            ExecutorError::ClickTarget(
+                "resolve_click_target_by_image called without template_image".to_string(),
+            )
+        })?;
 
         self.log("Resolving click target by image template".to_string());
 
@@ -536,7 +551,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let (screenshot_b64, screenshot_id) = self
             .take_screenshot_with_id(mcp, screenshot_args)
             .await
-            .ok_or("Failed to take screenshot for image template matching")?;
+            .ok_or(ExecutorError::ClickTarget(
+                "Failed to take screenshot for image template matching".to_string(),
+            ))?;
 
         let mut find_args = serde_json::json!({
             "template_image_base64": b64,
@@ -564,7 +581,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let result = mcp
             .call_tool("find_image", Some(find_args))
             .await
-            .map_err(|e| format!("find_image failed: {}", e))?;
+            .map_err(|e| ExecutorError::ClickTarget(format!("find_image failed: {}", e)))?;
         Self::check_tool_error(&result, "find_image")?;
 
         let result_text = Self::extract_result_text(&result);
@@ -579,25 +596,32 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }),
         );
 
-        let parsed: Value = serde_json::from_str(&result_text)
-            .map_err(|e| format!("Failed to parse find_image result: {}", e))?;
+        let parsed: Value = serde_json::from_str(&result_text).map_err(|e| {
+            ExecutorError::ClickTarget(format!("Failed to parse find_image result: {}", e))
+        })?;
 
         // find_image returns { "matches": [...] }.
-        let matches = parsed["matches"]
-            .as_array()
-            .ok_or("find_image returned no matches array")?;
-        let best = matches.first().ok_or("find_image found no matches")?;
+        let matches = parsed["matches"].as_array().ok_or_else(|| {
+            ExecutorError::ClickTarget("find_image returned no matches array".to_string())
+        })?;
+        let best = matches
+            .first()
+            .ok_or_else(|| ExecutorError::ClickTarget("find_image found no matches".to_string()))?;
 
         // Prefer screen coordinates (available when screenshot_id was used).
         // Fall back to center pixel coordinates.
         let x = best["screen_x"]
             .as_f64()
             .or_else(|| best["center"]["x"].as_f64())
-            .ok_or("Missing x in find_image match")?;
+            .ok_or(ExecutorError::ClickTarget(
+                "Missing x in find_image match".to_string(),
+            ))?;
         let y = best["screen_y"]
             .as_f64()
             .or_else(|| best["center"]["y"].as_f64())
-            .ok_or("Missing y in find_image match")?;
+            .ok_or(ExecutorError::ClickTarget(
+                "Missing y in find_image match".to_string(),
+            ))?;
 
         self.log(format!(
             "Resolved image target -> ({}, {}), score={}",
@@ -643,16 +667,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         cdp_server: &str,
         mcp: &McpRouter,
         node_run: Option<&NodeRun>,
-    ) -> Result<String, String> {
+    ) -> ExecutorResult<String> {
         // 1. Take CDP snapshot
         self.log(format!("CDP: taking snapshot to find '{}'", target));
         let snapshot_result = mcp
             .call_tool_on(cdp_server, "take_snapshot", None)
             .await
-            .map_err(|e| format!("CDP take_snapshot failed: {e}"))?;
+            .map_err(|e| ExecutorError::Cdp(format!("take_snapshot failed: {e}")))?;
 
         if snapshot_result.is_error == Some(true) {
-            return Err("CDP take_snapshot returned error".to_string());
+            return Err(ExecutorError::Cdp(
+                "take_snapshot returned error".to_string(),
+            ));
         }
 
         let snapshot_text = Self::extract_result_text(&snapshot_result);
@@ -684,13 +710,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let click_result = mcp
             .call_tool_on(cdp_server, "click", Some(click_args))
             .await
-            .map_err(|e| format!("CDP click failed: {e}"))?;
+            .map_err(|e| ExecutorError::Cdp(format!("click failed: {e}")))?;
 
         if click_result.is_error == Some(true) {
-            return Err(format!(
-                "CDP click error: {}",
+            return Err(ExecutorError::Cdp(format!(
+                "click error: {}",
                 Self::extract_result_text(&click_result)
-            ));
+            )));
         }
 
         self.record_event(
@@ -707,7 +733,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         target: &str,
         snapshot_text: &str,
-    ) -> Result<String, String> {
+    ) -> ExecutorResult<String> {
         let truncated = &snapshot_text[..snapshot_text.floor_char_boundary(4000)];
 
         let prompt = format!(
@@ -720,28 +746,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .reasoning_backend()
             .chat(vec![clickweave_llm::Message::user(prompt)], None)
             .await
-            .map_err(|e| format!("LLM resolution failed: {e}"))?;
+            .map_err(|e| ExecutorError::Cdp(format!("LLM resolution failed: {e}")))?;
 
         let raw_text = response
             .choices
             .first()
             .and_then(|c| c.message.content_text())
-            .ok_or_else(|| "LLM returned empty content".to_string())?;
+            .ok_or_else(|| ExecutorError::Cdp("LLM returned empty content".to_string()))?;
 
         let uid = raw_text.trim().trim_matches('"').to_string();
         if uid.is_empty() {
-            return Err(format!(
+            return Err(ExecutorError::Cdp(format!(
                 "LLM could not resolve '{}' in CDP snapshot",
                 target
-            ));
+            )));
         }
 
         // Validate that the UID actually appears in the snapshot.
         if !snapshot_text.contains(&format!("uid=\"{}\"", uid)) {
-            return Err(format!(
+            return Err(ExecutorError::Cdp(format!(
                 "LLM returned uid '{}' which does not exist in the CDP snapshot",
                 uid
-            ));
+            )));
         }
 
         self.log(format!("CDP: LLM resolved '{}' -> uid='{}'", target, uid));
@@ -753,7 +779,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         target: &str,
         matches: &[(String, String)],
-    ) -> Result<String, String> {
+    ) -> ExecutorResult<String> {
         let valid_uids: std::collections::HashSet<&str> =
             matches.iter().map(|(uid, _)| uid.as_str()).collect();
 
@@ -773,7 +799,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .reasoning_backend()
             .chat(vec![clickweave_llm::Message::user(prompt)], None)
             .await
-            .map_err(|e| format!("LLM disambiguation failed: {e}"))?;
+            .map_err(|e| ExecutorError::Cdp(format!("LLM disambiguation failed: {e}")))?;
 
         let raw_text = response
             .choices
@@ -841,7 +867,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         app_name: &str,
         mcp: &mut McpRouter,
         node_run: Option<&NodeRun>,
-    ) -> Result<String, String> {
+    ) -> ExecutorResult<String> {
         use clickweave_core::ExecutionMode;
         use clickweave_core::cdp::cdp_server_name;
         use clickweave_core::decision_cache::CdpPort;
@@ -879,10 +905,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .map(|e| e.port);
 
             let port = cached.ok_or_else(|| {
-                format!(
+                ExecutorError::Cdp(format!(
                     "No cached CDP port for '{}'. Run in Test mode first.",
                     app_name
-                )
+                ))
             })?;
 
             // Try spawning CDP server with cached port (app may still be running).
@@ -903,9 +929,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Spawn the CDP server if not already connected.
         if !mcp.has_server(&server_name) {
             let config = cdp_server_config(&server_name, port);
-            mcp.spawn_server(&config)
-                .await
-                .map_err(|e| format!("Failed to start CDP server for '{}': {}", app_name, e))?;
+            mcp.spawn_server(&config).await.map_err(|e| {
+                ExecutorError::Cdp(format!(
+                    "Failed to start CDP server for '{}': {}",
+                    app_name, e
+                ))
+            })?;
         }
 
         // Poll until the app is ready for CDP.
@@ -936,7 +965,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         app_name: &str,
         port: u16,
         mcp: &McpRouter,
-    ) -> Result<(), String> {
+    ) -> ExecutorResult<()> {
         // Quit (best-effort — app might not be running).
         let quit_args = serde_json::json!({ "app_name": app_name });
         if let Err(e) = mcp.call_tool("quit_app", Some(quit_args)).await {
@@ -957,14 +986,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let result = mcp
             .call_tool("launch_app", Some(launch_args))
             .await
-            .map_err(|e| format!("Failed to launch '{}' with debug port: {}", app_name, e))?;
+            .map_err(|e| {
+                ExecutorError::Cdp(format!(
+                    "Failed to launch '{}' with debug port: {}",
+                    app_name, e
+                ))
+            })?;
 
         if result.is_error == Some(true) {
-            return Err(format!(
+            return Err(ExecutorError::Cdp(format!(
                 "launch_app error for '{}': {}",
                 app_name,
                 Self::extract_result_text(&result)
-            ));
+            )));
         }
 
         // Wait for the app to start up.
@@ -978,7 +1012,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         server_name: &str,
         mcp: &McpRouter,
         timeout_secs: u64,
-    ) -> Result<(), String> {
+    ) -> ExecutorResult<()> {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 
         loop {
@@ -993,10 +1027,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
 
             if tokio::time::Instant::now() >= deadline {
-                return Err(format!(
+                return Err(ExecutorError::Cdp(format!(
                     "Timed out waiting for CDP server '{}' to be ready ({}s)",
                     server_name, timeout_secs
-                ));
+                )));
             }
 
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;

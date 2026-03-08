@@ -1,4 +1,4 @@
-use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
+use super::{ExecutorCommand, ExecutorEvent, ExecutorResult, ExecutorState, WorkflowExecutor};
 use clickweave_core::{ExecutionMode, NodeRole, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpRouter;
@@ -39,7 +39,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         retries: u32,
         command_rx: &mut Receiver<ExecutorCommand>,
         node_run: &mut Option<NodeRun>,
-    ) -> Result<Value, String> {
+    ) -> ExecutorResult<Value> {
         let mut attempt = 0;
 
         loop {
@@ -78,7 +78,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         "retry",
                         serde_json::json!({
                             "attempt": attempt,
-                            "error": e,
+                            "error": e.to_string(),
                         }),
                     );
                 }
@@ -357,11 +357,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         }
                     }
                     Err(e) => {
-                        self.emit_error(format!("Node {} failed: {}", node_name, e));
+                        let msg = e.to_string();
+                        self.emit_error(format!("Node {} failed: {}", node_name, msg));
                         if let Some(ref mut run) = node_run {
                             self.finalize_run(run, RunStatus::Failed);
                         }
-                        self.emit(ExecutorEvent::NodeFailed(node_id, e));
+                        self.emit(ExecutorEvent::NodeFailed(node_id, msg));
                         break (false, false);
                     }
                 }

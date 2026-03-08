@@ -499,7 +499,7 @@ async fn resolve_element_name_null_match_returns_error() {
         )
         .await
         .unwrap_err();
-    assert!(err.contains("not found"));
+    assert!(err.to_string().contains("not found"));
 }
 
 #[tokio::test]
@@ -515,7 +515,7 @@ async fn resolve_element_name_rejects_hallucinated_name() {
         )
         .await
         .unwrap_err();
-    assert!(err.contains("not in available elements list"));
+    assert!(err.to_string().contains("not in available elements list"));
 }
 
 #[tokio::test]
@@ -681,7 +681,7 @@ async fn disambiguate_click_matches_out_of_bounds() {
         .disambiguate_click_matches(Uuid::new_v4(), "2", &matches, None, None)
         .await
         .unwrap_err();
-    assert!(err.contains("out-of-bounds"));
+    assert!(err.to_string().contains("out-of-bounds"));
 }
 
 #[tokio::test]
@@ -692,7 +692,7 @@ async fn disambiguate_click_matches_missing_index_key() {
         .disambiguate_click_matches(Uuid::new_v4(), "Save", &matches, None, None)
         .await
         .unwrap_err();
-    assert!(err.contains("no valid index"));
+    assert!(err.to_string().contains("no valid index"));
 }
 
 #[tokio::test]
