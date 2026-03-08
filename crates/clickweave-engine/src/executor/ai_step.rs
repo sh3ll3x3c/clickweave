@@ -1,4 +1,4 @@
-use super::{ExecutorCommand, ExecutorError, ExecutorResult, WorkflowExecutor};
+use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::{AiStepParams, NodeRun};
 use clickweave_llm::{
     ChatBackend, Message, analyze_images, build_step_prompt, workflow_system_prompt,
@@ -6,7 +6,6 @@ use clickweave_llm::{
 use clickweave_mcp::McpRouter;
 use serde_json::Value;
 use std::time::Instant;
-use tokio::sync::mpsc::Receiver;
 use tracing::debug;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -16,7 +15,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         tools: &[Value],
         mcp: &McpRouter,
         timeout_ms: Option<u64>,
-        command_rx: &mut Receiver<ExecutorCommand>,
         mut node_run: Option<&mut NodeRun>,
     ) -> ExecutorResult<Value> {
         let mut messages = vec![
@@ -66,7 +64,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 break;
             }
 
-            if self.stop_requested(command_rx) {
+            if self.is_cancelled() {
                 return Err(ExecutorError::Cancelled);
             }
 

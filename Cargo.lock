@@ -426,7 +426,9 @@ dependencies = [
  "clickweave-mcp",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -491,6 +493,7 @@ dependencies = [
  "tauri-plugin-store",
  "tauri-specta",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -4456,6 +4459,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

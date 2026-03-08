@@ -11,6 +11,7 @@ use clickweave_llm::{ChatBackend, ChatResponse, Choice, Content, ContentPart, Me
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// A stub ChatBackend that never expects to be called.
@@ -46,6 +47,7 @@ fn make_test_executor() -> WorkflowExecutor<StubBackend> {
         None,
         tx,
         storage,
+        CancellationToken::new(),
     )
 }
 
@@ -108,6 +110,7 @@ fn make_scripted_executor(responses: Vec<&str>) -> WorkflowExecutor<ScriptedBack
         None,
         tx,
         storage,
+        CancellationToken::new(),
     )
 }
 
@@ -141,6 +144,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
+        cancel_token: CancellationToken,
     ) -> Self {
         let decision_cache = clickweave_core::decision_cache::DecisionCache::new(workflow.id);
         Self {
@@ -163,6 +167,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
             cdp_servers: HashMap::new(),
+            cancel_token,
         }
     }
 }
@@ -724,6 +729,7 @@ fn make_executor_with_workflow(workflow: Workflow) -> WorkflowExecutor<StubBacke
         None,
         tx,
         storage,
+        CancellationToken::new(),
     )
 }
 

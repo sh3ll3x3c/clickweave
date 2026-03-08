@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 use tokio::sync::mpsc::Sender;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +37,6 @@ pub enum ExecutorState {
 }
 
 pub enum ExecutorCommand {
-    Stop,
     Resume,
     Skip,
     Abort,
@@ -102,6 +102,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     pending_loop_exit: Option<PendingLoopExit>,
     /// Maps app name → CDP MCP server name in the McpRouter.
     cdp_servers: HashMap<String, String>,
+    cancel_token: CancellationToken,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -138,6 +139,7 @@ impl WorkflowExecutor {
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
+        cancel_token: CancellationToken,
     ) -> Self {
         let decision_cache = DecisionCache::load(&storage.cache_path())
             .unwrap_or_else(|| DecisionCache::new(workflow.id));
@@ -165,6 +167,7 @@ impl WorkflowExecutor {
             runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
             cdp_servers: HashMap::new(),
+            cancel_token,
         }
     }
 }
