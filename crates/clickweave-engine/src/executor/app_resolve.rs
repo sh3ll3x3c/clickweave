@@ -270,7 +270,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Evict element cache before clearing focused_app, so the cache key
         // still contains the correct app name.
         let (element_target, explicit_app) = match node_type {
-            NodeType::Click(p) => (p.target.as_deref(), None),
+            NodeType::Click(p) => (p.target.as_ref().map(|t| t.text()), None),
             NodeType::FindText(p) => (Some(p.search_text.as_str()), None),
             NodeType::McpToolCall(p) if p.tool_name == "find_text" => (
                 p.arguments.get("text").and_then(|v| v.as_str()),

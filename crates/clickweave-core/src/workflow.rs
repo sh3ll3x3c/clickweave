@@ -305,7 +305,7 @@ impl NodeType {
     pub fn action_description(&self) -> String {
         match self {
             NodeType::Click(p) => match &p.target {
-                Some(t) => format!("Clicked on '{}'", t),
+                Some(t) => format!("Clicked on '{}'", t.text()),
                 None if p.template_image.is_some() => "Clicked on image match".to_string(),
                 None => format!(
                     "Clicked at ({}, {})",

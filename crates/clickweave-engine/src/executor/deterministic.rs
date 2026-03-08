@@ -72,7 +72,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             && p.x.is_none()
         {
             // For Electron/Chrome apps, try CDP click first (snapshot + uid click).
-            let target = p.target.as_deref().unwrap();
+            let target = p.target.as_ref().unwrap().text();
             let app_kind = self.focused_app_kind();
 
             if app_kind.uses_cdp()
@@ -393,7 +393,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
-        let target = params.target.as_deref().ok_or_else(|| {
+        let target = params.target.as_ref().map(|t| t.text()).ok_or_else(|| {
             ExecutorError::ClickTarget("resolve_click_target called with no target".to_string())
         })?;
 

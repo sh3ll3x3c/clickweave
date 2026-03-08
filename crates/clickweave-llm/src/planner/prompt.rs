@@ -124,7 +124,7 @@ pub(crate) fn patcher_system_prompt(
                     // needs it to know what text the click resolves against.
                     if let NodeType::Click(p) = &n.node_type {
                         if let Some(target) = &p.target {
-                            args["target"] = Value::String(target.clone());
+                            args["target"] = Value::String(target.text().to_string());
                         } else if p.template_image.is_some() {
                             args["has_template_image"] = Value::Bool(true);
                         }

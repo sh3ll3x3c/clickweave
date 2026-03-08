@@ -3,7 +3,7 @@
 //! Used by both the planner (tool args → NodeType) and the executor (NodeType → tool args).
 
 use crate::{
-    ClickParams, FindImageParams, FindTextParams, FocusMethod, FocusWindowParams,
+    ClickParams, ClickTarget, FindImageParams, FindTextParams, FocusMethod, FocusWindowParams,
     ListWindowsParams, McpToolCallParams, MouseButton, NodeType, PressKeyParams, ScreenshotMode,
     ScrollParams, TakeScreenshotParams, TypeTextParams, walkthrough::AppKind,
 };
@@ -245,7 +245,9 @@ pub fn tool_invocation_to_node_type(
                 .get("target")
                 .or_else(|| args.get("text"))
                 .and_then(|v| v.as_str())
-                .map(String::from),
+                .map(|s| ClickTarget::Text {
+                    text: s.to_string(),
+                }),
             template_image: None,
             x: args.get("x").and_then(|v| v.as_f64()),
             y: args.get("y").and_then(|v| v.as_f64()),
@@ -423,7 +425,9 @@ mod tests {
     #[test]
     fn click_with_target_omits_target_from_invocation() {
         let nt = NodeType::Click(ClickParams {
-            target: Some("Submit".into()),
+            target: Some(ClickTarget::Text {
+                text: "Submit".into(),
+            }),
             ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();

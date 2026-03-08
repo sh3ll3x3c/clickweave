@@ -374,7 +374,7 @@ pub fn synthesize_draft(
     workflow_name: &str,
 ) -> crate::Workflow {
     use crate::{
-        ClickParams, Edge, FocusMethod, FocusWindowParams, Node, NodeType, Position,
+        ClickParams, ClickTarget, Edge, FocusMethod, FocusWindowParams, Node, NodeType, Position,
         PressKeyParams, ScrollParams, TypeTextParams, Workflow,
     };
 
@@ -444,7 +444,9 @@ pub fn synthesize_draft(
                 let (params, name) = if let Some(ref target) = best_target {
                     (
                         ClickParams {
-                            target: Some(target.clone()),
+                            target: Some(ClickTarget::Text {
+                                text: target.clone(),
+                            }),
                             x: None,
                             y: None,
                             button: *button,
@@ -1487,7 +1489,7 @@ mod tests {
             assert_eq!(wf.nodes.len(), 1);
             assert!(matches!(
                 &wf.nodes[0].node_type,
-                NodeType::Click(p) if p.target.as_deref() == Some("Submit")
+                NodeType::Click(p) if p.target.as_ref().map(|t| t.text()) == Some("Submit")
             ));
             assert_eq!(wf.nodes[0].name, "Click 'Submit'");
         }

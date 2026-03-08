@@ -90,8 +90,32 @@ impl Default for FindImageParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "type")]
+pub enum ClickTarget {
+    Text {
+        text: String,
+    },
+    CdpElement {
+        name: String,
+        role: Option<String>,
+        href: Option<String>,
+    },
+}
+
+impl ClickTarget {
+    /// Return the human-readable text for this target, regardless of variant.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text { text } => text,
+            Self::CdpElement { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ClickParams {
-    pub target: Option<String>,
+    pub target: Option<ClickTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_image: Option<String>,
     pub x: Option<f64>,
@@ -403,4 +427,67 @@ pub struct Artifact {
     pub path: String,
     pub metadata: Value,
     pub overlays: Vec<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn click_target_text_serde_roundtrip() {
+        let target = ClickTarget::Text {
+            text: "Submit".into(),
+        };
+        let json = serde_json::to_string(&target).unwrap();
+        assert!(json.contains("\"type\":\"Text\""));
+        let back: ClickTarget = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ClickTarget::Text { text } if text == "Submit"));
+    }
+
+    #[test]
+    fn click_target_cdp_element_serde_roundtrip() {
+        let target = ClickTarget::CdpElement {
+            name: "Friends".into(),
+            role: Some("link".into()),
+            href: Some("https://example.com".into()),
+        };
+        let json = serde_json::to_string(&target).unwrap();
+        assert!(json.contains("\"type\":\"CdpElement\""));
+        let back: ClickTarget = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ClickTarget::CdpElement { name, role, href }
+            if name == "Friends" && role.as_deref() == Some("link") && href.as_deref() == Some("https://example.com")));
+    }
+
+    #[test]
+    fn click_target_text_method() {
+        let text = ClickTarget::Text {
+            text: "Submit".into(),
+        };
+        assert_eq!(text.text(), "Submit");
+
+        let cdp = ClickTarget::CdpElement {
+            name: "Friends".into(),
+            role: None,
+            href: None,
+        };
+        assert_eq!(cdp.text(), "Friends");
+    }
+
+    #[test]
+    fn click_params_with_click_target_serde() {
+        let params = ClickParams {
+            target: Some(ClickTarget::CdpElement {
+                name: "Friends".into(),
+                role: Some("link".into()),
+                href: None,
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let back: ClickParams = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back.target,
+            Some(ClickTarget::CdpElement { ref name, .. }) if name == "Friends"
+        ));
+    }
 }
