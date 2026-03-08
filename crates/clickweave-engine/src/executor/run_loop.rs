@@ -1,10 +1,11 @@
-use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
+use super::{ExecutorCommand, ExecutorEvent, ExecutorResult, ExecutorState, WorkflowExecutor};
 use clickweave_core::{ExecutionMode, NodeRole, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpRouter;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 enum SupervisionAction {
@@ -15,13 +16,16 @@ enum SupervisionAction {
 
 async fn wait_for_supervision_command(
     command_rx: &mut Receiver<ExecutorCommand>,
+    cancel: &CancellationToken,
 ) -> SupervisionAction {
-    match command_rx.recv().await {
-        Some(ExecutorCommand::Resume) => SupervisionAction::Retry,
-        Some(ExecutorCommand::Skip) => SupervisionAction::Skip,
-        Some(ExecutorCommand::Abort) | Some(ExecutorCommand::Stop) | None => {
-            SupervisionAction::Abort
-        }
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => SupervisionAction::Abort,
+        cmd = command_rx.recv() => match cmd {
+            Some(ExecutorCommand::Resume) => SupervisionAction::Retry,
+            Some(ExecutorCommand::Skip) => SupervisionAction::Skip,
+            Some(ExecutorCommand::Abort) | None => SupervisionAction::Abort,
+        },
     }
 }
 
@@ -37,23 +41,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &mut McpRouter,
         timeout_ms: Option<u64>,
         retries: u32,
-        command_rx: &mut Receiver<ExecutorCommand>,
         node_run: &mut Option<NodeRun>,
-    ) -> Result<Value, String> {
+    ) -> ExecutorResult<Value> {
         let mut attempt = 0;
 
         loop {
             let result = match node_type {
                 NodeType::AiStep(params) => {
-                    self.execute_ai_step(
-                        params,
-                        tools,
-                        mcp,
-                        timeout_ms,
-                        command_rx,
-                        node_run.as_mut(),
-                    )
-                    .await
+                    self.execute_ai_step(params, tools, mcp, timeout_ms, node_run.as_mut())
+                        .await
                 }
                 other => {
                     self.execute_deterministic(node_id, other, mcp, node_run.as_mut())
@@ -78,7 +74,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         "retry",
                         serde_json::json!({
                             "attempt": attempt,
-                            "error": e,
+                            "error": e.to_string(),
                         }),
                     );
                 }
@@ -146,8 +142,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let mut verification_failed = false;
 
         while let Some(node_id) = current {
-            if self.stop_requested(&mut command_rx) {
-                self.log("Workflow stopped by user");
+            if self.is_cancelled() {
+                self.log("Workflow cancelled by user");
                 completed_normally = false;
                 break;
             }
@@ -199,7 +195,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             screenshot: verification.screenshot,
                         });
 
-                        match wait_for_supervision_command(&mut command_rx).await {
+                        match wait_for_supervision_command(&mut command_rx, &self.cancel_token)
+                            .await
+                        {
                             SupervisionAction::Retry => {
                                 // Can't re-run a loop; treat as skip
                                 self.log("Supervision: user chose Retry (continuing past loop)");
@@ -263,7 +261,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         &mut mcp,
                         timeout_ms,
                         retries,
-                        &mut command_rx,
                         &mut node_run,
                     )
                     .await
@@ -337,7 +334,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     screenshot: verification.screenshot,
                                 });
 
-                                match wait_for_supervision_command(&mut command_rx).await {
+                                match wait_for_supervision_command(
+                                    &mut command_rx,
+                                    &self.cancel_token,
+                                )
+                                .await
+                                {
                                     SupervisionAction::Retry => {
                                         self.log("Supervision: user chose Retry");
                                         continue;
@@ -357,11 +359,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         }
                     }
                     Err(e) => {
-                        self.emit_error(format!("Node {} failed: {}", node_name, e));
+                        let msg = e.to_string();
+                        self.emit_error(format!("Node {} failed: {}", node_name, msg));
                         if let Some(ref mut run) = node_run {
                             self.finalize_run(run, RunStatus::Failed);
                         }
-                        self.emit(ExecutorEvent::NodeFailed(node_id, e));
+                        self.emit(ExecutorEvent::NodeFailed(node_id, msg));
                         break (false, false);
                     }
                 }

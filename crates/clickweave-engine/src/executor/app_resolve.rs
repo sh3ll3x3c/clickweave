@@ -1,4 +1,4 @@
-use super::{ResolvedApp, WorkflowExecutor};
+use super::{ExecutorError, ExecutorResult, ResolvedApp, WorkflowExecutor};
 use clickweave_core::decision_cache::{self, AppResolution};
 use clickweave_core::{ExecutionMode, FocusMethod, NodeRun, NodeType};
 use clickweave_llm::{ChatBackend, Message};
@@ -18,7 +18,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         user_input: &str,
         mcp: &McpRouter,
         node_run: Option<&NodeRun>,
-    ) -> Result<ResolvedApp, String> {
+    ) -> ExecutorResult<ResolvedApp> {
         // Check in-memory cache first (populated during this execution)
         if let Some(cached) = self
             .app_cache
@@ -82,11 +82,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 Some(serde_json::json!({"user_apps_only": true})),
             )
             .await
-            .map_err(|e| format!("Failed to list apps: {}", e))?;
+            .map_err(|e| ExecutorError::AppResolution(format!("Failed to list apps: {}", e)))?;
         let windows_result = mcp
             .call_tool("list_windows", None)
             .await
-            .map_err(|e| format!("Failed to list windows: {}", e))?;
+            .map_err(|e| ExecutorError::AppResolution(format!("Failed to list windows: {}", e)))?;
 
         let apps_text = Self::extract_result_text(&apps_result);
         let windows_text = Self::extract_result_text(&windows_result);
@@ -94,11 +94,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Short-circuit: if no apps are running, don't ask the LLM — it will hallucinate.
         let apps_trimmed = apps_text.trim();
         if apps_trimmed.is_empty() || apps_trimmed == "[]" || apps_trimmed == "No apps found" {
-            return Err(format!(
+            return Err(ExecutorError::AppResolution(format!(
                 "App \"{}\" is not running (no matching apps found). \
                  Use launch_app to start it first.",
                 user_input
-            ));
+            )));
         }
 
         let prompt = format!(
@@ -124,50 +124,54 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .reasoning_backend()
             .chat(messages, None)
             .await
-            .map_err(|e| format!("LLM error during app resolution: {}", e))?;
+            .map_err(|e| ExecutorError::AppResolution(format!("LLM error: {}", e)))?;
 
-        let choice = response
-            .choices
-            .first()
-            .ok_or_else(|| "No response from LLM during app resolution".to_string())?;
+        let choice = response.choices.first().ok_or_else(|| {
+            ExecutorError::AppResolution("No response from LLM during app resolution".to_string())
+        })?;
 
-        let raw_text = choice
-            .message
-            .content_text()
-            .ok_or_else(|| "LLM returned empty content during app resolution".to_string())?;
-
-        let json_text = extract_json_object(strip_code_block(raw_text))
-            .ok_or_else(|| format!("No JSON object found in LLM response (raw: {})", raw_text))?;
-
-        let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
-            format!(
-                "Failed to parse LLM response as JSON: {} (raw: {})",
-                e, raw_text
+        let raw_text = choice.message.content_text().ok_or_else(|| {
+            ExecutorError::AppResolution(
+                "LLM returned empty content during app resolution".to_string(),
             )
         })?;
 
+        let json_text = extract_json_object(strip_code_block(raw_text)).ok_or_else(|| {
+            ExecutorError::AppResolution(format!(
+                "No JSON object found in LLM response (raw: {})",
+                raw_text
+            ))
+        })?;
+
+        let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
+            ExecutorError::AppResolution(format!(
+                "Failed to parse LLM response as JSON: {} (raw: {})",
+                e, raw_text
+            ))
+        })?;
+
         let name = parsed["name"].as_str().ok_or_else(|| {
-            format!(
+            ExecutorError::AppResolution(format!(
                 "App \"{}\" is not running (LLM found no match). \
                  Use launch_app to start it first.",
                 user_input
-            )
+            ))
         })?;
 
         // Post-validate: ensure the LLM returned a name that actually appears in the app list.
         if !apps_text.contains(name) {
-            return Err(format!(
+            return Err(ExecutorError::AppResolution(format!(
                 "App \"{}\" is not running (resolved name \"{}\" not found in app list). \
                  Use launch_app to start it first.",
                 user_input, name
-            ));
+            )));
         }
 
         let pid = parsed["pid"].as_i64().ok_or_else(|| {
-            format!(
+            ExecutorError::AppResolution(format!(
                 "LLM resolved name \"{}\" for \"{}\" but returned no PID",
                 name, user_input
-            )
+            ))
         })? as i32;
 
         let resolved = ResolvedApp {
@@ -214,14 +218,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Look up a PID for an app by its exact name via `list_apps`.
-    async fn lookup_app_pid(&self, app_name: &str, mcp: &McpRouter) -> Result<i32, String> {
+    async fn lookup_app_pid(&self, app_name: &str, mcp: &McpRouter) -> ExecutorResult<i32> {
         let result = mcp
             .call_tool(
                 "list_apps",
                 Some(serde_json::json!({"app_name": app_name, "user_apps_only": true})),
             )
             .await
-            .map_err(|e| format!("Failed to list apps: {}", e))?;
+            .map_err(|e| ExecutorError::AppResolution(format!("Failed to list apps: {}", e)))?;
         let text = Self::extract_result_text(&result);
         let apps: Vec<Value> = serde_json::from_str(&text).unwrap_or_default();
         for app in &apps {
@@ -231,10 +235,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 return Ok(pid as i32);
             }
         }
-        Err(format!(
+        Err(ExecutorError::AppResolution(format!(
             "App \"{}\" is not running (not found in app list)",
             app_name
-        ))
+        )))
     }
 
     /// Remove a cached app resolution so the next attempt re-resolves via LLM.

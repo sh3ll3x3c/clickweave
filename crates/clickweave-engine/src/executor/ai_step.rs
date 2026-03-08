@@ -1,4 +1,4 @@
-use super::{ExecutorCommand, WorkflowExecutor};
+use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::{AiStepParams, NodeRun};
 use clickweave_llm::{
     ChatBackend, Message, analyze_images, build_step_prompt, workflow_system_prompt,
@@ -6,7 +6,6 @@ use clickweave_llm::{
 use clickweave_mcp::McpRouter;
 use serde_json::Value;
 use std::time::Instant;
-use tokio::sync::mpsc::Receiver;
 use tracing::debug;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -16,9 +15,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         tools: &[Value],
         mcp: &McpRouter,
         timeout_ms: Option<u64>,
-        command_rx: &mut Receiver<ExecutorCommand>,
         mut node_run: Option<&mut NodeRun>,
-    ) -> Result<Value, String> {
+    ) -> ExecutorResult<Value> {
         let mut messages = vec![
             Message::system(workflow_system_prompt()),
             Message::user(build_step_prompt(
@@ -66,20 +64,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 break;
             }
 
-            if self.stop_requested(command_rx) {
-                return Err("Stopped by user".to_string());
+            if self.is_cancelled() {
+                return Err(ExecutorError::Cancelled);
             }
 
             let response = self
                 .agent
                 .chat(messages.clone(), Some(filtered_tools.clone()))
                 .await
-                .map_err(|e| format!("LLM error: {}", e))?;
+                .map_err(|e| ExecutorError::Llm(e.to_string()))?;
 
             let choice = response
                 .choices
                 .first()
-                .ok_or_else(|| "No response from LLM".to_string())?;
+                .ok_or(ExecutorError::Llm("No response from LLM".to_string()))?;
 
             let msg = &choice.message;
 

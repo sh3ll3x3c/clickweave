@@ -3,24 +3,33 @@ use clickweave_core::validate_workflow;
 use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 #[derive(Default)]
 pub struct ExecutorHandle {
-    stop_tx: Option<tokio::sync::mpsc::Sender<ExecutorCommand>>,
+    cancel_token: Option<CancellationToken>,
+    cmd_tx: Option<tokio::sync::mpsc::Sender<ExecutorCommand>>,
     task_handle: Option<tauri::async_runtime::JoinHandle<()>>,
 }
 
 impl ExecutorHandle {
-    /// Forcefully abort the running executor task. The MCP subprocess is killed
-    /// as a side effect: aborting the task drops `McpClient`, whose `Drop` impl
-    /// calls `kill()`. Returns `true` if a task was actually running.
+    /// Stop the running executor task. Signals cancellation via the token
+    /// (graceful), then aborts the tokio task (forceful fallback). The MCP
+    /// subprocess is killed as a side effect: aborting the task drops
+    /// `McpClient`, whose `Drop` impl calls `kill()`.
+    /// Returns `true` if a task was actually running.
     pub fn force_stop(&mut self) -> bool {
         let had_task = self.task_handle.is_some();
+        // Signal cancellation first (graceful)
+        if let Some(token) = self.cancel_token.take() {
+            token.cancel();
+        }
+        // Then abort the task (forceful fallback)
         if let Some(task) = self.task_handle.take() {
             task.abort();
         }
-        self.stop_tx = None;
+        self.cmd_tx = None;
         had_task
     }
 }
@@ -30,7 +39,7 @@ impl ExecutorHandle {
 pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<(), String> {
     {
         let handle = app.state::<Mutex<ExecutorHandle>>();
-        if handle.lock().unwrap().stop_tx.is_some() {
+        if handle.lock().unwrap().cmd_tx.is_some() {
             return Err("Workflow is already running".to_string());
         }
     }
@@ -62,6 +71,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     let cleanup_handle = emit_handle.clone();
 
     let mcp_configs = clickweave_mcp::default_server_configs(&request.mcp_command);
+    let cancel_token = CancellationToken::new();
+    let executor_token = cancel_token.clone();
 
     let task_handle = tauri::async_runtime::spawn(async move {
         let mut executor = WorkflowExecutor::new(
@@ -74,6 +85,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             project_path,
             event_tx,
             storage,
+            executor_token,
         );
         executor.run(cmd_rx).await;
     });
@@ -81,7 +93,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     {
         let handle = app.state::<Mutex<ExecutorHandle>>();
         let mut guard = handle.lock().unwrap();
-        guard.stop_tx = Some(cmd_tx);
+        guard.cancel_token = Some(cancel_token);
+        guard.cmd_tx = Some(cmd_tx);
         guard.task_handle = Some(task_handle);
     }
 
@@ -176,7 +189,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 
         let state = cleanup_handle.state::<Mutex<ExecutorHandle>>();
         let mut guard = state.lock().unwrap();
-        guard.stop_tx = None;
+        guard.cancel_token = None;
+        guard.cmd_tx = None;
         guard.task_handle = None;
     });
 
@@ -200,7 +214,7 @@ pub async fn supervision_respond(app: tauri::AppHandle, action: String) -> Resul
     let handle = app.state::<Mutex<ExecutorHandle>>();
     let guard = handle.lock().unwrap();
     let tx = guard
-        .stop_tx
+        .cmd_tx
         .as_ref()
         .ok_or("No workflow is running")?
         .clone();

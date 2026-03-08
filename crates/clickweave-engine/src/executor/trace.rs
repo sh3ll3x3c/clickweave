@@ -1,11 +1,10 @@
-use super::{ExecutorCommand, ExecutorEvent, WorkflowExecutor};
+use super::{ExecutorEvent, WorkflowExecutor};
 use base64::Engine;
 use clickweave_core::{ArtifactKind, NodeRun, RunStatus, TraceEvent, TraceLevel};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::{ToolCallResult, ToolContent};
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc::Receiver;
 use tracing::{debug, error, info};
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -155,8 +154,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    pub(crate) fn stop_requested(&self, command_rx: &mut Receiver<ExecutorCommand>) -> bool {
-        matches!(command_rx.try_recv(), Ok(ExecutorCommand::Stop))
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancel_token.is_cancelled()
     }
 
     pub(crate) fn check_step_complete(&self, content: &str) -> bool {

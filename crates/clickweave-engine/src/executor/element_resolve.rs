@@ -1,4 +1,4 @@
-use super::WorkflowExecutor;
+use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::decision_cache::{self, ClickDisambiguation, ElementResolution};
 use clickweave_core::{ExecutionMode, NodeRun};
 use clickweave_llm::{ChatBackend, Message};
@@ -52,7 +52,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         available_elements: &[String],
         app_name: Option<&str>,
         node_run: Option<&NodeRun>,
-    ) -> Result<String, String> {
+    ) -> ExecutorResult<String> {
         let cache_key = (target.to_string(), app_name.map(|s| s.to_string()));
 
         // Check in-memory cache first (populated during this execution)
@@ -134,44 +134,49 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .reasoning_backend()
             .chat(messages, None)
             .await
-            .map_err(|e| format!("LLM error during element resolution: {}", e))?;
+            .map_err(|e| ExecutorError::ElementResolution(format!("LLM error: {}", e)))?;
 
-        let choice = response
-            .choices
-            .first()
-            .ok_or_else(|| "No response from LLM during element resolution".to_string())?;
+        let choice = response.choices.first().ok_or_else(|| {
+            ExecutorError::ElementResolution(
+                "No response from LLM during element resolution".to_string(),
+            )
+        })?;
 
-        let raw_text = choice
-            .message
-            .content_text()
-            .ok_or_else(|| "LLM returned empty content during element resolution".to_string())?;
+        let raw_text = choice.message.content_text().ok_or_else(|| {
+            ExecutorError::ElementResolution(
+                "LLM returned empty content during element resolution".to_string(),
+            )
+        })?;
 
         let json_text =
             super::app_resolve::extract_json_object(super::app_resolve::strip_code_block(raw_text))
                 .ok_or_else(|| {
-                    format!("No JSON object found in LLM response (raw: {})", raw_text)
+                    ExecutorError::ElementResolution(format!(
+                        "No JSON object found in LLM response (raw: {})",
+                        raw_text
+                    ))
                 })?;
 
         let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
-            format!(
+            ExecutorError::ElementResolution(format!(
                 "Failed to parse LLM response as JSON: {} (raw: {})",
                 e, raw_text
-            )
+            ))
         })?;
 
         let name = parsed["name"].as_str().ok_or_else(|| {
-            format!(
+            ExecutorError::ElementResolution(format!(
                 "Element \"{}\" not found in available elements (LLM found no match)",
                 target
-            )
+            ))
         })?;
 
         // Post-validate: ensure the LLM returned a name that actually appears in the list.
         if !available_elements.iter().any(|e| e == name) {
-            return Err(format!(
+            return Err(ExecutorError::ElementResolution(format!(
                 "Element \"{}\" not found (resolved name \"{}\" not in available elements list)",
                 target, name
-            ));
+            )));
         }
 
         self.record_event(
@@ -219,7 +224,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         matches: &[Value],
         app_name: Option<&str>,
         node_run: Option<&NodeRun>,
-    ) -> Result<usize, String> {
+    ) -> ExecutorResult<usize> {
         let app_context = match app_name {
             Some(name) => format!(" in app \"{}\"", name),
             None => String::new(),
@@ -266,40 +271,54 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .reasoning_backend()
             .chat(messages, None)
             .await
-            .map_err(|e| format!("LLM error during click disambiguation: {}", e))?;
+            .map_err(|e| {
+                ExecutorError::ElementResolution(format!(
+                    "LLM error during click disambiguation: {}",
+                    e
+                ))
+            })?;
 
-        let choice = response
-            .choices
-            .first()
-            .ok_or_else(|| "No response from LLM during click disambiguation".to_string())?;
+        let choice = response.choices.first().ok_or_else(|| {
+            ExecutorError::ElementResolution(
+                "No response from LLM during click disambiguation".to_string(),
+            )
+        })?;
 
-        let raw_text = choice
-            .message
-            .content_text()
-            .ok_or_else(|| "LLM returned empty content during click disambiguation".to_string())?;
+        let raw_text = choice.message.content_text().ok_or_else(|| {
+            ExecutorError::ElementResolution(
+                "LLM returned empty content during click disambiguation".to_string(),
+            )
+        })?;
 
         let json_text =
             super::app_resolve::extract_json_object(super::app_resolve::strip_code_block(raw_text))
                 .ok_or_else(|| {
-                    format!("No JSON object found in LLM response (raw: {})", raw_text)
+                    ExecutorError::ElementResolution(format!(
+                        "No JSON object found in LLM response (raw: {})",
+                        raw_text
+                    ))
                 })?;
 
-        let parsed: Value = serde_json::from_str(json_text)
-            .map_err(|e| format!("Failed to parse LLM response: {} (raw: {})", e, raw_text))?;
+        let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
+            ExecutorError::ElementResolution(format!(
+                "Failed to parse LLM response: {} (raw: {})",
+                e, raw_text
+            ))
+        })?;
 
         let index = parsed["index"].as_u64().ok_or_else(|| {
-            format!(
+            ExecutorError::ElementResolution(format!(
                 "LLM returned no valid index for click disambiguation (raw: {})",
                 raw_text
-            )
+            ))
         })? as usize;
 
         if index >= matches.len() {
-            return Err(format!(
+            return Err(ExecutorError::ElementResolution(format!(
                 "LLM returned out-of-bounds index {} for {} matches",
                 index,
                 matches.len()
-            ));
+            )));
         }
 
         let chosen = &matches[index];
