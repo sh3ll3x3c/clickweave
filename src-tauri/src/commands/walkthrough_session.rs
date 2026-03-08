@@ -22,8 +22,16 @@ use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 /// JavaScript click listener injected into CDP-enabled apps.
 /// Captures the semantic target element on each click (capture phase,
 /// fires before navigation/DOM mutation).
+///
+/// All state is stored on `document` (not `window`) because
+/// chrome-devtools-mcp evaluates scripts in Puppeteer's utility world,
+/// which has a separate `window` from the main world.  `document` is
+/// shared across all JS execution contexts, so the listener, handler,
+/// and click queue remain accessible regardless of which world runs the
+/// injection or retrieval.
 const CDP_CLICK_LISTENER_JS: &str = r#"() => {
-  window.__cw_clicks = [];
+  const d = document;
+  d.__cw_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
   function accessibleText(node) {
     const a = node.ariaLabel || node.getAttribute('aria-label');
@@ -35,9 +43,9 @@ const CDP_CLICK_LISTENER_JS: &str = r#"() => {
     }
     return t.trim().substring(0, 200);
   }
-  window.__cw_onclick = (e) => {
+  d.__cw_handler = (e) => {
     const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
-    window.__cw_clicks.push({
+    d.__cw_clicks.push({
       ts: Date.now(),
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
@@ -49,23 +57,25 @@ const CDP_CLICK_LISTENER_JS: &str = r#"() => {
       className: el.className || null,
     });
   };
-  if (!window.__cw_listener) {
-    window.__cw_listener = (e) => window.__cw_onclick(e);
-    document.addEventListener('click', window.__cw_listener, true);
+  if (d.__cw_listener) {
+    d.removeEventListener('click', d.__cw_listener, true);
   }
+  d.__cw_listener = (e) => d.__cw_handler(e);
+  d.addEventListener('click', d.__cw_listener, true);
 }"#;
 
 /// JavaScript to retrieve and remove the oldest click from the queue.
 const CDP_RETRIEVE_CLICK_JS: &str = r#"() => {
-  if (!Array.isArray(window.__cw_clicks)) return null;
-  return window.__cw_clicks.shift() || null;
+  if (!Array.isArray(document.__cw_clicks)) return null;
+  return document.__cw_clicks.shift() || null;
 }"#;
 
 /// JavaScript to check if the click listener is still alive; re-inject if lost.
 /// Returns `"reinjected"` if it was re-injected, `"alive"` otherwise.
 const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
-  if (window.__cw_listener) return 'alive';
-  window.__cw_clicks = [];
+  const d = document;
+  if (d.__cw_listener) return 'alive';
+  d.__cw_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
   function accessibleText(node) {
     const a = node.ariaLabel || node.getAttribute('aria-label');
@@ -77,9 +87,9 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
     }
     return t.trim().substring(0, 200);
   }
-  window.__cw_onclick = (e) => {
+  d.__cw_handler = (e) => {
     const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
-    window.__cw_clicks.push({
+    d.__cw_clicks.push({
       ts: Date.now(),
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
@@ -91,8 +101,8 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
       className: el.className || null,
     });
   };
-  window.__cw_listener = (e) => window.__cw_onclick(e);
-  document.addEventListener('click', window.__cw_listener, true);
+  d.__cw_listener = (e) => d.__cw_handler(e);
+  d.addEventListener('click', d.__cw_listener, true);
   return 'reinjected';
 }"#;
 
@@ -256,6 +266,17 @@ pub(super) async fn process_capture_events(
     // only needs to drain completions to detect errors.
     let mut bg_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
+    // Sequential CDP click retrieval channel.  System clicks arrive in order
+    // and the JS listener pushes in order, so we must consume shift() entries
+    // sequentially — otherwise independent tasks race and steal each other's
+    // entries.  A single consumer task drains this channel in FIFO order.
+    struct CdpClickRequest {
+        server_name: String,
+        click_event_id: Uuid,
+        click_timestamp: u64,
+    }
+    let (cdp_tx, cdp_rx) = tokio::sync::mpsc::unbounded_channel::<CdpClickRequest>();
+
     // Screenshot buffer: a small (64pt / 128px on Retina) region around the
     // cursor, captured every 100ms. Used as the crop source for clicks —
     // always reflects what the user sees before hover effects from the click.
@@ -293,6 +314,32 @@ pub(super) async fn process_capture_events(
     if let Some(ref mcp) = mcp {
         populate_app_cache(mcp, &mut app_cache).await;
     }
+
+    // Spawn the sequential CDP click consumer.  It processes requests in FIFO
+    // order so each shift() retrieves the entry that matches the system click.
+    let cdp_consumer_handle = {
+        let mcp_for_cdp = mcp.clone();
+        let app_for_cdp = app.clone();
+        let storage_for_cdp = storage.clone();
+        let dir_for_cdp = session_dir.clone();
+        tokio::spawn(async move {
+            let mut rx = cdp_rx;
+            while let Some(req) = rx.recv().await {
+                if let Some(ref mcp) = mcp_for_cdp {
+                    cdp_retrieve_click(
+                        mcp,
+                        &req.server_name,
+                        &app_for_cdp,
+                        &storage_for_cdp,
+                        &dir_for_cdp,
+                        req.click_event_id,
+                        req.click_timestamp,
+                    )
+                    .await;
+                }
+            }
+        })
+    };
 
     'event_loop: loop {
         // Drain completed background tasks and wait for the next capture event.
@@ -398,29 +445,16 @@ pub(super) async fn process_capture_events(
                 if let Some(ref mcp_arc) = mcp {
                     let task_app_name = app_cache.get(&capture.target_pid).map(|c| c.name.clone());
 
-                    // Retrieve CDP click data if the click was in a CDP-enabled app.
+                    // Queue CDP click retrieval (processed sequentially to
+                    // preserve FIFO ordering with the JS click listener).
                     if let Some(server_name) = task_app_name
                         .as_deref()
                         .and_then(|name| cdp_state.get(name))
                     {
-                        let cdp_mcp = mcp_arc.clone();
-                        let cdp_app = app.clone();
-                        let cdp_storage = storage.clone();
-                        let cdp_dir = session_dir.clone();
-                        let cdp_server = server_name.clone();
-                        let click_id = click_event.id;
-                        let click_ts = capture.timestamp;
-                        bg_tasks.spawn(async move {
-                            cdp_retrieve_click(
-                                &cdp_mcp,
-                                &cdp_server,
-                                &cdp_app,
-                                &cdp_storage,
-                                &cdp_dir,
-                                click_id,
-                                click_ts,
-                            )
-                            .await;
+                        let _ = cdp_tx.send(CdpClickRequest {
+                            server_name: server_name.clone(),
+                            click_event_id: click_event.id,
+                            click_timestamp: capture.timestamp,
                         });
                     }
 
@@ -505,10 +539,23 @@ pub(super) async fn process_capture_events(
         persist_and_emit(&app, &storage, &session_dir, &wt_event);
     }
 
-    // Await in-flight enrichment tasks so their events are on disk before
-    // stop_walkthrough reads them. Bounded by a total drain timeout so a
-    // wedged MCP server can't block shutdown indefinitely.
+    // Drop the CDP sender so the sequential consumer finishes after
+    // processing any remaining queued requests.
+    drop(cdp_tx);
+
+    // Await in-flight enrichment tasks and the CDP consumer so their events
+    // are on disk before stop_walkthrough reads them.  Bounded by a total
+    // drain timeout so a wedged MCP server can't block shutdown indefinitely.
     let drain_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+
+    // Wait for the CDP consumer first (it has its own sequential pipeline).
+    if tokio::time::timeout_at(drain_deadline, cdp_consumer_handle)
+        .await
+        .is_err()
+    {
+        tracing::warn!("CDP consumer drain timeout reached");
+    }
+
     loop {
         match tokio::time::timeout_at(drain_deadline, bg_tasks.join_next()).await {
             Ok(Some(Ok(()))) => {} // task completed successfully
