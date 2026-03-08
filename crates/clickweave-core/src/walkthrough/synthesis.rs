@@ -537,9 +537,9 @@ pub fn synthesize_draft(
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::*;
     use super::*;
     use crate::MouseButton;
-    use super::super::types::*;
 
     #[test]
     fn test_walkthrough_status_default_is_idle() {
