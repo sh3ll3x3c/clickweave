@@ -411,14 +411,20 @@ pub fn synthesize_draft(
                 button,
                 click_count,
             } => {
-                // Use the best target candidate.
+                // Check for CDP element candidate first (structured target).
+                let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
+                    TargetCandidate::CdpElement { name, role, href } => Some((name, role, href)),
+                    _ => None,
+                });
+
+                // Use the best text target candidate.
                 let best_target = action
                     .target_candidates
                     .iter()
                     .find_map(|c| c.preferred_label().map(|s| s.to_string()));
 
                 // Fallback: if no text target, try image crop.
-                let image_crop_b64 = if best_target.is_none() {
+                let image_crop_b64 = if cdp_candidate.is_none() && best_target.is_none() {
                     action.target_candidates.iter().find_map(|c| match c {
                         TargetCandidate::ImageCrop { image_b64, .. } => Some(image_b64.clone()),
                         _ => None,
@@ -427,7 +433,23 @@ pub fn synthesize_draft(
                     None
                 };
 
-                let (params, name) = if let Some(ref target) = best_target {
+                let (params, name) = if let Some((cdp_name, cdp_role, cdp_href)) = cdp_candidate {
+                    (
+                        ClickParams {
+                            target: Some(ClickTarget::CdpElement {
+                                name: cdp_name.clone(),
+                                role: cdp_role.clone(),
+                                href: cdp_href.clone(),
+                            }),
+                            x: None,
+                            y: None,
+                            button: *button,
+                            click_count: *click_count,
+                            ..Default::default()
+                        },
+                        format!("Click '{cdp_name}'"),
+                    )
+                } else if let Some(ref target) = best_target {
                     (
                         ClickParams {
                             target: Some(ClickTarget::Text {
@@ -1477,6 +1499,45 @@ mod tests {
                 &wf.nodes[0].node_type,
                 NodeType::Click(p) if p.target.is_none() && p.x == Some(100.0)
             ));
+        }
+
+        #[test]
+        fn synthesize_draft_cdp_element_produces_click_target_cdp() {
+            let mut action = make_action(WalkthroughActionKind::Click {
+                x: 100.0,
+                y: 200.0,
+                button: MouseButton::Left,
+                click_count: 1,
+            });
+            action.target_candidates = vec![
+                TargetCandidate::CdpElement {
+                    name: "Friends".into(),
+                    role: Some("link".into()),
+                    href: Some("https://discord.com/friends".into()),
+                },
+                TargetCandidate::Coordinates { x: 100.0, y: 200.0 },
+            ];
+            let launch = make_action(WalkthroughActionKind::LaunchApp {
+                app_name: "Discord".into(),
+                app_kind: AppKind::ElectronApp,
+            });
+            let draft = synthesize_draft(&[launch, action], Uuid::new_v4(), "test");
+            let click_node = &draft.nodes[1];
+            match &click_node.node_type {
+                NodeType::Click(p) => {
+                    match &p.target {
+                        Some(crate::ClickTarget::CdpElement { name, role, href }) => {
+                            assert_eq!(name, "Friends");
+                            assert_eq!(role.as_deref(), Some("link"));
+                            assert_eq!(href.as_deref(), Some("https://discord.com/friends"));
+                        }
+                        other => panic!("expected CdpElement, got {:?}", other),
+                    }
+                    assert!(p.x.is_none());
+                    assert!(p.y.is_none());
+                }
+                _ => panic!("expected Click node"),
+            }
         }
 
         #[test]
