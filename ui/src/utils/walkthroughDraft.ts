@@ -44,10 +44,12 @@ export function applyAnnotationsToDraft(
         const candidate = action?.target_candidates[targetOvr.chosen_candidate_index];
         if (candidate) {
           let nodeType: NodeType;
-          if (candidate.type === "AccessibilityLabel" || candidate.type === "VlmLabel") {
-            nodeType = { ...updated.node_type, target: candidate.label, template_image: null, x: null, y: null };
+          if (candidate.type === "CdpElement") {
+            nodeType = { ...updated.node_type, target: { type: "CdpElement", name: candidate.name, role: candidate.role, href: candidate.href }, template_image: null, x: null, y: null };
+          } else if (candidate.type === "AccessibilityLabel" || candidate.type === "VlmLabel") {
+            nodeType = { ...updated.node_type, target: { type: "Text", text: candidate.label }, template_image: null, x: null, y: null };
           } else if (candidate.type === "OcrText") {
-            nodeType = { ...updated.node_type, target: candidate.text, template_image: null, x: null, y: null };
+            nodeType = { ...updated.node_type, target: { type: "Text", text: candidate.text }, template_image: null, x: null, y: null };
           } else if (candidate.type === "ImageCrop") {
             nodeType = { ...updated.node_type, target: null, template_image: candidate.image_b64, x: null, y: null };
           } else if (candidate.type === "Coordinates") {

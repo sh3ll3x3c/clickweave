@@ -46,7 +46,9 @@ export function actionLabel(action: WalkthroughAction): string {
       const idx = preferredTargetIndex(action.target_candidates);
       const best = action.target_candidates[idx];
       if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
-        const label = (best.type === "OcrText" || best.type === "CdpElement") ? best.text : best.label;
+        const label = (best.type === "OcrText") ? best.text
+          : (best.type === "CdpElement") ? best.name
+          : best.label;
         return `Click '${label.length > 25 ? label.slice(0, 25) + "\u2026" : label}'`;
       }
       return `Click (${k.x}, ${k.y})`;
@@ -70,7 +72,7 @@ export function targetCandidateLabel(candidate: TargetCandidate): string {
     case "OcrText": return `"${candidate.text}"`;
     case "ImageCrop": return "Image crop";
     case "Coordinates": return `(${candidate.x}, ${candidate.y})`;
-    case "CdpElement": return `"${candidate.text}"`;
+    case "CdpElement": return `"${candidate.name}"`;
   }
 }
 

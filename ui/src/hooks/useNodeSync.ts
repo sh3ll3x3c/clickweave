@@ -18,7 +18,7 @@ const MIN_GROUP_HEIGHT = 150;
 
 function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | undefined {
   if (nt.type !== "Click") return undefined;
-  if (nt.target) return nt.target;
+  if (nt.target) return nt.target.type === "Text" ? nt.target.text : nt.target.name;
   if (nt.template_image) return "image match";
   if (nt.x != null && nt.y != null) return `at (${Math.round(nt.x)}, ${Math.round(nt.y)})`;
   return undefined;

@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import { commands } from "../../bindings";
-import type { CdpAppConfig, CdpSetupProgress, NodeRename, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
+import type { CdpAppConfig, NodeRename, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
+import type { CdpSetupProgress } from "../../components/CdpAppSelectModal";
 import { applyAnnotationsToDraft } from "../../utils/walkthroughDraft";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { currentMonitor } from "@tauri-apps/api/window";

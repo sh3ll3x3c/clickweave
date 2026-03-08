@@ -1,6 +1,12 @@
 import { useState, useEffect } from "react";
 import { commands } from "../bindings";
-import type { CdpAppConfig, CdpSetupProgress, DetectedCdpApp } from "../bindings";
+import type { CdpAppConfig, DetectedCdpApp } from "../bindings";
+
+/** CDP setup progress event (emitted via Tauri events, not in auto-generated bindings). */
+export type CdpSetupProgress = {
+  app_name: string;
+  status: "Restarting" | "Launching" | "Connecting" | "Ready" | "Done" | { Failed: { reason: string } };
+};
 import { open } from "@tauri-apps/plugin-dialog";
 
 type ModalPhase = "detecting" | "selection" | "setup";

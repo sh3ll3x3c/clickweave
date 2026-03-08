@@ -272,7 +272,8 @@ binary_path: string | null; app_kind: AppKind }
  */
 export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
 export type ChatRole = "user" | "assistant"
-export type ClickParams = { target: string | null; template_image?: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
+export type ClickParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
+export type ClickTarget = { type: "Text"; text: string } | { type: "CdpElement"; name: string; role: string | null; href: string | null }
 export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
 /**
  * Persistent conversation session for a workflow.
@@ -390,9 +391,9 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
  */
 { type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number } | 
 /**
- * Element verified via Chrome DevTools Protocol snapshot.
+ * Element captured via Chrome DevTools Protocol click listener.
  */
-{ type: "CdpElement"; text: string; uid: string }
+{ type: "CdpElement"; name: string; role: string | null; href: string | null }
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"

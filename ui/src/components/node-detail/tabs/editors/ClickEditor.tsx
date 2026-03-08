@@ -16,12 +16,24 @@ export function ClickEditor({ nodeType, onUpdate, projectPath, appKind }: NodeEd
 
   return (
     <FieldGroup title="Click">
-      <TextField
-        label="Target"
-        value={nt.target ?? ""}
-        onChange={(v) => updateType({ target: optionalString(v) })}
-        placeholder="Text to find and click (auto-resolves coordinates)"
-      />
+      {nt.target?.type === "CdpElement" ? (
+        <div>
+          <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+            Target (CDP)
+          </label>
+          <span className="block px-2.5 py-1.5 text-sm">
+            &quot;{nt.target.name}&quot;
+            {nt.target.role && <span className="ml-1 text-xs text-[var(--text-muted)]">({nt.target.role})</span>}
+          </span>
+        </div>
+      ) : (
+        <TextField
+          label="Target"
+          value={nt.target?.type === "Text" ? nt.target.text : ""}
+          onChange={(v) => updateType({ target: v ? { type: "Text" as const, text: v } : null })}
+          placeholder="Text to find and click (auto-resolves coordinates)"
+        />
+      )}
       <TemplateImageField
         value={nt.template_image ?? null}
         onClear={() => updateType({ template_image: null })}
