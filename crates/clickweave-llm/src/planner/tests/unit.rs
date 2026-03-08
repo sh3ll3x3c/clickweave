@@ -1,6 +1,8 @@
 use super::helpers::*;
 use crate::planner::mapping::step_to_node_type;
-use crate::planner::parse::{extract_json, layout_nodes, truncate_intent};
+use crate::planner::parse::{
+    extract_json, id_str_short, layout_nodes, step_rejected_reason, truncate_intent,
+};
 use crate::planner::prompt::planner_system_prompt;
 use crate::planner::*;
 use clickweave_core::NodeType;
@@ -191,4 +193,181 @@ fn test_step_to_node_type_if() {
     let (nt, name) = step_to_node_type(&step, &[]).unwrap();
     assert_eq!(name, "Check Result");
     assert!(matches!(nt, NodeType::If(_)));
+}
+
+// ── extract_json additional tests ───────────────────────────────
+
+#[test]
+fn test_extract_json_with_surrounding_text() {
+    let input = "Here is the output:\n```json\n{\"key\": \"value\"}\n```\nDone!";
+    assert_eq!(extract_json(input), r#"{"key": "value"}"#);
+}
+
+#[test]
+fn test_extract_json_whitespace_only() {
+    let input = "   ";
+    assert_eq!(extract_json(input), "");
+}
+
+#[test]
+fn test_extract_json_no_closing_fence() {
+    // When there's an opening fence but no closing fence, falls through to trimmed
+    let input = "```json\n{\"key\": true}";
+    assert_eq!(extract_json(input), input.trim());
+}
+
+// ── layout_nodes additional tests ───────────────────────────────
+
+#[test]
+fn test_layout_nodes_empty() {
+    let positions = layout_nodes(0);
+    assert!(positions.is_empty());
+}
+
+#[test]
+fn test_layout_nodes_single() {
+    let positions = layout_nodes(1);
+    assert_eq!(positions.len(), 1);
+    assert_eq!(positions[0].x, 300.0);
+    assert_eq!(positions[0].y, 100.0);
+}
+
+#[test]
+fn test_layout_nodes_spacing() {
+    let positions = layout_nodes(3);
+    // All x-coordinates are the same
+    assert!(positions.iter().all(|p| p.x == 300.0));
+    // Vertical spacing is 120.0
+    let dy01 = positions[1].y - positions[0].y;
+    let dy12 = positions[2].y - positions[1].y;
+    assert!((dy01 - 120.0).abs() < f32::EPSILON);
+    assert!((dy12 - 120.0).abs() < f32::EPSILON);
+}
+
+// ── truncate_intent additional tests ────────────────────────────
+
+#[test]
+fn test_truncate_intent_exactly_50_bytes() {
+    let input = "a".repeat(50);
+    assert_eq!(truncate_intent(&input), input);
+}
+
+#[test]
+fn test_truncate_intent_51_bytes() {
+    let input = "a".repeat(51);
+    let truncated = truncate_intent(&input);
+    assert!(truncated.ends_with("..."));
+    assert!(truncated.len() <= 50);
+}
+
+// ── id_str_short tests ──────────────────────────────────────────
+
+#[test]
+fn test_id_str_short_returns_hyphenated_uuid() {
+    let id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let short = id_str_short(&id);
+    // The function uses {:.8} on Hyphenated, which returns the full hyphenated form
+    assert_eq!(short, "550e8400-e29b-41d4-a716-446655440000");
+}
+
+#[test]
+fn test_id_str_short_is_deterministic() {
+    let id = uuid::Uuid::new_v4();
+    let a = id_str_short(&id);
+    let b = id_str_short(&id);
+    assert_eq!(a, b);
+    // Should match the standard hyphenated form
+    assert_eq!(a, id.as_hyphenated().to_string());
+}
+
+// ── step_rejected_reason tests ──────────────────────────────────
+
+#[test]
+fn test_step_rejected_reason_tool_always_allowed() {
+    let step = PlanStep::Tool {
+        tool_name: "click".to_string(),
+        arguments: serde_json::json!({}),
+        name: None,
+    };
+    // Tool steps are never rejected regardless of flags
+    assert!(step_rejected_reason(&step, false, false).is_none());
+    assert!(step_rejected_reason(&step, true, true).is_none());
+}
+
+#[test]
+fn test_step_rejected_reason_ai_transform_disabled() {
+    let step = PlanStep::AiTransform {
+        kind: "summarize".to_string(),
+        input_ref: "prev.output".to_string(),
+        output_schema: None,
+        name: None,
+    };
+    let reason = step_rejected_reason(&step, false, false);
+    assert!(reason.is_some());
+    assert!(reason.unwrap().contains("AI transforms disabled"));
+}
+
+#[test]
+fn test_step_rejected_reason_ai_transform_enabled() {
+    let step = PlanStep::AiTransform {
+        kind: "summarize".to_string(),
+        input_ref: "prev.output".to_string(),
+        output_schema: None,
+        name: None,
+    };
+    assert!(step_rejected_reason(&step, true, false).is_none());
+}
+
+#[test]
+fn test_step_rejected_reason_ai_step_disabled() {
+    let step = PlanStep::AiStep {
+        prompt: "do something".to_string(),
+        allowed_tools: None,
+        max_tool_calls: None,
+        timeout_ms: None,
+        name: None,
+    };
+    let reason = step_rejected_reason(&step, false, false);
+    assert!(reason.is_some());
+    assert!(reason.unwrap().contains("agent steps disabled"));
+}
+
+#[test]
+fn test_step_rejected_reason_ai_step_enabled() {
+    let step = PlanStep::AiStep {
+        prompt: "do something".to_string(),
+        allowed_tools: None,
+        max_tool_calls: None,
+        timeout_ms: None,
+        name: None,
+    };
+    assert!(step_rejected_reason(&step, false, true).is_none());
+}
+
+#[test]
+fn test_step_rejected_reason_loop_always_allowed() {
+    let step = PlanStep::Loop {
+        name: None,
+        exit_condition: bool_condition("x.found"),
+        max_iterations: None,
+    };
+    assert!(step_rejected_reason(&step, false, false).is_none());
+}
+
+#[test]
+fn test_step_rejected_reason_if_always_allowed() {
+    let step = PlanStep::If {
+        name: None,
+        condition: bool_condition("x.found"),
+    };
+    assert!(step_rejected_reason(&step, false, false).is_none());
+}
+
+#[test]
+fn test_step_rejected_reason_endloop_always_allowed() {
+    let step = PlanStep::EndLoop {
+        name: None,
+        loop_id: "n1".to_string(),
+    };
+    assert!(step_rejected_reason(&step, false, false).is_none());
 }
