@@ -5,7 +5,7 @@ pub fn cdp_server_name(app_name: &str) -> String {
 }
 
 /// A match found in a CDP snapshot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotMatch {
     pub uid: String,
     pub label: String,
@@ -30,38 +30,45 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
     let mut exact = Vec::new();
     let mut substring = Vec::new();
     for line in snapshot_text.lines() {
-        let Some((uid, is_leaf)) = parse_line_uid(line) else {
+        let Some((uid, role, is_leaf)) = parse_line_uid(line) else {
             continue;
         };
         if is_leaf {
             continue;
         }
         let label = extract_label(line);
-        let role = extract_role(line);
-        let url = extract_url(line);
         let label_lower = label.to_lowercase();
-        let m = SnapshotMatch {
-            uid,
-            label: label.clone(),
-            role,
-            url,
-        };
-        if label_lower == target_lower {
-            exact.push(m);
+        let is_match = if label_lower == target_lower {
+            Some(true)
         } else if label_lower.contains(&target_lower) || line.to_lowercase().contains(&target_lower)
         {
-            substring.push(m);
+            Some(false)
+        } else {
+            None
+        };
+        if let Some(is_exact) = is_match {
+            let m = SnapshotMatch {
+                uid,
+                label: label.clone(),
+                role: role.to_string(),
+                url: extract_url(line),
+            };
+            if is_exact {
+                exact.push(m);
+            } else {
+                substring.push(m);
+            }
         }
     }
     // Prefer exact label matches; fall back to substring matches.
     if exact.is_empty() { substring } else { exact }
 }
 
-/// Parse a snapshot line to extract its UID and whether it's a leaf text node.
+/// Parse a snapshot line to extract its UID, role, and whether it's a leaf text node.
 ///
-/// Returns `(uid, is_leaf)` or `None` if the line has no UID.
+/// Returns `(uid, role, is_leaf)` or `None` if the line has no UID.
 /// Handles both `uid=1_11 treeitem ...` and `uid="e1" button ...` formats.
-fn parse_line_uid(line: &str) -> Option<(String, bool)> {
+fn parse_line_uid(line: &str) -> Option<(String, &str, bool)> {
     let uid_pos = line.find("uid=")?;
     let rest = &line[uid_pos + 4..];
     let (uid, after_uid) = if let Some(quoted) = rest.strip_prefix('"') {
@@ -76,9 +83,10 @@ fn parse_line_uid(line: &str) -> Option<(String, bool)> {
         }
         (uid, &rest[end..])
     };
-    let role = after_uid.trim_start();
+    let after_uid = after_uid.trim_start().trim_start_matches(']').trim_start();
+    let role = after_uid.split_whitespace().next().unwrap_or("");
     let is_leaf = role.starts_with("StaticText") || role.starts_with("InlineTextBox");
-    Some((uid.to_string(), is_leaf))
+    Some((uid.to_string(), role, is_leaf))
 }
 
 /// Extract the visible label text from a snapshot line.
@@ -111,29 +119,6 @@ fn extract_label(line: &str) -> String {
     line.trim().to_string()
 }
 
-/// Extract the role from a snapshot line (the word after the UID).
-///
-/// For `uid=1_5 treeitem "Direct Messages"` → `treeitem`.
-fn extract_role(line: &str) -> String {
-    let uid_pos = match line.find("uid=") {
-        Some(p) => p,
-        None => return String::new(),
-    };
-    let rest = &line[uid_pos..];
-    // Skip past uid value to find role.
-    let after_uid = if let Some(pos) = rest.find(' ') {
-        rest[pos..].trim_start()
-    } else {
-        return String::new();
-    };
-    // Role is the first word after uid.
-    after_uid
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string()
-}
-
 /// Extract `url=` attribute value from a snapshot line.
 ///
 /// For `uid=1_0 link "Home" url="https://example.com"` → `Some("https://example.com")`.
@@ -147,8 +132,7 @@ fn extract_url(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cdp_server_name, extract_label, extract_role, extract_url, find_elements_in_snapshot,
-        parse_line_uid,
+        cdp_server_name, extract_label, extract_url, find_elements_in_snapshot, parse_line_uid,
     };
 
     // Real chrome-devtools-mcp format (unquoted UIDs).
@@ -177,18 +161,21 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
 
     #[test]
     fn parse_uid_unquoted() {
-        let (uid, is_leaf) = parse_line_uid(r#"uid=1_5 treeitem "Direct Messages""#).unwrap();
+        let (uid, role, is_leaf) = parse_line_uid(r#"uid=1_5 treeitem "Direct Messages""#).unwrap();
         assert_eq!(uid, "1_5");
+        assert_eq!(role, "treeitem");
         assert!(!is_leaf);
 
-        let (uid, _) = parse_line_uid("  uid=1_0 RootWebArea").unwrap();
+        let (uid, role, _) = parse_line_uid("  uid=1_0 RootWebArea").unwrap();
         assert_eq!(uid, "1_0");
+        assert_eq!(role, "RootWebArea");
     }
 
     #[test]
     fn parse_uid_quoted() {
-        let (uid, is_leaf) = parse_line_uid(r#"[uid="e1"] button "Submit""#).unwrap();
+        let (uid, role, is_leaf) = parse_line_uid(r#"[uid="e1"] button "Submit""#).unwrap();
         assert_eq!(uid, "e1");
+        assert_eq!(role, "button");
         assert!(!is_leaf);
     }
 
@@ -200,10 +187,11 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
 
     #[test]
     fn parse_uid_detects_leaf_text() {
-        let (_, is_leaf) = parse_line_uid(r#"    uid=1_6 StaticText "Direct Messages""#).unwrap();
+        let (_, _, is_leaf) =
+            parse_line_uid(r#"    uid=1_6 StaticText "Direct Messages""#).unwrap();
         assert!(is_leaf);
 
-        let (_, is_leaf) = parse_line_uid(r#"uid=1_2 link "Friends""#).unwrap();
+        let (_, _, is_leaf) = parse_line_uid(r#"uid=1_2 link "Friends""#).unwrap();
         assert!(!is_leaf);
     }
 
@@ -309,7 +297,7 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
 
     #[test]
     fn parse_uid_detects_inline_text_box() {
-        let (_, is_leaf) = parse_line_uid(r#"uid=1_8 InlineTextBox "Hello""#).unwrap();
+        let (_, _, is_leaf) = parse_line_uid(r#"uid=1_8 InlineTextBox "Hello""#).unwrap();
         assert!(is_leaf);
     }
 
@@ -332,23 +320,6 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
             uids.contains(&"1_7"),
             "should match 'Add Friends to DM' button via line"
         );
-    }
-
-    // --- extract_role ---
-
-    #[test]
-    fn extract_role_from_snapshot_line() {
-        assert_eq!(extract_role(r#"uid=1_2 link "Friends""#), "link");
-        assert_eq!(
-            extract_role(r#"uid=1_5 treeitem "Direct Messages" level="1""#),
-            "treeitem"
-        );
-        assert_eq!(extract_role(r#"uid=1_1 button "Go back""#), "button");
-    }
-
-    #[test]
-    fn extract_role_no_uid() {
-        assert_eq!(extract_role("no uid here"), "");
     }
 
     // --- extract_url ---

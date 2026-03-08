@@ -87,7 +87,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 };
                 match self
                     .resolve_and_click_cdp(
-                        node_id,
                         target,
                         expected_role,
                         expected_href,
@@ -669,16 +668,34 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
 use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
 
+/// Narrow CDP matches by role and/or href, keeping the original set if
+/// filtering would eliminate all candidates.
+fn narrow_matches(
+    matches: &mut Vec<SnapshotMatch>,
+    expected_role: Option<&str>,
+    expected_href: Option<&str>,
+) {
+    if let Some(role) = expected_role {
+        let role_lower = role.to_lowercase();
+        if matches.iter().any(|m| m.role.to_lowercase() == role_lower) {
+            matches.retain(|m| m.role.to_lowercase() == role_lower);
+        }
+    }
+    if let Some(href) = expected_href {
+        if matches.iter().any(|m| m.url.as_deref() == Some(href)) {
+            matches.retain(|m| m.url.as_deref() == Some(href));
+        }
+    }
+}
+
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Try to resolve and click a text target via CDP (chrome-devtools).
     ///
     /// Takes a snapshot of the page's accessibility tree, finds the element
     /// matching the target text, and clicks it via CDP. Returns the click
     /// result text on success, or an error string to trigger native fallback.
-    #[allow(clippy::too_many_arguments)]
     async fn resolve_and_click_cdp(
         &self,
-        _node_id: Uuid,
         target: &str,
         expected_role: Option<&str>,
         expected_href: Option<&str>,
@@ -704,30 +721,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // 2. Find matching elements
         let mut matches = find_elements_in_snapshot(&snapshot_text, target);
 
-        // Narrow by role if available.
-        if let Some(role) = expected_role {
-            let role_lower = role.to_lowercase();
-            let filtered: Vec<_> = matches
-                .iter()
-                .filter(|m| m.role.to_lowercase() == role_lower)
-                .cloned()
-                .collect();
-            if !filtered.is_empty() {
-                matches = filtered;
-            }
-        }
-
-        // Narrow by href if available.
-        if let Some(href) = expected_href {
-            let filtered: Vec<_> = matches
-                .iter()
-                .filter(|m| m.url.as_deref() == Some(href))
-                .cloned()
-                .collect();
-            if !filtered.is_empty() {
-                matches = filtered;
-            }
-        }
+        // Narrow by role and/or href if available (single pass, in-place).
+        narrow_matches(&mut matches, expected_role, expected_href);
 
         let uid = if matches.is_empty() {
             self.log(format!(
@@ -1065,7 +1060,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             match mcp.call_tool_on(server_name, "list_pages", None).await {
                 Ok(result) if result.is_error != Some(true) => {
                     let text = Self::extract_result_text(&result);
-                    if text.contains("1:") {
+                    if text.contains("0:") {
                         return Ok(());
                     }
                 }

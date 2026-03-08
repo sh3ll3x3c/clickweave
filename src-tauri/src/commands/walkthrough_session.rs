@@ -22,36 +22,54 @@ use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 /// JavaScript click listener injected into CDP-enabled apps.
 /// Captures the semantic target element on each click (capture phase,
 /// fires before navigation/DOM mutation).
-const CDP_CLICK_LISTENER_JS: &str = r#"
-(() => {
+const CDP_CLICK_LISTENER_JS: &str = r#"() => {
   if (window.__clickweave_lastClick !== undefined) return;
   window.__clickweave_lastClick = null;
+  const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
     window.__clickweave_lastClick = {
       tagName: el.tagName,
-      role: el.getAttribute('role') || el.ariaRoleDescription || null,
+      role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
       textContent: (el.textContent || '').trim().substring(0, 200),
+      value: el.value || null,
       href: el.closest('a')?.href || null,
       id: el.id || null,
       className: el.className || null,
     };
   }, true);
-})()
-"#;
+}"#;
 
 /// JavaScript to retrieve and clear the last click data.
-const CDP_RETRIEVE_CLICK_JS: &str = r#"
-(() => {
+const CDP_RETRIEVE_CLICK_JS: &str = r#"() => {
+  if (typeof window.__clickweave_lastClick === 'undefined') return null;
   const c = window.__clickweave_lastClick;
   window.__clickweave_lastClick = null;
   return c;
-})()
-"#;
+}"#;
 
-/// JavaScript to check if the click listener is still alive.
-const CDP_CHECK_LISTENER_JS: &str = "typeof window.__clickweave_lastClick !== 'undefined'";
+/// JavaScript to check if the click listener is still alive; re-inject if lost.
+/// Returns `"reinjected"` if it was re-injected, `"alive"` otherwise.
+const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
+  if (typeof window.__clickweave_lastClick !== 'undefined') return 'alive';
+  window.__clickweave_lastClick = null;
+  const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
+    window.__clickweave_lastClick = {
+      tagName: el.tagName,
+      role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
+      ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
+      textContent: (el.textContent || '').trim().substring(0, 200),
+      value: el.value || null,
+      href: el.closest('a')?.href || null,
+      id: el.id || null,
+      className: el.className || null,
+    };
+  }, true);
+  return 'reinjected';
+}"#;
 
 #[cfg(target_os = "macos")]
 use crate::platform::macos::{CursorRegionCapture, MacOSEventTap};
@@ -785,22 +803,44 @@ async fn setup_cdp_apps(
                 );
 
                 // Inject click listener for record-time element capture.
-                let inject_args = serde_json::json!({ "expression": CDP_CLICK_LISTENER_JS });
-                match mcp
+                let inject_args = serde_json::json!({ "function": CDP_CLICK_LISTENER_JS });
+                let inject_ok = match mcp
                     .call_tool_on(&server_name, "evaluate_script", Some(inject_args))
                     .await
                 {
-                    Ok(_) => {
-                        tracing::info!("Injected click listener into '{}'", cdp_app.name)
+                    Ok(r) if r.is_error != Some(true) => {
+                        tracing::info!("Injected click listener into '{}'", cdp_app.name);
+                        true
                     }
-                    Err(e) => tracing::warn!(
-                        "Failed to inject click listener into '{}': {e}",
-                        cdp_app.name
-                    ),
-                }
+                    Ok(r) => {
+                        let err: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+                        tracing::warn!(
+                            "CDP click listener injection rejected for '{}': {err}",
+                            cdp_app.name
+                        );
+                        false
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to inject click listener into '{}': {e}",
+                            cdp_app.name
+                        );
+                        false
+                    }
+                };
 
-                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Ready);
-                state.insert(cdp_app.name.clone(), server_name);
+                if inject_ok {
+                    emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Ready);
+                    state.insert(cdp_app.name.clone(), server_name);
+                } else {
+                    emit_cdp_progress(
+                        app,
+                        &cdp_app.name,
+                        CdpSetupStatus::Failed {
+                            reason: "Click listener injection failed".to_string(),
+                        },
+                    );
+                }
             }
             Err(e) => {
                 tracing::warn!("CDP poll failed for '{}': {}", cdp_app.name, e);
@@ -832,7 +872,7 @@ async fn poll_cdp_ready(
                     .filter_map(|c| c.as_text())
                     .collect::<Vec<_>>()
                     .join("\n");
-                if text.contains("1:") {
+                if text.contains("0:") {
                     return Ok(());
                 }
             }
@@ -887,7 +927,7 @@ async fn cdp_retrieve_click(
     // Small delay to let the capture-phase listener fire.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let retrieve_args = serde_json::json!({ "expression": CDP_RETRIEVE_CLICK_JS });
+    let retrieve_args = serde_json::json!({ "function": CDP_RETRIEVE_CLICK_JS });
     let call_fut = mcp.call_tool_on(server_name, "evaluate_script", Some(retrieve_args));
     let result = match tokio::time::timeout(CDP_SNAPSHOT_TIMEOUT, call_fut).await {
         Ok(Ok(r)) if r.is_error != Some(true) => r,
@@ -910,20 +950,19 @@ async fn cdp_retrieve_click(
     if text.trim() == "null" || text.trim().is_empty() {
         tracing::debug!("CDP click listener returned null for {click_event_id}");
 
-        // Check if listener is still alive; re-inject if lost.
-        let check_args = serde_json::json!({ "expression": CDP_CHECK_LISTENER_JS });
-        if let Ok(r) = mcp
+        // Check listener health and re-inject if lost (single MCP call).
+        let check_args = serde_json::json!({ "function": CDP_CHECK_AND_REINJECT_JS });
+        match mcp
             .call_tool_on(server_name, "evaluate_script", Some(check_args))
             .await
         {
-            let alive: String = r.content.iter().filter_map(|c| c.as_text()).collect();
-            if alive.trim() != "true" {
-                tracing::info!("CDP click listener lost, re-injecting");
-                let inject_args = serde_json::json!({ "expression": CDP_CLICK_LISTENER_JS });
-                let _ = mcp
-                    .call_tool_on(server_name, "evaluate_script", Some(inject_args))
-                    .await;
+            Ok(r) => {
+                let status: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+                if status.trim() == "reinjected" {
+                    tracing::info!("CDP click listener lost after navigation, re-injected");
+                }
             }
+            Err(e) => tracing::warn!("CDP click listener health check failed: {e}"),
         }
         return;
     }
@@ -937,11 +976,12 @@ async fn cdp_retrieve_click(
         }
     };
 
-    // Build name from ariaLabel or textContent.
+    // Build name from ariaLabel, textContent, or value (for inputs).
     let name = parsed["ariaLabel"]
         .as_str()
         .filter(|s| !s.is_empty())
-        .or_else(|| parsed["textContent"].as_str().filter(|s| !s.is_empty()));
+        .or_else(|| parsed["textContent"].as_str().filter(|s| !s.is_empty()))
+        .or_else(|| parsed["value"].as_str().filter(|s| !s.is_empty()));
     let Some(name) = name else {
         tracing::debug!("CDP click has no usable name for {click_event_id}");
         return;
