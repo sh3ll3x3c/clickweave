@@ -23,54 +23,76 @@ use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 /// Captures the semantic target element on each click (capture phase,
 /// fires before navigation/DOM mutation).
 const CDP_CLICK_LISTENER_JS: &str = r#"() => {
-  if (Array.isArray(window.__clickweave_clicks)) {
-    window.__clickweave_clicks.length = 0;
-    return;
-  }
-  window.__clickweave_clicks = [];
+  window.__cw_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  document.addEventListener('click', (e) => {
+  function accessibleText(node) {
+    const a = node.ariaLabel || node.getAttribute('aria-label');
+    if (a) return a;
+    let t = '';
+    for (const ch of node.childNodes) {
+      if (ch.nodeType === 3) { t += ch.textContent; continue; }
+      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') t += accessibleText(ch);
+    }
+    return t.trim().substring(0, 200);
+  }
+  window.__cw_onclick = (e) => {
     const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
-    window.__clickweave_clicks.push({
+    window.__cw_clicks.push({
       ts: Date.now(),
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: (el.textContent || '').trim().substring(0, 200),
+      textContent: accessibleText(el),
       value: el.value || null,
       href: el.closest('a')?.href || null,
       id: el.id || null,
       className: el.className || null,
     });
-  }, true);
+  };
+  if (!window.__cw_listener) {
+    window.__cw_listener = (e) => window.__cw_onclick(e);
+    document.addEventListener('click', window.__cw_listener, true);
+  }
 }"#;
 
 /// JavaScript to retrieve and remove the oldest click from the queue.
 const CDP_RETRIEVE_CLICK_JS: &str = r#"() => {
-  if (!Array.isArray(window.__clickweave_clicks)) return null;
-  return window.__clickweave_clicks.shift() || null;
+  if (!Array.isArray(window.__cw_clicks)) return null;
+  return window.__cw_clicks.shift() || null;
 }"#;
 
 /// JavaScript to check if the click listener is still alive; re-inject if lost.
 /// Returns `"reinjected"` if it was re-injected, `"alive"` otherwise.
 const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
-  if (Array.isArray(window.__clickweave_clicks)) return 'alive';
-  window.__clickweave_clicks = [];
+  if (window.__cw_listener) return 'alive';
+  window.__cw_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  document.addEventListener('click', (e) => {
+  function accessibleText(node) {
+    const a = node.ariaLabel || node.getAttribute('aria-label');
+    if (a) return a;
+    let t = '';
+    for (const ch of node.childNodes) {
+      if (ch.nodeType === 3) { t += ch.textContent; continue; }
+      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') t += accessibleText(ch);
+    }
+    return t.trim().substring(0, 200);
+  }
+  window.__cw_onclick = (e) => {
     const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
-    window.__clickweave_clicks.push({
+    window.__cw_clicks.push({
       ts: Date.now(),
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: (el.textContent || '').trim().substring(0, 200),
+      textContent: accessibleText(el),
       value: el.value || null,
       href: el.closest('a')?.href || null,
       id: el.id || null,
       className: el.className || null,
     });
-  }, true);
+  };
+  window.__cw_listener = (e) => window.__cw_onclick(e);
+  document.addEventListener('click', window.__cw_listener, true);
   return 'reinjected';
 }"#;
 
