@@ -4,8 +4,17 @@ pub fn cdp_server_name(app_name: &str) -> String {
     format!("cdp:{app_name}")
 }
 
+/// A match found in a CDP snapshot.
+#[derive(Debug, Clone)]
+pub struct SnapshotMatch {
+    pub uid: String,
+    pub label: String,
+    pub role: String,
+    pub url: Option<String>,
+}
+
 /// Parse a CDP snapshot and find interactive elements whose text contains the target.
-/// Returns a vec of (uid, label) tuples.
+/// Returns a vec of `SnapshotMatch` with uid, label, role, and url.
 ///
 /// Leaf text nodes (`StaticText`, `InlineTextBox`) are excluded since they
 /// duplicate their parent's label and are not useful as click targets.
@@ -16,7 +25,7 @@ pub fn cdp_server_name(app_name: &str) -> String {
 /// uid=1_0 button "Submit"
 /// uid=1_1 link "Friends"
 /// ```
-pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<(String, String)> {
+pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<SnapshotMatch> {
     let target_lower = target.to_lowercase();
     let mut exact = Vec::new();
     let mut substring = Vec::new();
@@ -28,12 +37,20 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<(Stri
             continue;
         }
         let label = extract_label(line);
+        let role = extract_role(line);
+        let url = extract_url(line);
         let label_lower = label.to_lowercase();
+        let m = SnapshotMatch {
+            uid,
+            label: label.clone(),
+            role,
+            url,
+        };
         if label_lower == target_lower {
-            exact.push((uid, label));
+            exact.push(m);
         } else if label_lower.contains(&target_lower) || line.to_lowercase().contains(&target_lower)
         {
-            substring.push((uid, label));
+            substring.push(m);
         }
     }
     // Prefer exact label matches; fall back to substring matches.
@@ -94,9 +111,45 @@ fn extract_label(line: &str) -> String {
     line.trim().to_string()
 }
 
+/// Extract the role from a snapshot line (the word after the UID).
+///
+/// For `uid=1_5 treeitem "Direct Messages"` → `treeitem`.
+fn extract_role(line: &str) -> String {
+    let uid_pos = match line.find("uid=") {
+        Some(p) => p,
+        None => return String::new(),
+    };
+    let rest = &line[uid_pos..];
+    // Skip past uid value to find role.
+    let after_uid = if let Some(pos) = rest.find(' ') {
+        rest[pos..].trim_start()
+    } else {
+        return String::new();
+    };
+    // Role is the first word after uid.
+    after_uid
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Extract `url=` attribute value from a snapshot line.
+///
+/// For `uid=1_0 link "Home" url="https://example.com"` → `Some("https://example.com")`.
+fn extract_url(line: &str) -> Option<String> {
+    let marker = "url=\"";
+    let start = line.find(marker)? + marker.len();
+    let end = line[start..].find('"')? + start;
+    Some(line[start..end].to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{cdp_server_name, extract_label, find_elements_in_snapshot, parse_line_uid};
+    use super::{
+        cdp_server_name, extract_label, extract_role, extract_url, find_elements_in_snapshot,
+        parse_line_uid,
+    };
 
     // Real chrome-devtools-mcp format (unquoted UIDs).
     const SNAPSHOT: &str = r##"
@@ -160,16 +213,16 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
         // StaticText is filtered out, so only the treeitem matches.
         let matches = find_elements_in_snapshot(SNAPSHOT, "Direct Messages");
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].0, "1_5");
-        assert_eq!(matches[0].1, "Direct Messages");
+        assert_eq!(matches[0].uid, "1_5");
+        assert_eq!(matches[0].label, "Direct Messages");
     }
 
     #[test]
     fn single_match_quoted_format() {
         let matches = find_elements_in_snapshot(SNAPSHOT_QUOTED, "Friends");
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].0, "e2");
-        assert_eq!(matches[0].1, "Friends");
+        assert_eq!(matches[0].uid, "e2");
+        assert_eq!(matches[0].label, "Friends");
     }
 
     #[test]
@@ -184,8 +237,8 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
     fn case_insensitive() {
         let matches = find_elements_in_snapshot(SNAPSHOT, "settings");
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].0, "1_3");
-        assert_eq!(matches[0].1, "Settings");
+        assert_eq!(matches[0].uid, "1_3");
+        assert_eq!(matches[0].label, "Settings");
     }
 
     #[test]
@@ -194,8 +247,8 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
         // Only the exact match should be returned.
         let matches = find_elements_in_snapshot(SNAPSHOT, "Friends");
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].0, "1_2");
-        assert_eq!(matches[0].1, "Friends");
+        assert_eq!(matches[0].uid, "1_2");
+        assert_eq!(matches[0].label, "Friends");
     }
 
     #[test]
@@ -266,7 +319,7 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
     fn line_substring_match_when_target_in_role() {
         // "button" doesn't appear in the label "Go back", but does in the line.
         let matches = find_elements_in_snapshot(SNAPSHOT, "button");
-        let uids: Vec<&str> = matches.iter().map(|(uid, _)| uid.as_str()).collect();
+        let uids: Vec<&str> = matches.iter().map(|m| m.uid.as_str()).collect();
         assert!(
             uids.contains(&"1_1"),
             "should match 'Go back' button via line"
@@ -279,5 +332,54 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
             uids.contains(&"1_7"),
             "should match 'Add Friends to DM' button via line"
         );
+    }
+
+    // --- extract_role ---
+
+    #[test]
+    fn extract_role_from_snapshot_line() {
+        assert_eq!(extract_role(r#"uid=1_2 link "Friends""#), "link");
+        assert_eq!(
+            extract_role(r#"uid=1_5 treeitem "Direct Messages" level="1""#),
+            "treeitem"
+        );
+        assert_eq!(extract_role(r#"uid=1_1 button "Go back""#), "button");
+    }
+
+    #[test]
+    fn extract_role_no_uid() {
+        assert_eq!(extract_role("no uid here"), "");
+    }
+
+    // --- extract_url ---
+
+    #[test]
+    fn extract_url_present() {
+        let url = extract_url(r##"uid=1_0 RootWebArea "#avail" url="https://discord.com/""##);
+        assert_eq!(url.as_deref(), Some("https://discord.com/"));
+    }
+
+    #[test]
+    fn extract_url_absent() {
+        assert!(extract_url(r#"uid=1_1 button "Go back""#).is_none());
+    }
+
+    #[test]
+    fn extract_url_multiple_links() {
+        let snapshot = r#"uid=1_0 link "Home" url="https://example.com/home"
+uid=1_1 link "Home" url="https://example.com/other""#;
+        let matches = find_elements_in_snapshot(snapshot, "Home");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].url.as_deref(), Some("https://example.com/home"));
+        assert_eq!(matches[1].url.as_deref(), Some("https://example.com/other"));
+    }
+
+    // --- SnapshotMatch role field ---
+
+    #[test]
+    fn find_elements_returns_role() {
+        let matches = find_elements_in_snapshot(SNAPSHOT, "Friends");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].role, "link");
     }
 }

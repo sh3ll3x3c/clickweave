@@ -72,14 +72,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             && p.x.is_none()
         {
             // For Electron/Chrome apps, try CDP click first (snapshot + uid click).
-            let target = p.target.as_ref().unwrap().text();
+            let click_target = p.target.as_ref().unwrap();
+            let target = click_target.text();
             let app_kind = self.focused_app_kind();
 
             if app_kind.uses_cdp()
                 && let Some(cdp_server) = self.focused_cdp_server()
             {
+                let (expected_role, expected_href) = match click_target {
+                    clickweave_core::ClickTarget::CdpElement { role, href, .. } => {
+                        (role.as_deref(), href.as_deref())
+                    }
+                    _ => (None, None),
+                };
                 match self
-                    .resolve_and_click_cdp(node_id, target, &cdp_server, mcp, node_run.as_deref())
+                    .resolve_and_click_cdp(
+                        node_id,
+                        target,
+                        expected_role,
+                        expected_href,
+                        &cdp_server,
+                        mcp,
+                        node_run.as_deref(),
+                    )
                     .await
                 {
                     Ok(result_text) => {
@@ -652,7 +667,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 }
 
-use clickweave_core::cdp::find_elements_in_snapshot;
+use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Try to resolve and click a text target via CDP (chrome-devtools).
@@ -664,6 +679,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         _node_id: Uuid,
         target: &str,
+        expected_role: Option<&str>,
+        expected_href: Option<&str>,
         cdp_server: &str,
         mcp: &McpRouter,
         node_run: Option<&NodeRun>,
@@ -684,7 +701,32 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let snapshot_text = Self::extract_result_text(&snapshot_result);
 
         // 2. Find matching elements
-        let matches = find_elements_in_snapshot(&snapshot_text, target);
+        let mut matches = find_elements_in_snapshot(&snapshot_text, target);
+
+        // Narrow by role if available.
+        if let Some(role) = expected_role {
+            let role_lower = role.to_lowercase();
+            let filtered: Vec<_> = matches
+                .iter()
+                .filter(|m| m.role.to_lowercase() == role_lower)
+                .cloned()
+                .collect();
+            if !filtered.is_empty() {
+                matches = filtered;
+            }
+        }
+
+        // Narrow by href if available.
+        if let Some(href) = expected_href {
+            let filtered: Vec<_> = matches
+                .iter()
+                .filter(|m| m.url.as_deref() == Some(href))
+                .cloned()
+                .collect();
+            if !filtered.is_empty() {
+                matches = filtered;
+            }
+        }
 
         let uid = if matches.is_empty() {
             self.log(format!(
@@ -694,7 +736,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.resolve_cdp_element_name(target, &snapshot_text)
                 .await?
         } else if matches.len() == 1 {
-            matches[0].0.clone()
+            matches[0].uid.clone()
         } else {
             self.log(format!(
                 "CDP: {} matches for '{}', disambiguating",
@@ -763,7 +805,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         // Validate that the UID actually appears in the snapshot.
-        if !snapshot_text.contains(&format!("uid=\"{}\"", uid)) {
+        let uid_exists = snapshot_text.contains(&format!("uid=\"{}\"", uid))
+            || snapshot_text.contains(&format!("uid={} ", uid))
+            || snapshot_text.ends_with(&format!("uid={}", uid));
+        if !uid_exists {
             return Err(ExecutorError::Cdp(format!(
                 "LLM returned uid '{}' which does not exist in the CDP snapshot",
                 uid
@@ -778,15 +823,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn disambiguate_cdp_elements(
         &self,
         target: &str,
-        matches: &[(String, String)],
+        matches: &[SnapshotMatch],
     ) -> ExecutorResult<String> {
         let valid_uids: std::collections::HashSet<&str> =
-            matches.iter().map(|(uid, _)| uid.as_str()).collect();
+            matches.iter().map(|m| m.uid.as_str()).collect();
 
         let options: Vec<String> = matches
             .iter()
             .enumerate()
-            .map(|(i, (uid, text))| format!("{}: uid={} — {}", i + 1, uid, text))
+            .map(|(i, m)| format!("{}: uid={} — {}", i + 1, m.uid, m.label))
             .collect();
 
         let prompt = format!(
@@ -815,7 +860,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "CDP: LLM returned '{}' which is not in candidate set, using first match",
                 uid
             ));
-            Ok(matches[0].0.clone())
+            Ok(matches[0].uid.clone())
         }
     }
 }
