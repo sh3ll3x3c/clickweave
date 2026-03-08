@@ -41,7 +41,7 @@ fn main() {
     let console_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let file_filter = EnvFilter::new(
-        "info,clickweave_core=debug,clickweave_engine=debug,clickweave_llm=debug,clickweave_mcp=debug",
+        "info,clickweave_core=debug,clickweave_engine=debug,clickweave_llm=debug,clickweave_mcp=debug,clickweave_tauri=debug",
     );
 
     tracing_subscriber::registry()

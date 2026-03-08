@@ -1060,7 +1060,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             match mcp.call_tool_on(server_name, "list_pages", None).await {
                 Ok(result) if result.is_error != Some(true) => {
                     let text = Self::extract_result_text(&result);
-                    if text.contains("0:") {
+                    // Page index may be 0-based or 1-based depending on MCP
+                    // server version — check for any "N: <url>" page entry.
+                    if text.lines().any(|l| {
+                        l.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) && l.contains(": ")
+                    }) {
                         return Ok(());
                     }
                 }

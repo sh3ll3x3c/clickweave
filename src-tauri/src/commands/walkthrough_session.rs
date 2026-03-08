@@ -23,12 +23,16 @@ use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 /// Captures the semantic target element on each click (capture phase,
 /// fires before navigation/DOM mutation).
 const CDP_CLICK_LISTENER_JS: &str = r#"() => {
-  if (window.__clickweave_lastClick !== undefined) return;
-  window.__clickweave_lastClick = null;
+  if (Array.isArray(window.__clickweave_clicks)) {
+    window.__clickweave_clicks.length = 0;
+    return;
+  }
+  window.__clickweave_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
-    window.__clickweave_lastClick = {
+    window.__clickweave_clicks.push({
+      ts: Date.now(),
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
@@ -37,27 +41,26 @@ const CDP_CLICK_LISTENER_JS: &str = r#"() => {
       href: el.closest('a')?.href || null,
       id: el.id || null,
       className: el.className || null,
-    };
+    });
   }, true);
 }"#;
 
-/// JavaScript to retrieve and clear the last click data.
+/// JavaScript to retrieve and remove the oldest click from the queue.
 const CDP_RETRIEVE_CLICK_JS: &str = r#"() => {
-  if (typeof window.__clickweave_lastClick === 'undefined') return null;
-  const c = window.__clickweave_lastClick;
-  window.__clickweave_lastClick = null;
-  return c;
+  if (!Array.isArray(window.__clickweave_clicks)) return null;
+  return window.__clickweave_clicks.shift() || null;
 }"#;
 
 /// JavaScript to check if the click listener is still alive; re-inject if lost.
 /// Returns `"reinjected"` if it was re-injected, `"alive"` otherwise.
 const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
-  if (typeof window.__clickweave_lastClick !== 'undefined') return 'alive';
-  window.__clickweave_lastClick = null;
+  if (Array.isArray(window.__clickweave_clicks)) return 'alive';
+  window.__clickweave_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
-    window.__clickweave_lastClick = {
+    window.__clickweave_clicks.push({
+      ts: Date.now(),
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
@@ -66,7 +69,7 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
       href: el.closest('a')?.href || null,
       id: el.id || null,
       className: el.className || null,
-    };
+    });
   }, true);
   return 'reinjected';
 }"#;
@@ -872,7 +875,11 @@ async fn poll_cdp_ready(
                     .filter_map(|c| c.as_text())
                     .collect::<Vec<_>>()
                     .join("\n");
-                if text.contains("0:") {
+                // Page index may be 0-based or 1-based depending on MCP
+                // server version — check for any "N: <url>" page entry.
+                if text.lines().any(|l| {
+                    l.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) && l.contains(": ")
+                }) {
                     return Ok(());
                 }
                 tracing::debug!(
@@ -949,32 +956,50 @@ async fn cdp_retrieve_click(
     click_event_id: Uuid,
     click_timestamp: u64,
 ) {
-    // Small delay to let the capture-phase listener fire.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Poll the click queue with retries.  The macOS event tap fires before the
+    // click is delivered to the app, so the JS click event may not have pushed
+    // to the queue yet on the first attempt.
+    const POLL_DELAYS_MS: &[u64] = &[100, 200, 300, 400];
+    let mut text = String::new();
 
-    let retrieve_args = serde_json::json!({ "function": CDP_RETRIEVE_CLICK_JS });
-    let call_fut = mcp.call_tool_on(server_name, "evaluate_script", Some(retrieve_args));
-    let result = match tokio::time::timeout(CDP_SNAPSHOT_TIMEOUT, call_fut).await {
-        Ok(Ok(r)) if r.is_error != Some(true) => r,
-        Ok(Ok(r)) => {
-            let err: String = r.content.iter().filter_map(|c| c.as_text()).collect();
-            tracing::debug!("CDP click retrieve error for {click_event_id}: {err}");
-            return;
-        }
-        Ok(Err(e)) => {
-            tracing::debug!("CDP click retrieve failed for {click_event_id}: {e}");
-            return;
-        }
-        Err(_) => {
-            tracing::debug!("CDP click retrieve timed out for {click_event_id}");
-            return;
-        }
-    };
+    for (attempt, &delay_ms) in POLL_DELAYS_MS.iter().enumerate() {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 
-    let raw_text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
-    let text = extract_eval_result(&raw_text);
+        let retrieve_args = serde_json::json!({ "function": CDP_RETRIEVE_CLICK_JS });
+        let call_fut = mcp.call_tool_on(server_name, "evaluate_script", Some(retrieve_args));
+        let result = match tokio::time::timeout(CDP_SNAPSHOT_TIMEOUT, call_fut).await {
+            Ok(Ok(r)) if r.is_error != Some(true) => r,
+            Ok(Ok(r)) => {
+                let err: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+                tracing::debug!("CDP click retrieve error for {click_event_id}: {err}");
+                return;
+            }
+            Ok(Err(e)) => {
+                tracing::debug!("CDP click retrieve failed for {click_event_id}: {e}");
+                return;
+            }
+            Err(_) => {
+                tracing::debug!("CDP click retrieve timed out for {click_event_id}");
+                return;
+            }
+        };
+
+        let raw_text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
+        text = extract_eval_result(&raw_text).to_string();
+        if text != "null" && text != "undefined" && !text.is_empty() {
+            break;
+        }
+
+        if attempt < POLL_DELAYS_MS.len() - 1 {
+            tracing::debug!(
+                "CDP click queue empty for {click_event_id} (attempt {}), retrying",
+                attempt + 1
+            );
+        }
+    }
+
     if text == "null" || text == "undefined" || text.is_empty() {
-        tracing::debug!("CDP click listener returned null for {click_event_id}");
+        tracing::debug!("CDP click queue empty after all retries for {click_event_id}");
 
         // Check listener health and re-inject if lost (single MCP call).
         let check_args = serde_json::json!({ "function": CDP_CHECK_AND_REINJECT_JS });
@@ -995,7 +1020,7 @@ async fn cdp_retrieve_click(
     }
 
     // Parse the JSON result from evaluate_script.
-    let parsed: serde_json::Value = match serde_json::from_str(text) {
+    let parsed: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
             tracing::debug!("CDP click data parse failed for {click_event_id}: {e}");
@@ -1016,6 +1041,12 @@ async fn cdp_retrieve_click(
 
     let role = parsed["role"].as_str().map(|s| s.to_string());
     let href = parsed["href"].as_str().map(|s| s.to_string());
+
+    tracing::info!(
+        "CDP resolved click {click_event_id} → name={:?} role={:?}",
+        name,
+        role
+    );
 
     let event = WalkthroughEvent {
         id: Uuid::new_v4(),
