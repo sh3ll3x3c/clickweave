@@ -911,6 +911,26 @@ pub(super) fn emit_cdp_progress(app: &tauri::AppHandle, app_name: &str, status: 
     );
 }
 
+/// Extract the JSON payload from a chrome-devtools-mcp `evaluate_script` response.
+///
+/// The tool wraps results in markdown:
+/// ```text
+/// Script ran on page and returned:
+/// ```json
+/// <value>
+/// ```
+/// ```
+fn extract_eval_result(text: &str) -> &str {
+    // Look for content between ```json and ``` fences.
+    if let Some(start) = text.find("```json\n") {
+        let json_start = start + "```json\n".len();
+        if let Some(end) = text[json_start..].find("\n```") {
+            return text[json_start..json_start + end].trim();
+        }
+    }
+    text.trim()
+}
+
 /// Retrieve the last click's DOM element data from the injected listener.
 ///
 /// Returns a `CdpClickResolved` event if data is available, or None if the
@@ -946,8 +966,9 @@ async fn cdp_retrieve_click(
         }
     };
 
-    let text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
-    if text.trim() == "null" || text.trim().is_empty() {
+    let raw_text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
+    let text = extract_eval_result(&raw_text);
+    if text == "null" || text == "undefined" || text.is_empty() {
         tracing::debug!("CDP click listener returned null for {click_event_id}");
 
         // Check listener health and re-inject if lost (single MCP call).
@@ -957,8 +978,9 @@ async fn cdp_retrieve_click(
             .await
         {
             Ok(r) => {
-                let status: String = r.content.iter().filter_map(|c| c.as_text()).collect();
-                if status.trim() == "reinjected" {
+                let raw: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+                let status = extract_eval_result(&raw);
+                if status.contains("reinjected") {
                     tracing::info!("CDP click listener lost after navigation, re-injected");
                 }
             }
@@ -968,7 +990,7 @@ async fn cdp_retrieve_click(
     }
 
     // Parse the JSON result from evaluate_script.
-    let parsed: serde_json::Value = match serde_json::from_str(&text) {
+    let parsed: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => {
             tracing::debug!("CDP click data parse failed for {click_event_id}: {e}");
