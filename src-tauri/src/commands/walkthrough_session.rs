@@ -875,6 +875,11 @@ async fn poll_cdp_ready(
                 if text.contains("0:") {
                     return Ok(());
                 }
+                tracing::debug!(
+                    "CDP list_pages for '{}' returned but no pages yet: {:?}",
+                    server_name,
+                    &text[..text.len().min(500)]
+                );
             }
             Ok(result) => {
                 let text: String = result
