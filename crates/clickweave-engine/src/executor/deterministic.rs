@@ -1078,7 +1078,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 
         loop {
-            match mcp.call_tool_on(server_name, "list_pages", None).await {
+            match mcp
+                .call_tool_on(server_name, "list_pages", Some(serde_json::json!({})))
+                .await
+            {
                 Ok(result) if result.is_error != Some(true) => {
                     let text = Self::extract_result_text(&result);
                     // Page index may be 0-based or 1-based depending on MCP
