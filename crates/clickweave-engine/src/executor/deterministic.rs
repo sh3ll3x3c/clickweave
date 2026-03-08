@@ -928,6 +928,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 app_name, port
             ));
             self.relaunch_with_debug_port(app_name, port, mcp).await?;
+            // App was restarted — evict stale PID from app cache.
+            self.evict_app_cache(app_name);
             // Store in decision cache for Run mode replay.
             self.decision_cache
                 .write()
@@ -963,6 +965,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     app_name, port
                 ));
                 self.relaunch_with_debug_port(app_name, port, mcp).await?;
+                // App was restarted — evict stale PID from app cache.
+                self.evict_app_cache(app_name);
             }
             port
         };
