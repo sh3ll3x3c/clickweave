@@ -45,7 +45,7 @@ export function applyAnnotationsToDraft(
         if (candidate) {
           let nodeType: NodeType;
           if (candidate.type === "CdpElement") {
-            nodeType = { ...updated.node_type, target: { type: "CdpElement", name: candidate.name, role: candidate.role, href: candidate.href }, template_image: null, x: null, y: null };
+            nodeType = { ...updated.node_type, target: { type: "CdpElement", name: candidate.name, role: candidate.role, href: candidate.href, parent_role: candidate.parent_role, parent_name: candidate.parent_name }, template_image: null, x: null, y: null };
           } else if (candidate.type === "AccessibilityLabel" || candidate.type === "VlmLabel") {
             nodeType = { ...updated.node_type, target: { type: "Text", text: candidate.label }, template_image: null, x: null, y: null };
           } else if (candidate.type === "OcrText") {
