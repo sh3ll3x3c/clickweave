@@ -240,3 +240,51 @@ async fn disambiguate_click_matches_code_block_wrapped() {
         .unwrap();
     assert_eq!(idx, 0);
 }
+
+#[tokio::test]
+async fn disambiguate_click_matches_includes_supervision_hint() {
+    let mut exec = make_scripted_executor(vec![r#"{"index": 1}"#]);
+    exec.supervision_hint =
+        Some("Previous click hit the wrong element. The Friends tab is still active.".to_string());
+    let matches = make_find_text_matches(&[
+        ("Direct Messages", "AXStaticText"),
+        ("Direct Messages", "AXButton"),
+    ]);
+    let idx = exec
+        .disambiguate_click_matches(
+            Uuid::new_v4(),
+            "Direct Messages",
+            &matches,
+            Some("Discord"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(idx, 1);
+}
+
+#[tokio::test]
+async fn disambiguate_click_matches_records_tried_indices() {
+    // Two scripted responses: first picks 0, second picks 1
+    let exec = make_scripted_executor(vec![r#"{"index": 0}"#, r#"{"index": 1}"#]);
+    let matches = make_find_text_matches(&[
+        ("Save", "AXStaticText"),
+        ("Save", "AXButton"),
+        ("Save", "AXMenuItem"),
+    ]);
+    let node_id = Uuid::new_v4();
+
+    let idx0 = exec
+        .disambiguate_click_matches(node_id, "Save", &matches, None, None)
+        .await
+        .unwrap();
+    assert_eq!(idx0, 0);
+    assert_eq!(*exec.tried_click_indices.read().unwrap(), vec![0]);
+
+    let idx1 = exec
+        .disambiguate_click_matches(node_id, "Save", &matches, None, None)
+        .await
+        .unwrap();
+    assert_eq!(idx1, 1);
+    assert_eq!(*exec.tried_click_indices.read().unwrap(), vec![0, 1]);
+}

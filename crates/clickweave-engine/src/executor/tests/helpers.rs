@@ -161,6 +161,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             pending_loop_exit: None,
             cdp_servers: HashMap::new(),
             cancel_token,
+            supervision_hint: None,
+            tried_click_indices: RwLock::new(Vec::new()),
+            tried_cdp_uids: RwLock::new(Vec::new()),
         }
     }
 }

@@ -697,22 +697,33 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &McpRouter,
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
-        // 1. Take CDP snapshot
+        // 1. Ensure a page is selected (list_pages triggers auto-selection
+        //    inside chrome-devtools-mcp). This is needed because the CDP server
+        //    may have been spawned in an earlier node (e.g. FocusWindow) and the
+        //    selected page could have changed since.
+        let _ = mcp
+            .call_tool_on(cdp_server, "list_pages", Some(serde_json::json!({})))
+            .await;
+
+        // 2. Take CDP snapshot
         self.log(format!("CDP: taking snapshot to find '{}'", target));
         let snapshot_result = mcp
-            .call_tool_on(cdp_server, "take_snapshot", None)
+            .call_tool_on(cdp_server, "take_snapshot", Some(serde_json::json!({})))
             .await
             .map_err(|e| ExecutorError::Cdp(format!("take_snapshot failed: {e}")))?;
 
         if snapshot_result.is_error == Some(true) {
-            return Err(ExecutorError::Cdp(
-                "take_snapshot returned error".to_string(),
-            ));
+            let error_text = Self::extract_result_text(&snapshot_result);
+            self.log(format!("CDP take_snapshot error: {}", error_text));
+            return Err(ExecutorError::Cdp(format!(
+                "take_snapshot error: {}",
+                error_text
+            )));
         }
 
         let snapshot_text = Self::extract_result_text(&snapshot_result);
 
-        // 2. Find matching elements
+        // 3. Find matching elements
         let mut matches = find_elements_in_snapshot(&snapshot_text, target);
 
         // Narrow by role/href then parent context for disambiguation.
@@ -741,7 +752,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.disambiguate_cdp_elements(target, &matches).await?
         };
 
-        // 3. Click the element
+        // 4. Click the element
         self.log(format!("CDP: clicking element uid='{}'", uid));
         let click_args = serde_json::json!({ "uid": uid });
         let click_result = mcp
@@ -829,9 +840,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .map(|(i, m)| format!("{}: uid={} — {}", i + 1, m.uid, m.label))
             .collect();
 
+        let hint_context = self.format_supervision_hint("A previous click attempt failed. ");
+
+        let tried_context = {
+            let tried = self
+                .tried_cdp_uids
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            Self::format_tried_context(&tried, "UIDs")
+        };
+
         let prompt = format!(
             "Multiple elements match the target '{target}'. Which one is the best match?\n\
-             Return ONLY the uid value, nothing else.\n\n{}",
+             Return ONLY the uid value, nothing else.\n\n{}{hint_context}{tried_context}",
             options.join("\n")
         );
 
@@ -849,6 +870,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let uid = raw_text.trim().trim_matches('"').to_string();
         if valid_uids.contains(uid.as_str()) {
+            self.tried_cdp_uids
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(uid.clone());
             Ok(uid)
         } else {
             self.log(format!(
@@ -1092,6 +1117,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     if text.lines().any(|l| {
                         l.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) && l.contains(": ")
                     }) {
+                        self.log(format!("CDP pages for '{}': {}", server_name, text.trim()));
                         return Ok(());
                     }
                     tracing::debug!(

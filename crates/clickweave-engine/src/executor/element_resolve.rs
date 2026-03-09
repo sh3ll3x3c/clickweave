@@ -252,6 +252,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             "disambiguating click matches"
         );
 
+        let hint_context = self.format_supervision_hint(&format!(
+            "A previous attempt to click '{}' failed. ",
+            target
+        ));
+
+        let tried_context = {
+            let tried = self
+                .tried_click_indices
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            Self::format_tried_context(&tried, "indices")
+        };
+
         let prompt = format!(
             "You need to click on \"{target}\"{app_context}.\n\
              \n\
@@ -263,7 +276,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
              \n\
              Pick the element that is most likely the intended click target.\n\
              Prefer interactive elements (buttons, links) over static display text.\n\
-             Prefer exact text matches over partial/substring matches."
+             Prefer exact text matches over partial/substring matches.\
+             {hint_context}{tried_context}"
         );
 
         let messages = vec![Message::user(prompt)];
@@ -320,6 +334,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 matches.len()
             )));
         }
+
+        self.tried_click_indices
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(index);
 
         let chosen = &matches[index];
         let chosen_text = chosen["text"].as_str().unwrap_or("?");

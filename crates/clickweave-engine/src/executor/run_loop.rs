@@ -219,6 +219,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             // Regular execution nodes
             self.emit(ExecutorEvent::NodeStarted(node_id));
+            self.supervision_hint = None;
+            self.tried_click_indices
+                .get_mut()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            self.tried_cdp_uids
+                .get_mut()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             self.log(format!(
                 "Executing node: {} ({})",
                 node_name,
@@ -228,6 +237,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let timeout_ms = node.timeout_ms;
             let settle_ms = node.settle_ms;
             let retries = node.retries;
+            let supervision_retries = node.supervision_retries;
             let trace_level = node.trace_level;
 
             let mut node_run = self
@@ -251,6 +261,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // Returns (succeeded, was_abort) to distinguish supervision
             // aborts from execution errors (which handle their own
             // finalization inside the Err arm).
+            let mut supervision_attempts: u32 = 0;
             let (node_succeeded, was_supervision_abort) = loop {
                 match self
                     .execute_node_with_retries(
@@ -320,13 +331,37 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                             let verification = self.verify_step(&node_name, &node_type, &mcp).await;
                             if verification.passed {
+                                self.supervision_hint = None;
                                 self.emit(ExecutorEvent::SupervisionPassed {
                                     node_id,
                                     node_name: node_name.clone(),
                                     summary: verification.reasoning,
                                 });
                                 break (true, false);
+                            } else if supervision_attempts < supervision_retries {
+                                // Auto-retry: evict caches and re-execute with hint
+                                supervision_attempts += 1;
+                                self.log(format!(
+                                    "Supervision auto-retry {}/{} for '{}': {}",
+                                    supervision_attempts,
+                                    supervision_retries,
+                                    node_name,
+                                    verification.reasoning,
+                                ));
+                                self.supervision_hint = Some(verification.reasoning.clone());
+                                self.evict_caches_for_node(&node_type);
+                                self.record_event(
+                                    node_run.as_ref(),
+                                    "supervision_retry",
+                                    serde_json::json!({
+                                        "attempt": supervision_attempts,
+                                        "reason": verification.reasoning,
+                                    }),
+                                );
+                                continue;
                             } else {
+                                // Exhausted auto-retries, fall through to manual
+                                self.supervision_hint = None;
                                 self.emit(ExecutorEvent::SupervisionPaused {
                                     node_id,
                                     node_name: node_name.clone(),

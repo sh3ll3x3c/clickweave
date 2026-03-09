@@ -103,6 +103,13 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     /// Maps app name → CDP MCP server name in the McpRouter.
     cdp_servers: HashMap<String, String>,
     cancel_token: CancellationToken,
+    /// Hint from a previous supervision failure, threaded into disambiguation
+    /// prompts on retry so the LLM picks a different match.
+    supervision_hint: Option<String>,
+    /// Native click disambiguation indices already tried during supervision retries.
+    tried_click_indices: RwLock<Vec<usize>>,
+    /// CDP element UIDs already tried during supervision retries.
+    tried_cdp_uids: RwLock<Vec<String>>,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -168,6 +175,9 @@ impl WorkflowExecutor {
             pending_loop_exit: None,
             cdp_servers: HashMap::new(),
             cancel_token,
+            supervision_hint: None,
+            tried_click_indices: RwLock::new(Vec::new()),
+            tried_cdp_uids: RwLock::new(Vec::new()),
         }
     }
 }
@@ -194,6 +204,31 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .as_ref()
             .map(|(_, kind)| *kind)
             .unwrap_or(AppKind::Native)
+    }
+
+    /// Format a "previously tried" list as a prompt suffix for disambiguation.
+    /// Returns an empty string when nothing has been tried yet.
+    pub(crate) fn format_tried_context<T: std::fmt::Debug>(items: &[T], label: &str) -> String {
+        if items.is_empty() {
+            String::new()
+        } else {
+            format!("\nPreviously tried {label} that FAILED: {items:?}. Do NOT pick any of these.")
+        }
+    }
+
+    /// Format the supervision hint (if any) as a prompt suffix for disambiguation.
+    pub(crate) fn format_supervision_hint(&self, context: &str) -> String {
+        self.supervision_hint
+            .as_deref()
+            .map(|hint| {
+                format!(
+                    "\n\nIMPORTANT: {}\
+                     The supervision system reported: \"{}\"\n\
+                     Pick a DIFFERENT element.",
+                    context, hint
+                )
+            })
+            .unwrap_or_default()
     }
 
     /// Return the best available LLM for text reasoning tasks (app resolution,
