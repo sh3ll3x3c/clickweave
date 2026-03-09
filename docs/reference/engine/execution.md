@@ -190,6 +190,17 @@ Each node has `retries` (0-10). On failure before final attempt:
 
 If retries are exhausted, execution fails and graph walk stops.
 
+### Supervision Retries
+
+Each node has `supervision_retries` (default 2). When VLM supervision detects a failed step:
+
+1. If auto-retries remain: evict caches, set `supervision_hint` with failure reasoning, re-execute
+2. The hint is threaded into disambiguation prompts so the LLM picks a different match
+3. If auto-retries exhausted: fall through to manual `SupervisionPaused` (Resume/Skip/Abort)
+4. The hint is cleared on supervision pass or after exhausting auto-retries
+
+This is orthogonal to node retries (which trigger on tool execution errors). Supervision retries trigger when the tool succeeds but the VLM determines the action didn't have the intended effect.
+
 ### Planning/Assistant Retries
 
 See [Planning & LLM Retry Logic](../llm/planning-retries.md).
@@ -298,6 +309,7 @@ Common event types recorded in trace files:
 - `match_disambiguated`
 - `cdp_click`
 - `cdp_connected`
+- `supervision_retry`
 
 ## Inline Verification Verdicts
 
