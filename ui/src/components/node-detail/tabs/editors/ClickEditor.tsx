@@ -25,6 +25,12 @@ export function ClickEditor({ nodeType, onUpdate, projectPath, appKind }: NodeEd
             &quot;{nt.target.name}&quot;
             {nt.target.role && <span className="ml-1 text-xs text-[var(--text-muted)]">({nt.target.role})</span>}
           </span>
+          {nt.target.parent_role && (
+            <span className="block px-2.5 text-[10px] text-[var(--text-muted)]">
+              in {nt.target.parent_role}
+              {nt.target.parent_name && <> &quot;{nt.target.parent_name}&quot;</>}
+            </span>
+          )}
         </div>
       ) : (
         <TextField
