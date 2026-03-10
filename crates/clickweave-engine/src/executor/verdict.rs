@@ -3,6 +3,36 @@ use clickweave_llm::{ChatBackend, Message};
 use serde_json::Value;
 use uuid::Uuid;
 
+/// Build a `NodeVerdict` with a single `CheckResult`.
+fn make_verdict(
+    node_id: Uuid,
+    node_name: &str,
+    check_name: &str,
+    check_type: CheckType,
+    verdict: CheckVerdict,
+    reasoning: String,
+) -> NodeVerdict {
+    NodeVerdict {
+        node_id,
+        node_name: node_name.to_string(),
+        check_results: vec![CheckResult {
+            check_name: check_name.to_string(),
+            check_type,
+            verdict,
+            reasoning,
+        }],
+        expected_outcome_verdict: None,
+    }
+}
+
+/// Returns `true` when every check in the verdict passed.
+pub(crate) fn verdict_passed(verdict: &NodeVerdict) -> bool {
+    verdict
+        .check_results
+        .iter()
+        .all(|r| r.verdict != CheckVerdict::Fail)
+}
+
 /// Create a deterministic NodeVerdict for a Verification-role node based on its
 /// runtime result. Works for FindText, FindImage, and ListWindows which produce
 /// array results with a `.found` boolean.
@@ -31,29 +61,18 @@ pub(crate) fn deterministic_verdict(
     };
 
     let (verdict, reasoning) = if found {
+        let suffix = if count == 1 { "" } else { "es" };
         (
             CheckVerdict::Pass,
-            format!(
-                "Found {} match{}",
-                count,
-                if count == 1 { "" } else { "es" }
-            ),
+            format!("Found {} match{}", count, suffix),
         )
     } else {
         (CheckVerdict::Fail, "No matches found".to_string())
     };
 
-    NodeVerdict {
-        node_id,
-        node_name: node_name.to_string(),
-        check_results: vec![CheckResult {
-            check_name: node_name.to_string(),
-            check_type,
-            verdict,
-            reasoning,
-        }],
-        expected_outcome_verdict: None,
-    }
+    make_verdict(
+        node_id, node_name, node_name, check_type, verdict, reasoning,
+    )
 }
 
 const SCREENSHOT_VERIFICATION_PROMPT: &str = "\
@@ -159,17 +178,15 @@ pub(crate) async fn screenshot_verdict<C: ChatBackend>(
         Err(e) => (CheckVerdict::Fail, format!("VLM call failed: {}", e)),
     };
 
-    NodeVerdict {
+    let check_name = format!("{}: {}", node_name, expected_outcome);
+    make_verdict(
         node_id,
-        node_name: node_name.to_string(),
-        check_results: vec![CheckResult {
-            check_name: format!("{}: {}", node_name, expected_outcome),
-            check_type: CheckType::ScreenshotMatch,
-            verdict,
-            reasoning,
-        }],
-        expected_outcome_verdict: None,
-    }
+        node_name,
+        &check_name,
+        CheckType::ScreenshotMatch,
+        verdict,
+        reasoning,
+    )
 }
 
 #[cfg(test)]
