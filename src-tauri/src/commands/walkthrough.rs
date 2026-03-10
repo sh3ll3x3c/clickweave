@@ -3,8 +3,9 @@ use std::sync::Mutex;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    AppKind, WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind,
-    WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
+    ActionConfidence, AppKind, WalkthroughAction, WalkthroughActionKind, WalkthroughAnnotations,
+    WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
+    WalkthroughStorage,
 };
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
@@ -362,6 +363,14 @@ pub async fn stop_walkthrough(
                 resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
             }
 
+            // Hover: retrieve hover events and convert to candidate actions.
+            // Uses a temporary MCP instance to call stop_hover_tracking/get_hover_events.
+            let hover_candidates = retrieve_hover_candidates(&events).await;
+            for candidate in hover_candidates {
+                let insert_idx = find_chronological_insert_position(&actions, &candidate, &events);
+                actions.insert(insert_idx, candidate);
+            }
+
             // Save actions.
             if let Err(e) = storage.save_actions(dir, &actions) {
                 tracing::warn!("Failed to save actions: {e}");
@@ -600,4 +609,102 @@ pub async fn seed_walkthrough_cache(
     );
 
     Ok(())
+}
+
+/// Retrieve hover candidates from HoverDetected events captured during recording.
+///
+/// Filters by dwell threshold and removes hovers immediately followed by a click
+/// on the same location (the click subsumes the hover).
+async fn retrieve_hover_candidates(events: &[WalkthroughEvent]) -> Vec<WalkthroughAction> {
+    let hover_threshold_ms: u64 = 1000;
+    let mut candidates = Vec::new();
+
+    for (i, event) in events.iter().enumerate() {
+        if let WalkthroughEventKind::HoverDetected {
+            x,
+            y,
+            element_name,
+            element_role,
+            dwell_ms,
+        } = &event.kind
+        {
+            // Filter by dwell threshold.
+            if *dwell_ms < hover_threshold_ms {
+                continue;
+            }
+
+            // Skip if next non-enrichment event is a click near same coordinates
+            // (the click subsumes the hover intent).
+            let click_follows = events[i + 1..].iter().any(|e| {
+                matches!(
+                    &e.kind,
+                    WalkthroughEventKind::MouseClicked { x: cx, y: cy, .. }
+                    if (cx - x).abs() < 20.0 && (cy - y).abs() < 20.0
+                        && e.timestamp.saturating_sub(event.timestamp) < 2000
+                )
+            });
+            if click_follows {
+                continue;
+            }
+
+            let mut target_candidates = vec![];
+            if !element_name.is_empty() {
+                target_candidates.push(
+                    clickweave_core::walkthrough::TargetCandidate::AccessibilityLabel {
+                        label: element_name.clone(),
+                        role: element_role.clone(),
+                    },
+                );
+            }
+
+            candidates.push(WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::Hover {
+                    x: *x,
+                    y: *y,
+                    dwell_ms: *dwell_ms,
+                },
+                app_name: None,
+                window_title: None,
+                target_candidates,
+                artifact_paths: vec![],
+                source_event_ids: vec![event.id],
+                confidence: ActionConfidence::Medium,
+                warnings: vec![],
+                screenshot_meta: None,
+                candidate: true,
+            });
+        }
+    }
+
+    candidates
+}
+
+/// Find the chronological insertion position for a hover candidate action
+/// based on its source event timestamp, relative to existing actions.
+fn find_chronological_insert_position(
+    actions: &[WalkthroughAction],
+    candidate: &WalkthroughAction,
+    events: &[WalkthroughEvent],
+) -> usize {
+    let candidate_ts = candidate
+        .source_event_ids
+        .first()
+        .and_then(|id| events.iter().find(|e| e.id == *id))
+        .map(|e| e.timestamp)
+        .unwrap_or(u64::MAX);
+
+    // Find the first action whose source event timestamp is after the candidate's.
+    for (i, action) in actions.iter().enumerate() {
+        let action_ts = action
+            .source_event_ids
+            .first()
+            .and_then(|id| events.iter().find(|e| e.id == *id))
+            .map(|e| e.timestamp)
+            .unwrap_or(0);
+        if action_ts > candidate_ts {
+            return i;
+        }
+    }
+    actions.len()
 }

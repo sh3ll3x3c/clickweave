@@ -353,6 +353,25 @@ pub(super) async fn process_capture_events(
             std::sync::Arc::new(clickweave_llm::LlmClient::new(config))
         });
 
+    // Start hover tracking for the recording session (non-fatal if unavailable).
+    if let Some(ref mcp) = mcp {
+        let mut hover_args = serde_json::json!({
+            "min_dwell_ms": 300,
+            "poll_interval_ms": 100,
+            "max_duration_ms": 600_000,
+        });
+        // Scope to focused app if known from CDP setup.
+        if let Some(first_app) = cdp_apps.first() {
+            hover_args["app_name"] = serde_json::json!(first_app.name);
+        }
+        if let Err(e) = mcp
+            .call_tool("start_hover_tracking", Some(hover_args))
+            .await
+        {
+            tracing::warn!("Failed to start hover tracking: {e}");
+        }
+    }
+
     // Background tasks for click enrichment and VLM resolution.
     // Each task persists and emits its own events; the event loop
     // only needs to drain completions to detect errors.
