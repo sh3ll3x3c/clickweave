@@ -2,7 +2,7 @@ import type { StateCreator } from "zustand";
 import { commands } from "../../bindings";
 import type { CdpAppConfig, NodeRename, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
 import type { CdpSetupProgress } from "../../components/CdpAppSelectModal";
-import { applyAnnotationsToDraft } from "../../utils/walkthroughDraft";
+import { applyAnnotationsToDraft, findCandidateInsertIndex, recomputeNodePositions, synthesizeNodeForKeptCandidate } from "../../utils/walkthroughDraft";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { currentMonitor } from "@tauri-apps/api/window";
 import { LogicalSize, LogicalPosition } from "@tauri-apps/api/dpi";
@@ -281,11 +281,39 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughExpandedAction: s.walkthroughExpandedAction === id ? null : id,
   })),
 
-  keepCandidate: (actionId) => set((s) => ({
-    walkthroughActions: s.walkthroughActions.map((a) =>
+  keepCandidate: (actionId) => set((s) => {
+    const updatedActions = s.walkthroughActions.map((a) =>
       a.id === actionId ? { ...a, candidate: false } : a,
-    ),
-  })),
+    );
+
+    const action = updatedActions.find((a) => a.id === actionId);
+    if (!action || !s.walkthroughDraft || action.kind.type !== "Hover") {
+      return { walkthroughActions: updatedActions };
+    }
+
+    // Synthesize a node for the kept candidate and insert it into the draft.
+    const nodeId = crypto.randomUUID();
+    const insertIdx = findCandidateInsertIndex(
+      actionId, updatedActions, s.walkthroughActionNodeMap, s.walkthroughDraft.nodes,
+    );
+    const position = { x: 250, y: insertIdx * 100 };
+    const node = synthesizeNodeForKeptCandidate(action, nodeId, position);
+
+    const updatedNodes = [...s.walkthroughDraft.nodes];
+    updatedNodes.splice(insertIdx, 0, node);
+
+    return {
+      walkthroughActions: updatedActions,
+      walkthroughDraft: {
+        ...s.walkthroughDraft,
+        nodes: recomputeNodePositions(updatedNodes),
+      },
+      walkthroughActionNodeMap: [
+        ...s.walkthroughActionNodeMap,
+        { action_id: actionId, node_id: nodeId },
+      ],
+    };
+  }),
 
   dismissCandidate: (actionId) => set((s) => ({
     walkthroughActions: s.walkthroughActions.filter((a) => a.id !== actionId),

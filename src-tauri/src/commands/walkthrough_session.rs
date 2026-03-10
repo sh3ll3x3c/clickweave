@@ -685,6 +685,78 @@ pub(super) async fn process_capture_events(
     #[cfg(target_os = "macos")]
     cursor_poll_handle.abort();
 
+    // Retrieve hover events from MCP and persist them as HoverDetected
+    // walkthrough events so that stop_walkthrough's retrieve_hover_candidates
+    // can find them when scanning the event log.
+    if let Some(ref mcp) = mcp {
+        match mcp.call_tool("stop_hover_tracking", None).await {
+            Ok(result) if result.is_error != Some(true) => {
+                let raw_text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
+                match serde_json::from_str::<Vec<serde_json::Value>>(&raw_text) {
+                    Ok(events) => {
+                        let mut count = 0u32;
+                        for ev in events {
+                            // Skip timeout sentinel events.
+                            if ev.get("timeout").and_then(|v| v.as_bool()) == Some(true) {
+                                continue;
+                            }
+                            let x = ev
+                                .pointer("/cursor/x")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
+                            let y = ev
+                                .pointer("/cursor/y")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
+                            let element_name = ev
+                                .pointer("/element/name")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| ev.pointer("/element/label").and_then(|v| v.as_str()))
+                                .unwrap_or("")
+                                .to_string();
+                            let element_role = ev
+                                .pointer("/element/role")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let dwell_ms = ev
+                                .get("previous_dwell_ms")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let timestamp_ms =
+                                ev.get("timestamp_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                            let hover_event = WalkthroughEvent {
+                                id: Uuid::new_v4(),
+                                timestamp: timestamp_ms,
+                                kind: WalkthroughEventKind::HoverDetected {
+                                    x,
+                                    y,
+                                    element_name,
+                                    element_role,
+                                    dwell_ms,
+                                },
+                            };
+                            persist_and_emit(&app, &storage, &session_dir, &hover_event);
+                            count += 1;
+                        }
+                        if count > 0 {
+                            tracing::info!("Persisted {count} hover events from MCP tracking");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse hover tracking response: {e}");
+                    }
+                }
+            }
+            Ok(_) => {
+                tracing::debug!("stop_hover_tracking returned error (may not have been active)");
+            }
+            Err(e) => {
+                tracing::debug!("stop_hover_tracking call failed: {e}");
+            }
+        }
+    }
+
     tracing::info!("Walkthrough capture event loop ended");
 }
 
