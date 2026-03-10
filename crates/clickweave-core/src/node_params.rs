@@ -100,6 +100,10 @@ pub enum WindowControlAction {
     Close,
     Minimize,
     Maximize,
+    /// Green button in "zoom" mode — resizes/maximizes the window without
+    /// entering full screen. Same physical button as Maximize but different
+    /// macOS subrole (`AXZoomButton` vs `AXFullScreenButton`).
+    Zoom,
 }
 
 impl WindowControlAction {
@@ -109,7 +113,7 @@ impl WindowControlAction {
         match self {
             Self::Close => (14.0, 14.0),
             Self::Minimize => (34.0, 14.0),
-            Self::Maximize => (54.0, 14.0),
+            Self::Maximize | Self::Zoom => (54.0, 14.0),
         }
     }
 
@@ -118,6 +122,7 @@ impl WindowControlAction {
             Self::Close => "Close window",
             Self::Minimize => "Minimize window",
             Self::Maximize => "Maximize window",
+            Self::Zoom => "Zoom window",
         }
     }
 }

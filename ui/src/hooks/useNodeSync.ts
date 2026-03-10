@@ -21,7 +21,10 @@ function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | und
   if (nt.target) {
     if (nt.target.type === "Text") return nt.target.text;
     if (nt.target.type === "CdpElement") return nt.target.name;
-    if (nt.target.type === "WindowControl") return nt.target.action;
+    if (nt.target.type === "WindowControl") {
+      const names: Record<string, string> = { Close: "Close window", Minimize: "Minimize window", Maximize: "Maximize window", Zoom: "Zoom window" };
+      return names[nt.target.action] ?? nt.target.action;
+    }
   }
   if (nt.template_image) return "image match";
   if (nt.x != null && nt.y != null) return `at (${Math.round(nt.x)}, ${Math.round(nt.y)})`;
