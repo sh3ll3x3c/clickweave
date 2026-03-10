@@ -38,22 +38,24 @@ export function actionIcon(kind: WalkthroughAction["kind"]): { icon: string; col
   }
 }
 
+function pointerActionLabel(prefix: string, action: WalkthroughAction, x: number, y: number): string {
+  const idx = preferredTargetIndex(action.target_candidates);
+  const best = action.target_candidates[idx];
+  if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
+    const label = (best.type === "OcrText") ? best.text
+      : (best.type === "CdpElement") ? best.name
+      : best.label;
+    return `${prefix} '${label.length > 25 ? label.slice(0, 25) + "\u2026" : label}'`;
+  }
+  return `${prefix} (${x}, ${y})`;
+}
+
 export function actionLabel(action: WalkthroughAction): string {
   const k = action.kind;
   switch (k.type) {
     case "LaunchApp": return `Launch ${k.app_name}`;
     case "FocusWindow": return `Focus ${k.app_name}`;
-    case "Click": {
-      const idx = preferredTargetIndex(action.target_candidates);
-      const best = action.target_candidates[idx];
-      if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
-        const label = (best.type === "OcrText") ? best.text
-          : (best.type === "CdpElement") ? best.name
-          : best.label;
-        return `Click '${label.length > 25 ? label.slice(0, 25) + "\u2026" : label}'`;
-      }
-      return `Click (${k.x}, ${k.y})`;
-    }
+    case "Click": return pointerActionLabel("Click", action, k.x, k.y);
     case "TypeText": {
       const t = k.text;
       return `Type '${t.length > 30 ? t.slice(0, 30) + "\u2026" : t}'`;
@@ -63,17 +65,7 @@ export function actionLabel(action: WalkthroughAction): string {
       return `Press ${mods}${k.key}`;
     }
     case "Scroll": return "Scroll";
-    case "Hover": {
-      const idx = preferredTargetIndex(action.target_candidates);
-      const best = action.target_candidates[idx];
-      if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
-        const label = (best.type === "OcrText") ? best.text
-          : (best.type === "CdpElement") ? best.name
-          : best.label;
-        return `Hover '${label.length > 25 ? label.slice(0, 25) + "\u2026" : label}'`;
-      }
-      return `Hover (${k.x}, ${k.y})`;
-    }
+    case "Hover": return pointerActionLabel("Hover", action, k.x, k.y);
   }
 }
 

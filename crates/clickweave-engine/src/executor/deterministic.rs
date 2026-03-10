@@ -527,17 +527,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Some(retry_args)
     }
 
-    async fn resolve_click_target(
+    /// Resolve a text target to screen coordinates via find_text + disambiguation.
+    ///
+    /// Shared by click and hover target resolution. Returns `(x, y)` coordinates.
+    async fn resolve_target_by_text(
         &self,
         node_id: Uuid,
+        target: &str,
         mcp: &McpRouter,
-        params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
-    ) -> ExecutorResult<NodeType> {
-        let target = params.target.as_ref().map(|t| t.text()).ok_or_else(|| {
-            ExecutorError::ClickTarget("resolve_click_target called with no target".to_string())
-        })?;
-
+    ) -> ExecutorResult<(f64, f64)> {
         let scoped_app = self.focused_app_name();
 
         // Use cached element resolution if available (e.g. × → Multiply) to
@@ -557,11 +556,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         match &scoped_app {
-            Some(app) => self.log(format!("Resolving click target: '{}' in '{}'", target, app)),
-            None => self.log(format!(
-                "Resolving click target: '{}' (screen-wide)",
-                target
-            )),
+            Some(app) => self.log(format!("Resolving target: '{}' in '{}'", target, app)),
+            None => self.log(format!("Resolving target: '{}' (screen-wide)", target)),
         }
 
         let find_result = mcp
@@ -637,12 +633,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 target
             ))
         })?;
-        let matched_text = best["text"].as_str().unwrap_or(target);
 
-        self.log(format!(
-            "Resolved target '{}' -> ({}, {}) from '{}'",
-            target, x, y, matched_text
-        ));
+        self.log(format!("Resolved target '{}' -> ({}, {})", target, x, y));
 
         self.record_event(
             node_run.as_deref(),
@@ -651,39 +643,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "target": target,
                 "x": x,
                 "y": y,
-                "matched_text": matched_text,
                 "app_name": scoped_app,
             }),
         );
 
-        Ok(NodeType::Click(ClickParams {
-            target: params.target.clone(),
-            x: Some(x),
-            y: Some(y),
-            button: params.button,
-            click_count: params.click_count,
-            ..Default::default()
-        }))
+        Ok((x, y))
     }
 
-    async fn resolve_click_target_by_image(
+    /// Resolve a target by image template matching. Returns `(x, y)` coordinates.
+    async fn resolve_target_by_image(
         &self,
-        _node_id: Uuid,
+        template_b64: &str,
         mcp: &McpRouter,
-        params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
-    ) -> ExecutorResult<NodeType> {
-        let b64 = params.template_image.as_deref().ok_or_else(|| {
-            ExecutorError::ClickTarget(
-                "resolve_click_target_by_image called without template_image".to_string(),
-            )
-        })?;
+    ) -> ExecutorResult<(f64, f64)> {
+        self.log("Resolving target by image template".to_string());
 
-        self.log("Resolving click target by image template".to_string());
-
-        // Take a screenshot first — find_image needs both a template and a
-        // screenshot to search within. Use screenshot_id when available so
-        // find_image has the screenshot metadata for screen coordinate conversion.
         let app_name = self.focused_app_name();
         let screenshot_args = match &app_name {
             Some(name) => serde_json::json!({ "app_name": name }),
@@ -697,7 +672,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ))?;
 
         let mut find_args = serde_json::json!({
-            "template_image_base64": b64,
+            "template_image_base64": template_b64,
             "threshold": 0.75,
             "max_results": 1,
         });
@@ -741,7 +716,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ExecutorError::ClickTarget(format!("Failed to parse find_image result: {}", e))
         })?;
 
-        // find_image returns { "matches": [...] }.
         let matches = parsed["matches"].as_array().ok_or_else(|| {
             ExecutorError::ClickTarget("find_image returned no matches array".to_string())
         })?;
@@ -749,8 +723,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .first()
             .ok_or_else(|| ExecutorError::ClickTarget("find_image found no matches".to_string()))?;
 
-        // Prefer screen coordinates (available when screenshot_id was used).
-        // Fall back to center pixel coordinates.
         let x = best["screen_x"]
             .as_f64()
             .or_else(|| best["center"]["x"].as_f64())
@@ -782,6 +754,45 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }),
         );
 
+        Ok((x, y))
+    }
+
+    async fn resolve_click_target(
+        &self,
+        node_id: Uuid,
+        mcp: &McpRouter,
+        params: &ClickParams,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> ExecutorResult<NodeType> {
+        let target = params.target.as_ref().map(|t| t.text()).ok_or_else(|| {
+            ExecutorError::ClickTarget("resolve_click_target called with no target".to_string())
+        })?;
+        let (x, y) = self
+            .resolve_target_by_text(node_id, target, mcp, node_run)
+            .await?;
+        Ok(NodeType::Click(ClickParams {
+            target: params.target.clone(),
+            x: Some(x),
+            y: Some(y),
+            button: params.button,
+            click_count: params.click_count,
+            ..Default::default()
+        }))
+    }
+
+    async fn resolve_click_target_by_image(
+        &self,
+        _node_id: Uuid,
+        mcp: &McpRouter,
+        params: &ClickParams,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> ExecutorResult<NodeType> {
+        let b64 = params.template_image.as_deref().ok_or_else(|| {
+            ExecutorError::ClickTarget(
+                "resolve_click_target_by_image called without template_image".to_string(),
+            )
+        })?;
+        let (x, y) = self.resolve_target_by_image(b64, mcp, node_run).await?;
         Ok(NodeType::Click(ClickParams {
             target: params.target.clone(),
             x: Some(x),
@@ -802,112 +813,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let target = params.target.as_ref().map(|t| t.text()).ok_or_else(|| {
             ExecutorError::ClickTarget("resolve_hover_target called with no target".to_string())
         })?;
-
-        let scoped_app = self.focused_app_name();
-
-        let element_key = (target.to_string(), scoped_app.clone());
-        let search_text = self
-            .element_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&element_key)
-            .cloned()
-            .unwrap_or_else(|| target.to_string());
-
-        let mut find_args = serde_json::json!({"text": search_text});
-        if let Some(ref app_name) = scoped_app {
-            find_args["app_name"] = serde_json::Value::String(app_name.clone());
-        }
-
-        self.log(format!("Resolving hover target: '{}'", target));
-
-        let find_result = mcp
-            .call_tool("find_text", Some(find_args.clone()))
-            .await
-            .map_err(|e| {
-                ExecutorError::ClickTarget(format!("find_text for '{}' failed: {}", target, e))
-            })?;
-
-        Self::check_tool_error(&find_result, "find_text")?;
-
-        let result_text = Self::extract_result_text(&find_result);
-        let mut matches: Vec<Value> = serde_json::from_str(&result_text).unwrap_or_default();
-
-        if matches.is_empty()
-            && let Some(retry_text) = self
-                .try_resolve_find_text(node_id, &find_args, &result_text, mcp, node_run.as_deref())
-                .await
-        {
-            matches = serde_json::from_str(&retry_text).unwrap_or_default();
-        }
-
-        let best = if matches.is_empty() {
-            return Err(ExecutorError::ClickTarget(format!(
-                "Could not find text '{}' on screen for hover",
-                target,
-            )));
-        } else if matches.len() == 1 {
-            &matches[0]
-        } else {
-            let ck = cache_key(node_id, target, scoped_app.as_deref());
-            let cached_idx = self
-                .decision_cache
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .click_disambiguation
-                .get(&ck)
-                .and_then(|cached| {
-                    matches.iter().position(|m| {
-                        m["text"].as_str() == Some(cached.chosen_text.as_str())
-                            && m["role"].as_str() == Some(cached.chosen_role.as_str())
-                    })
-                });
-
-            let idx = if let Some(idx) = cached_idx {
-                self.log(format!("Using cached disambiguation for '{}'", target));
-                idx
-            } else {
-                self.disambiguate_click_matches(
-                    node_id,
-                    target,
-                    &matches,
-                    scoped_app.as_deref(),
-                    node_run.as_deref(),
-                )
-                .await?
-            };
-            &matches[idx]
-        };
-
-        let x = best["x"].as_f64().ok_or_else(|| {
-            ExecutorError::ClickTarget(format!(
-                "find_text match for '{}' missing 'x' coordinate",
-                target
-            ))
-        })?;
-        let y = best["y"].as_f64().ok_or_else(|| {
-            ExecutorError::ClickTarget(format!(
-                "find_text match for '{}' missing 'y' coordinate",
-                target
-            ))
-        })?;
-
-        self.log(format!(
-            "Resolved hover target '{}' -> ({}, {})",
-            target, x, y
-        ));
-
-        self.record_event(
-            node_run.as_deref(),
-            "target_resolved",
-            serde_json::json!({
-                "target": target,
-                "x": x,
-                "y": y,
-                "action": "hover",
-            }),
-        );
-
+        let (x, y) = self
+            .resolve_target_by_text(node_id, target, mcp, node_run)
+            .await?;
         Ok(NodeType::Hover(HoverParams {
             target: params.target.clone(),
             x: Some(x),
@@ -929,104 +837,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "resolve_hover_target_by_image called without template_image".to_string(),
             )
         })?;
-
-        self.log("Resolving hover target by image template".to_string());
-
-        let app_name = self.focused_app_name();
-        let screenshot_args = match &app_name {
-            Some(name) => serde_json::json!({ "app_name": name }),
-            None => serde_json::json!({}),
-        };
-        let (screenshot_b64, screenshot_id) = self
-            .take_screenshot_with_id(mcp, screenshot_args)
-            .await
-            .ok_or(ExecutorError::ClickTarget(
-                "Failed to take screenshot for hover image template matching".to_string(),
-            ))?;
-
-        let mut find_args = serde_json::json!({
-            "template_image_base64": b64,
-            "threshold": 0.75,
-            "max_results": 1,
-        });
-        if let Some(id) = &screenshot_id {
-            find_args["screenshot_id"] = serde_json::Value::String(id.clone());
-        } else {
-            find_args["screenshot_image_base64"] = serde_json::Value::String(screenshot_b64);
-        }
-
-        self.record_event(
-            node_run.as_deref(),
-            "tool_call",
-            serde_json::json!({"name": "find_image", "args": {
-                "threshold": 0.75,
-                "max_results": 1,
-                "has_template": true,
-                "action": "hover",
-            }}),
-        );
-
-        let result = mcp
-            .call_tool("find_image", Some(find_args))
-            .await
-            .map_err(|e| ExecutorError::ClickTarget(format!("find_image failed: {}", e)))?;
-        Self::check_tool_error(&result, "find_image")?;
-
-        let result_text = Self::extract_result_text(&result);
-
-        self.record_event(
-            node_run.as_deref(),
-            "tool_result",
-            serde_json::json!({
-                "name": "find_image",
-                "text": Self::truncate_for_trace(&result_text, 8192),
-                "text_len": result_text.len(),
-            }),
-        );
-
-        let parsed: Value = serde_json::from_str(&result_text).map_err(|e| {
-            ExecutorError::ClickTarget(format!("Failed to parse find_image result: {}", e))
-        })?;
-
-        let matches = parsed["matches"].as_array().ok_or_else(|| {
-            ExecutorError::ClickTarget("find_image returned no matches array".to_string())
-        })?;
-        let best = matches
-            .first()
-            .ok_or_else(|| ExecutorError::ClickTarget("find_image found no matches".to_string()))?;
-
-        let x = best["screen_x"]
-            .as_f64()
-            .or_else(|| best["center"]["x"].as_f64())
-            .ok_or(ExecutorError::ClickTarget(
-                "Missing x in find_image match".to_string(),
-            ))?;
-        let y = best["screen_y"]
-            .as_f64()
-            .or_else(|| best["center"]["y"].as_f64())
-            .ok_or(ExecutorError::ClickTarget(
-                "Missing y in find_image match".to_string(),
-            ))?;
-
-        self.log(format!(
-            "Resolved hover image target -> ({}, {}), score={}",
-            x,
-            y,
-            best["score"].as_f64().unwrap_or(0.0)
-        ));
-
-        self.record_event(
-            node_run.as_deref(),
-            "target_resolved",
-            serde_json::json!({
-                "method": "find_image",
-                "x": x,
-                "y": y,
-                "score": best["score"],
-                "action": "hover",
-            }),
-        );
-
+        let (x, y) = self.resolve_target_by_image(b64, mcp, node_run).await?;
         Ok(NodeType::Hover(HoverParams {
             target: params.target.clone(),
             template_image: params.template_image.clone(),
@@ -1040,13 +851,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
-    /// Try to resolve and click a text target via CDP (chrome-devtools).
+    /// Resolve a text target to a CDP element UID via snapshot + find + disambiguate.
     ///
-    /// Takes a snapshot of the page's accessibility tree, finds the element
-    /// matching the target text, and clicks it via CDP. Returns the click
-    /// result text on success, or an error string to trigger native fallback.
+    /// Shared by both click and hover CDP paths. Returns the resolved element UID.
     #[allow(clippy::too_many_arguments)]
-    async fn resolve_and_click_cdp(
+    async fn resolve_cdp_element_uid(
         &self,
         target: &str,
         expected_role: Option<&str>,
@@ -1055,12 +864,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         expected_parent_name: Option<&str>,
         cdp_server: &str,
         mcp: &McpRouter,
-        node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
         // 1. Ensure a page is selected (list_pages triggers auto-selection
-        //    inside chrome-devtools-mcp). This is needed because the CDP server
-        //    may have been spawned in an earlier node (e.g. FocusWindow) and the
-        //    selected page could have changed since.
+        //    inside chrome-devtools-mcp).
         let _ = mcp
             .call_tool_on(cdp_server, "list_pages", Some(serde_json::json!({})))
             .await;
@@ -1085,8 +891,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // 3. Find matching elements
         let mut matches = find_elements_in_snapshot(&snapshot_text, target);
-
-        // Narrow by role/href then parent context for disambiguation.
         clickweave_core::cdp::narrow_matches(&mut matches, expected_role, expected_href);
         clickweave_core::cdp::narrow_by_parent(
             &mut matches,
@@ -1094,36 +898,59 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             expected_parent_name,
         );
 
-        let uid = if matches.is_empty() {
+        if matches.is_empty() {
             self.log(format!(
                 "CDP: no exact match for '{}', trying LLM resolution",
                 target
             ));
-            self.resolve_cdp_element_name(target, &snapshot_text)
-                .await?
+            self.resolve_cdp_element_name(target, &snapshot_text).await
         } else if matches.len() == 1 {
-            matches[0].uid.clone()
+            Ok(matches[0].uid.clone())
         } else {
             self.log(format!(
                 "CDP: {} matches for '{}', disambiguating",
                 matches.len(),
                 target
             ));
-            self.disambiguate_cdp_elements(target, &matches).await?
-        };
+            self.disambiguate_cdp_elements(target, &matches).await
+        }
+    }
 
-        // 4. Click the element
+    /// Resolve a CDP element and click it. Returns the click result text.
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_and_click_cdp(
+        &self,
+        target: &str,
+        expected_role: Option<&str>,
+        expected_href: Option<&str>,
+        expected_parent_role: Option<&str>,
+        expected_parent_name: Option<&str>,
+        cdp_server: &str,
+        mcp: &McpRouter,
+        node_run: Option<&NodeRun>,
+    ) -> ExecutorResult<String> {
+        let uid = self
+            .resolve_cdp_element_uid(
+                target,
+                expected_role,
+                expected_href,
+                expected_parent_role,
+                expected_parent_name,
+                cdp_server,
+                mcp,
+            )
+            .await?;
+
         self.log(format!("CDP: clicking element uid='{}'", uid));
-        let click_args = serde_json::json!({ "uid": uid });
-        let click_result = mcp
-            .call_tool_on(cdp_server, "click", Some(click_args))
+        let result = mcp
+            .call_tool_on(cdp_server, "click", Some(serde_json::json!({ "uid": uid })))
             .await
             .map_err(|e| ExecutorError::Cdp(format!("click failed: {e}")))?;
 
-        if click_result.is_error == Some(true) {
+        if result.is_error == Some(true) {
             return Err(ExecutorError::Cdp(format!(
                 "click error: {}",
-                Self::extract_result_text(&click_result)
+                Self::extract_result_text(&result)
             )));
         }
 
@@ -1133,14 +960,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             serde_json::json!({ "target": target, "uid": uid }),
         );
 
-        Ok(Self::extract_result_text(&click_result))
+        Ok(Self::extract_result_text(&result))
     }
 
-    /// Try to resolve and hover a text target via CDP (chrome-devtools).
-    ///
-    /// Takes a snapshot of the page's accessibility tree, finds the element
-    /// matching the target text, and hovers it via CDP. Returns the hover
-    /// result text on success, or an error string to trigger native fallback.
+    /// Resolve a CDP element and hover it. Returns the hover result text.
     #[allow(clippy::too_many_arguments)]
     async fn resolve_and_hover_cdp(
         &self,
@@ -1153,67 +976,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &McpRouter,
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
-        // 1. Ensure a page is selected
-        let _ = mcp
-            .call_tool_on(cdp_server, "list_pages", Some(serde_json::json!({})))
-            .await;
+        let uid = self
+            .resolve_cdp_element_uid(
+                target,
+                expected_role,
+                expected_href,
+                expected_parent_role,
+                expected_parent_name,
+                cdp_server,
+                mcp,
+            )
+            .await?;
 
-        // 2. Take CDP snapshot
-        self.log(format!("CDP: taking snapshot to hover '{}'", target));
-        let snapshot_result = mcp
-            .call_tool_on(cdp_server, "take_snapshot", Some(serde_json::json!({})))
-            .await
-            .map_err(|e| ExecutorError::Cdp(format!("take_snapshot failed: {e}")))?;
-
-        if snapshot_result.is_error == Some(true) {
-            let error_text = Self::extract_result_text(&snapshot_result);
-            return Err(ExecutorError::Cdp(format!(
-                "take_snapshot error: {}",
-                error_text
-            )));
-        }
-
-        let snapshot_text = Self::extract_result_text(&snapshot_result);
-
-        // 3. Find matching elements
-        let mut matches = find_elements_in_snapshot(&snapshot_text, target);
-        clickweave_core::cdp::narrow_matches(&mut matches, expected_role, expected_href);
-        clickweave_core::cdp::narrow_by_parent(
-            &mut matches,
-            expected_parent_role,
-            expected_parent_name,
-        );
-
-        let uid = if matches.is_empty() {
-            self.log(format!(
-                "CDP: no exact match for '{}', trying LLM resolution",
-                target
-            ));
-            self.resolve_cdp_element_name(target, &snapshot_text)
-                .await?
-        } else if matches.len() == 1 {
-            matches[0].uid.clone()
-        } else {
-            self.log(format!(
-                "CDP: {} matches for '{}', disambiguating",
-                matches.len(),
-                target
-            ));
-            self.disambiguate_cdp_elements(target, &matches).await?
-        };
-
-        // 4. Hover the element
         self.log(format!("CDP: hovering element uid='{}'", uid));
-        let hover_args = serde_json::json!({ "uid": uid });
-        let hover_result = mcp
-            .call_tool_on(cdp_server, "hover", Some(hover_args))
+        let result = mcp
+            .call_tool_on(cdp_server, "hover", Some(serde_json::json!({ "uid": uid })))
             .await
             .map_err(|e| ExecutorError::Cdp(format!("hover failed: {e}")))?;
 
-        if hover_result.is_error == Some(true) {
+        if result.is_error == Some(true) {
             return Err(ExecutorError::Cdp(format!(
                 "hover error: {}",
-                Self::extract_result_text(&hover_result)
+                Self::extract_result_text(&result)
             )));
         }
 
@@ -1223,7 +1007,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             serde_json::json!({ "target": target, "uid": uid }),
         );
 
-        Ok(Self::extract_result_text(&hover_result))
+        Ok(Self::extract_result_text(&result))
     }
 
     /// Ask the LLM to find the best matching element in the CDP snapshot.

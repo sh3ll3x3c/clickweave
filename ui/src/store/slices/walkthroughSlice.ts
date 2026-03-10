@@ -247,11 +247,11 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   },
 
   stopWalkthrough: async () => {
-    const { pushLog, plannerConfig } = get();
+    const { pushLog, plannerConfig, hoverDwellThreshold } = get();
     const planner = plannerConfig.baseUrl && plannerConfig.model
       ? toEndpoint(plannerConfig)
       : null;
-    const result = await commands.stopWalkthrough(planner);
+    const result = await commands.stopWalkthrough(planner, hoverDwellThreshold);
     if (result.status === "error") {
       pushLog(`Walkthrough stop failed: ${result.error}`);
     }

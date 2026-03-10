@@ -174,9 +174,9 @@ async resumeWalkthrough() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async stopWalkthrough(planner: EndpointConfig | null) : Promise<Result<null, string>> {
+async stopWalkthrough(planner: EndpointConfig | null, hoverDwellThreshold: number | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("stop_walkthrough", { planner }) };
+    return { status: "ok", data: await TAURI_INVOKE("stop_walkthrough", { planner, hoverDwellThreshold }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

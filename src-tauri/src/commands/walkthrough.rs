@@ -300,6 +300,7 @@ pub async fn resume_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
 pub async fn stop_walkthrough(
     app: tauri::AppHandle,
     planner: Option<super::types::EndpointConfig>,
+    hover_dwell_threshold: Option<u64>,
 ) -> Result<(), String> {
     let (task, storage, session_dir, workflow_id, session_id) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
@@ -365,7 +366,8 @@ pub async fn stop_walkthrough(
 
             // Hover: retrieve hover events and convert to candidate actions.
             // Uses a temporary MCP instance to call stop_hover_tracking/get_hover_events.
-            let hover_candidates = retrieve_hover_candidates(&events).await;
+            let hover_candidates =
+                retrieve_hover_candidates(&events, hover_dwell_threshold.unwrap_or(1000));
             for candidate in hover_candidates {
                 let insert_idx = find_chronological_insert_position(&actions, &candidate, &events);
                 actions.insert(insert_idx, candidate);
@@ -615,8 +617,10 @@ pub async fn seed_walkthrough_cache(
 ///
 /// Filters by dwell threshold and removes hovers immediately followed by a click
 /// on the same location (the click subsumes the hover).
-async fn retrieve_hover_candidates(events: &[WalkthroughEvent]) -> Vec<WalkthroughAction> {
-    let hover_threshold_ms: u64 = 1000;
+fn retrieve_hover_candidates(
+    events: &[WalkthroughEvent],
+    hover_threshold_ms: u64,
+) -> Vec<WalkthroughAction> {
     let mut candidates = Vec::new();
 
     for (i, event) in events.iter().enumerate() {
