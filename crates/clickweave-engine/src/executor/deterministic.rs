@@ -706,6 +706,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             app_name
         ));
 
+        // Focus the window first — it may be off-screen (different Space,
+        // behind other windows) after a CDP relaunch or app switch.
+        if let Some(ref name) = app_name {
+            let focus_args = Some(serde_json::json!({"app_name": name}));
+            let _ = mcp.call_tool("focus_window", focus_args).await;
+        }
+
         // Call list_windows to get window bounds.
         let args = app_name
             .as_ref()
@@ -726,26 +733,43 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ExecutorError::ClickTarget(format!("Failed to parse list_windows response: {e}"))
         })?;
 
-        // Find the best window: prefer one matching the focused app, on-screen,
-        // with the smallest layer (frontmost standard window).
+        // Find the best window: prefer on-screen windows, but accept off-screen
+        // ones (the focus_window call above may not have taken effect yet).
+        // Bounds are valid regardless of is_on_screen — we just need the
+        // window's position to compute the traffic light button coordinates.
         let window = if let Some(ref name) = app_name {
-            windows
+            let candidates: Vec<_> = windows
                 .iter()
-                .filter(|w| {
-                    w["owner_name"].as_str() == Some(name)
-                        && w["is_on_screen"].as_bool().unwrap_or(false)
-                })
-                .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
-        } else {
-            windows
+                .filter(|w| w["owner_name"].as_str() == Some(name))
+                .collect();
+            // Prefer on-screen, fall back to any matching window.
+            candidates
                 .iter()
+                .copied()
                 .filter(|w| w["is_on_screen"].as_bool().unwrap_or(false))
                 .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
+                .or_else(|| {
+                    candidates
+                        .into_iter()
+                        .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
+                })
+        } else {
+            let candidates: Vec<_> = windows.iter().collect();
+            candidates
+                .iter()
+                .copied()
+                .filter(|w| w["is_on_screen"].as_bool().unwrap_or(false))
+                .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
+                .or_else(|| {
+                    candidates
+                        .into_iter()
+                        .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
+                })
         };
 
         let window = window.ok_or_else(|| {
             ExecutorError::ClickTarget(format!(
-                "No visible window found for app {:?} to resolve {}",
+                "No window found for app {:?} to resolve {}",
                 app_name,
                 action.display_name()
             ))
