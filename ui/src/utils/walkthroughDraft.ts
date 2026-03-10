@@ -1,6 +1,7 @@
 import type { ClickTarget, Edge, Node, NodeType, Position, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../bindings";
 import type { ActionNodeEntry } from "../store/slices/walkthroughSlice";
 import { buildActionByNodeId } from "../store/slices/walkthroughSlice";
+import { ACTIONABLE_AX_ROLES } from "./walkthroughFormatting";
 
 const NODE_X_POSITION = 250;
 const NODE_Y_SPACING = 100;
@@ -106,11 +107,13 @@ export function synthesizeNodeForKeptCandidate(
 
   const { x: hx, y: hy, dwell_ms } = action.kind;
 
-  // Target resolution priority: CDP > text label > image crop > coordinates
+  // Target resolution priority: CDP > actionable text label > image crop > coordinates
+  // Mirrors backend preferred_label(): only actionable AX roles qualify.
   const cdp = action.target_candidates.find((c) => c.type === "CdpElement");
-  const textLabel = action.target_candidates.find(
-    (c) => c.type === "AccessibilityLabel" || c.type === "VlmLabel" || c.type === "OcrText",
-  );
+  const textLabel = action.target_candidates.find((c) => {
+    if (c.type === "AccessibilityLabel") return ACTIONABLE_AX_ROLES.has(c.role ?? "");
+    return c.type === "VlmLabel" || c.type === "OcrText";
+  });
   const imageCrop = action.target_candidates.find((c) => c.type === "ImageCrop");
 
   let target: ClickTarget | null = null;
@@ -121,7 +124,11 @@ export function synthesizeNodeForKeptCandidate(
   if (cdp && cdp.type === "CdpElement") {
     target = { type: "CdpElement", name: cdp.name, role: cdp.role, href: cdp.href, parent_role: cdp.parent_role, parent_name: cdp.parent_name };
   } else if (textLabel) {
-    const label = textLabel.type === "OcrText" ? textLabel.text : textLabel.label;
+    const label = textLabel.type === "OcrText"
+      ? textLabel.text
+      : textLabel.type === "AccessibilityLabel" || textLabel.type === "VlmLabel"
+        ? textLabel.label
+        : "";
     target = { type: "Text", text: label };
   } else if (imageCrop && imageCrop.type === "ImageCrop") {
     template_image = imageCrop.image_b64;
@@ -145,8 +152,8 @@ export function synthesizeNodeForKeptCandidate(
     timeout_ms: null,
     settle_ms: null,
     retries: 0,
-    supervision_retries: 0,
-    trace_level: "Off",
+    supervision_retries: 2,
+    trace_level: "Minimal",
     role: "Default",
     expected_outcome: null,
   };

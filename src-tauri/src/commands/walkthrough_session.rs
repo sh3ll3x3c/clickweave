@@ -689,8 +689,10 @@ pub(super) async fn process_capture_events(
     // walkthrough events so that stop_walkthrough's retrieve_hover_candidates
     // can find them when scanning the event log.
     if let Some(ref mcp) = mcp {
-        match mcp.call_tool("stop_hover_tracking", None).await {
-            Ok(result) if result.is_error != Some(true) => {
+        let hover_timeout = tokio::time::Duration::from_secs(5);
+        match tokio::time::timeout(hover_timeout, mcp.call_tool("stop_hover_tracking", None)).await
+        {
+            Ok(Ok(result)) if result.is_error != Some(true) => {
                 let raw_text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
                 match serde_json::from_str::<Vec<serde_json::Value>>(&raw_text) {
                     Ok(events) => {
@@ -748,11 +750,14 @@ pub(super) async fn process_capture_events(
                     }
                 }
             }
-            Ok(_) => {
+            Ok(Ok(_)) => {
                 tracing::debug!("stop_hover_tracking returned error (may not have been active)");
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::debug!("stop_hover_tracking call failed: {e}");
+            }
+            Err(_) => {
+                tracing::warn!("stop_hover_tracking timed out after {hover_timeout:?}");
             }
         }
     }
