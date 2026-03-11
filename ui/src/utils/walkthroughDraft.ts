@@ -37,13 +37,14 @@ export function applyAnnotationsToDraft(
   if (nodeOrder && nodeOrder.length > 0) {
     const nodeById = new Map(draft.nodes.map((n) => [n.id, n]));
     const reordered: typeof draft.nodes = [];
+    const reorderedIds = new Set<string>();
     for (const id of nodeOrder) {
       const n = nodeById.get(id);
-      if (n) reordered.push(n);
+      if (n) { reordered.push(n); reorderedIds.add(n.id); }
     }
     // Append any nodes not in nodeOrder (safety fallback)
     for (const n of draft.nodes) {
-      if (!reordered.includes(n)) reordered.push(n);
+      if (!reorderedIds.has(n.id)) reordered.push(n);
     }
     orderedDraftNodes = reordered;
   }

@@ -1,5 +1,6 @@
 import type { Node, WalkthroughAction } from "../bindings";
 import type { ActionNodeEntry } from "../store/slices/walkthroughSlice";
+import { buildActionByNodeId } from "../store/slices/walkthroughSlice";
 
 // --- Types ---
 
@@ -74,17 +75,10 @@ export function computeAppGroups(
   deletedSet: Set<string>,
 ): AppGroup[] {
   const nodeMap = new Map(draftNodes.map((n) => [n.id, n]));
-  const actionById = new Map(actions.map((a) => [a.id, a]));
   const candidateActionMap = new Map(
     actions.filter((a) => a.candidate).map((a) => [a.id, a]),
   );
-
-  // Build node_id → action lookup
-  const actionByNodeId = new Map<string, WalkthroughAction>();
-  for (const entry of actionNodeMap) {
-    const action = actionById.get(entry.action_id);
-    if (action) actionByNodeId.set(entry.node_id, action);
-  }
+  const actionByNodeId = buildActionByNodeId(actionNodeMap, actions);
 
   // Resolve all IDs to render items, filtering deleted and stale
   const resolvedItems: RenderItem[] = [];
@@ -119,22 +113,9 @@ export function computeAppGroups(
 
 // --- Drag validation ---
 
-export function isAnchorId(
-  id: string,
-  draftNodes: Node[],
-  actions: WalkthroughAction[],
-): boolean {
-  const node = draftNodes.find((n) => n.id === id);
-  if (node) return ANCHOR_TYPES.has(node.node_type.type);
-  const action = actions.find((a) => a.id === id);
-  if (action) return ANCHOR_TYPES.has(action.kind.type);
-  return false;
-}
-
 export function isValidItemDrop(
   dragId: string,
   targetIndex: number,
-  orderedIds: string[],
   groups: AppGroup[],
 ): boolean {
   // Anchors cannot be dragged

@@ -1,10 +1,9 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import type { AppKind, WalkthroughAction } from "../bindings";
 import { APP_KIND_LABELS, usesCdp } from "../utils/appKind";
-import { buildActionByNodeId } from "../store/slices/walkthroughSlice";
 import { ImageLightbox, CrosshairOverlay, type LightboxImage } from "./ImageLightbox";
 import { computeAppGroups, isValidItemDrop, type AppGroup, type RenderItem } from "../utils/walkthroughGrouping";
 import {
@@ -19,6 +18,9 @@ import {
   targetCandidateLabel,
   targetCandidateMethod,
 } from "../utils/walkthroughFormatting";
+
+const DND_ITEM_ID = "application/x-item-id";
+const DND_GROUP_INDEX = "application/x-group-index";
 
 export function WalkthroughPanel() {
   const walkthroughStatus = useStore((s) => s.walkthroughStatus);
@@ -50,7 +52,13 @@ export function WalkthroughPanel() {
 
   const [lightboxActionId, setLightboxActionId] = useState<string | null>(null);
   const [crosshairs, setCrosshairs] = useState<Map<string, { xPercent: number; yPercent: number }>>(new Map());
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndexRaw] = useState<number | null>(null);
+  const dragOverRef = useRef<number | null>(null);
+  const setDragOverIndex = useCallback((idx: number | null) => {
+    if (dragOverRef.current === idx) return;
+    dragOverRef.current = idx;
+    setDragOverIndexRaw(idx);
+  }, []);
 
   const onThumbnailLoad = useCallback((action: WalkthroughAction, img: HTMLImageElement) => {
     const result = computeCrosshairPercent(action, img.naturalWidth, img.naturalHeight);
@@ -75,9 +83,6 @@ export function WalkthroughPanel() {
   // Hide when user closed the panel via X. State is preserved; can reopen from toolbar.
   if (!walkthroughPanelOpen) return null;
 
-  // Build action lookup by node_id for metadata (screenshots, candidates, confidence).
-  const actionByNodeId = buildActionByNodeId(walkthroughActionNodeMap, walkthroughActions);
-
   // Build app_kind map from LaunchApp/FocusWindow actions so Click nodes can
   // know whether they're targeting an Electron/Chrome app.
   const appKindMap = new Map<string, AppKind>();
@@ -93,7 +98,6 @@ export function WalkthroughPanel() {
   const targetMap = new Map(walkthroughAnnotations.target_overrides.map((o) => [o.node_id, o]));
   const varPromoMap = new Map(walkthroughAnnotations.variable_promotions.map((p) => [p.node_id, p]));
 
-  const activeNodes = draftNodes.filter((n) => !deletedSet.has(n.id));
   const warningCount = walkthroughActions.reduce((sum, a) => sum + a.warnings.length, 0) + walkthroughWarnings.length;
 
   // Compute groups from the ordered list
@@ -113,6 +117,7 @@ export function WalkthroughPanel() {
     }
   }
 
+  const activeNodeCount = step;
   const totalActiveItems = groups.reduce((sum, g) => sum + g.items.length, 0);
   const allDeleted = draftNodes.length > 0 && totalActiveItems === 0;
 
@@ -140,11 +145,11 @@ export function WalkthroughPanel() {
     e.preventDefault();
     setDragOverIndex(null);
 
-    const dragItemId = e.dataTransfer.getData("application/x-item-id");
-    const groupIdxStr = e.dataTransfer.getData("application/x-group-index");
+    const dragItemId = e.dataTransfer.getData(DND_ITEM_ID);
+    const groupIdxStr = e.dataTransfer.getData(DND_GROUP_INDEX);
 
     if (dragItemId) {
-      if (!isValidItemDrop(dragItemId, flatIdx, walkthroughNodeOrder, groups)) return;
+      if (!isValidItemDrop(dragItemId, flatIdx, groups)) return;
 
       const fromIdx = walkthroughNodeOrder.indexOf(dragItemId);
       if (fromIdx >= 0) {
@@ -263,7 +268,7 @@ export function WalkthroughPanel() {
                 draggable
                 onDragStart={(e) => {
                   e.stopPropagation();
-                  e.dataTransfer.setData("application/x-item-id", item.id);
+                  e.dataTransfer.setData(DND_ITEM_ID, item.id);
                   e.dataTransfer.effectAllowed = "move";
                   const card = (e.currentTarget as HTMLElement).closest("[data-item-id]");
                   if (card) (card as HTMLElement).style.opacity = "0.4";
@@ -475,7 +480,7 @@ export function WalkthroughPanel() {
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-medium text-[var(--text-primary)]">Review Walkthrough</h2>
           <span className="rounded-full bg-[var(--bg-hover)] px-2 py-0.5 text-[10px] text-[var(--text-muted)]">
-            {activeNodes.length} step{activeNodes.length !== 1 ? "s" : ""}
+            {activeNodeCount} step{activeNodeCount !== 1 ? "s" : ""}
           </span>
           {warningCount > 0 && (
             <span className="rounded-full bg-yellow-500/20 px-2 py-0.5 text-[10px] text-yellow-400">
@@ -528,7 +533,7 @@ export function WalkthroughPanel() {
                     className="flex items-center gap-2 px-2 py-1 cursor-grab active:cursor-grabbing group/header"
                     draggable
                     onDragStart={(e) => {
-                      e.dataTransfer.setData("application/x-group-index", String(groupIndex));
+                      e.dataTransfer.setData(DND_GROUP_INDEX, String(groupIndex));
                       e.dataTransfer.effectAllowed = "move";
                       (e.currentTarget as HTMLElement).style.opacity = "0.4";
                     }}
@@ -561,15 +566,14 @@ export function WalkthroughPanel() {
               className="h-4"
               onDragOver={(e) => {
                 e.preventDefault();
-                const total = groups.reduce((s, g) => s + g.items.length, 0);
-                setDragOverIndex(total);
+                setDragOverIndex(totalActiveItems);
               }}
               onDragLeave={() => setDragOverIndex(null)}
               onDrop={(e) => {
                 e.preventDefault();
                 setDragOverIndex(null);
-                const itemId = e.dataTransfer.getData("application/x-item-id");
-                const groupIdxStr = e.dataTransfer.getData("application/x-group-index");
+                const itemId = e.dataTransfer.getData(DND_ITEM_ID);
+                const groupIdxStr = e.dataTransfer.getData(DND_GROUP_INDEX);
                 if (itemId) {
                   const fromIdx = walkthroughNodeOrder.indexOf(itemId);
                   if (fromIdx >= 0) reorderNode(fromIdx, walkthroughNodeOrder.length - 1);

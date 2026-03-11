@@ -22,9 +22,10 @@ export function buildActionByNodeId(
   actionNodeMap: ActionNodeEntry[],
   actions: WalkthroughAction[],
 ): Map<string, WalkthroughAction> {
+  const actionById = new Map(actions.map((a) => [a.id, a]));
   const map = new Map<string, WalkthroughAction>();
   for (const entry of actionNodeMap) {
-    const action = actions.find((a) => a.id === entry.action_id);
+    const action = actionById.get(entry.action_id);
     if (action) map.set(entry.node_id, action);
   }
   return map;

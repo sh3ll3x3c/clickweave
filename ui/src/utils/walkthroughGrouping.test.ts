@@ -213,19 +213,19 @@ describe("isValidItemDrop", () => {
   it("allows reordering non-anchor items within group", () => {
     const groups = computeAppGroups(order, nodes, actions, map, new Set());
     // Drag n3 to position before n2 (but after anchor n1) → valid
-    expect(isValidItemDrop("n3", 1, order, groups)).toBe(true);
+    expect(isValidItemDrop("n3", 1, groups)).toBe(true);
   });
 
   it("rejects dropping a non-anchor item above the anchor", () => {
     const groups = computeAppGroups(order, nodes, actions, map, new Set());
     // Drag n2 to position 0 (above FocusWindow n1) → invalid
-    expect(isValidItemDrop("n2", 0, order, groups)).toBe(false);
+    expect(isValidItemDrop("n2", 0, groups)).toBe(false);
   });
 
   it("rejects dragging the anchor item itself", () => {
     const groups = computeAppGroups(order, nodes, actions, map, new Set());
     // FocusWindow anchor can't be dragged at all
-    expect(isValidItemDrop("n1", 2, order, groups)).toBe(false);
+    expect(isValidItemDrop("n1", 2, groups)).toBe(false);
   });
 });
 
