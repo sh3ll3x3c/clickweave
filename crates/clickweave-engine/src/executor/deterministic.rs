@@ -3,12 +3,65 @@ use clickweave_core::decision_cache::cache_key;
 use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{
     ClickParams, FocusMethod, FocusWindowParams, HoverParams, NodeRun, NodeType, ScreenshotMode,
-    TakeScreenshotParams, tool_mapping,
+    TakeScreenshotParams, WindowControlAction, tool_mapping,
 };
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::{McpRouter, ToolCallResult};
 use serde_json::Value;
 use uuid::Uuid;
+
+/// Select the best window from a `list_windows` response for window control resolution.
+///
+/// Filters by `app_name` (case-insensitive) if provided. Among matches, prefers
+/// on-screen windows at the lowest layer. Uses array index as z-order tiebreaker
+/// since `list_windows` returns windows in front-to-back order.
+fn select_best_window<'a>(windows: &'a [Value], app_name: Option<&str>) -> Option<&'a Value> {
+    let rank = |i: usize, w: &Value| (w["layer"].as_i64().unwrap_or(i64::MAX), i);
+
+    let mut best_onscreen: Option<(usize, &Value)> = None;
+    let mut best_any: Option<(usize, &Value)> = None;
+
+    for (i, w) in windows.iter().enumerate() {
+        let matches = app_name.map_or(true, |name| {
+            w["owner_name"]
+                .as_str()
+                .is_some_and(|o| o.eq_ignore_ascii_case(name))
+        });
+        if !matches {
+            continue;
+        }
+
+        let key = rank(i, w);
+        if best_any.map_or(true, |(bi, bw)| key < rank(bi, bw)) {
+            best_any = Some((i, w));
+        }
+        if w["is_on_screen"].as_bool().unwrap_or(false)
+            && best_onscreen.map_or(true, |(bi, bw)| key < rank(bi, bw))
+        {
+            best_onscreen = Some((i, w));
+        }
+    }
+
+    best_onscreen.or(best_any).map(|(_, w)| w)
+}
+
+/// Compute the click coordinates for a window control action given window bounds.
+///
+/// Returns `(win_x, win_y, click_x, click_y)` or an error if bounds are missing.
+fn compute_window_control_click(
+    window: &Value,
+    action: WindowControlAction,
+) -> Result<(f64, f64, f64, f64), String> {
+    let bounds = &window["bounds"];
+    let win_x = bounds["x"]
+        .as_f64()
+        .ok_or_else(|| "Window bounds missing 'x'".to_string())?;
+    let win_y = bounds["y"]
+        .as_f64()
+        .ok_or_else(|| "Window bounds missing 'y'".to_string())?;
+    let (offset_x, offset_y) = action.window_offset();
+    Ok((win_x, win_y, win_x + offset_x, win_y + offset_y))
+}
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn execute_deterministic(
@@ -832,39 +885,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ExecutorError::ClickTarget(format!("Failed to parse list_windows response: {e}"))
         })?;
 
-        // Find the best window: prefer on-screen windows, but accept off-screen
-        // ones (the focus_window call above may not have taken effect yet).
-        // Bounds are valid regardless of is_on_screen — we just need the
-        // window's position to compute the traffic light button coordinates.
-        let window = if let Some(ref name) = app_name {
-            let candidates: Vec<_> = windows
-                .iter()
-                .filter(|w| w["owner_name"].as_str() == Some(name))
-                .collect();
-            // Prefer on-screen, fall back to any matching window.
-            candidates
-                .iter()
-                .copied()
-                .filter(|w| w["is_on_screen"].as_bool().unwrap_or(false))
-                .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
-                .or_else(|| {
-                    candidates
-                        .into_iter()
-                        .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
-                })
-        } else {
-            let candidates: Vec<_> = windows.iter().collect();
-            candidates
-                .iter()
-                .copied()
-                .filter(|w| w["is_on_screen"].as_bool().unwrap_or(false))
-                .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
-                .or_else(|| {
-                    candidates
-                        .into_iter()
-                        .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
-                })
-        };
+        let window = select_best_window(&windows, app_name.as_deref());
 
         let window = window.ok_or_else(|| {
             ExecutorError::ClickTarget(format!(
@@ -874,17 +895,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ))
         })?;
 
-        let bounds = &window["bounds"];
-        let win_x = bounds["x"]
-            .as_f64()
-            .ok_or_else(|| ExecutorError::ClickTarget("Window bounds missing 'x'".to_string()))?;
-        let win_y = bounds["y"]
-            .as_f64()
-            .ok_or_else(|| ExecutorError::ClickTarget("Window bounds missing 'y'".to_string()))?;
-
-        let (offset_x, offset_y) = action.window_offset();
-        let click_x = win_x + offset_x;
-        let click_y = win_y + offset_y;
+        let (win_x, win_y, click_x, click_y) =
+            compute_window_control_click(window, action).map_err(ExecutorError::ClickTarget)?;
 
         self.log(format!(
             "Resolved {} -> ({click_x}, {click_y}) (window at {win_x}, {win_y})",
@@ -1516,5 +1528,128 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clickweave_core::WindowControlAction;
+    use serde_json::json;
+
+    fn make_window(owner: &str, layer: i64, on_screen: bool, x: f64, y: f64) -> Value {
+        json!({
+            "owner_name": owner,
+            "layer": layer,
+            "is_on_screen": on_screen,
+            "bounds": { "x": x, "y": y, "width": 800.0, "height": 600.0 }
+        })
+    }
+
+    // --- select_best_window ---
+
+    #[test]
+    fn select_window_case_insensitive_match() {
+        let windows = vec![make_window("Calculator", 0, true, 100.0, 200.0)];
+        let result = select_best_window(&windows, Some("calculator"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap()["bounds"]["x"].as_f64(), Some(100.0));
+    }
+
+    #[test]
+    fn select_window_no_match_returns_none() {
+        let windows = vec![make_window("Finder", 0, true, 0.0, 0.0)];
+        assert!(select_best_window(&windows, Some("Calculator")).is_none());
+    }
+
+    #[test]
+    fn select_window_prefers_on_screen() {
+        let windows = vec![
+            make_window("App", 0, false, 10.0, 10.0),
+            make_window("App", 0, true, 20.0, 20.0),
+        ];
+        let result = select_best_window(&windows, Some("App")).unwrap();
+        assert_eq!(result["bounds"]["x"].as_f64(), Some(20.0));
+    }
+
+    #[test]
+    fn select_window_prefers_lowest_layer() {
+        let windows = vec![
+            make_window("App", 3, true, 10.0, 10.0),
+            make_window("App", 0, true, 20.0, 20.0),
+        ];
+        let result = select_best_window(&windows, Some("App")).unwrap();
+        assert_eq!(result["bounds"]["x"].as_f64(), Some(20.0));
+    }
+
+    #[test]
+    fn select_window_same_layer_picks_frontmost_by_index() {
+        // First window in the list is frontmost (OS z-order).
+        let windows = vec![
+            make_window("App", 0, true, 10.0, 10.0),
+            make_window("App", 0, true, 20.0, 20.0),
+        ];
+        let result = select_best_window(&windows, Some("App")).unwrap();
+        assert_eq!(result["bounds"]["x"].as_f64(), Some(10.0));
+    }
+
+    #[test]
+    fn select_window_falls_back_to_offscreen() {
+        let windows = vec![make_window("App", 0, false, 30.0, 40.0)];
+        let result = select_best_window(&windows, Some("App")).unwrap();
+        assert_eq!(result["bounds"]["x"].as_f64(), Some(30.0));
+    }
+
+    #[test]
+    fn select_window_no_app_name_returns_best_overall() {
+        let windows = vec![
+            make_window("Finder", 0, true, 10.0, 10.0),
+            make_window("Calculator", 0, true, 20.0, 20.0),
+        ];
+        let result = select_best_window(&windows, None).unwrap();
+        // No filter — picks frontmost (first in list).
+        assert_eq!(result["bounds"]["x"].as_f64(), Some(10.0));
+    }
+
+    #[test]
+    fn select_window_empty_list() {
+        let windows: Vec<Value> = vec![];
+        assert!(select_best_window(&windows, Some("App")).is_none());
+        assert!(select_best_window(&windows, None).is_none());
+    }
+
+    // --- compute_window_control_click ---
+
+    #[test]
+    fn compute_close_click() {
+        let window = make_window("App", 0, true, 100.0, 200.0);
+        let (wx, wy, cx, cy) =
+            compute_window_control_click(&window, WindowControlAction::Close).unwrap();
+        assert_eq!((wx, wy), (100.0, 200.0));
+        assert_eq!((cx, cy), (114.0, 214.0));
+    }
+
+    #[test]
+    fn compute_minimize_click() {
+        let window = make_window("App", 0, true, 100.0, 200.0);
+        let (wx, wy, cx, cy) =
+            compute_window_control_click(&window, WindowControlAction::Minimize).unwrap();
+        assert_eq!((wx, wy), (100.0, 200.0));
+        assert_eq!((cx, cy), (134.0, 214.0));
+    }
+
+    #[test]
+    fn compute_maximize_click() {
+        let window = make_window("App", 0, true, 100.0, 200.0);
+        let (wx, wy, cx, cy) =
+            compute_window_control_click(&window, WindowControlAction::Maximize).unwrap();
+        assert_eq!((wx, wy), (100.0, 200.0));
+        assert_eq!((cx, cy), (154.0, 214.0));
+    }
+
+    #[test]
+    fn compute_click_missing_bounds_errors() {
+        let window = json!({"owner_name": "App", "bounds": {}});
+        assert!(compute_window_control_click(&window, WindowControlAction::Close).is_err());
     }
 }

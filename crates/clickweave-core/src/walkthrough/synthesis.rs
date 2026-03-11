@@ -72,9 +72,13 @@ impl WindowControl {
     /// Note: Close is NOT here — Cmd+W closes a tab, not the window.
     /// Close is only detected via accessibility (subrole/label).
     fn from_shortcut(key: &str, modifiers: &[String]) -> Option<Self> {
-        match (key, modifiers) {
-            ("m", [m]) if m == "command" => Some(Self::Minimize),
-            ("f", [m1, m2]) if m1 == "command" && m2 == "control" => Some(Self::Maximize),
+        // Sort modifiers so matching is order-independent — the order from
+        // flags_to_modifiers() depends on flag-check order, not user intent.
+        let mut sorted: Vec<&str> = modifiers.iter().map(|s| s.as_str()).collect();
+        sorted.sort_unstable();
+        match (key, sorted.as_slice()) {
+            ("m", ["command"]) => Some(Self::Minimize),
+            ("f", ["command", "control"]) => Some(Self::Maximize),
             _ => None,
         }
     }
@@ -107,8 +111,10 @@ impl WindowControl {
 /// Human-readable names for well-known keyboard shortcuts that aren't
 /// window control buttons (those are handled by `WindowControl::from_shortcut`).
 fn shortcut_display_name(key: &str, modifiers: &[String]) -> Option<String> {
-    match (key, modifiers) {
-        ("w", [m]) if m == "command" => Some("Close tab".to_string()),
+    let mut sorted: Vec<&str> = modifiers.iter().map(|s| s.as_str()).collect();
+    sorted.sort_unstable();
+    match (key, sorted.as_slice()) {
+        ("w", ["command"]) => Some("Close tab".to_string()),
         _ => None,
     }
 }
@@ -1822,6 +1828,16 @@ mod tests {
                 let recovered = WindowControl::from_shortcut(key, &modifiers);
                 assert_eq!(recovered, Some(wc), "roundtrip failed for {wc:?}");
             }
+        }
+
+        #[test]
+        fn test_window_control_shortcut_order_independent() {
+            // control+command (reversed) should still match Maximize.
+            let modifiers = vec!["control".to_string(), "command".to_string()];
+            assert_eq!(
+                WindowControl::from_shortcut("f", &modifiers),
+                Some(WindowControl::Maximize)
+            );
         }
 
         #[test]

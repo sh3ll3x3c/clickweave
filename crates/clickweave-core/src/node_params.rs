@@ -106,14 +106,26 @@ pub enum WindowControlAction {
     Zoom,
 }
 
+/// Standard macOS traffic light button Y offset (center of button from window top).
+/// Based on the default NSWindow title bar. Custom title bars (e.g. Electron apps
+/// with `titleBarStyle: 'hidden'`) may use different positions.
+const TRAFFIC_LIGHT_Y: f64 = 14.0;
+/// X offsets for close / minimize / maximize button centers from window left edge.
+const TRAFFIC_LIGHT_CLOSE_X: f64 = 14.0;
+const TRAFFIC_LIGHT_MINIMIZE_X: f64 = 34.0;
+const TRAFFIC_LIGHT_MAXIMIZE_X: f64 = 54.0;
+
 impl WindowControlAction {
     /// Pixel offset from the window's top-left corner to the button center.
-    /// Standard macOS traffic light positions (consistent across versions).
+    ///
+    /// These are standard macOS traffic light positions for the default `NSWindow`
+    /// title bar. They are stable across macOS versions (10.x through 15.x) but
+    /// may be incorrect for apps with custom title bars or hidden traffic lights.
     pub fn window_offset(self) -> (f64, f64) {
         match self {
-            Self::Close => (14.0, 14.0),
-            Self::Minimize => (34.0, 14.0),
-            Self::Maximize | Self::Zoom => (54.0, 14.0),
+            Self::Close => (TRAFFIC_LIGHT_CLOSE_X, TRAFFIC_LIGHT_Y),
+            Self::Minimize => (TRAFFIC_LIGHT_MINIMIZE_X, TRAFFIC_LIGHT_Y),
+            Self::Maximize | Self::Zoom => (TRAFFIC_LIGHT_MAXIMIZE_X, TRAFFIC_LIGHT_Y),
         }
     }
 
