@@ -115,13 +115,37 @@ impl McpRouter {
     }
 
     /// Call a tool by name, routing to the server that owns it.
+    ///
+    /// If the tool isn't in the cached ownership map (e.g. the server
+    /// dynamically added it via `notifications/tools/list_changed`),
+    /// falls back to trying each server in order.
     pub async fn call_tool(&self, name: &str, arguments: Option<Value>) -> Result<ToolCallResult> {
-        let server_idx = self
-            .tool_ownership
-            .get(name)
-            .ok_or_else(|| anyhow!("Tool '{}' not found in any MCP server", name))?;
+        if let Some(server_idx) = self.tool_ownership.get(name) {
+            return self.servers[*server_idx].1.call_tool(name, arguments).await;
+        }
 
-        self.servers[*server_idx].1.call_tool(name, arguments).await
+        // Tool not in cached ownership — try each server (handles dynamic tools).
+        for (server_name, client) in &self.servers {
+            match client.call_tool(name, arguments.clone()).await {
+                Ok(result) if result.is_error != Some(true) => return Ok(result),
+                Ok(result) => {
+                    // Server recognized the tool but returned an error — propagate it.
+                    let msg = result
+                        .content
+                        .iter()
+                        .filter_map(|c| c.as_text())
+                        .collect::<String>();
+                    if !msg.contains("Unknown tool") {
+                        return Ok(result);
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("Tool '{name}' not on server '{server_name}': {e}");
+                }
+            }
+        }
+
+        Err(anyhow!("Tool '{}' not found in any MCP server", name))
     }
 
     /// Get all tools from all servers (merged, deduplicated).

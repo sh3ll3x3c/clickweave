@@ -163,6 +163,21 @@ pub enum WalkthroughEventKind {
         parent_name: Option<String>,
         click_event_id: Uuid,
     },
+    HoverDetected {
+        x: f64,
+        y: f64,
+        element_name: String,
+        element_role: Option<String>,
+        dwell_ms: u64,
+    },
+    CdpHoverResolved {
+        name: String,
+        role: Option<String>,
+        href: Option<String>,
+        parent_role: Option<String>,
+        parent_name: Option<String>,
+        hover_event_id: Uuid,
+    },
     Paused,
     Resumed,
     Stopped,
@@ -215,6 +230,10 @@ pub struct WalkthroughAction {
     /// Screenshot coordinate metadata for VLM click target resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot_meta: Option<ScreenshotMeta>,
+    /// Whether this action is a candidate (e.g. detected hover) that needs
+    /// explicit user confirmation before inclusion in the draft.
+    #[serde(default)]
+    pub candidate: bool,
 }
 
 impl WalkthroughAction {
@@ -235,6 +254,7 @@ impl WalkthroughAction {
             confidence: ActionConfidence::High,
             warnings: vec![],
             screenshot_meta: None,
+            candidate: false,
         }
     }
 }
@@ -267,6 +287,11 @@ pub enum WalkthroughActionKind {
     },
     Scroll {
         delta_y: f64,
+    },
+    Hover {
+        x: f64,
+        y: f64,
+        dwell_ms: u64,
     },
 }
 
@@ -425,8 +450,10 @@ pub fn build_action_node_map(
     actions: &[WalkthroughAction],
     workflow: &crate::Workflow,
 ) -> Vec<ActionNodeEntry> {
+    // Only non-candidate actions have corresponding nodes in the draft.
     actions
         .iter()
+        .filter(|a| !a.candidate)
         .zip(workflow.nodes.iter())
         .map(|(a, n)| ActionNodeEntry {
             action_id: a.id,

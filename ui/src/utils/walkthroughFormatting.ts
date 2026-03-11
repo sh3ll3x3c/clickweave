@@ -34,7 +34,21 @@ export function actionIcon(kind: WalkthroughAction["kind"]): { icon: string; col
     case "TypeText": return { icon: "\u2328", color: "text-blue-400" };
     case "PressKey": return { icon: "\u2325", color: "text-[var(--text-muted)]" };
     case "Scroll": return { icon: "\u2195", color: "text-[var(--text-muted)]" };
+    case "Hover": return { icon: "\u{1F446}", color: "text-[var(--accent-coral)]" };
   }
+}
+
+function pointerActionLabel(prefix: string, action: WalkthroughAction, x: number, y: number): string {
+  const idx = preferredTargetIndex(action.target_candidates);
+  const best = action.target_candidates[idx];
+  if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
+    const label = (best.type === "OcrText") ? best.text
+      : (best.type === "CdpElement") ? best.name
+      : (best.type === "WindowControl") ? best.action
+      : best.label;
+    return `${prefix} '${label.length > 25 ? label.slice(0, 25) + "\u2026" : label}'`;
+  }
+  return `${prefix} (${x}, ${y})`;
 }
 
 export function actionLabel(action: WalkthroughAction): string {
@@ -42,18 +56,7 @@ export function actionLabel(action: WalkthroughAction): string {
   switch (k.type) {
     case "LaunchApp": return `Launch ${k.app_name}`;
     case "FocusWindow": return `Focus ${k.app_name}`;
-    case "Click": {
-      const idx = preferredTargetIndex(action.target_candidates);
-      const best = action.target_candidates[idx];
-      if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
-        const label = (best.type === "OcrText") ? best.text
-          : (best.type === "CdpElement") ? best.name
-          : (best.type === "WindowControl") ? best.action
-          : best.label;
-        return `Click '${label.length > 25 ? label.slice(0, 25) + "\u2026" : label}'`;
-      }
-      return `Click (${k.x}, ${k.y})`;
-    }
+    case "Click": return pointerActionLabel("Click", action, k.x, k.y);
     case "TypeText": {
       const t = k.text;
       return `Type '${t.length > 30 ? t.slice(0, 30) + "\u2026" : t}'`;
@@ -63,6 +66,7 @@ export function actionLabel(action: WalkthroughAction): string {
       return `Press ${mods}${k.key}`;
     }
     case "Scroll": return "Scroll";
+    case "Hover": return pointerActionLabel("Hover", action, k.x, k.y);
   }
 }
 
@@ -107,6 +111,7 @@ export function nodeTypeIcon(nodeType: Node["node_type"]): { icon: string; color
     case "FocusWindow":
     case "ListWindows": return { icon: "\u25CE", color: "text-green-400" };
     case "Click": return { icon: "\u25C9", color: "text-[var(--accent-coral)]" };
+    case "Hover": return { icon: "\u{1F446}", color: "text-[var(--accent-coral)]" };
     case "TypeText": return { icon: "\u2328", color: "text-blue-400" };
     case "PressKey": return { icon: "\u2325", color: "text-[var(--text-muted)]" };
     case "Scroll": return { icon: "\u2195", color: "text-[var(--text-muted)]" };
@@ -137,7 +142,7 @@ export function computeCrosshairPercent(
   naturalWidth: number,
   naturalHeight: number,
 ): { xPercent: number; yPercent: number } | null {
-  if (action.kind.type !== "Click" || !action.screenshot_meta) return null;
+  if ((action.kind.type !== "Click" && action.kind.type !== "Hover") || !action.screenshot_meta) return null;
   const meta = action.screenshot_meta;
   const px = (action.kind.x - meta.origin_x) * meta.scale;
   const py = (action.kind.y - meta.origin_y) * meta.scale;

@@ -2,7 +2,7 @@ import type { StateCreator } from "zustand";
 import { commands } from "../../bindings";
 import type { CdpAppConfig, NodeRename, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
 import type { CdpSetupProgress } from "../../components/CdpAppSelectModal";
-import { applyAnnotationsToDraft } from "../../utils/walkthroughDraft";
+import { applyAnnotationsToDraft, findCandidateInsertIndex, recomputeNodePositions, synthesizeNodeForKeptCandidate } from "../../utils/walkthroughDraft";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { currentMonitor } from "@tauri-apps/api/window";
 import { LogicalSize, LogicalPosition } from "@tauri-apps/api/dpi";
@@ -130,6 +130,8 @@ export interface WalkthroughSlice {
   cancelWalkthrough: () => Promise<void>;
 
   setWalkthroughExpandedAction: (id: string | null) => void;
+  keepCandidate: (actionId: string) => void;
+  dismissCandidate: (actionId: string) => void;
   deleteNode: (nodeId: string) => void;
   restoreNode: (nodeId: string) => void;
   renameNode: (nodeId: string, newName: string) => void;
@@ -219,7 +221,8 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     const planner = plannerConfig.baseUrl && plannerConfig.model
       ? toEndpoint(plannerConfig)
       : null;
-    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner, cdpApps);
+    const { hoverDwellThreshold } = get();
+    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner, cdpApps, hoverDwellThreshold);
     if (result.status === "error") {
       set({ walkthroughError: result.error, walkthroughCdpModalOpen: false });
       pushLog(`Walkthrough start failed: ${result.error}`);
@@ -245,11 +248,11 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   },
 
   stopWalkthrough: async () => {
-    const { pushLog, plannerConfig } = get();
+    const { pushLog, plannerConfig, hoverDwellThreshold } = get();
     const planner = plannerConfig.baseUrl && plannerConfig.model
       ? toEndpoint(plannerConfig)
       : null;
-    const result = await commands.stopWalkthrough(planner);
+    const result = await commands.stopWalkthrough(planner, hoverDwellThreshold);
     if (result.status === "error") {
       pushLog(`Walkthrough stop failed: ${result.error}`);
     }
@@ -277,6 +280,44 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
   setWalkthroughExpandedAction: (id) => set((s) => ({
     walkthroughExpandedAction: s.walkthroughExpandedAction === id ? null : id,
+  })),
+
+  keepCandidate: (actionId) => set((s) => {
+    const updatedActions = s.walkthroughActions.map((a) =>
+      a.id === actionId ? { ...a, candidate: false } : a,
+    );
+
+    const action = updatedActions.find((a) => a.id === actionId);
+    if (!action || !s.walkthroughDraft || action.kind.type !== "Hover") {
+      return { walkthroughActions: updatedActions };
+    }
+
+    // Synthesize a node for the kept candidate and insert it into the draft.
+    const nodeId = crypto.randomUUID();
+    const insertIdx = findCandidateInsertIndex(
+      actionId, updatedActions, s.walkthroughActionNodeMap, s.walkthroughDraft.nodes,
+    );
+    const position = { x: 250, y: insertIdx * 100 };
+    const node = synthesizeNodeForKeptCandidate(action, nodeId, position);
+
+    const updatedNodes = [...s.walkthroughDraft.nodes];
+    updatedNodes.splice(insertIdx, 0, node);
+
+    return {
+      walkthroughActions: updatedActions,
+      walkthroughDraft: {
+        ...s.walkthroughDraft,
+        nodes: recomputeNodePositions(updatedNodes),
+      },
+      walkthroughActionNodeMap: [
+        ...s.walkthroughActionNodeMap,
+        { action_id: actionId, node_id: nodeId },
+      ],
+    };
+  }),
+
+  dismissCandidate: (actionId) => set((s) => ({
+    walkthroughActions: s.walkthroughActions.filter((a) => a.id !== actionId),
   })),
 
   deleteNode: (nodeId) => set((s) => ({

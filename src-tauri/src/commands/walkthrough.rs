@@ -3,8 +3,9 @@ use std::sync::Mutex;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    AppKind, WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind,
-    WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
+    ActionConfidence, AppKind, WalkthroughAction, WalkthroughActionKind, WalkthroughAnnotations,
+    WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
+    WalkthroughStorage,
 };
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
@@ -18,7 +19,7 @@ use crate::platform::macos::MacOSEventTap;
 // Re-export from submodules for use within the commands crate.
 pub use super::walkthrough_session::WalkthroughHandle;
 
-use super::walkthrough_enrichment::resolve_click_targets_with_vlm;
+use super::walkthrough_enrichment::{attach_nearest_screenshots, resolve_click_targets_with_vlm};
 use super::walkthrough_session::{
     get_recording_bar_rect, populate_app_cache, process_capture_events, spawn_mcp,
     strip_recording_bar_click,
@@ -128,6 +129,7 @@ pub async fn start_walkthrough(
     project_path: Option<String>,
     planner: Option<super::types::EndpointConfig>,
     cdp_apps: Vec<CdpAppConfig>,
+    hover_dwell_threshold: Option<u64>,
 ) -> Result<(), String> {
     let wf_id = parse_uuid(&workflow_id, "workflow")?;
 
@@ -203,6 +205,7 @@ pub async fn start_walkthrough(
         };
 
         let emit_handle = app.clone();
+        let hover_dwell_ms = hover_dwell_threshold.unwrap_or(1000);
         let processing_task = tauri::async_runtime::spawn(async move {
             process_capture_events(
                 emit_handle,
@@ -213,6 +216,7 @@ pub async fn start_walkthrough(
                 session_dir,
                 cancel,
                 cdp_apps,
+                hover_dwell_ms,
             )
             .await;
         });
@@ -299,6 +303,7 @@ pub async fn resume_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
 pub async fn stop_walkthrough(
     app: tauri::AppHandle,
     planner: Option<super::types::EndpointConfig>,
+    hover_dwell_threshold: Option<u64>,
 ) -> Result<(), String> {
     let (task, storage, session_dir, workflow_id, session_id) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
@@ -357,7 +362,19 @@ pub async fn stop_walkthrough(
             let (mut actions, mut norm_warnings) =
                 clickweave_core::walkthrough::normalize_events(&events);
 
-            // VLM: resolve click targets using vision (parallel).
+            // Hover: retrieve hover events and convert to candidate actions.
+            let hover_candidates =
+                retrieve_hover_candidates(&events, hover_dwell_threshold.unwrap_or(1000));
+            for candidate in hover_candidates {
+                let insert_idx = find_chronological_insert_position(&actions, &candidate, &events);
+                actions.insert(insert_idx, candidate);
+            }
+
+            // Attach the nearest click's screenshot to hover candidates so
+            // VLM can resolve their targets too.
+            attach_nearest_screenshots(&mut actions);
+
+            // VLM: resolve click and hover targets using vision (parallel).
             if let Some(ref planner_cfg) = planner {
                 resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
             }
@@ -600,4 +617,140 @@ pub async fn seed_walkthrough_cache(
     );
 
     Ok(())
+}
+
+/// Retrieve hover candidates from HoverDetected events captured during recording.
+///
+/// Filters by dwell threshold and removes hovers immediately followed by a click
+/// on the same location (the click subsumes the hover).
+fn retrieve_hover_candidates(
+    events: &[WalkthroughEvent],
+    hover_threshold_ms: u64,
+) -> Vec<WalkthroughAction> {
+    let mut candidates = Vec::new();
+
+    for event in events {
+        if let WalkthroughEventKind::HoverDetected {
+            x,
+            y,
+            element_name,
+            element_role,
+            dwell_ms,
+        } = &event.kind
+        {
+            // Filter by dwell threshold.
+            if *dwell_ms < hover_threshold_ms {
+                continue;
+            }
+
+            // Skip if any click near the same coordinates occurred shortly after
+            // this hover (the click subsumes the hover intent).  Scans all events
+            // because hover entries may be appended after clicks in the file.
+            let click_follows = events.iter().any(|e| {
+                matches!(
+                    &e.kind,
+                    WalkthroughEventKind::MouseClicked { x: cx, y: cy, .. }
+                    if (cx - x).abs() < 20.0 && (cy - y).abs() < 20.0
+                        && e.timestamp > event.timestamp
+                        && e.timestamp.saturating_sub(event.timestamp) < 2000
+                )
+            });
+            if click_follows {
+                continue;
+            }
+
+            let mut target_candidates = vec![];
+
+            // Check for CDP DOM resolution for this hover event.
+            let cdp_resolved = events.iter().find_map(|e| {
+                if let WalkthroughEventKind::CdpHoverResolved {
+                    hover_event_id,
+                    name,
+                    role,
+                    href,
+                    parent_role,
+                    parent_name,
+                } = &e.kind
+                    && *hover_event_id == event.id
+                {
+                    return Some((
+                        name.clone(),
+                        role.clone(),
+                        href.clone(),
+                        parent_role.clone(),
+                        parent_name.clone(),
+                    ));
+                }
+                None
+            });
+
+            if let Some((name, role, href, parent_role, parent_name)) = cdp_resolved {
+                target_candidates.push(clickweave_core::walkthrough::TargetCandidate::CdpElement {
+                    name,
+                    role,
+                    href,
+                    parent_role,
+                    parent_name,
+                });
+            }
+
+            if !element_name.is_empty() {
+                target_candidates.push(
+                    clickweave_core::walkthrough::TargetCandidate::AccessibilityLabel {
+                        label: element_name.clone(),
+                        role: element_role.clone(),
+                    },
+                );
+            }
+
+            candidates.push(WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::Hover {
+                    x: *x,
+                    y: *y,
+                    dwell_ms: *dwell_ms,
+                },
+                app_name: None,
+                window_title: None,
+                target_candidates,
+                artifact_paths: vec![],
+                source_event_ids: vec![event.id],
+                confidence: ActionConfidence::Medium,
+                warnings: vec![],
+                screenshot_meta: None,
+                candidate: true,
+            });
+        }
+    }
+
+    candidates
+}
+
+/// Find the chronological insertion position for a hover candidate action
+/// based on its source event timestamp, relative to existing actions.
+fn find_chronological_insert_position(
+    actions: &[WalkthroughAction],
+    candidate: &WalkthroughAction,
+    events: &[WalkthroughEvent],
+) -> usize {
+    let candidate_ts = candidate
+        .source_event_ids
+        .first()
+        .and_then(|id| events.iter().find(|e| e.id == *id))
+        .map(|e| e.timestamp)
+        .unwrap_or(u64::MAX);
+
+    // Find the first action whose source event timestamp is after the candidate's.
+    for (i, action) in actions.iter().enumerate() {
+        let action_ts = action
+            .source_event_ids
+            .first()
+            .and_then(|id| events.iter().find(|e| e.id == *id))
+            .map(|e| e.timestamp)
+            .unwrap_or(0);
+        if action_ts > candidate_ts {
+            return i;
+        }
+    }
+    actions.len()
 }
