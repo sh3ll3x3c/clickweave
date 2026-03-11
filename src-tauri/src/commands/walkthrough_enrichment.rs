@@ -273,6 +273,47 @@ pub(super) async fn execute_vlm_click_request(
 /// For each Click action that has a screenshot artifact and screenshot metadata,
 /// draws a crosshair on the screenshot and sends it to the VLM asking what UI
 /// element was clicked. Image prep and VLM calls all run concurrently.
+/// Attach the nearest click's screenshot and metadata to hover candidate actions
+/// that lack their own screenshot.  This enables VLM enrichment for hovers.
+pub(super) fn attach_nearest_screenshots(actions: &mut [WalkthroughAction]) {
+    use clickweave_core::walkthrough::WalkthroughActionKind;
+
+    // Collect indices and screenshot data from actions that have screenshots.
+    let screenshots: Vec<(usize, String, ScreenshotMeta)> = actions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            let path = a.artifact_paths.first()?;
+            let meta = a.screenshot_meta?;
+            Some((i, path.clone(), meta))
+        })
+        .collect();
+
+    if screenshots.is_empty() {
+        return;
+    }
+
+    // For each hover candidate without a screenshot, find the nearest screenshot.
+    let hover_indices: Vec<usize> = actions
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| {
+            matches!(a.kind, WalkthroughActionKind::Hover { .. }) && a.artifact_paths.is_empty()
+        })
+        .map(|(i, _)| i)
+        .collect();
+
+    for hover_idx in hover_indices {
+        // Find the screenshot from the closest action by index distance.
+        let (_, path, meta) = screenshots
+            .iter()
+            .min_by_key(|(i, _, _)| (*i as isize - hover_idx as isize).unsigned_abs())
+            .unwrap();
+        actions[hover_idx].artifact_paths = vec![path.clone()];
+        actions[hover_idx].screenshot_meta = Some(*meta);
+    }
+}
+
 pub(super) async fn resolve_click_targets_with_vlm(
     actions: &mut [WalkthroughAction],
     planner_cfg: &super::types::EndpointConfig,
@@ -302,6 +343,7 @@ pub(super) async fn resolve_click_targets_with_vlm(
     for (idx, action) in actions.iter().enumerate() {
         let (click_x, click_y) = match &action.kind {
             WalkthroughActionKind::Click { x, y, .. } => (*x, *y),
+            WalkthroughActionKind::Hover { x, y, .. } => (*x, *y),
             _ => continue,
         };
 
@@ -431,9 +473,10 @@ pub(super) async fn resolve_click_targets_with_vlm(
         if let Some(label) = label {
             let (click_x, click_y) = match &actions[action_idx].kind {
                 WalkthroughActionKind::Click { x, y, .. } => (*x, *y),
+                WalkthroughActionKind::Hover { x, y, .. } => (*x, *y),
                 _ => continue,
             };
-            tracing::info!("VLM resolved click at ({click_x:.0}, {click_y:.0}) → \"{label}\"");
+            tracing::info!("VLM resolved target at ({click_x:.0}, {click_y:.0}) → \"{label}\"");
             let action = &mut actions[action_idx];
             // Insert VLM label after actionable AX labels but before
             // non-actionable AX labels, OCR, and coordinates.

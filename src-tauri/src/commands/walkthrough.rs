@@ -19,7 +19,7 @@ use crate::platform::macos::MacOSEventTap;
 // Re-export from submodules for use within the commands crate.
 pub use super::walkthrough_session::WalkthroughHandle;
 
-use super::walkthrough_enrichment::resolve_click_targets_with_vlm;
+use super::walkthrough_enrichment::{attach_nearest_screenshots, resolve_click_targets_with_vlm};
 use super::walkthrough_session::{
     get_recording_bar_rect, populate_app_cache, process_capture_events, spawn_mcp,
     strip_recording_bar_click,
@@ -129,6 +129,7 @@ pub async fn start_walkthrough(
     project_path: Option<String>,
     planner: Option<super::types::EndpointConfig>,
     cdp_apps: Vec<CdpAppConfig>,
+    hover_dwell_threshold: Option<u64>,
 ) -> Result<(), String> {
     let wf_id = parse_uuid(&workflow_id, "workflow")?;
 
@@ -204,6 +205,7 @@ pub async fn start_walkthrough(
         };
 
         let emit_handle = app.clone();
+        let hover_dwell_ms = hover_dwell_threshold.unwrap_or(1000);
         let processing_task = tauri::async_runtime::spawn(async move {
             process_capture_events(
                 emit_handle,
@@ -214,6 +216,7 @@ pub async fn start_walkthrough(
                 session_dir,
                 cancel,
                 cdp_apps,
+                hover_dwell_ms,
             )
             .await;
         });
@@ -359,18 +362,21 @@ pub async fn stop_walkthrough(
             let (mut actions, mut norm_warnings) =
                 clickweave_core::walkthrough::normalize_events(&events);
 
-            // VLM: resolve click targets using vision (parallel).
-            if let Some(ref planner_cfg) = planner {
-                resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
-            }
-
             // Hover: retrieve hover events and convert to candidate actions.
-            // Uses a temporary MCP instance to call stop_hover_tracking/get_hover_events.
             let hover_candidates =
                 retrieve_hover_candidates(&events, hover_dwell_threshold.unwrap_or(1000));
             for candidate in hover_candidates {
                 let insert_idx = find_chronological_insert_position(&actions, &candidate, &events);
                 actions.insert(insert_idx, candidate);
+            }
+
+            // Attach the nearest click's screenshot to hover candidates so
+            // VLM can resolve their targets too.
+            attach_nearest_screenshots(&mut actions);
+
+            // VLM: resolve click and hover targets using vision (parallel).
+            if let Some(ref planner_cfg) = planner {
+                resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
             }
 
             // Save actions.
@@ -654,6 +660,40 @@ fn retrieve_hover_candidates(
             }
 
             let mut target_candidates = vec![];
+
+            // Check for CDP DOM resolution for this hover event.
+            let cdp_resolved = events.iter().find_map(|e| {
+                if let WalkthroughEventKind::CdpHoverResolved {
+                    hover_event_id,
+                    name,
+                    role,
+                    href,
+                    parent_role,
+                    parent_name,
+                } = &e.kind
+                    && *hover_event_id == event.id
+                {
+                    return Some((
+                        name.clone(),
+                        role.clone(),
+                        href.clone(),
+                        parent_role.clone(),
+                        parent_name.clone(),
+                    ));
+                }
+                None
+            });
+
+            if let Some((name, role, href, parent_role, parent_name)) = cdp_resolved {
+                target_candidates.push(clickweave_core::walkthrough::TargetCandidate::CdpElement {
+                    name,
+                    role,
+                    href,
+                    parent_role,
+                    parent_name,
+                });
+            }
+
             if !element_name.is_empty() {
                 target_candidates.push(
                     clickweave_core::walkthrough::TargetCandidate::AccessibilityLabel {

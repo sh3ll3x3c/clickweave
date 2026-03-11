@@ -352,8 +352,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             // CDP click resolved events are consumed in the click peek loop above.
             WalkthroughEventKind::CdpClickResolved { .. } => {}
 
-            // Hover events are processed separately (not during normalization).
+            // Hover events and their CDP enrichment are processed separately.
             WalkthroughEventKind::HoverDetected { .. } => {}
+            WalkthroughEventKind::CdpHoverResolved { .. } => {}
 
             // Skip non-action events.
             WalkthroughEventKind::Paused
