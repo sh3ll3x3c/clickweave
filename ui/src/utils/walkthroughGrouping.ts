@@ -12,7 +12,7 @@ export type AppGroup = {
   appName: string | null;
   color: string;
   items: RenderItem[];
-  anchorIndex: number; // index within items of FocusWindow/LaunchApp, or -1
+  anchorIndices: Set<number>; // indices within items of FocusWindow/LaunchApp
 };
 
 // --- Color palette ---
@@ -93,16 +93,18 @@ export function computeAppGroups(
     const app = itemAppName(item);
     const lastGroup = groups[groups.length - 1];
     if (lastGroup && lastGroup.appName === app) {
-      if (isAnchor(item) && lastGroup.anchorIndex === -1) {
-        lastGroup.anchorIndex = lastGroup.items.length;
+      if (isAnchor(item)) {
+        lastGroup.anchorIndices.add(lastGroup.items.length);
       }
       lastGroup.items.push(item);
     } else {
+      const anchors = new Set<number>();
+      if (isAnchor(item)) anchors.add(0);
       groups.push({
         appName: app,
         color: app ? GROUP_COLORS[hashAppName(app)] : "transparent",
         items: [item],
-        anchorIndex: isAnchor(item) ? 0 : -1,
+        anchorIndices: anchors,
       });
     }
   }
@@ -119,22 +121,22 @@ export function isValidItemDrop(
 ): boolean {
   // Anchors cannot be dragged
   for (const g of groups) {
-    if (g.anchorIndex >= 0 && g.items[g.anchorIndex].id === dragId) {
-      return false;
+    for (const ai of g.anchorIndices) {
+      if (g.items[ai].id === dragId) return false;
     }
   }
 
   // Find which group the target index falls into.
-  // targetIndex is a flat index into the ordered (non-deleted) items.
+  // targetIndex is a flat index into the ordered items.
   let flatIndex = 0;
   for (const group of groups) {
     const groupStart = flatIndex;
     const groupEnd = flatIndex + group.items.length;
     if (targetIndex >= groupStart && targetIndex < groupEnd) {
-      // Dropping within this group — can't go above anchor
-      if (group.anchorIndex >= 0) {
-        const anchorFlat = groupStart + group.anchorIndex;
-        if (targetIndex <= anchorFlat && dragId !== group.items[group.anchorIndex].id) {
+      // Dropping within this group — can't go above any anchor
+      if (group.anchorIndices.size > 0) {
+        const lowestAnchorFlat = groupStart + Math.min(...group.anchorIndices);
+        if (targetIndex <= lowestAnchorFlat) {
           return false;
         }
       }

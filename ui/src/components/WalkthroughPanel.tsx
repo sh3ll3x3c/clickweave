@@ -168,7 +168,7 @@ export function WalkthroughPanel() {
   // Render a single item (node or candidate) within a group
   function renderGroupItem(item: RenderItem, group: AppGroup, groupIndex: number, itemIndex: number) {
     const flatIdx = flatIdxAt(groupIndex, itemIndex);
-    const isItemAnchor = group.anchorIndex >= 0 && group.items[group.anchorIndex].id === item.id;
+    const isItemAnchor = group.anchorIndices.has(itemIndex);
 
     const borderLeftStyle = group.appName
       ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" as const }
@@ -527,7 +527,7 @@ export function WalkthroughPanel() {
             {groups.map((group, groupIndex) => (
               <div key={`${group.appName ?? "ungrouped"}-${groupIndex}`} className="space-y-0">
                 {/* Group header (only for named groups with >1 item or an anchor) */}
-                {group.appName && (group.items.length > 1 || group.anchorIndex >= 0) && (
+                {group.appName && (group.items.length > 1 || group.anchorIndices.size > 0) && (
                   <div
                     className="flex items-center gap-2 px-2 py-1 cursor-grab active:cursor-grabbing group/header"
                     draggable
@@ -578,7 +578,7 @@ export function WalkthroughPanel() {
                   if (fromIdx >= 0) reorderNode(fromIdx, walkthroughNodeOrder.length - 1);
                 } else if (groupIdxStr) {
                   const fromGroupIdx = parseInt(groupIdxStr, 10);
-                  if (!isNaN(fromGroupIdx)) reorderGroup(fromGroupIdx, groups.length - 1);
+                  if (!isNaN(fromGroupIdx)) reorderGroup(fromGroupIdx, groups.length);
                 }
               }}
             />

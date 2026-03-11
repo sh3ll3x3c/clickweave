@@ -398,7 +398,8 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       s.walkthroughActions, s.walkthroughActionNodeMap,
     );
     if (fromGroupIndex < 0 || fromGroupIndex >= groups.length) return {};
-    if (toGroupIndex < 0 || toGroupIndex >= groups.length) return {};
+    // toGroupIndex === groups.length means "append to end"
+    if (toGroupIndex < 0 || toGroupIndex > groups.length) return {};
 
     // Extract the flat ID ranges for each group (includes deleted items),
     // reorder, and flatten back.

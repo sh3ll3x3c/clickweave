@@ -92,7 +92,7 @@ describe("computeAppGroups", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].appName).toBe("Calculator");
     expect(groups[0].items).toHaveLength(3);
-    expect(groups[0].anchorIndex).toBe(0);
+    expect(groups[0].anchorIndices).toEqual(new Set([0]));
   });
 
   it("splits interleaved apps into separate groups", () => {
