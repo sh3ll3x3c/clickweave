@@ -156,6 +156,10 @@ export function synthesizeNodeForKeptCandidate(
  * Find the insertion index for a kept candidate node within the draft's node
  * array, based on its position in the actions list relative to already-mapped
  * actions.
+ *
+ * Uses "insert after the last mapped action at or before this one" so that
+ * hover candidates land after the Launch/Focus setup they logically belong to,
+ * matching the backend's insertion strategy.
  */
 export function findCandidateInsertIndex(
   actionId: string,
@@ -165,16 +169,17 @@ export function findCandidateInsertIndex(
 ): number {
   const actionIdx = actions.findIndex((a) => a.id === actionId);
 
-  // Find the first action AFTER this one that has a node in the draft.
-  for (let i = actionIdx + 1; i < actions.length; i++) {
+  // Find the last action BEFORE this one that has a node in the draft,
+  // then insert after that node.
+  for (let i = actionIdx - 1; i >= 0; i--) {
     const entry = actionNodeMap.find((e) => e.action_id === actions[i].id);
     if (entry) {
       const nodeIdx = draftNodes.findIndex((n) => n.id === entry.node_id);
-      if (nodeIdx >= 0) return nodeIdx;
+      if (nodeIdx >= 0) return nodeIdx + 1;
     }
   }
 
-  return draftNodes.length; // append at end
+  return 0; // no preceding mapped action — insert at start
 }
 
 /** Recompute vertical positions for a linear list of draft nodes. */

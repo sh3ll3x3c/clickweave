@@ -502,12 +502,14 @@ pub(super) async fn resolve_click_targets_with_vlm(
             };
             tracing::info!("VLM resolved target at ({click_x:.0}, {click_y:.0}) → \"{label}\"");
             let action = &mut actions[action_idx];
-            // Insert VLM label after actionable AX labels but before
-            // non-actionable AX labels, OCR, and coordinates.
+            // Insert VLM label after CDP elements and actionable AX labels
+            // but before non-actionable AX labels, OCR, and coordinates.
             let insert_pos = action
                 .target_candidates
                 .iter()
-                .position(|c| !c.is_actionable_ax_label())
+                .position(|c| {
+                    !matches!(c, TargetCandidate::CdpElement { .. }) && !c.is_actionable_ax_label()
+                })
                 .unwrap_or(action.target_candidates.len());
             action
                 .target_candidates

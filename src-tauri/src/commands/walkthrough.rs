@@ -728,6 +728,12 @@ fn retrieve_hover_candidates(
 
 /// Find the chronological insertion position for a hover candidate action
 /// based on its source event timestamp, relative to existing actions.
+///
+/// Uses "insert after the last action at or before the hover's timestamp"
+/// rather than "insert before the first action after." Hover transition
+/// events fire right before the click that triggers AppFocused, so placing
+/// them *after* nearby actions keeps hovers behind the Launch/Focus setup
+/// they logically belong to.
 fn find_chronological_insert_position(
     actions: &[WalkthroughAction],
     candidate: &WalkthroughAction,
@@ -740,7 +746,9 @@ fn find_chronological_insert_position(
         .map(|e| e.timestamp)
         .unwrap_or(u64::MAX);
 
-    // Find the first action whose source event timestamp is after the candidate's.
+    // Find the last action whose source event timestamp is at or before the
+    // candidate's, then insert after it.
+    let mut insert_after: Option<usize> = None;
     for (i, action) in actions.iter().enumerate() {
         let action_ts = action
             .source_event_ids
@@ -748,9 +756,9 @@ fn find_chronological_insert_position(
             .and_then(|id| events.iter().find(|e| e.id == *id))
             .map(|e| e.timestamp)
             .unwrap_or(0);
-        if action_ts > candidate_ts {
-            return i;
+        if action_ts <= candidate_ts {
+            insert_after = Some(i);
         }
     }
-    actions.len()
+    insert_after.map_or(0, |i| i + 1)
 }

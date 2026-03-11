@@ -104,6 +104,36 @@ export function WalkthroughPanel() {
   // Candidate actions (hovers awaiting Keep/Dismiss) — not yet in the draft
   const candidateActions = walkthroughActions.filter((a) => a.candidate);
 
+  // Build a unified chronological render list by walking walkthroughActions
+  // in order and emitting either a draft node card or a candidate card.
+  type RenderItem =
+    | { type: "node"; node: (typeof draftNodes)[0]; action: WalkthroughAction | undefined }
+    | { type: "candidate"; action: WalkthroughAction };
+
+  const renderItems: RenderItem[] = [];
+  const renderedNodeIds = new Set<string>();
+  const nodeByActionId = new Map(
+    walkthroughActionNodeMap.map((e) => [e.action_id, draftNodes.find((n) => n.id === e.node_id)])
+  );
+
+  for (const action of walkthroughActions) {
+    if (action.candidate) {
+      renderItems.push({ type: "candidate", action });
+    } else {
+      const node = nodeByActionId.get(action.id);
+      if (node) {
+        renderItems.push({ type: "node", node, action });
+        renderedNodeIds.add(node.id);
+      }
+    }
+  }
+  // Append any draft nodes not covered by actions (safety fallback).
+  for (const node of draftNodes) {
+    if (!renderedNodeIds.has(node.id)) {
+      renderItems.push({ type: "node", node, action: actionByNodeId.get(node.id) });
+    }
+  }
+
   // Precompute lightbox image if one is open
   const lightboxImage: LightboxImage | null = (() => {
     if (!lightboxActionId) return null;
@@ -171,8 +201,42 @@ export function WalkthroughPanel() {
           </div>
         ) : (
           <div className="space-y-1.5">
-            {draftNodes.map((node) => {
-              const action = actionByNodeId.get(node.id);
+            {renderItems.map((item) => {
+              if (item.type === "candidate") {
+                const { icon, color } = actionIcon(item.action.kind);
+                const label = actionLabel(item.action);
+                return (
+                  <div
+                    key={`candidate-${item.action.id}`}
+                    className="rounded-lg border border-dashed border-purple-500/50 opacity-60"
+                  >
+                    <div className="flex items-center gap-2 px-3 py-2">
+                      <span className="w-5 text-right text-[10px] text-[var(--text-muted)]">?</span>
+                      <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
+                      <span className="truncate text-xs text-[var(--text-secondary)]">{label}</span>
+                      <span className="ml-1 rounded bg-purple-900/50 px-1.5 py-0.5 text-[10px] text-purple-300">
+                        candidate
+                      </span>
+                      <div className="flex gap-1 ml-auto">
+                        <button
+                          onClick={() => keepCandidate(item.action.id)}
+                          className="rounded bg-green-700 px-2 py-0.5 text-[10px] text-white hover:bg-green-600"
+                        >
+                          Keep
+                        </button>
+                        <button
+                          onClick={() => dismissCandidate(item.action.id)}
+                          className="rounded bg-[var(--bg-input)] px-2 py-0.5 text-[10px] text-[var(--text-muted)] hover:bg-red-500/20"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              const { node, action } = item;
               const isDeleted = deletedSet.has(node.id);
               const isExpanded = walkthroughExpandedAction === node.id;
               const currentStep = stepNumbers.get(node.id) ?? null;
@@ -393,41 +457,6 @@ export function WalkthroughPanel() {
                       })()}
                     </div>
                   )}
-                </div>
-              );
-            })}
-
-            {/* Candidate hover actions (ghost nodes) */}
-            {candidateActions.map((action) => {
-              const { icon, color } = actionIcon(action.kind);
-              const label = actionLabel(action);
-              return (
-                <div
-                  key={`candidate-${action.id}`}
-                  className="rounded-lg border border-dashed border-purple-500/50 opacity-60"
-                >
-                  <div className="flex items-center gap-2 px-3 py-2">
-                    <span className="w-5 text-right text-[10px] text-[var(--text-muted)]">?</span>
-                    <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
-                    <span className="truncate text-xs text-[var(--text-secondary)]">{label}</span>
-                    <span className="ml-1 rounded bg-purple-900/50 px-1.5 py-0.5 text-[10px] text-purple-300">
-                      candidate
-                    </span>
-                    <div className="flex gap-1 ml-auto">
-                      <button
-                        onClick={() => keepCandidate(action.id)}
-                        className="rounded bg-green-700 px-2 py-0.5 text-[10px] text-white hover:bg-green-600"
-                      >
-                        Keep
-                      </button>
-                      <button
-                        onClick={() => dismissCandidate(action.id)}
-                        className="rounded bg-[var(--bg-input)] px-2 py-0.5 text-[10px] text-[var(--text-muted)] hover:bg-red-500/20"
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                  </div>
                 </div>
               );
             })}
