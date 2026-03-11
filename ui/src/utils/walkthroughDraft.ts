@@ -19,6 +19,7 @@ export function applyAnnotationsToDraft(
   annotations: WalkthroughAnnotations,
   actions: WalkthroughAction[],
   actionNodeMap: ActionNodeEntry[],
+  nodeOrder?: string[],
 ): { nodes: Node[]; edges: Edge[] } {
   // Collect deleted node IDs directly (annotations already use node_id).
   const deletedNodeIds = new Set(annotations.deleted_node_ids);
@@ -31,8 +32,24 @@ export function applyAnnotationsToDraft(
   const targetMap = new Map(annotations.target_overrides.map((o) => [o.node_id, o]));
   const varPromoMap = new Map(annotations.variable_promotions.map((p) => [p.node_id, p]));
 
+  // Reorder draft nodes to match user-specified order if provided.
+  let orderedDraftNodes = draft.nodes;
+  if (nodeOrder && nodeOrder.length > 0) {
+    const nodeById = new Map(draft.nodes.map((n) => [n.id, n]));
+    const reordered: typeof draft.nodes = [];
+    for (const id of nodeOrder) {
+      const n = nodeById.get(id);
+      if (n) reordered.push(n);
+    }
+    // Append any nodes not in nodeOrder (safety fallback)
+    for (const n of draft.nodes) {
+      if (!reordered.includes(n)) reordered.push(n);
+    }
+    orderedDraftNodes = reordered;
+  }
+
   // Filter and transform nodes.
-  const nodes = draft.nodes
+  const nodes = orderedDraftNodes
     .filter((n) => !deletedNodeIds.has(n.id))
     .map((n): Node => {
       let updated = { ...n };
