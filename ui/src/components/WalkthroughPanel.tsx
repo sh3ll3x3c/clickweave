@@ -118,8 +118,7 @@ export function WalkthroughPanel() {
   }
 
   const activeNodeCount = step;
-  const totalActiveItems = groups.reduce((sum, g) => sum + g.items.length, 0);
-  const allDeleted = draftNodes.length > 0 && totalActiveItems === 0;
+  const allDeleted = draftNodes.length > 0 && activeNodeCount === 0;
 
   // Precompute lightbox image if one is open
   const lightboxImage: LightboxImage | null = (() => {
@@ -526,7 +525,7 @@ export function WalkthroughPanel() {
         ) : (
           <div className="space-y-1.5">
             {groups.map((group, groupIndex) => (
-              <div key={group.appName ?? `ungrouped-${groupIndex}`} className="space-y-0">
+              <div key={`${group.appName ?? "ungrouped"}-${groupIndex}`} className="space-y-0">
                 {/* Group header (only for named groups with >1 item or an anchor) */}
                 {group.appName && (group.items.length > 1 || group.anchorIndex >= 0) && (
                   <div
@@ -566,7 +565,7 @@ export function WalkthroughPanel() {
               className="h-4"
               onDragOver={(e) => {
                 e.preventDefault();
-                setDragOverIndex(totalActiveItems);
+                setDragOverIndex(groups.reduce((sum, g) => sum + g.items.length, 0));
               }}
               onDragLeave={() => setDragOverIndex(null)}
               onDrop={(e) => {

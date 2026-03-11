@@ -100,7 +100,7 @@ export function applyAnnotationsToDraft(
     edges.push({ from: nodes[i].id, to: nodes[i + 1].id, output: null });
   }
 
-  return { nodes, edges };
+  return { nodes: recomputeNodePositions(nodes), edges };
 }
 
 /**
