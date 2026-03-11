@@ -238,9 +238,9 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
     }
     return t.trim().substring(0, 200);
   }
-  let lastEl = null;
-  let enterTime = 0;
-  const MIN_DWELL = 300;
+  d.__cw_hover_lastEl = null;
+  d.__cw_hover_enterTime = 0;
+  const MIN_DWELL = __CW_MIN_DWELL__;
   if (d.__cw_hover_mousemove) {
     d.removeEventListener('mousemove', d.__cw_hover_mousemove, true);
   }
@@ -249,58 +249,65 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
     d.__cw_hover_y = e.clientY;
   };
   d.addEventListener('mousemove', d.__cw_hover_mousemove, true);
+  d.__cw_hover_flush = () => {
+    const el = d.__cw_hover_lastEl;
+    const enter = d.__cw_hover_enterTime;
+    if (!el || !enter) return;
+    const now = Date.now();
+    if ((now - enter) < MIN_DWELL) return;
+    let text = accessibleText(el);
+    if (!text) {
+      let p = el.parentElement;
+      while (p && p !== d.documentElement) {
+        const la = p.ariaLabel || p.getAttribute('aria-label');
+        if (la) { text = la; break; }
+        const lb = p.getAttribute('aria-labelledby');
+        if (lb) {
+          const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
+          if (r) { text = r; break; }
+        }
+        if (p.title) { text = p.title; break; }
+        p = p.parentElement;
+      }
+    }
+    let parentRole = null;
+    let parentName = null;
+    {
+      let p = el.parentElement;
+      while (p && p !== d.documentElement) {
+        const r = p.getAttribute('role');
+        const a = p.ariaLabel || p.getAttribute('aria-label');
+        if (r || a) {
+          parentRole = r || null;
+          parentName = a || accessibleText(p).substring(0, 200) || null;
+          break;
+        }
+        p = p.parentElement;
+      }
+    }
+    d.__cw_hovers.push({
+      ts: enter,
+      dwellMs: now - enter,
+      tagName: el.tagName,
+      role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
+      ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
+      textContent: text || null,
+      href: el.closest('a')?.href || null,
+      parentRole: parentRole,
+      parentName: parentName,
+    });
+    d.__cw_hover_lastEl = null;
+    d.__cw_hover_enterTime = 0;
+  };
   if (d.__cw_hover_interval) clearInterval(d.__cw_hover_interval);
   d.__cw_hover_interval = setInterval(() => {
     const raw = d.elementFromPoint(d.__cw_hover_x, d.__cw_hover_y);
-    if (!raw) { lastEl = null; enterTime = 0; return; }
+    if (!raw) { d.__cw_hover_lastEl = null; d.__cw_hover_enterTime = 0; return; }
     const el = raw.closest(INTERACTIVE) || raw.closest('[aria-label]') || raw;
-    if (el === lastEl) return;
-    const now = Date.now();
-    if (lastEl && enterTime && (now - enterTime) >= MIN_DWELL) {
-      let text = accessibleText(lastEl);
-      if (!text) {
-        let p = lastEl.parentElement;
-        while (p && p !== d.documentElement) {
-          const la = p.ariaLabel || p.getAttribute('aria-label');
-          if (la) { text = la; break; }
-          const lb = p.getAttribute('aria-labelledby');
-          if (lb) {
-            const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-            if (r) { text = r; break; }
-          }
-          if (p.title) { text = p.title; break; }
-          p = p.parentElement;
-        }
-      }
-      let parentRole = null;
-      let parentName = null;
-      {
-        let p = lastEl.parentElement;
-        while (p && p !== d.documentElement) {
-          const r = p.getAttribute('role');
-          const a = p.ariaLabel || p.getAttribute('aria-label');
-          if (r || a) {
-            parentRole = r || null;
-            parentName = a || accessibleText(p).substring(0, 200) || null;
-            break;
-          }
-          p = p.parentElement;
-        }
-      }
-      d.__cw_hovers.push({
-        ts: enterTime,
-        dwellMs: now - enterTime,
-        tagName: lastEl.tagName,
-        role: lastEl.getAttribute('role') || TAG_ROLES[lastEl.tagName] || null,
-        ariaLabel: lastEl.ariaLabel || lastEl.getAttribute('aria-label') || null,
-        textContent: text || null,
-        href: lastEl.closest('a')?.href || null,
-        parentRole: parentRole,
-        parentName: parentName,
-      });
-    }
-    lastEl = el;
-    enterTime = now;
+    if (el === d.__cw_hover_lastEl) return;
+    d.__cw_hover_flush();
+    d.__cw_hover_lastEl = el;
+    d.__cw_hover_enterTime = Date.now();
   }, 100);
 }"#;
 
@@ -319,6 +326,7 @@ const CDP_RETRIEVE_HOVERS_JS: &str = r#"() => {
 const CDP_STOP_HOVER_JS: &str = r#"() => {
   const d = document;
   if (d.__cw_hover_interval) { clearInterval(d.__cw_hover_interval); d.__cw_hover_interval = null; }
+  if (d.__cw_hover_flush) { d.__cw_hover_flush(); d.__cw_hover_flush = null; }
   if (d.__cw_hover_mousemove) { d.removeEventListener('mousemove', d.__cw_hover_mousemove, true); d.__cw_hover_mousemove = null; }
 }"#;
 
@@ -1299,10 +1307,8 @@ async fn setup_cdp_apps(
 
                 // Inject hover listener alongside click listener.
                 if inject_ok {
-                    let hover_js = CDP_HOVER_LISTENER_JS.replace(
-                        "const MIN_DWELL = 300;",
-                        &format!("const MIN_DWELL = {hover_dwell_ms};"),
-                    );
+                    let hover_js = CDP_HOVER_LISTENER_JS
+                        .replace("__CW_MIN_DWELL__", &hover_dwell_ms.to_string());
                     let hover_args = serde_json::json!({ "function": hover_js });
                     match mcp
                         .call_tool_on(&server_name, "evaluate_script", Some(hover_args))
@@ -1719,8 +1725,11 @@ async fn enrich_click_background(
                 screenshot_meta = *meta;
             }
             WalkthroughEventKind::AccessibilityElementCaptured { label, role } => {
-                has_actionable_ax =
-                    clickweave_core::walkthrough::is_actionable_ax_role(role.as_deref());
+                // Only treat as actionable if we also have a non-empty label.
+                // Elements with an actionable role but no label (e.g. unlabeled
+                // buttons with a subrole) should still get VLM fallback.
+                has_actionable_ax = !label.is_empty()
+                    && clickweave_core::walkthrough::is_actionable_ax_role(role.as_deref());
                 ax_label_data = Some((label.clone(), role.clone()));
             }
             _ => {}
