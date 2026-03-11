@@ -68,12 +68,30 @@ impl McpClient {
 
     async fn read_response(&self) -> Result<JsonRpcResponse> {
         let mut stdout = self.stdout.lock().await;
-        let mut line = String::new();
-        stdout.read_line(&mut line).await?;
+        loop {
+            let mut line = String::new();
+            stdout.read_line(&mut line).await?;
 
-        trace!("MCP response: {}", line.trim());
+            let trimmed = line.trim();
+            trace!("MCP response: {}", trimmed);
 
-        serde_json::from_str(&line).context("Failed to parse MCP response")
+            // MCP servers may send notifications (e.g. notifications/tools/list_changed)
+            // interleaved with responses.  Notifications have a "method" field but no "id".
+            // Skip them and keep reading until we get the actual response.
+            if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                if v.get("method").is_some() && v.get("id").is_none() {
+                    debug!(
+                        "Skipping server notification: {}",
+                        v.get("method")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("unknown")
+                    );
+                    continue;
+                }
+            }
+
+            return serde_json::from_str(&line).context("Failed to parse MCP response");
+        }
     }
 
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<JsonRpcResponse> {
