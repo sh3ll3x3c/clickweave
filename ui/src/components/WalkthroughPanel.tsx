@@ -254,32 +254,27 @@ export function WalkthroughPanel() {
           }`}
           style={borderLeftStyle}
         >
-          {/* Collapsed row */}
+          {/* Collapsed row — entire row is draggable for non-anchor items */}
           <div
             className="group flex cursor-pointer items-center gap-2 px-3 py-2"
+            draggable={!isItemAnchor && !isDeleted}
             onClick={() => setWalkthroughExpandedAction(node.id)}
+            onDragStart={(e) => {
+              e.dataTransfer.setData(DND_ITEM_ID, item.id);
+              e.dataTransfer.effectAllowed = "move";
+              const card = (e.currentTarget as HTMLElement).closest("[data-item-id]");
+              if (card) (card as HTMLElement).style.opacity = "0.4";
+            }}
+            onDragEnd={(e) => {
+              const card = (e.currentTarget as HTMLElement).closest("[data-item-id]");
+              if (card) (card as HTMLElement).style.opacity = "";
+            }}
           >
-            {/* Drag handle (hidden for anchors and deleted items) */}
+            {/* Drag handle indicator (visual only) */}
             {isItemAnchor || isDeleted ? (
               <span className="w-5 shrink-0" />
             ) : (
-              <span
-                className="flex w-5 h-8 shrink-0 items-center justify-center text-lg text-[var(--text-muted)] opacity-40 hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing select-none"
-                draggable
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                onDragStart={(e) => {
-                  e.stopPropagation();
-                  e.dataTransfer.setData(DND_ITEM_ID, item.id);
-                  e.dataTransfer.effectAllowed = "move";
-                  const card = (e.currentTarget as HTMLElement).closest("[data-item-id]");
-                  if (card) (card as HTMLElement).style.opacity = "0.4";
-                }}
-                onDragEnd={(e) => {
-                  const card = (e.currentTarget as HTMLElement).closest("[data-item-id]");
-                  if (card) (card as HTMLElement).style.opacity = "";
-                }}
-              >
+              <span className="flex w-5 shrink-0 items-center justify-center text-lg text-[var(--text-muted)] opacity-40 group-hover:opacity-100 transition-opacity select-none">
                 &#x2261;
               </span>
             )}
