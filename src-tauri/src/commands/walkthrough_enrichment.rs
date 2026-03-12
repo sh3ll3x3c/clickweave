@@ -328,13 +328,21 @@ pub(super) fn attach_nearest_screenshots(actions: &mut [WalkthroughAction]) {
         .collect();
 
     for hover_idx in hover_indices {
-        // Find the screenshot from the closest action by index distance.
-        let (_, path, meta) = screenshots
+        let hover_app = actions[hover_idx].app_name.as_deref();
+
+        // Prefer a screenshot from the same app; fall back to nearest overall.
+        let best = screenshots
             .iter()
+            .filter(|(i, _, _)| actions[*i].app_name.as_deref() == hover_app)
             .min_by_key(|(i, _, _)| (*i as isize - hover_idx as isize).unsigned_abs())
+            .or_else(|| {
+                screenshots
+                    .iter()
+                    .min_by_key(|(i, _, _)| (*i as isize - hover_idx as isize).unsigned_abs())
+            })
             .unwrap();
-        actions[hover_idx].artifact_paths = vec![path.clone()];
-        actions[hover_idx].screenshot_meta = Some(*meta);
+        actions[hover_idx].artifact_paths = vec![best.1.clone()];
+        actions[hover_idx].screenshot_meta = Some(best.2);
     }
 }
 
