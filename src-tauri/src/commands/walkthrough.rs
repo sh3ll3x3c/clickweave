@@ -654,6 +654,7 @@ fn retrieve_hover_candidates(
             element_name,
             element_role,
             dwell_ms,
+            app_name,
         } = &event.kind
         else {
             continue;
@@ -680,9 +681,35 @@ fn retrieve_hover_candidates(
             continue;
         }
 
-        // Resolve which app this hover belongs to by finding the closest
-        // AppFocused event (previous or next) by timestamp.
-        let (hover_app, hover_window) = resolve_hover_app(event.timestamp, &focus_events);
+        // For CDP hovers (x=0, y=0), coordinate matching doesn't work.
+        // Instead, check if the hover's element name matches a click's CDP target
+        // within 2s after the hover — this indicates a pass-through hover.
+        if *x == 0.0 && *y == 0.0 {
+            let text_matches_click = events.iter().any(|e| {
+                if let WalkthroughEventKind::CdpClickResolved { name, .. } = &e.kind {
+                    e.timestamp > event.timestamp
+                        && e.timestamp.saturating_sub(event.timestamp) < 2000
+                        && name == element_name
+                } else {
+                    false
+                }
+            });
+            if text_matches_click {
+                continue;
+            }
+        }
+
+        // Use explicit app_name from CDP if present; fall back to timestamp resolution.
+        let (hover_app, hover_window) = if let Some(explicit_app) = app_name {
+            let title = focus_events
+                .iter()
+                .rev()
+                .find(|(_, a, _)| a == explicit_app)
+                .and_then(|(_, _, t)| t.clone());
+            (Some(explicit_app.clone()), title)
+        } else {
+            resolve_hover_app(event.timestamp, &focus_events)
+        };
 
         let mut target_candidates = vec![];
 
@@ -856,6 +883,7 @@ mod tests {
                 element_name: "Button".to_string(),
                 element_role: Some("AXButton".to_string()),
                 dwell_ms,
+                app_name: None,
             },
         }
     }
@@ -922,5 +950,94 @@ mod tests {
         assert_eq!(candidates[0].app_name.as_deref(), Some("Signal"));
         // ts=1200: 3800ms from Signal → stays with Discord
         assert_eq!(candidates[1].app_name.as_deref(), Some("Discord"));
+    }
+
+    fn hover_event_with_app(ts: u64, dwell_ms: u64, app: &str) -> WalkthroughEvent {
+        WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp: ts,
+            kind: WalkthroughEventKind::HoverDetected {
+                x: 0.0,
+                y: 0.0,
+                element_name: "Button".to_string(),
+                element_role: Some("AXButton".to_string()),
+                dwell_ms,
+                app_name: Some(app.to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn hover_with_app_name_uses_it_directly() {
+        let events = vec![
+            focus_event(1000, "Signal"),
+            hover_event_with_app(1100, 1500, "Discord"),
+            focus_event(2000, "Discord"),
+        ];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].app_name.as_deref(), Some("Discord"));
+    }
+
+    #[test]
+    fn hover_text_matching_next_click_filtered_out() {
+        use clickweave_core::walkthrough::WalkthroughEventKind;
+        let hover_id = Uuid::new_v4();
+        let events = vec![
+            focus_event(1000, "App"),
+            WalkthroughEvent {
+                id: hover_id,
+                timestamp: 2000,
+                kind: WalkthroughEventKind::HoverDetected {
+                    x: 0.0,
+                    y: 0.0,
+                    element_name: "Submit".to_string(),
+                    element_role: Some("button".to_string()),
+                    dwell_ms: 1200,
+                    app_name: Some("App".to_string()),
+                },
+            },
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 2000,
+                kind: WalkthroughEventKind::CdpHoverResolved {
+                    hover_event_id: hover_id,
+                    name: "Submit".to_string(),
+                    role: Some("button".to_string()),
+                    href: None,
+                    parent_role: None,
+                    parent_name: None,
+                },
+            },
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 3000,
+                kind: WalkthroughEventKind::MouseClicked {
+                    x: 100.0,
+                    y: 200.0,
+                    button: clickweave_core::MouseButton::Left,
+                    click_count: 1,
+                    modifiers: vec![],
+                },
+            },
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 3000,
+                kind: WalkthroughEventKind::CdpClickResolved {
+                    name: "Submit".to_string(),
+                    role: Some("button".to_string()),
+                    href: None,
+                    parent_role: None,
+                    parent_name: None,
+                    click_event_id: Uuid::new_v4(),
+                },
+            },
+        ];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(
+            candidates.len(),
+            0,
+            "hover matching next click target should be filtered"
+        );
     }
 }

@@ -169,6 +169,8 @@ pub enum WalkthroughEventKind {
         element_name: String,
         element_role: Option<String>,
         dwell_ms: u64,
+        #[serde(default)]
+        app_name: Option<String>,
     },
     CdpHoverResolved {
         name: String,
