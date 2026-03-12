@@ -53,6 +53,7 @@ export function WalkthroughPanel() {
   const [lightboxActionId, setLightboxActionId] = useState<string | null>(null);
   const [crosshairs, setCrosshairs] = useState<Map<string, { xPercent: number; yPercent: number }>>(new Map());
   const [expandedCandidateGroups, setExpandedCandidateGroups] = useState<Set<number>>(new Set());
+  const [isDragging, setIsDragging] = useState(false);
   const [dragOverIndex, setDragOverIndexRaw] = useState<number | null>(null);
   const dragOverRef = useRef<number | null>(null);
   const setDragOverIndex = useCallback((idx: number | null) => {
@@ -175,16 +176,16 @@ export function WalkthroughPanel() {
       ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" as const }
       : {};
 
-    // Drop zone before this item
+    // Drop zone before this item — expands during drag for easier targeting
     const dropZone = (
       <div
-        className="relative h-1"
-        onDragOver={(e) => { e.preventDefault(); setDragOverIndex(flatIdx); }}
+        className={`relative transition-all ${isDragging ? "h-6" : "h-1"}`}
+        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOverIndex(flatIdx); }}
         onDragLeave={() => setDragOverIndex(null)}
         onDrop={(e) => handleDrop(e, flatIdx, groupIndex)}
       >
         {dragOverIndex === flatIdx && (
-          <div className="absolute left-0 right-0 top-0 h-0.5 bg-[var(--accent-coral)]" />
+          <div className="absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 bg-[var(--accent-coral)]" />
         )}
       </div>
     );
@@ -262,10 +263,17 @@ export function WalkthroughPanel() {
             onDragStart={(e) => {
               e.dataTransfer.setData(DND_ITEM_ID, item.id);
               e.dataTransfer.effectAllowed = "move";
-              const card = (e.currentTarget as HTMLElement).closest("[data-item-id]");
-              if (card) (card as HTMLElement).style.opacity = "0.4";
+              e.dataTransfer.dropEffect = "move";
+              setIsDragging(true);
+              const card = (e.currentTarget as HTMLElement).closest("[data-item-id]") as HTMLElement | null;
+              if (card) {
+                card.style.opacity = "0.4";
+                e.dataTransfer.setDragImage(card, card.offsetWidth / 2, card.offsetHeight / 2);
+              }
             }}
             onDragEnd={(e) => {
+              setIsDragging(false);
+              setDragOverIndex(null);
               const card = (e.currentTarget as HTMLElement).closest("[data-item-id]");
               if (card) (card as HTMLElement).style.opacity = "";
             }}
@@ -532,9 +540,13 @@ export function WalkthroughPanel() {
                     onDragStart={(e) => {
                       e.dataTransfer.setData(DND_GROUP_INDEX, String(groupIndex));
                       e.dataTransfer.effectAllowed = "move";
+                      e.dataTransfer.dropEffect = "move";
+                      setIsDragging(true);
                       (e.currentTarget as HTMLElement).style.opacity = "0.4";
                     }}
                     onDragEnd={(e) => {
+                      setIsDragging(false);
+                      setDragOverIndex(null);
                       (e.currentTarget as HTMLElement).style.opacity = "";
                     }}
                   >
@@ -621,6 +633,7 @@ export function WalkthroughPanel() {
                   className="relative h-4"
                   onDragOver={(e) => {
                     e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
                     setDragOverIndex(totalItems);
                   }}
                   onDragLeave={() => setDragOverIndex(null)}
