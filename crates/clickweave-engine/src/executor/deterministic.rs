@@ -22,7 +22,7 @@ fn select_best_window<'a>(windows: &'a [Value], app_name: Option<&str>) -> Optio
     let mut best_any: Option<(usize, &Value)> = None;
 
     for (i, w) in windows.iter().enumerate() {
-        let matches = app_name.map_or(true, |name| {
+        let matches = app_name.is_none_or(|name| {
             w["owner_name"]
                 .as_str()
                 .is_some_and(|o| o.eq_ignore_ascii_case(name))
@@ -32,11 +32,11 @@ fn select_best_window<'a>(windows: &'a [Value], app_name: Option<&str>) -> Optio
         }
 
         let key = rank(i, w);
-        if best_any.map_or(true, |(bi, bw)| key < rank(bi, bw)) {
+        if best_any.is_none_or(|(bi, bw)| key < rank(bi, bw)) {
             best_any = Some((i, w));
         }
         if w["is_on_screen"].as_bool().unwrap_or(false)
-            && best_onscreen.map_or(true, |(bi, bw)| key < rank(bi, bw))
+            && best_onscreen.is_none_or(|(bi, bw)| key < rank(bi, bw))
         {
             best_onscreen = Some((i, w));
         }

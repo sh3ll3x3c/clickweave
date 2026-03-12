@@ -26,6 +26,7 @@ fn make_verdict(
 }
 
 /// Returns `true` when every check in the verdict passed.
+#[allow(dead_code)]
 pub(crate) fn verdict_passed(verdict: &NodeVerdict) -> bool {
     verdict
         .check_results
