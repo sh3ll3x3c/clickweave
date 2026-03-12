@@ -123,7 +123,6 @@ export interface WalkthroughSlice {
     warnings: string[];
     action_node_map: ActionNodeEntry[];
   }) => void;
-  fetchWalkthroughDraft: () => Promise<void>;
   openCdpModal: () => void;
   closeCdpModal: () => void;
   startWalkthrough: (cdpApps?: CdpAppConfig[]) => Promise<void>;
@@ -196,23 +195,6 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughAnnotations: { ...emptyAnnotations },
     walkthroughNodeOrder: draft ? buildInitialOrder(actions, draft.nodes, action_node_map) : [],
   }),
-
-  fetchWalkthroughDraft: async () => {
-    const result = await commands.getWalkthroughDraft();
-    if (result.status === "ok") {
-      const existingMap = get().walkthroughActionNodeMap;
-      set({
-        walkthroughActions: result.data.actions,
-        walkthroughDraft: result.data.draft ?? null,
-        walkthroughWarnings: result.data.warnings,
-        walkthroughStatus: "Review",
-        walkthroughPanelOpen: true,
-        walkthroughNodeOrder: result.data.draft
-          ? buildInitialOrder(result.data.actions, result.data.draft.nodes, existingMap)
-          : [],
-      });
-    }
-  },
 
   openCdpModal: () => set({ walkthroughCdpModalOpen: true, walkthroughCdpProgress: [] }),
   closeCdpModal: () => set({ walkthroughCdpModalOpen: false }),
