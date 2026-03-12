@@ -619,6 +619,9 @@ pub async fn seed_walkthrough_cache(
     Ok(())
 }
 
+/// Maximum time window (ms) after a hover to look for a subsuming click.
+const HOVER_CLICK_WINDOW_MS: u64 = 2000;
+
 /// Retrieve hover candidates from HoverDetected events captured during recording.
 ///
 /// Filters by dwell threshold and removes hovers immediately followed by a click
@@ -674,7 +677,7 @@ fn retrieve_hover_candidates(
                 WalkthroughEventKind::MouseClicked { x: cx, y: cy, .. }
                 if (cx - x).abs() < 20.0 && (cy - y).abs() < 20.0
                     && e.timestamp > event.timestamp
-                    && e.timestamp.saturating_sub(event.timestamp) < 2000
+                    && e.timestamp.saturating_sub(event.timestamp) < HOVER_CLICK_WINDOW_MS
             )
         });
         if click_follows {
@@ -688,7 +691,7 @@ fn retrieve_hover_candidates(
             let text_matches_click = events.iter().any(|e| {
                 if let WalkthroughEventKind::CdpClickResolved { name, .. } = &e.kind {
                     e.timestamp > event.timestamp
-                        && e.timestamp.saturating_sub(event.timestamp) < 2000
+                        && e.timestamp.saturating_sub(event.timestamp) < HOVER_CLICK_WINDOW_MS
                         && name == element_name
                 } else {
                     false
@@ -706,7 +709,12 @@ fn retrieve_hover_candidates(
                 .rev()
                 .find(|(_, a, _)| a == explicit_app)
                 .and_then(|(_, _, t)| t.clone());
-            (Some(explicit_app.clone()), title)
+            if title.is_some() {
+                (Some(explicit_app.clone()), title)
+            } else {
+                // Explicit app not found in focus events — fall back to timestamp resolution.
+                resolve_hover_app(event.timestamp, &focus_events)
+            }
         } else {
             resolve_hover_app(event.timestamp, &focus_events)
         };
@@ -874,18 +882,7 @@ mod tests {
     }
 
     fn hover_event(ts: u64, dwell_ms: u64) -> WalkthroughEvent {
-        WalkthroughEvent {
-            id: Uuid::new_v4(),
-            timestamp: ts,
-            kind: WalkthroughEventKind::HoverDetected {
-                x: 100.0,
-                y: 200.0,
-                element_name: "Button".to_string(),
-                element_role: Some("AXButton".to_string()),
-                dwell_ms,
-                app_name: None,
-            },
-        }
+        hover_event_with_app(ts, dwell_ms, None)
     }
 
     #[test]
@@ -952,17 +949,17 @@ mod tests {
         assert_eq!(candidates[1].app_name.as_deref(), Some("Discord"));
     }
 
-    fn hover_event_with_app(ts: u64, dwell_ms: u64, app: &str) -> WalkthroughEvent {
+    fn hover_event_with_app(ts: u64, dwell_ms: u64, app: Option<&str>) -> WalkthroughEvent {
         WalkthroughEvent {
             id: Uuid::new_v4(),
             timestamp: ts,
             kind: WalkthroughEventKind::HoverDetected {
-                x: 0.0,
-                y: 0.0,
+                x: 100.0,
+                y: 200.0,
                 element_name: "Button".to_string(),
                 element_role: Some("AXButton".to_string()),
                 dwell_ms,
-                app_name: Some(app.to_string()),
+                app_name: app.map(|s| s.to_string()),
             },
         }
     }
@@ -971,7 +968,7 @@ mod tests {
     fn hover_with_app_name_uses_it_directly() {
         let events = vec![
             focus_event(1000, "Signal"),
-            hover_event_with_app(1100, 1500, "Discord"),
+            hover_event_with_app(1100, 1500, Some("Discord")),
             focus_event(2000, "Discord"),
         ];
         let candidates = retrieve_hover_candidates(&events, 1000);
