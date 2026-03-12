@@ -52,6 +52,7 @@ export function WalkthroughPanel() {
 
   const [lightboxActionId, setLightboxActionId] = useState<string | null>(null);
   const [crosshairs, setCrosshairs] = useState<Map<string, { xPercent: number; yPercent: number }>>(new Map());
+  const [expandedCandidateGroups, setExpandedCandidateGroups] = useState<Set<number>>(new Set());
   const [dragOverIndex, setDragOverIndexRaw] = useState<number | null>(null);
   const dragOverRef = useRef<number | null>(null);
   const setDragOverIndex = useCallback((idx: number | null) => {
@@ -263,8 +264,10 @@ export function WalkthroughPanel() {
               <span className="w-5 shrink-0" />
             ) : (
               <span
-                className="flex w-5 shrink-0 items-center justify-center text-base text-[var(--text-muted)] opacity-30 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing select-none"
+                className="flex w-5 h-8 shrink-0 items-center justify-center text-lg text-[var(--text-muted)] opacity-40 hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing select-none"
                 draggable
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
                 onDragStart={(e) => {
                   e.stopPropagation();
                   e.dataTransfer.setData(DND_ITEM_ID, item.id);
@@ -558,27 +561,57 @@ export function WalkthroughPanel() {
                   item.type === "candidate" ? null : renderGroupItem(item, group, groupIndex, itemIndex)
                 )}
 
-                {/* Collapsed candidate summary */}
+                {/* Candidate summary (expandable) */}
                 {(() => {
                   const candidates = group.items.filter((i): i is Extract<typeof i, { type: "candidate" }> => i.type === "candidate");
                   if (candidates.length === 0) return null;
+                  const isExpanded = expandedCandidateGroups.has(groupIndex);
                   return (
-                    <div className="flex items-center gap-2 px-3 py-1.5 text-[10px] text-purple-400/60">
-                      <span className="rounded bg-purple-900/40 px-1.5 py-0.5">{candidates.length} hover candidate{candidates.length > 1 ? "s" : ""}</span>
-                      <div className="flex gap-1 ml-auto">
+                    <div className="text-[10px]">
+                      <div className="flex items-center gap-2 px-3 py-1.5 text-purple-400/60">
                         <button
-                          onClick={() => candidates.forEach((c) => keepCandidate(c.action.id))}
-                          className="rounded bg-green-700 px-2 py-0.5 text-white hover:bg-green-600"
+                          className="flex items-center gap-1 rounded bg-purple-900/40 px-1.5 py-0.5 hover:bg-purple-900/60 transition-colors"
+                          onClick={() => setExpandedCandidateGroups((prev) => {
+                            const next = new Set(prev);
+                            isExpanded ? next.delete(groupIndex) : next.add(groupIndex);
+                            return next;
+                          })}
                         >
-                          Keep all
+                          <span className={`transition-transform ${isExpanded ? "rotate-90" : ""}`}>&#x25B6;</span>
+                          {candidates.length} hover candidate{candidates.length > 1 ? "s" : ""}
                         </button>
-                        <button
-                          onClick={() => candidates.forEach((c) => dismissCandidate(c.action.id))}
-                          className="rounded bg-[var(--bg-input)] px-2 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20"
-                        >
-                          Dismiss all
-                        </button>
+                        <div className="flex gap-1 ml-auto">
+                          <button
+                            onClick={() => candidates.forEach((c) => keepCandidate(c.action.id))}
+                            className="rounded bg-green-700 px-2 py-0.5 text-white hover:bg-green-600"
+                          >
+                            Keep all
+                          </button>
+                          <button
+                            onClick={() => candidates.forEach((c) => dismissCandidate(c.action.id))}
+                            className="rounded bg-[var(--bg-input)] px-2 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20"
+                          >
+                            Dismiss all
+                          </button>
+                        </div>
                       </div>
+                      {isExpanded && (
+                        <div className="space-y-0.5 px-3 pb-1.5">
+                          {candidates.map((c) => {
+                            const { icon, color } = actionIcon(c.action.kind);
+                            return (
+                              <div key={c.id} className="flex items-center gap-2 rounded px-2 py-1 border border-dashed border-purple-500/30" style={group.appName ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" } : {}}>
+                                <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
+                                <span className="truncate text-xs text-[var(--text-secondary)]">{actionLabel(c.action)}</span>
+                                <div className="flex gap-0.5 ml-auto shrink-0">
+                                  <button onClick={() => keepCandidate(c.action.id)} className="rounded bg-green-700 px-1.5 py-0.5 text-white hover:bg-green-600">Keep</button>
+                                  <button onClick={() => dismissCandidate(c.action.id)} className="rounded bg-[var(--bg-input)] px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20">Dismiss</button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
