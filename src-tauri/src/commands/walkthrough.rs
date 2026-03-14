@@ -207,7 +207,7 @@ pub async fn start_walkthrough(
         };
 
         let emit_handle = app.clone();
-        let hover_dwell_ms = hover_dwell_threshold.unwrap_or(1000);
+        let hover_dwell_ms = hover_dwell_threshold.unwrap_or(2000);
         let processing_task = tauri::async_runtime::spawn(async move {
             process_capture_events(
                 emit_handle,
@@ -366,7 +366,7 @@ pub async fn stop_walkthrough(
 
             // Hover: retrieve hover events and convert to candidate actions.
             let hover_candidates =
-                retrieve_hover_candidates(&events, hover_dwell_threshold.unwrap_or(1000));
+                retrieve_hover_candidates(&events, hover_dwell_threshold.unwrap_or(2000));
             for candidate in hover_candidates {
                 let insert_idx = find_chronological_insert_position(&actions, &candidate, &events);
                 actions.insert(insert_idx, candidate);
