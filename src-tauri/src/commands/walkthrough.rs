@@ -1024,6 +1024,37 @@ mod tests {
     }
 
     #[test]
+    fn native_hover_with_app_name_not_subsumed_by_cdp_click() {
+        // Native hover carries app_name (from MCP element.app_name) but has no
+        // paired CdpHoverResolved. A CdpClickResolved on the same name/role
+        // should NOT subsume it — the CDP click-matching guard only applies to
+        // CDP hovers (identified by CdpHoverResolved presence).
+        use clickweave_core::walkthrough::WalkthroughEventKind;
+        let events = vec![
+            focus_event(1000, "Finder"),
+            hover_event_with_app(2000, 1500, Some("Finder")),
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 3000,
+                kind: WalkthroughEventKind::CdpClickResolved {
+                    name: "Button".to_string(),
+                    role: Some("AXButton".to_string()),
+                    href: None,
+                    parent_role: None,
+                    parent_name: None,
+                    click_event_id: Uuid::new_v4(),
+                },
+            },
+        ];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(
+            candidates.len(),
+            1,
+            "native hover should not be subsumed by CDP click"
+        );
+    }
+
+    #[test]
     fn hover_text_matching_next_click_filtered_out() {
         use clickweave_core::walkthrough::WalkthroughEventKind;
         let hover_id = Uuid::new_v4();
