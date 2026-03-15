@@ -220,8 +220,10 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
 const CDP_HOVER_LISTENER_JS: &str = r#"() => {
   const d = document;
   d.__cw_hovers = [];
-  d.__cw_hover_x = 0;
-  d.__cw_hover_y = 0;
+  d.__cw_hover_cx = 0;
+  d.__cw_hover_cy = 0;
+  d.__cw_hover_enter_sx = 0;
+  d.__cw_hover_enter_sy = 0;
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
   const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
   function accessibleText(node) {
@@ -257,8 +259,8 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
     d.removeEventListener('mousemove', d.__cw_hover_mousemove, true);
   }
   d.__cw_hover_mousemove = (e) => {
-    d.__cw_hover_x = e.clientX;
-    d.__cw_hover_y = e.clientY;
+    d.__cw_hover_cx = e.clientX;
+    d.__cw_hover_cy = e.clientY;
   };
   d.addEventListener('mousemove', d.__cw_hover_mousemove, true);
   d.__cw_hover_flush = () => {
@@ -300,8 +302,8 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
     d.__cw_hovers.push({
       ts: enter,
       dwellMs: now - enter,
-      x: d.__cw_hover_x,
-      y: d.__cw_hover_y,
+      x: d.__cw_hover_enter_sx,
+      y: d.__cw_hover_enter_sy,
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
@@ -315,13 +317,15 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
   };
   if (d.__cw_hover_interval) clearInterval(d.__cw_hover_interval);
   d.__cw_hover_interval = setInterval(() => {
-    const raw = d.elementFromPoint(d.__cw_hover_x, d.__cw_hover_y);
+    const raw = d.elementFromPoint(d.__cw_hover_cx, d.__cw_hover_cy);
     if (!raw) { d.__cw_hover_lastEl = null; d.__cw_hover_enterTime = 0; return; }
     const el = raw.closest(INTERACTIVE) || raw.closest('[aria-label]') || raw;
     if (el === d.__cw_hover_lastEl) return;
     d.__cw_hover_flush();
     d.__cw_hover_lastEl = el;
     d.__cw_hover_enterTime = Date.now();
+    d.__cw_hover_enter_sx = d.__cw_hover_cx + window.screenX;
+    d.__cw_hover_enter_sy = d.__cw_hover_cy + window.screenY;
   }, 100);
 }"#;
 
