@@ -49,7 +49,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   vlmEnabled: DEFAULT_VLM_ENABLED,
   mcpCommand: DEFAULT_MCP_COMMAND,
   maxRepairAttempts: 3,
-  hoverDwellThreshold: 1000,
+  hoverDwellThreshold: 2000,
   _settingsLoaded: false,
 
   loadSettingsFromDisk: () => {
@@ -64,7 +64,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           vlmEnabled: s.vlmEnabled,
           mcpCommand: s.mcpCommand,
           maxRepairAttempts: clampInt(s.maxRepairAttempts, 0, 10, 3),
-          hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 1000),
+          hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 2000),
         });
       })
       .catch((e) => console.error("Failed to load settings:", e));
@@ -76,5 +76,5 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   setVlmEnabled: (enabled) => persistSetting("vlmEnabled", enabled, set),
   setMcpCommand: (cmd) => persistSetting("mcpCommand", cmd, set),
   setMaxRepairAttempts: (n) => persistSetting("maxRepairAttempts", clampInt(n, 0, 10, 3), set),
-  setHoverDwellThreshold: (ms) => persistSetting("hoverDwellThreshold", clampInt(ms, 100, 10000, 1000), set),
+  setHoverDwellThreshold: (ms) => persistSetting("hoverDwellThreshold", clampInt(ms, 100, 10000, 2000), set),
 });

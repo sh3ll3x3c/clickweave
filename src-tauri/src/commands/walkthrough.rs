@@ -19,7 +19,10 @@ use crate::platform::macos::MacOSEventTap;
 // Re-export from submodules for use within the commands crate.
 pub use super::walkthrough_session::WalkthroughHandle;
 
-use super::walkthrough_enrichment::{attach_nearest_screenshots, resolve_click_targets_with_vlm};
+use super::walkthrough_enrichment::{
+    RecordedFrame, attach_recording_frames, generate_hover_screenshots,
+    resolve_click_targets_with_vlm,
+};
 use super::walkthrough_session::{
     get_recording_bar_rect, populate_app_cache, process_capture_events, spawn_mcp,
     strip_recording_bar_click,
@@ -205,7 +208,7 @@ pub async fn start_walkthrough(
         };
 
         let emit_handle = app.clone();
-        let hover_dwell_ms = hover_dwell_threshold.unwrap_or(1000);
+        let hover_dwell_ms = hover_dwell_threshold.unwrap_or(2000);
         let processing_task = tauri::async_runtime::spawn(async move {
             process_capture_events(
                 emit_handle,
@@ -364,19 +367,50 @@ pub async fn stop_walkthrough(
 
             // Hover: retrieve hover events and convert to candidate actions.
             let hover_candidates =
-                retrieve_hover_candidates(&events, hover_dwell_threshold.unwrap_or(1000));
+                retrieve_hover_candidates(&events, hover_dwell_threshold.unwrap_or(2000));
             for candidate in hover_candidates {
                 let insert_idx = find_chronological_insert_position(&actions, &candidate, &events);
                 actions.insert(insert_idx, candidate);
             }
 
-            // Attach the nearest click's screenshot to hover candidates so
-            // VLM can resolve their targets too.
-            attach_nearest_screenshots(&mut actions);
+            // Attach before/after recording frames to hover candidates so
+            // VLM can compare pre-hover and post-hover visual state.
+            let frames_path = dir.join("recording_frames.json");
+            let recording_frames: Vec<RecordedFrame> = std::fs::read_to_string(&frames_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            if recording_frames.is_empty() {
+                tracing::warn!(
+                    "No recording frames available — hover candidates will lack screenshots"
+                );
+            } else {
+                attach_recording_frames(&mut actions, &recording_frames, &events);
+            }
+
+            // Generate crosshair-marked screenshots for hover candidates
+            // so the review panel shows where each hover was on the window.
+            generate_hover_screenshots(&mut actions, dir).await;
 
             // VLM: resolve click and hover targets using vision (parallel).
             if let Some(ref planner_cfg) = planner {
                 resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
+            }
+
+            // Clean up raw recording frames — they're no longer needed after
+            // hover screenshots have been generated and VLM has resolved targets.
+            // The raw stream may contain unrelated app states and typed secrets.
+            if !recording_frames.is_empty() {
+                let mut cleaned = 0u32;
+                for frame in &recording_frames {
+                    if std::fs::remove_file(&frame.path).is_ok() {
+                        cleaned += 1;
+                    }
+                }
+                let _ = std::fs::remove_file(&frames_path);
+                if cleaned > 0 {
+                    tracing::info!("Cleaned up {cleaned} raw recording frames");
+                }
             }
 
             // Save actions.
@@ -413,13 +447,6 @@ pub async fn stop_walkthrough(
     };
 
     let action_node_map = clickweave_core::walkthrough::build_action_node_map(&actions, &draft);
-
-    // Persist draft to disk.
-    if let (Some(storage), Some(dir)) = (&storage, &session_dir)
-        && let Err(e) = storage.save_draft(dir, &draft)
-    {
-        tracing::warn!("Failed to save final draft: {e}");
-    }
 
     // Store results, persist, and emit — all under the same lock acquisition
     // to prevent cancel_walkthrough() from racing between the session update

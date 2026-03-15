@@ -19,7 +19,7 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   vlmEnabled: DEFAULT_VLM_ENABLED,
   mcpCommand: DEFAULT_MCP_COMMAND,
   maxRepairAttempts: 3,
-  hoverDwellThreshold: 1000,
+  hoverDwellThreshold: 2000,
 };
 
 export async function loadSettings(): Promise<PersistedSettings> {

@@ -220,8 +220,10 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
 const CDP_HOVER_LISTENER_JS: &str = r#"() => {
   const d = document;
   d.__cw_hovers = [];
-  d.__cw_hover_x = 0;
-  d.__cw_hover_y = 0;
+  d.__cw_hover_cx = 0;
+  d.__cw_hover_cy = 0;
+  d.__cw_hover_enter_sx = 0;
+  d.__cw_hover_enter_sy = 0;
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
   const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
   function accessibleText(node) {
@@ -257,8 +259,8 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
     d.removeEventListener('mousemove', d.__cw_hover_mousemove, true);
   }
   d.__cw_hover_mousemove = (e) => {
-    d.__cw_hover_x = e.clientX;
-    d.__cw_hover_y = e.clientY;
+    d.__cw_hover_cx = e.clientX;
+    d.__cw_hover_cy = e.clientY;
   };
   d.addEventListener('mousemove', d.__cw_hover_mousemove, true);
   d.__cw_hover_flush = () => {
@@ -300,8 +302,8 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
     d.__cw_hovers.push({
       ts: enter,
       dwellMs: now - enter,
-      x: d.__cw_hover_x,
-      y: d.__cw_hover_y,
+      x: d.__cw_hover_enter_sx,
+      y: d.__cw_hover_enter_sy,
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
@@ -315,13 +317,15 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
   };
   if (d.__cw_hover_interval) clearInterval(d.__cw_hover_interval);
   d.__cw_hover_interval = setInterval(() => {
-    const raw = d.elementFromPoint(d.__cw_hover_x, d.__cw_hover_y);
+    const raw = d.elementFromPoint(d.__cw_hover_cx, d.__cw_hover_cy);
     if (!raw) { d.__cw_hover_lastEl = null; d.__cw_hover_enterTime = 0; return; }
     const el = raw.closest(INTERACTIVE) || raw.closest('[aria-label]') || raw;
     if (el === d.__cw_hover_lastEl) return;
     d.__cw_hover_flush();
     d.__cw_hover_lastEl = el;
     d.__cw_hover_enterTime = Date.now();
+    d.__cw_hover_enter_sx = d.__cw_hover_cx + window.screenX;
+    d.__cw_hover_enter_sy = d.__cw_hover_cy + window.screenY;
   }, 100);
 }"#;
 
@@ -512,6 +516,25 @@ pub(super) async fn process_capture_events(
             .await
         {
             tracing::warn!("Failed to start hover tracking: {e}");
+        }
+    }
+
+    // Start continuous screen recording for hover screenshots (non-fatal).
+    if let Some(ref mcp) = mcp {
+        let artifacts_dir = session_dir.join("artifacts");
+        let recording_args = serde_json::json!({
+            "output_dir": artifacts_dir.to_string_lossy(),
+            "max_duration_ms": 600_000,
+        });
+        match mcp.call_tool("start_recording", Some(recording_args)).await {
+            Ok(r) if r.is_error != Some(true) => {
+                tracing::info!("Continuous recording started")
+            }
+            Ok(r) => {
+                let msg: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+                tracing::warn!("start_recording returned error (non-fatal): {msg}");
+            }
+            Err(e) => tracing::warn!("Failed to start recording (non-fatal): {e}"),
         }
     }
 
@@ -827,6 +850,38 @@ pub(super) async fn process_capture_events(
     // Stop the cursor region polling task.
     #[cfg(target_os = "macos")]
     cursor_poll_handle.abort();
+
+    // Stop continuous recording and persist the frame list so
+    // stop_walkthrough can attach recording frames to hover actions.
+    if let Some(ref mcp) = mcp {
+        let recording_timeout = tokio::time::Duration::from_secs(10);
+        match tokio::time::timeout(recording_timeout, mcp.call_tool("stop_recording", None)).await {
+            Ok(Ok(result)) if result.is_error != Some(true) => {
+                let frames = super::walkthrough_enrichment::parse_recording_frames(&result.content);
+                tracing::info!("Recording stopped, got {} frames", frames.len());
+                let frames_path = session_dir.join("recording_frames.json");
+                match serde_json::to_string_pretty(&frames) {
+                    Ok(json) => {
+                        if let Err(e) = std::fs::write(&frames_path, json) {
+                            tracing::warn!("Failed to write recording frames: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to serialize recording frames: {e}");
+                    }
+                }
+            }
+            Ok(Ok(_)) => {
+                tracing::debug!("stop_recording returned error (may not have been active)");
+            }
+            Ok(Err(e)) => {
+                tracing::debug!("stop_recording call failed: {e}");
+            }
+            Err(_) => {
+                tracing::warn!("stop_recording timed out after {recording_timeout:?}");
+            }
+        }
+    }
 
     // Retrieve hover events from MCP and persist them as HoverDetected
     // walkthrough events so that stop_walkthrough's retrieve_hover_candidates

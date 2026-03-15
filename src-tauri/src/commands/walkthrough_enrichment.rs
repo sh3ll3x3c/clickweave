@@ -3,9 +3,40 @@ use clickweave_core::walkthrough::{
     ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughEvent, WalkthroughEventKind,
 };
 use clickweave_mcp::McpRouter;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::walkthrough::VLM_CALL_TIMEOUT;
+
+/// A single frame from continuous screen recording (returned by `stop_recording`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct RecordedFrame {
+    pub timestamp_ms: u64,
+    pub path: String,
+    pub app_name: String,
+    pub window_id: u32,
+    pub origin_x: f64,
+    pub origin_y: f64,
+    pub scale: f64,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+}
+
+/// Parse the `stop_recording` MCP response into a sorted list of frames.
+pub(super) fn parse_recording_frames(
+    content: &[clickweave_mcp::ToolContent],
+) -> Vec<RecordedFrame> {
+    let raw_text: String = content.iter().filter_map(|c| c.as_text()).collect();
+    let mut frames: Vec<RecordedFrame> = match serde_json::from_str(&raw_text) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("Failed to parse recording frames: {e}");
+            return Vec::new();
+        }
+    };
+    frames.sort_by_key(|f| f.timestamp_ms);
+    frames
+}
 
 /// Maximum length of a VLM-resolved label to accept. Longer responses
 /// are likely full sentences rather than a concise element name.
@@ -292,60 +323,124 @@ pub(super) async fn execute_vlm_click_request(
     }
 }
 
-/// Use a VLM to identify click targets for all click actions (in parallel).
+/// Find the frames immediately before and after the given timestamp.
 ///
-/// For each Click action that has a screenshot artifact and screenshot metadata,
-/// draws a crosshair on the screenshot and sends it to the VLM asking what UI
-/// element was clicked. Image prep and VLM calls all run concurrently.
-/// Attach the nearest click's screenshot and metadata to hover candidate actions
-/// that lack their own screenshot.  This enables VLM enrichment for hovers.
-pub(super) fn attach_nearest_screenshots(actions: &mut [WalkthroughAction]) {
+/// Returns `(before, after)` where:
+/// - `before` is the last frame with `timestamp_ms < timestamp`
+/// - `after` is the first frame with `timestamp_ms >= timestamp`
+///
+/// Frames must be sorted by `timestamp_ms` (guaranteed by `parse_recording_frames`).
+/// Uses binary search for O(log n) lookup.
+fn find_surrounding_frames(
+    frames: &[RecordedFrame],
+    timestamp_ms: u64,
+) -> (Option<&RecordedFrame>, Option<&RecordedFrame>) {
+    if frames.is_empty() {
+        return (None, None);
+    }
+    let idx = frames.partition_point(|f| f.timestamp_ms < timestamp_ms);
+    let before = if idx > 0 {
+        Some(&frames[idx - 1])
+    } else {
+        None
+    };
+    let after = frames.get(idx);
+    (before, after)
+}
+
+/// Attach before/after recording frames to hover actions.
+///
+/// For each Hover action, computes the hover start time (`timestamp - dwell_ms`)
+/// and finds the frames immediately before and after that point. The before
+/// frame (element unobscured) is used by VLM for target identification; both
+/// frames appear in the review panel so the user can see the hover's visual
+/// effect (tooltips, highlights, etc.).
+///
+/// `artifact_paths` is set to `[before_path, after_path]` when both exist,
+/// or a single path when only one is available. Click actions are skipped.
+pub(super) fn attach_recording_frames(
+    actions: &mut [WalkthroughAction],
+    frames: &[RecordedFrame],
+    events: &[clickweave_core::walkthrough::WalkthroughEvent],
+) {
     use clickweave_core::walkthrough::WalkthroughActionKind;
 
-    // Collect indices and screenshot data from actions that have screenshots.
-    let screenshots: Vec<(usize, String, ScreenshotMeta)> = actions
-        .iter()
-        .enumerate()
-        .filter_map(|(i, a)| {
-            let path = a.artifact_paths.first()?;
-            let meta = a.screenshot_meta?;
-            Some((i, path.clone(), meta))
-        })
-        .collect();
-
-    if screenshots.is_empty() {
+    if frames.is_empty() {
         return;
     }
 
-    // For each hover candidate without a screenshot, find the nearest screenshot.
-    let hover_indices: Vec<usize> = actions
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| {
-            matches!(a.kind, WalkthroughActionKind::Hover { .. }) && a.artifact_paths.is_empty()
-        })
-        .map(|(i, _)| i)
-        .collect();
+    for action in actions.iter_mut() {
+        if !matches!(action.kind, WalkthroughActionKind::Hover { .. }) {
+            continue;
+        }
+        if !action.artifact_paths.is_empty() {
+            continue;
+        }
 
-    for hover_idx in hover_indices {
-        let hover_app = actions[hover_idx].app_name.as_deref();
+        // The event timestamp is when the hover started (cursor arrived at
+        // the element) for both native and CDP hovers:
+        // - Native: MCP fires a transition event with timestamp_ms = arrival time
+        // - CDP: JS listener stores ts = Date.now() at element enter
+        let hover_start_ts = action
+            .source_event_ids
+            .first()
+            .and_then(|id| events.iter().find(|e| e.id == *id))
+            .map(|e| e.timestamp)
+            .unwrap_or(0);
 
-        // Prefer a screenshot from the same app; fall back to nearest overall.
-        let best = screenshots
-            .iter()
-            .filter(|(i, _, _)| actions[*i].app_name.as_deref() == hover_app)
-            .min_by_key(|(i, _, _)| (*i as isize - hover_idx as isize).unsigned_abs())
-            .or_else(|| {
-                screenshots
-                    .iter()
-                    .min_by_key(|(i, _, _)| (*i as isize - hover_idx as isize).unsigned_abs())
-            })
-            .unwrap();
-        actions[hover_idx].artifact_paths = vec![best.1.clone()];
-        actions[hover_idx].screenshot_meta = Some(best.2);
+        // Prefer frames from the same app (recording captures per-app
+        // windows). Fall back to all frames if no app-specific match.
+        let app_frames: Vec<RecordedFrame> = if let Some(app) = &action.app_name {
+            frames
+                .iter()
+                .filter(|f| f.app_name == *app)
+                .cloned()
+                .collect()
+        } else {
+            vec![]
+        };
+        let search_frames = if app_frames.is_empty() {
+            frames
+        } else {
+            &app_frames
+        };
+        let (before, after) = find_surrounding_frames(search_frames, hover_start_ts);
+
+        // Use the before frame's metadata for coordinate mapping — VLM and
+        // crosshair drawing operate on artifact_paths[0] (the before frame).
+        // Fall back to the after frame if no before exists.
+        let meta_frame = before.or(after);
+        if let Some(f) = meta_frame
+            && f.scale > 0.0
+        {
+            action.screenshot_meta = Some(ScreenshotMeta {
+                origin_x: f.origin_x,
+                origin_y: f.origin_y,
+                scale: f.scale,
+            });
+        }
+
+        match (before, after) {
+            (Some(b), Some(a)) => {
+                action.artifact_paths = vec![b.path.clone(), a.path.clone()];
+            }
+            (Some(b), None) => {
+                action.artifact_paths = vec![b.path.clone()];
+            }
+            (None, Some(a)) => {
+                action.artifact_paths = vec![a.path.clone()];
+            }
+            (None, None) => {}
+        }
     }
 }
 
+/// Use a VLM to identify click/hover targets (in parallel).
+///
+/// For each Click or Hover action that lacks an actionable AX label or VLM label,
+/// draws a crosshair on the screenshot and sends it to the VLM asking what UI
+/// element is at that point. For hovers with before/after recording frames,
+/// uses the before frame (element unobscured by hover effects).
 pub(super) async fn resolve_click_targets_with_vlm(
     actions: &mut [WalkthroughAction],
     planner_cfg: &super::types::EndpointConfig,
@@ -356,30 +451,26 @@ pub(super) async fn resolve_click_targets_with_vlm(
         return;
     }
 
-    // Collect the data needed per eligible click. Image prep (PNG decode +
-    // crosshair draw + JPEG encode) moves inside each spawned task so all
-    // clicks are prepared concurrently instead of sequentially.
-    struct ClickInput {
+    struct VlmInput {
         action_idx: usize,
         screenshot_path: String,
-        click_x: f64,
-        click_y: f64,
+        x: f64,
+        y: f64,
         meta: ScreenshotMeta,
         ax_label: Option<(String, Option<String>)>,
         ocr_text: Option<String>,
         app_name: Option<String>,
     }
 
-    let mut inputs: Vec<ClickInput> = Vec::new();
+    let mut inputs: Vec<VlmInput> = Vec::new();
 
     for (idx, action) in actions.iter().enumerate() {
-        let (click_x, click_y) = match &action.kind {
+        let (x, y) = match &action.kind {
             WalkthroughActionKind::Click { x, y, .. } => (*x, *y),
             WalkthroughActionKind::Hover { x, y, .. } => (*x, *y),
             _ => continue,
         };
 
-        // Skip clicks that already have a specific accessibility label.
         if action
             .target_candidates
             .iter()
@@ -387,8 +478,6 @@ pub(super) async fn resolve_click_targets_with_vlm(
         {
             continue;
         }
-
-        // Skip clicks that already have a VLM label (resolved during recording).
         if action
             .target_candidates
             .iter()
@@ -397,6 +486,9 @@ pub(super) async fn resolve_click_targets_with_vlm(
             continue;
         }
 
+        // For hovers with before/after frames, use artifact_paths[0] (the
+        // before frame) so the element is unobscured by hover effects.
+        // For clicks, artifact_paths[0] is the per-click screenshot.
         let screenshot_path = match action.artifact_paths.first() {
             Some(p) => p.clone(),
             None => continue,
@@ -417,11 +509,11 @@ pub(super) async fn resolve_click_targets_with_vlm(
             _ => None,
         });
 
-        inputs.push(ClickInput {
+        inputs.push(VlmInput {
             action_idx: idx,
             screenshot_path,
-            click_x,
-            click_y,
+            x,
+            y,
             meta,
             ax_label,
             ocr_text,
@@ -433,7 +525,10 @@ pub(super) async fn resolve_click_targets_with_vlm(
         return;
     }
 
-    tracing::info!("VLM: resolving {} click targets in parallel", inputs.len());
+    tracing::info!(
+        "VLM: resolving {} click/hover targets in parallel",
+        inputs.len()
+    );
 
     let llm_config = planner_cfg
         .clone()
@@ -442,17 +537,12 @@ pub(super) async fn resolve_click_targets_with_vlm(
         .with_thinking(false);
     let backend = std::sync::Arc::new(clickweave_llm::LlmClient::new(llm_config));
 
-    // Fire all tasks in parallel — each task prepares its own image on the
-    // blocking pool (PNG decode + crosshair draw + JPEG encode) and then
-    // sends the VLM request (async HTTP).
     let mut join_set = tokio::task::JoinSet::new();
 
     for input in inputs {
         let backend = backend.clone();
 
         join_set.spawn(async move {
-            // Image prep is CPU-heavy (PNG decode + draw + JPEG encode) plus
-            // blocking file I/O — run on the blocking pool.
             let req = tokio::task::spawn_blocking(move || {
                 let ax_ref = input
                     .ax_label
@@ -460,8 +550,8 @@ pub(super) async fn resolve_click_targets_with_vlm(
                     .map(|(l, r)| (l.as_str(), r.as_deref()));
                 prepare_vlm_click_request(
                     &input.screenshot_path,
-                    input.click_x,
-                    input.click_y,
+                    input.x,
+                    input.y,
                     input.meta,
                     ax_ref,
                     input.ocr_text.as_deref(),
@@ -503,15 +593,13 @@ pub(super) async fn resolve_click_targets_with_vlm(
         };
 
         if let Some(label) = label {
-            let (click_x, click_y) = match &actions[action_idx].kind {
+            let (x, y) = match &actions[action_idx].kind {
                 WalkthroughActionKind::Click { x, y, .. } => (*x, *y),
                 WalkthroughActionKind::Hover { x, y, .. } => (*x, *y),
                 _ => continue,
             };
-            tracing::info!("VLM resolved target at ({click_x:.0}, {click_y:.0}) → \"{label}\"");
+            tracing::info!("VLM resolved target at ({x:.0}, {y:.0}) → \"{label}\"");
             let action = &mut actions[action_idx];
-            // Insert VLM label after CDP elements and actionable AX labels
-            // but before non-actionable AX labels, OCR, and coordinates.
             let insert_pos = action
                 .target_candidates
                 .iter()
@@ -568,32 +656,25 @@ pub(super) fn crop_click_region(
     Some((jpeg_bytes, b64))
 }
 
-/// Downscale the full window screenshot and draw a red crosshair at the click point.
+/// Draw a red crosshair with black outline on an RGBA image at pixel coordinates.
 ///
-/// Draws a red crosshair at `(px, py)` in image-pixel coordinates, then
-/// downscales + JPEG-encodes via the shared VLM image prep utility.
-/// Returns `None` if the image can't be decoded.
-pub(super) fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<String> {
-    let img = image::load_from_memory(png_bytes).ok()?;
-    let (img_w, img_h) = (img.width(), img.height());
+/// The crosshair is a gap-centered cross with 4 arms. Dimensions scale with
+/// image size so the crosshair stays visible at any resolution.
+fn draw_crosshair(rgba: &mut image::RgbaImage, px: f64, py: f64) {
+    let (img_w, img_h) = (rgba.width(), rgba.height());
 
-    // Scale crosshair dimensions so it remains visible after VLM downscaling.
-    // A 3152px Retina screenshot downscales ~0.4x to 1280px; a 1px line would
-    // become sub-pixel and vanish in Triangle filter + JPEG compression.
     let longest = img_w.max(img_h) as f64;
     let scale = (longest / clickweave_llm::DEFAULT_MAX_DIMENSION as f64).max(1.0);
     let half_thickness = (2.0 * scale).round() as i64;
     let arm_length = (20.0 * scale).round() as i64;
     let gap = (4.0 * scale).round() as i64;
 
-    let mut rgba = img.into_rgba8();
     let cx = (px as u32).min(img_w.saturating_sub(1)) as i64;
     let cy = (py as u32).min(img_h.saturating_sub(1)) as i64;
 
     let outline = image::Rgba([0, 0, 0, 200]);
     let fill = image::Rgba([255, 0, 0, 255]);
 
-    // Draw a filled rectangle, clamped to image bounds.
     let draw_rect =
         |img: &mut image::RgbaImage, x0: i64, y0: i64, x1: i64, y1: i64, color: image::Rgba<u8>| {
             let x_lo = x0.max(0) as u32;
@@ -607,39 +688,34 @@ pub(super) fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<Str
             }
         };
 
-    // Draw 4 arms (left, right, top, bottom) in two passes:
-    // first a black outline (1px larger all around), then red fill on top.
+    // Two passes: black outline (1px larger all around), then red fill.
     for (color, expand) in [(outline, 1i64), (fill, 0i64)] {
-        // Left arm
         draw_rect(
-            &mut rgba,
+            rgba,
             cx - arm_length - expand,
             cy - half_thickness - expand,
             cx - gap + expand,
             cy + half_thickness + expand,
             color,
         );
-        // Right arm
         draw_rect(
-            &mut rgba,
+            rgba,
             cx + gap - expand,
             cy - half_thickness - expand,
             cx + arm_length + expand,
             cy + half_thickness + expand,
             color,
         );
-        // Top arm
         draw_rect(
-            &mut rgba,
+            rgba,
             cx - half_thickness - expand,
             cy - arm_length - expand,
             cx + half_thickness + expand,
             cy - gap + expand,
             color,
         );
-        // Bottom arm
         draw_rect(
-            &mut rgba,
+            rgba,
             cx - half_thickness - expand,
             cy + gap - expand,
             cx + half_thickness + expand,
@@ -647,10 +723,453 @@ pub(super) fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<Str
             color,
         );
     }
+}
+
+/// Downscale the full window screenshot and draw a red crosshair at the click point.
+///
+/// Draws a red crosshair at `(px, py)` in image-pixel coordinates, then
+/// downscales + JPEG-encodes via the shared VLM image prep utility.
+/// Returns `None` if the image can't be decoded.
+pub(super) fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<String> {
+    let img = image::load_from_memory(png_bytes).ok()?;
+    let mut rgba = img.into_rgba8();
+
+    draw_crosshair(&mut rgba, px, py);
 
     let (b64, _mime) = clickweave_llm::prepare_dynimage_for_vlm(
         image::DynamicImage::ImageRgba8(rgba),
         clickweave_llm::DEFAULT_MAX_DIMENSION,
     );
     Some(b64)
+}
+
+/// Generate crosshair-marked screenshots for hover actions (parallel, async).
+///
+/// For each Hover action that has recording frame(s) (from
+/// `attach_recording_frames`), loads each frame, draws a crosshair at the
+/// hover position, and saves the result as JPEG. Updates the action's
+/// `artifact_paths` to point to the new files.
+///
+/// When two frames are present (before/after hover start), both get
+/// crosshairs. The before frame is used by VLM for element identification
+/// (element unobscured by hover effects); both frames appear in the review
+/// panel so the user can see the hover's visual effect.
+///
+/// Image decoding, crosshair drawing, and JPEG encoding run on the blocking
+/// pool in parallel so they don't block the async runtime or serialize.
+pub(super) async fn generate_hover_screenshots(
+    actions: &mut [WalkthroughAction],
+    session_dir: &std::path::Path,
+) {
+    use clickweave_core::walkthrough::WalkthroughActionKind;
+
+    let artifacts_dir = session_dir.join("artifacts");
+
+    struct HoverFrameInput {
+        action_idx: usize,
+        /// Index within `artifact_paths` (0 = before or single, 1 = after).
+        path_idx: usize,
+        source_path: String,
+        hover_x: f64,
+        hover_y: f64,
+        meta: ScreenshotMeta,
+        output_path: std::path::PathBuf,
+    }
+
+    let mut inputs = Vec::new();
+    for (idx, action) in actions.iter().enumerate() {
+        let (hover_x, hover_y) = match &action.kind {
+            WalkthroughActionKind::Hover { x, y, .. } => (*x, *y),
+            _ => continue,
+        };
+        if action.artifact_paths.is_empty() {
+            continue;
+        }
+        let meta = match action.screenshot_meta {
+            Some(m) => m,
+            None => continue,
+        };
+        let id_simple = action.id.as_simple();
+        for (path_idx, source_path) in action.artifact_paths.iter().enumerate() {
+            let suffix = if action.artifact_paths.len() == 2 {
+                if path_idx == 0 { "before" } else { "after" }
+            } else {
+                "hover"
+            };
+            let filename = format!("hover_{id_simple}_{suffix}.jpg");
+            inputs.push(HoverFrameInput {
+                action_idx: idx,
+                path_idx,
+                source_path: source_path.clone(),
+                hover_x,
+                hover_y,
+                meta,
+                output_path: artifacts_dir.join(filename),
+            });
+        }
+    }
+
+    if inputs.is_empty() {
+        return;
+    }
+
+    // Process all frames in parallel on the blocking pool.
+    let mut join_set = tokio::task::JoinSet::new();
+    for input in inputs {
+        join_set.spawn_blocking(move || {
+            let img_bytes = std::fs::read(&input.source_path).ok()?;
+            let img = image::load_from_memory(&img_bytes).ok()?;
+            let (px, py) = input.meta.screen_to_pixel(input.hover_x, input.hover_y);
+            let mut rgba = img.into_rgba8();
+            draw_crosshair(&mut rgba, px, py);
+
+            let dynamic = image::DynamicImage::ImageRgba8(rgba);
+            let mut buf = std::io::Cursor::new(Vec::new());
+            dynamic.write_to(&mut buf, image::ImageFormat::Jpeg).ok()?;
+            std::fs::write(&input.output_path, buf.into_inner()).ok()?;
+            Some((input.action_idx, input.path_idx, input.output_path))
+        });
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        if let Ok(Some((action_idx, path_idx, path))) = result {
+            actions[action_idx].artifact_paths[path_idx] = path.to_string_lossy().to_string();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clickweave_core::walkthrough::{
+        ActionConfidence, WalkthroughAction, WalkthroughActionKind, WalkthroughEvent,
+        WalkthroughEventKind,
+    };
+    use uuid::Uuid;
+
+    fn frame(ts: u64) -> RecordedFrame {
+        frame_for_app(ts, "TestApp")
+    }
+
+    fn frame_for_app(ts: u64, app: &str) -> RecordedFrame {
+        RecordedFrame {
+            timestamp_ms: ts,
+            path: format!("/frames/frame_{ts}.png"),
+            app_name: app.to_string(),
+            window_id: 1,
+            origin_x: 10.0,
+            origin_y: 20.0,
+            scale: 2.0,
+            pixel_width: 1920,
+            pixel_height: 1080,
+        }
+    }
+
+    // --- find_surrounding_frames tests ---
+
+    #[test]
+    fn surrounding_frames_between_two() {
+        let frames = vec![frame(1000), frame(2000), frame(3000)];
+        let (before, after) = find_surrounding_frames(&frames, 1500);
+        assert_eq!(before.unwrap().timestamp_ms, 1000);
+        assert_eq!(after.unwrap().timestamp_ms, 2000);
+    }
+
+    #[test]
+    fn surrounding_frames_exact_match_goes_to_after() {
+        let frames = vec![frame(1000), frame(2000), frame(3000)];
+        // partition_point(< 2000) → idx=1, before=frame(1000), after=frame(2000)
+        let (before, after) = find_surrounding_frames(&frames, 2000);
+        assert_eq!(before.unwrap().timestamp_ms, 1000);
+        assert_eq!(after.unwrap().timestamp_ms, 2000);
+    }
+
+    #[test]
+    fn surrounding_frames_before_first() {
+        let frames = vec![frame(1000), frame(2000)];
+        let (before, after) = find_surrounding_frames(&frames, 500);
+        assert!(before.is_none());
+        assert_eq!(after.unwrap().timestamp_ms, 1000);
+    }
+
+    #[test]
+    fn surrounding_frames_after_last() {
+        let frames = vec![frame(1000), frame(2000)];
+        let (before, after) = find_surrounding_frames(&frames, 5000);
+        assert_eq!(before.unwrap().timestamp_ms, 2000);
+        assert!(after.is_none());
+    }
+
+    #[test]
+    fn surrounding_frames_empty() {
+        let frames: Vec<RecordedFrame> = vec![];
+        let (before, after) = find_surrounding_frames(&frames, 1000);
+        assert!(before.is_none());
+        assert!(after.is_none());
+    }
+
+    #[test]
+    fn surrounding_frames_single_element_before() {
+        let frames = vec![frame(1000)];
+        let (before, after) = find_surrounding_frames(&frames, 2000);
+        assert_eq!(before.unwrap().timestamp_ms, 1000);
+        assert!(after.is_none());
+    }
+
+    #[test]
+    fn surrounding_frames_single_element_after() {
+        let frames = vec![frame(5000)];
+        let (before, after) = find_surrounding_frames(&frames, 1000);
+        assert!(before.is_none());
+        assert_eq!(after.unwrap().timestamp_ms, 5000);
+    }
+
+    // --- attach_recording_frames tests ---
+
+    fn hover_action(event_id: Uuid) -> WalkthroughAction {
+        WalkthroughAction {
+            id: Uuid::new_v4(),
+            kind: WalkthroughActionKind::Hover {
+                x: 100.0,
+                y: 200.0,
+                dwell_ms: 2000,
+            },
+            app_name: Some("TestApp".to_string()),
+            window_title: None,
+            target_candidates: vec![],
+            artifact_paths: vec![],
+            source_event_ids: vec![event_id],
+            confidence: ActionConfidence::Medium,
+            warnings: vec![],
+            screenshot_meta: None,
+            candidate: true,
+        }
+    }
+
+    fn click_action(event_id: Uuid) -> WalkthroughAction {
+        WalkthroughAction {
+            id: Uuid::new_v4(),
+            kind: WalkthroughActionKind::Click {
+                x: 300.0,
+                y: 400.0,
+                button: clickweave_core::MouseButton::Left,
+                click_count: 1,
+            },
+            app_name: Some("TestApp".to_string()),
+            window_title: None,
+            target_candidates: vec![],
+            artifact_paths: vec!["/screenshots/click.png".to_string()],
+            source_event_ids: vec![event_id],
+            confidence: ActionConfidence::High,
+            warnings: vec![],
+            screenshot_meta: Some(ScreenshotMeta {
+                origin_x: 0.0,
+                origin_y: 0.0,
+                scale: 2.0,
+            }),
+            candidate: false,
+        }
+    }
+
+    /// Native hover event: timestamp = exit time (cursor left).
+    /// dwell_ms = 2000, so hover start = ts - 2000.
+    fn hover_event(id: Uuid, ts: u64) -> WalkthroughEvent {
+        WalkthroughEvent {
+            id,
+            timestamp: ts,
+            kind: WalkthroughEventKind::HoverDetected {
+                x: 100.0,
+                y: 200.0,
+                element_name: "Button".to_string(),
+                element_role: Some("AXButton".to_string()),
+                dwell_ms: 2000,
+                app_name: None,
+            },
+        }
+    }
+
+    /// CDP hover event: timestamp = enter time (hover start).
+    /// dwell_ms = 2000, but no subtraction needed for start time.
+    fn cdp_hover_event(id: Uuid, ts: u64) -> WalkthroughEvent {
+        WalkthroughEvent {
+            id,
+            timestamp: ts,
+            kind: WalkthroughEventKind::HoverDetected {
+                x: 100.0,
+                y: 200.0,
+                element_name: "Submit".to_string(),
+                element_role: Some("button".to_string()),
+                dwell_ms: 2000,
+                app_name: Some("Chrome".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn attach_recording_frames_before_after_pair() {
+        let hover_id = Uuid::new_v4();
+        // Hover ts=3000 (arrival time). Frames: 1000, 2000, 3000, 4000.
+        // Before start(3000): frame(2000). After start(3000): frame(3000).
+        let events = vec![hover_event(hover_id, 3000)];
+        let frames = vec![frame(1000), frame(2000), frame(3000), frame(4000)];
+        let mut actions = vec![hover_action(hover_id)];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        assert_eq!(actions[0].artifact_paths.len(), 2);
+        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
+        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_3000.png");
+        let meta = actions[0].screenshot_meta.unwrap();
+        assert_eq!(meta.scale, 2.0);
+    }
+
+    #[test]
+    fn attach_recording_frames_skips_clicks() {
+        let click_id = Uuid::new_v4();
+        let events = vec![hover_event(click_id, 5000)];
+        let frames = vec![frame(1000), frame(2000), frame(3000)];
+        let mut actions = vec![click_action(click_id)];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        // Click already has a screenshot — should be unchanged.
+        assert_eq!(actions[0].artifact_paths.len(), 1);
+        assert_eq!(actions[0].artifact_paths[0], "/screenshots/click.png");
+    }
+
+    #[test]
+    fn attach_recording_frames_skips_hovers_with_existing_screenshot() {
+        let hover_id = Uuid::new_v4();
+        let events = vec![hover_event(hover_id, 5000)];
+        let frames = vec![frame(1000), frame(2000)];
+        let mut actions = vec![{
+            let mut a = hover_action(hover_id);
+            a.artifact_paths = vec!["/existing/screenshot.png".to_string()];
+            a
+        }];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        assert_eq!(actions[0].artifact_paths[0], "/existing/screenshot.png");
+    }
+
+    #[test]
+    fn attach_recording_frames_empty_frames_is_noop() {
+        let hover_id = Uuid::new_v4();
+        let events = vec![hover_event(hover_id, 5000)];
+        let mut actions = vec![hover_action(hover_id)];
+
+        attach_recording_frames(&mut actions, &[], &events);
+
+        assert!(actions[0].artifact_paths.is_empty());
+    }
+
+    #[test]
+    fn attach_recording_frames_only_before_when_hover_starts_after_last_frame() {
+        let hover_id = Uuid::new_v4();
+        // Hover ts=8000, all frames before that.
+        let events = vec![hover_event(hover_id, 8000)];
+        let frames = vec![frame(1000), frame(2000)];
+        let mut actions = vec![hover_action(hover_id)];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        assert_eq!(actions[0].artifact_paths.len(), 1);
+        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
+    }
+
+    #[test]
+    fn attach_recording_frames_only_after_when_hover_starts_before_first_frame() {
+        let hover_id = Uuid::new_v4();
+        // Hover ts=500, all frames after that.
+        let events = vec![hover_event(hover_id, 500)];
+        let frames = vec![frame(1000), frame(2000)];
+        let mut actions = vec![hover_action(hover_id)];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        assert_eq!(actions[0].artifact_paths.len(), 1);
+        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_1000.png");
+    }
+
+    #[test]
+    fn attach_recording_frames_native_and_cdp_both_use_timestamp_directly() {
+        // Both native and CDP hovers use the event timestamp as hover start.
+        // Native: MCP fires transition event with timestamp_ms = arrival time.
+        // CDP: JS listener stores ts = Date.now() at element enter.
+        let native_id = Uuid::new_v4();
+        let cdp_id = Uuid::new_v4();
+        let events = vec![hover_event(native_id, 3000), cdp_hover_event(cdp_id, 3000)];
+        let frames = vec![frame(1000), frame(2000), frame(3000), frame(4000)];
+        let mut native_actions = vec![hover_action(native_id)];
+        let mut cdp_actions = vec![hover_action(cdp_id)];
+
+        attach_recording_frames(&mut native_actions, &frames, &events);
+        attach_recording_frames(&mut cdp_actions, &frames, &events);
+
+        // Both should get the same frame pair around ts=3000.
+        assert_eq!(
+            native_actions[0].artifact_paths,
+            cdp_actions[0].artifact_paths
+        );
+        assert_eq!(
+            native_actions[0].artifact_paths[0],
+            "/frames/frame_2000.png"
+        );
+        assert_eq!(
+            native_actions[0].artifact_paths[1],
+            "/frames/frame_3000.png"
+        );
+    }
+
+    #[test]
+    fn attach_recording_frames_prefers_same_app_frames() {
+        let hover_id = Uuid::new_v4();
+        // Hover on TestApp at ts=3000. Frames from two apps interleaved.
+        let events = vec![hover_event(hover_id, 3000)];
+        let frames = vec![
+            frame_for_app(1000, "OtherApp"),
+            frame_for_app(2000, "TestApp"),
+            frame_for_app(2500, "OtherApp"),
+            frame_for_app(3000, "TestApp"),
+            frame_for_app(3500, "OtherApp"),
+        ];
+        let mut actions = vec![hover_action(hover_id)];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        // Should pick TestApp frames: before=2000, after=3000 (not OtherApp's 2500/3500).
+        assert_eq!(actions[0].artifact_paths.len(), 2);
+        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
+        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_3000.png");
+    }
+
+    #[test]
+    fn attach_recording_frames_falls_back_to_all_frames_when_no_app_match() {
+        let hover_id = Uuid::new_v4();
+        // Hover has app_name=None (can happen for native hovers without focus resolution).
+        let events = vec![{
+            let mut e = hover_event(hover_id, 3000);
+            if let WalkthroughEventKind::HoverDetected { .. } = &e.kind {
+                // hover_event already has app_name: None
+            }
+            e
+        }];
+        let frames = vec![
+            frame_for_app(2000, "SomeApp"),
+            frame_for_app(4000, "SomeApp"),
+        ];
+        let mut actions = vec![{
+            let mut a = hover_action(hover_id);
+            a.app_name = None; // No app resolved
+            a
+        }];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        // Falls back to all frames since no app name to filter on.
+        assert_eq!(actions[0].artifact_paths.len(), 2);
+        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
+        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_4000.png");
+    }
 }
