@@ -17,6 +17,11 @@ export function isWalkthroughActive(status: WalkthroughStatus): boolean {
   return status !== "Idle" && status !== "Applied" && status !== "Cancelled";
 }
 
+/** Returns true when the walkthrough is recording or processing (canvas should be non-interactive). */
+export function isWalkthroughBusy(status: WalkthroughStatus): boolean {
+  return status === "Recording" || status === "Paused" || status === "Processing";
+}
+
 /** Build a lookup map from node_id → WalkthroughAction using the action-node map. */
 export function buildActionByNodeId(
   actionNodeMap: ActionNodeEntry[],
@@ -165,7 +170,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   setWalkthroughStatus: (status) => {
     set({ walkthroughStatus: status });
     // Close the recording bar window when leaving recording states
-    if (status === "Review" || status === "Idle" || status === "Cancelled" || status === "Applied") {
+    if (status === "Processing" || status === "Review" || status === "Idle" || status === "Cancelled" || status === "Applied") {
       closeRecordingBarWindow();
     }
   },
