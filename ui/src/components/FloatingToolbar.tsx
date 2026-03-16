@@ -2,6 +2,56 @@ import { useState, useRef, useEffect } from "react";
 import type { ExecutionMode } from "../bindings";
 import type { WalkthroughStatus } from "../store/slices/walkthroughSlice";
 
+interface ConfirmDialogProps {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  confirmClassName: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function ConfirmDialog({ title, description, confirmLabel, confirmClassName, onCancel, onConfirm }: ConfirmDialogProps) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        e.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [onCancel]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="w-[400px] rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] p-5 shadow-2xl">
+        <h3 className="text-sm font-medium text-[var(--text-primary)]">
+          {title}
+        </h3>
+        <p className="mt-2 text-xs text-[var(--text-secondary)]">
+          {description}
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className={`rounded px-4 py-1.5 text-xs font-medium text-white hover:opacity-90 ${confirmClassName}`}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface FloatingToolbarProps {
   executorState: "idle" | "running";
   executionMode: ExecutionMode;
@@ -170,34 +220,14 @@ export function FloatingToolbar({
       )}
 
       {showConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="w-[400px] rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] p-5 shadow-2xl">
-            <h3 className="text-sm font-medium text-[var(--text-primary)]">
-              Workflow contains AI nodes
-            </h3>
-            <p className="mt-2 text-xs text-[var(--text-secondary)]">
-              This workflow includes non-deterministic AI steps that will make
-              LLM calls during execution. Results may vary between runs.
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={() => setShowConfirm(false)}
-                className="rounded px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShowConfirm(false);
-                  onRunStop();
-                }}
-                className="rounded bg-[var(--accent-green)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90"
-              >
-                Run Anyway
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Workflow contains AI nodes"
+          description="This workflow includes non-deterministic AI steps that will make LLM calls during execution. Results may vary between runs."
+          confirmLabel="Run Anyway"
+          confirmClassName="bg-[var(--accent-green)]"
+          onCancel={() => setShowConfirm(false)}
+          onConfirm={() => { setShowConfirm(false); onRunStop(); }}
+        />
       )}
     </>
   );
