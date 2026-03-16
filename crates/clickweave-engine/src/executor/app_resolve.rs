@@ -20,13 +20,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<ResolvedApp> {
         // Check in-memory cache first (populated during this execution)
-        if let Some(cached) = self
-            .app_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(user_input)
-            .cloned()
-        {
+        if let Some(cached) = self.read_app_cache().get(user_input).cloned() {
             debug!(user_input, resolved_name = %cached.name, "app_cache hit");
             self.log(format!(
                 "App resolved (cached): \"{}\" -> {} (pid {})",
@@ -39,13 +33,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Clone the cached value out before any .await to avoid holding the
         // RwLockReadGuard across an await point (which breaks Send).
         let ck = decision_cache::cache_key(node_id, user_input, None);
-        let cached_app = self
-            .decision_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .app_resolution
-            .get(&ck)
-            .cloned();
+        let cached_app = self.read_decision_cache().app_resolution.get(&ck).cloned();
         if let Some(cached) = cached_app {
             debug!(user_input, resolved_name = %cached.resolved_name, "decision_cache app hit");
             // We have the app name but need a fresh PID — look it up
@@ -59,9 +47,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         "App resolved (decision cache): \"{}\" -> {} (pid {})",
                         user_input, resolved.name, resolved.pid
                     ));
-                    self.app_cache
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner())
+                    self.write_app_cache()
                         .insert(user_input.to_string(), resolved.clone());
                     return Ok(resolved);
                 }
@@ -194,24 +180,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             user_input, resolved.name, resolved.pid
         ));
 
-        self.app_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
+        self.write_app_cache()
             .insert(user_input.to_string(), resolved.clone());
 
         // Record in decision cache for replay in Run mode (name only, not PID)
         if self.execution_mode == ExecutionMode::Test {
-            self.decision_cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .app_resolution
-                .insert(
-                    ck,
-                    AppResolution {
-                        user_input: user_input.to_string(),
-                        resolved_name: resolved.name.clone(),
-                    },
-                );
+            self.write_decision_cache().app_resolution.insert(
+                ck,
+                AppResolution {
+                    user_input: user_input.to_string(),
+                    resolved_name: resolved.name.clone(),
+                },
+            );
         }
 
         Ok(resolved)
@@ -243,13 +223,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Remove a cached app resolution so the next attempt re-resolves via LLM.
     pub(crate) fn evict_app_cache(&self, user_input: &str) {
-        if self
-            .app_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(user_input)
-            .is_some()
-        {
+        if self.write_app_cache().remove(user_input).is_some() {
             debug!(user_input, "evicted app_cache entry");
             self.log(format!("App cache evicted for \"{}\"", user_input));
         }
@@ -287,7 +261,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         if matches!(node_type, NodeType::FocusWindow(_)) {
-            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = None;
+            *self.write_focused_app() = None;
         }
     }
 }

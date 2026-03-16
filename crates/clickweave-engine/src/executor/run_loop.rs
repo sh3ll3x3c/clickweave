@@ -219,14 +219,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // Regular execution nodes
             self.emit(ExecutorEvent::NodeStarted(node_id));
             self.supervision_hint = None;
-            self.tried_click_indices
-                .get_mut()
-                .unwrap_or_else(|e| e.into_inner())
-                .clear();
-            self.tried_cdp_uids
-                .get_mut()
-                .unwrap_or_else(|e| e.into_inner())
-                .clear();
+            self.write_tried_click_indices().clear();
+            self.write_tried_cdp_uids().clear();
             self.log(format!(
                 "Executing node: {} ({})",
                 node_name,
@@ -474,11 +468,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // Save decision cache after Test mode runs
         if self.execution_mode == ExecutionMode::Test {
-            let save_result = self
-                .decision_cache
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .save(&self.storage.cache_path());
+            let save_result = self.read_decision_cache().save(&self.storage.cache_path());
             match save_result {
                 Ok(()) => self.log("Decision cache saved"),
                 Err(e) => self.log(format!("Warning: failed to save decision cache: {}", e)),

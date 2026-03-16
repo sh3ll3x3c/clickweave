@@ -216,10 +216,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or(&self.agent);
 
         let messages = {
-            let mut history = self
-                .supervision_history
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut history = self.write_supervision_history();
 
             if history.is_empty() {
                 history.push(Message::system(SUPERVISION_SYSTEM_PROMPT));
@@ -238,10 +235,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .unwrap_or("");
 
                 {
-                    let mut history = self
-                        .supervision_history
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let mut history = self.write_supervision_history();
                     history.push(Message::assistant(raw));
                 }
 
@@ -250,10 +244,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             Err(e) => {
                 self.log(format!("Supervision: verification failed: {}", e));
                 {
-                    let mut history = self
-                        .supervision_history
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let mut history = self.write_supervision_history();
                     history.push(Message::assistant(format!(
                         "{{\"passed\": true, \"reasoning\": \"verification error: {}\"}}",
                         e

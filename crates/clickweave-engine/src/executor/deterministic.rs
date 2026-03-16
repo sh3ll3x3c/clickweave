@@ -343,8 +343,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .await?;
             }
 
-            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) =
-                Some((app.name.clone(), app_kind));
+            *self.write_focused_app() = Some((app.name.clone(), app_kind));
 
             resolved_fw = NodeType::FocusWindow(FocusWindowParams {
                 method: FocusMethod::Pid,
@@ -436,8 +435,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // launch_app implies the app is now focused
         if let Some(name) = &launch_app_name {
-            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) =
-                Some((name.clone(), launch_app_kind));
+            *self.write_focused_app() = Some((name.clone(), launch_app_kind));
 
             if launch_app_kind != AppKind::Native {
                 self.log(format!(
@@ -604,9 +602,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // avoid matching display text that happens to contain the symbol.
         let element_key = (target.to_string(), scoped_app.clone());
         let search_text = self
-            .element_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .read_element_cache()
             .get(&element_key)
             .cloned()
             .unwrap_or_else(|| target.to_string());
@@ -654,9 +650,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // Check decision cache first
             let ck = cache_key(node_id, target, scoped_app.as_deref());
             let cached_idx = self
-                .decision_cache
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
+                .read_decision_cache()
                 .click_disambiguation
                 .get(&ck)
                 .and_then(|cached| {
@@ -1223,10 +1217,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let hint_context = self.format_supervision_hint("A previous click attempt failed. ");
 
         let tried_context = {
-            let tried = self
-                .tried_cdp_uids
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
+            let tried = self.read_tried_cdp_uids();
             Self::format_tried_context(&tried, "UIDs")
         };
 
@@ -1250,10 +1241,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let uid = raw_text.trim().trim_matches('"').to_string();
         if valid_uids.contains(uid.as_str()) {
-            self.tried_cdp_uids
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(uid.clone());
+            self.write_tried_cdp_uids().push(uid.clone());
             Ok(uid)
         } else {
             self.log(format!(
@@ -1335,18 +1323,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // App was restarted — evict stale PID from app cache.
             self.evict_app_cache(app_name);
             // Store in decision cache for Run mode replay.
-            self.decision_cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
+            self.write_decision_cache()
                 .cdp_port
                 .insert(app_name.to_string(), CdpPort { port });
             port
         } else {
             // Run mode: read cached port, try connecting, relaunch if needed.
             let cached = self
-                .decision_cache
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
+                .read_decision_cache()
                 .cdp_port
                 .get(app_name)
                 .map(|e| e.port);
