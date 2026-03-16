@@ -3,6 +3,7 @@ import { commands } from "../../bindings";
 import type { WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
 import type { CdpSetupProgress } from "../../components/CdpAppSelectModal";
 import { buildInitialOrder } from "../../utils/walkthroughGrouping";
+import { errorMessage } from "../../utils/commandError";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { currentMonitor } from "@tauri-apps/api/window";
 import type { StoreState } from "./types";
@@ -179,6 +180,6 @@ export async function seedCache(workflow: Workflow, get: () => StoreState) {
     entries,
   );
   if (result.status === "error") {
-    console.warn("Cache seeding failed:", result.error);
+    console.warn("Cache seeding failed:", errorMessage(result.error));
   }
 }

@@ -3,6 +3,7 @@ import { commands } from "../../bindings";
 import type { CdpAppConfig } from "../../bindings";
 import type { CdpSetupProgress } from "../../components/CdpAppSelectModal";
 import { toEndpoint } from "../settings";
+import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 import type { WalkthroughCapturedEvent } from "./walkthroughSlice";
 import { openRecordingBarWindow, closeRecordingBarWindow } from "./walkthroughSlice";
@@ -63,8 +64,9 @@ export const createWalkthroughRecordingSlice: StateCreator<StoreState, [], [], W
     const { hoverDwellThreshold } = get();
     const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner, cdpApps, hoverDwellThreshold);
     if (result.status === "error") {
-      _set({ walkthroughError: result.error, walkthroughCdpModalOpen: false });
-      pushLog(`Walkthrough start failed: ${result.error}`);
+      const msg = errorMessage(result.error);
+      _set({ walkthroughError: msg, walkthroughCdpModalOpen: false });
+      pushLog(`Walkthrough start failed: ${msg}`);
     } else {
       openRecordingBarWindow();
     }
@@ -74,7 +76,7 @@ export const createWalkthroughRecordingSlice: StateCreator<StoreState, [], [], W
     const { pushLog } = get();
     const result = await commands.pauseWalkthrough();
     if (result.status === "error") {
-      pushLog(`Walkthrough pause failed: ${result.error}`);
+      pushLog(`Walkthrough pause failed: ${errorMessage(result.error)}`);
     }
   },
 
@@ -82,7 +84,7 @@ export const createWalkthroughRecordingSlice: StateCreator<StoreState, [], [], W
     const { pushLog } = get();
     const result = await commands.resumeWalkthrough();
     if (result.status === "error") {
-      pushLog(`Walkthrough resume failed: ${result.error}`);
+      pushLog(`Walkthrough resume failed: ${errorMessage(result.error)}`);
     }
   },
 
@@ -93,7 +95,7 @@ export const createWalkthroughRecordingSlice: StateCreator<StoreState, [], [], W
       : null;
     const result = await commands.stopWalkthrough(planner, hoverDwellThreshold);
     if (result.status === "error") {
-      pushLog(`Walkthrough stop failed: ${result.error}`);
+      pushLog(`Walkthrough stop failed: ${errorMessage(result.error)}`);
     }
   },
 
@@ -114,7 +116,7 @@ export const createWalkthroughRecordingSlice: StateCreator<StoreState, [], [], W
     });
     const result = await commands.cancelWalkthrough();
     if (result.status === "error") {
-      pushLog(`Walkthrough cancel failed: ${result.error}`);
+      pushLog(`Walkthrough cancel failed: ${errorMessage(result.error)}`);
     }
   },
 });

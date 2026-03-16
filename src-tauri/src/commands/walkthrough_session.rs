@@ -403,16 +403,18 @@ impl WalkthroughHandle {
     pub(super) fn ensure_status(
         &self,
         expected: &[WalkthroughStatus],
-    ) -> Result<&WalkthroughSession, String> {
+    ) -> Result<&WalkthroughSession, super::error::CommandError> {
         let session = self
             .session
             .as_ref()
-            .ok_or("No walkthrough session is active")?;
+            .ok_or(super::error::CommandError::validation(
+                "No walkthrough session is active",
+            ))?;
         if !expected.contains(&session.status) {
-            return Err(format!(
+            return Err(super::error::CommandError::validation(format!(
                 "Walkthrough is in {:?} state, expected one of {:?}",
                 session.status, expected
-            ));
+            )));
         }
         Ok(session)
     }
