@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `d0fd809`
+Verified at commit: `5df5bb1`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -89,7 +89,8 @@ ui/src/
     ├── graphValidation.ts
     ├── loopMembers.ts
     ├── walkthroughDraft.ts
-    └── walkthroughFormatting.ts
+    ├── walkthroughFormatting.ts
+    └── walkthroughGrouping.ts
 ```
 
 ## State Model
@@ -128,7 +129,7 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **SettingsSlice** (`settingsSlice.ts`)
 
-- `plannerConfig`, `agentConfig`, `vlmConfig`, `vlmEnabled`, `mcpCommand`, `maxRepairAttempts`
+- `plannerConfig`, `agentConfig`, `vlmConfig`, `vlmEnabled`, `mcpCommand`, `maxRepairAttempts`, `hoverDwellThreshold`
 - persistence via `store/settings.ts` (`settings.json` through Tauri plugin-store)
 
 **UiSlice** (`uiSlice.ts`)
@@ -226,6 +227,7 @@ From `ui/src/store/state.ts` and `settings.ts`:
 - `vlmEnabled`: `false`
 - `mcpCommand`: `"npx"`
 - `maxRepairAttempts`: `3`
+- `hoverDwellThreshold`: `2000`
 
 `maxRepairAttempts` is clamped to `0..10` in `settingsSlice.ts`.
 

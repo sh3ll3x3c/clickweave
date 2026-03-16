@@ -176,6 +176,7 @@ Clickweave is a Tauri v2 hybrid app with a Rust backend and a React frontend.
 | **Vision** | FindText | OCR-based text search (contains or exact match) |
 | **Vision** | FindImage | Template matching with threshold and max results |
 | **Input** | Click | Mouse click at coordinates or by target text (LLM-resolved) |
+| **Input** | Hover | Move mouse to position with optional dwell time |
 | **Input** | TypeText | Keyboard text input |
 | **Input** | PressKey | Key press with modifiers (shift, control, option, command) |
 | **Input** | Scroll | Scroll at position with delta |

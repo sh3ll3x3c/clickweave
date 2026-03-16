@@ -1,6 +1,6 @@
 # MCP Integration (Reference)
 
-Verified at commit: `d0fd809`
+Verified at commit: `5df5bb1`
 
 Clickweave executes desktop/browser automation by spawning MCP server subprocesses and talking JSON-RPC over stdio. Multiple servers are managed by `McpRouter`, which merges tool lists and routes `call_tool` requests to the owning server.
 
@@ -53,7 +53,7 @@ After spawning, the router builds a merged tool list. On tool-name conflicts, **
 | Method | Behavior |
 |--------|----------|
 | `spawn(configs)` | Spawn all servers, build routing table |
-| `call_tool(name, args)` | Route to owning server |
+| `call_tool(name, args)` | Route to owning server; falls back to trying each server if tool not in cached ownership (handles dynamically added tools) |
 | `tools()` | Merged tool list |
 | `tools_as_openai()` | OpenAI function-calling format |
 | `server_count()` | Number of active servers |
@@ -145,6 +145,7 @@ File: `crates/clickweave-core/src/tool_mapping.rs`
 | `FindText` | `find_text` | `text`, optional `app_name` (from `FindTextParams.scope`) |
 | `FindImage` | `find_image` | `template_image_base64`, `threshold`, `max_results` |
 | `Click` | `click` | coordinates/button/count |
+| `Hover` | `move_mouse` | optional `x`, `y` |
 | `TypeText` | `type_text` | `text` |
 | `PressKey` | `press_key` | `key`, optional `modifiers` |
 | `Scroll` | `scroll` | `delta_y`, optional `x`,`y` |

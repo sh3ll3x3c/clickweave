@@ -1,6 +1,6 @@
 # Architecture Overview (Reference)
 
-Verified at commit: `d0fd809`
+Verified at commit: `5df5bb1`
 
 Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
 
