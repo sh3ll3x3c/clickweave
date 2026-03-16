@@ -78,29 +78,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 && let Some(cdp_server) = self.focused_cdp_server()
                 && let Some(target) = &p.target
             {
-                let (expected_role, expected_href, expected_parent_role, expected_parent_name) =
-                    match target {
-                        clickweave_core::ClickTarget::CdpElement {
-                            role,
-                            href,
-                            parent_role,
-                            parent_name,
-                            ..
-                        } => (
-                            role.as_deref(),
-                            href.as_deref(),
-                            parent_role.as_deref(),
-                            parent_name.as_deref(),
-                        ),
-                        _ => (None, None, None, None),
-                    };
+                let expected = cdp::CdpExpected::from_click_target(target);
                 match self
                     .resolve_and_hover_cdp(
                         target.text(),
-                        expected_role,
-                        expected_href,
-                        expected_parent_role,
-                        expected_parent_name,
+                        &expected,
                         &cdp_server,
                         mcp,
                         node_run.as_deref(),
@@ -247,29 +229,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             if app_kind.uses_cdp()
                 && let Some(cdp_server) = self.focused_cdp_server()
             {
-                let (expected_role, expected_href, expected_parent_role, expected_parent_name) =
-                    match click_target {
-                        clickweave_core::ClickTarget::CdpElement {
-                            role,
-                            href,
-                            parent_role,
-                            parent_name,
-                            ..
-                        } => (
-                            role.as_deref(),
-                            href.as_deref(),
-                            parent_role.as_deref(),
-                            parent_name.as_deref(),
-                        ),
-                        _ => (None, None, None, None),
-                    };
+                let expected = cdp::CdpExpected::from_click_target(click_target);
                 match self
                     .resolve_and_click_cdp(
                         target,
-                        expected_role,
-                        expected_href,
-                        expected_parent_role,
-                        expected_parent_name,
+                        &expected,
                         &cdp_server,
                         mcp,
                         node_run.as_deref(),

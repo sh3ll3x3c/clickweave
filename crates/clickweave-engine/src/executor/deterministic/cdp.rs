@@ -1,9 +1,39 @@
 use super::super::{ExecutorError, ExecutorResult, WorkflowExecutor};
+use clickweave_core::ClickTarget;
 use clickweave_core::NodeRun;
 use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::{McpRouter, ToolProvider};
 use uuid::Uuid;
+
+/// Expected CDP element attributes for matching during snapshot search.
+#[derive(Debug, Default)]
+pub(crate) struct CdpExpected<'a> {
+    pub role: Option<&'a str>,
+    pub href: Option<&'a str>,
+    pub parent_role: Option<&'a str>,
+    pub parent_name: Option<&'a str>,
+}
+
+impl<'a> CdpExpected<'a> {
+    pub fn from_click_target(target: &'a ClickTarget) -> Self {
+        match target {
+            ClickTarget::CdpElement {
+                role,
+                href,
+                parent_role,
+                parent_name,
+                ..
+            } => Self {
+                role: role.as_deref(),
+                href: href.as_deref(),
+                parent_role: parent_role.as_deref(),
+                parent_name: parent_name.as_deref(),
+            },
+            _ => Self::default(),
+        }
+    }
+}
 
 /// Pick a random port in the ephemeral range (49152-65535).
 fn rand_ephemeral_port() -> u16 {
@@ -34,14 +64,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Resolve a text target to a CDP element UID via snapshot + find + disambiguate.
     ///
     /// Shared by both click and hover CDP paths. Returns the resolved element UID.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::executor) async fn resolve_cdp_element_uid(
         &self,
         target: &str,
-        expected_role: Option<&str>,
-        expected_href: Option<&str>,
-        expected_parent_role: Option<&str>,
-        expected_parent_name: Option<&str>,
+        expected: &CdpExpected<'_>,
         cdp_server: &str,
         mcp: &(impl ToolProvider + ?Sized),
     ) -> ExecutorResult<String> {
@@ -71,11 +97,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // 3. Find matching elements
         let mut matches = find_elements_in_snapshot(&snapshot_text, target);
-        clickweave_core::cdp::narrow_matches(&mut matches, expected_role, expected_href);
+        clickweave_core::cdp::narrow_matches(&mut matches, expected.role, expected.href);
         clickweave_core::cdp::narrow_by_parent(
             &mut matches,
-            expected_parent_role,
-            expected_parent_name,
+            expected.parent_role,
+            expected.parent_name,
         );
 
         if matches.is_empty() {
@@ -98,29 +124,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Resolve a CDP element and perform an action (click or hover) on it.
     /// Returns the action result text.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::executor) async fn execute_cdp_action(
         &self,
         action: &str,
         target: &str,
-        expected_role: Option<&str>,
-        expected_href: Option<&str>,
-        expected_parent_role: Option<&str>,
-        expected_parent_name: Option<&str>,
+        expected: &CdpExpected<'_>,
         cdp_server: &str,
         mcp: &(impl ToolProvider + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
         let uid = self
-            .resolve_cdp_element_uid(
-                target,
-                expected_role,
-                expected_href,
-                expected_parent_role,
-                expected_parent_name,
-                cdp_server,
-                mcp,
-            )
+            .resolve_cdp_element_uid(target, expected, cdp_server, mcp)
             .await?;
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
@@ -147,57 +161,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Resolve a CDP element and click it. Returns the click result text.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::executor) async fn resolve_and_click_cdp(
         &self,
         target: &str,
-        expected_role: Option<&str>,
-        expected_href: Option<&str>,
-        expected_parent_role: Option<&str>,
-        expected_parent_name: Option<&str>,
+        expected: &CdpExpected<'_>,
         cdp_server: &str,
         mcp: &(impl ToolProvider + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
-        self.execute_cdp_action(
-            "click",
-            target,
-            expected_role,
-            expected_href,
-            expected_parent_role,
-            expected_parent_name,
-            cdp_server,
-            mcp,
-            node_run,
-        )
-        .await
+        self.execute_cdp_action("click", target, expected, cdp_server, mcp, node_run)
+            .await
     }
 
     /// Resolve a CDP element and hover it. Returns the hover result text.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::executor) async fn resolve_and_hover_cdp(
         &self,
         target: &str,
-        expected_role: Option<&str>,
-        expected_href: Option<&str>,
-        expected_parent_role: Option<&str>,
-        expected_parent_name: Option<&str>,
+        expected: &CdpExpected<'_>,
         cdp_server: &str,
         mcp: &(impl ToolProvider + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
-        self.execute_cdp_action(
-            "hover",
-            target,
-            expected_role,
-            expected_href,
-            expected_parent_role,
-            expected_parent_name,
-            cdp_server,
-            mcp,
-            node_run,
-        )
-        .await
+        self.execute_cdp_action("hover", target, expected, cdp_server, mcp, node_run)
+            .await
     }
 
     /// Ask the LLM to find the best matching element in the CDP snapshot.
