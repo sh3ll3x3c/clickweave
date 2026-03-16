@@ -677,6 +677,27 @@ fn retrieve_hover_candidates(
         .collect();
     focus_events.sort_by_key(|(ts, _, _)| *ts);
 
+    // Build paused intervals so we can discard hovers that occurred while
+    // recording was paused (MCP hover tracking keeps running during pause,
+    // so dwell time during paused intervals produces false candidates).
+    let mut paused_intervals: Vec<(u64, u64)> = Vec::new();
+    let mut pause_start: Option<u64> = None;
+    for e in events {
+        match &e.kind {
+            WalkthroughEventKind::Paused => pause_start = Some(e.timestamp),
+            WalkthroughEventKind::Resumed => {
+                if let Some(start) = pause_start.take() {
+                    paused_intervals.push((start, e.timestamp));
+                }
+            }
+            _ => {}
+        }
+    }
+    // If still paused at end of events (no matching Resume), extend to u64::MAX
+    if let Some(start) = pause_start {
+        paused_intervals.push((start, u64::MAX));
+    }
+
     for event in events {
         let WalkthroughEventKind::HoverDetected {
             x,
@@ -690,8 +711,21 @@ fn retrieve_hover_candidates(
             continue;
         };
 
-        // Filter by dwell threshold.
-        if *dwell_ms < hover_threshold_ms {
+        // Subtract any paused time that overlaps with the hover span so that
+        // hovers spanning or occurring during a pause don't get inflated dwell.
+        let hover_end = event.timestamp + dwell_ms;
+        let paused_overlap: u64 = paused_intervals
+            .iter()
+            .map(|(ps, pe)| {
+                let os = (*ps).max(event.timestamp);
+                let oe = (*pe).min(hover_end);
+                if os < oe { oe - os } else { 0 }
+            })
+            .sum();
+        let effective_dwell = dwell_ms.saturating_sub(paused_overlap);
+
+        // Filter by dwell threshold using pause-adjusted dwell.
+        if effective_dwell < hover_threshold_ms {
             continue;
         }
 
@@ -815,7 +849,7 @@ fn retrieve_hover_candidates(
             kind: WalkthroughActionKind::Hover {
                 x: *x,
                 y: *y,
-                dwell_ms: *dwell_ms,
+                dwell_ms: effective_dwell,
             },
             app_name: hover_app,
             window_title: hover_window,
@@ -930,6 +964,95 @@ mod tests {
 
     fn hover_event(ts: u64, dwell_ms: u64) -> WalkthroughEvent {
         hover_event_with_app(ts, dwell_ms, None)
+    }
+
+    #[test]
+    fn hover_during_paused_interval_is_filtered() {
+        let events = vec![
+            focus_event(1000, "Discord"),
+            hover_event(500, 1200), // ends at 1700, before pause at 2000 — kept
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 2000,
+                kind: WalkthroughEventKind::Paused,
+            },
+            hover_event(3000, 2000), // during pause — should be filtered
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 5000,
+                kind: WalkthroughEventKind::Resumed,
+            },
+            hover_event(6000, 2000), // after resume — should be kept
+        ];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(candidates.len(), 2, "hover during pause should be filtered");
+    }
+
+    #[test]
+    fn hover_spanning_pause_has_dwell_adjusted() {
+        // Hover starts at 1800 with raw dwell 5000ms (ends at 6800).
+        // Pause at 2000, resume at 5000 → 3000ms of paused time.
+        // Effective dwell = 5000 - 3000 = 2000ms → passes 1000ms threshold.
+        // But with threshold 3000ms → filtered (effective 2000 < 3000).
+        let events = vec![
+            focus_event(1000, "Discord"),
+            hover_event(1800, 5000), // spans the pause
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 2000,
+                kind: WalkthroughEventKind::Paused,
+            },
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 5000,
+                kind: WalkthroughEventKind::Resumed,
+            },
+        ];
+        // With 1000ms threshold: effective 2000ms passes
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(
+            candidates.len(),
+            1,
+            "hover spanning pause should pass low threshold"
+        );
+        // Verify the action carries pause-adjusted dwell, not raw 5000ms
+        if let WalkthroughActionKind::Hover { dwell_ms, .. } = &candidates[0].kind {
+            assert_eq!(
+                *dwell_ms, 2000,
+                "dwell should be adjusted for pause overlap"
+            );
+        } else {
+            panic!("expected Hover action");
+        }
+
+        // With 3000ms threshold: effective 2000ms is filtered
+        let candidates = retrieve_hover_candidates(&events, 3000);
+        assert_eq!(
+            candidates.len(),
+            0,
+            "hover spanning pause should fail high threshold"
+        );
+    }
+
+    #[test]
+    fn hover_after_trailing_pause_without_resume_is_filtered() {
+        // User pauses then hits stop without resuming — no matching Resumed event.
+        let events = vec![
+            focus_event(1000, "Discord"),
+            hover_event(1500, 2000), // before pause — kept
+            WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: 3000,
+                kind: WalkthroughEventKind::Paused,
+            },
+            hover_event(4000, 2000), // after pause, no resume — filtered
+        ];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(
+            candidates.len(),
+            1,
+            "hover after trailing pause should be filtered"
+        );
     }
 
     #[test]
