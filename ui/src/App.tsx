@@ -195,6 +195,7 @@ function App() {
                   executionMode={executionMode}
                   logsOpen={logsDrawerOpen}
                   hasAiNodes={hasAiNodes}
+                  hasNodes={workflow.nodes.length > 0}
                   walkthroughStatus={walkthroughStatus}
                   walkthroughPanelOpen={walkthroughPanelOpen}
                   onToggleLogs={toggleLogsDrawer}
@@ -206,6 +207,7 @@ function App() {
                   onAssistant={toggleAssistant}
                   onSetExecutionMode={setExecutionMode}
                   onOpenWalkthroughPanel={() => setWalkthroughPanelOpen(true)}
+                  onRecord={() => useStore.getState().openCdpModal()}
                 />
               </div>
 

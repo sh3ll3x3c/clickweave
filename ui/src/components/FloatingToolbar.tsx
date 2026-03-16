@@ -57,6 +57,7 @@ interface FloatingToolbarProps {
   executionMode: ExecutionMode;
   logsOpen: boolean;
   hasAiNodes: boolean;
+  hasNodes: boolean;
   walkthroughStatus: WalkthroughStatus;
   walkthroughPanelOpen: boolean;
   onToggleLogs: () => void;
@@ -64,6 +65,7 @@ interface FloatingToolbarProps {
   onAssistant: () => void;
   onSetExecutionMode: (mode: ExecutionMode) => void;
   onOpenWalkthroughPanel: () => void;
+  onRecord: () => void;
 }
 
 export function FloatingToolbar({
@@ -71,6 +73,7 @@ export function FloatingToolbar({
   executionMode,
   logsOpen,
   hasAiNodes,
+  hasNodes,
   walkthroughStatus,
   walkthroughPanelOpen,
   onToggleLogs,
@@ -78,9 +81,11 @@ export function FloatingToolbar({
   onAssistant,
   onSetExecutionMode,
   onOpenWalkthroughPanel,
+  onRecord,
 }: FloatingToolbarProps) {
   const isRunning = executorState === "running";
   const [showConfirm, setShowConfirm] = useState(false);
+  const [showRecordConfirm, setShowRecordConfirm] = useState(false);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -107,6 +112,14 @@ export function FloatingToolbar({
     }
   };
 
+  const handleRecord = () => {
+    if (hasNodes) {
+      setShowRecordConfirm(true);
+    } else {
+      onRecord();
+    }
+  };
+
   const runLabel = executionMode === "Test" ? "Test Workflow" : "Run Workflow";
 
   return (
@@ -118,6 +131,18 @@ export function FloatingToolbar({
         >
           Assistant
         </button>
+        {walkthroughStatus === "Idle" && !isRunning && (
+          <>
+            <div className="mx-1 h-4 w-px bg-[var(--border)]" />
+            <button
+              onClick={handleRecord}
+              className="flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs text-[var(--accent-coral)] hover:bg-[var(--bg-hover)]"
+            >
+              <span className="h-2 w-2 rounded-full bg-red-500" />
+              Record
+            </button>
+          </>
+        )}
         {walkthroughStatus === "Review" && !walkthroughPanelOpen && (
           <>
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
@@ -227,6 +252,17 @@ export function FloatingToolbar({
           confirmClassName="bg-[var(--accent-green)]"
           onCancel={() => setShowConfirm(false)}
           onConfirm={() => { setShowConfirm(false); onRunStop(); }}
+        />
+      )}
+
+      {showRecordConfirm && (
+        <ConfirmDialog
+          title="Replace current workflow?"
+          description="Recording a new walkthrough will replace the existing nodes on your canvas. You can undo this after applying."
+          confirmLabel="Record Anyway"
+          confirmClassName="bg-[var(--accent-coral)]"
+          onCancel={() => setShowRecordConfirm(false)}
+          onConfirm={() => { setShowRecordConfirm(false); onRecord(); }}
         />
       )}
     </>
