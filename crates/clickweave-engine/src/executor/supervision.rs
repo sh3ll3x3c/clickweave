@@ -347,8 +347,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
 /// Parse the LLM's JSON verification response. Returns (passed, reasoning).
 fn parse_verification_response(raw: &str) -> (bool, String) {
-    let text = super::app_resolve::strip_code_block(raw);
-    let json_text = super::app_resolve::extract_json_object(text);
+    let json_text = super::app_resolve::parse_llm_json_response(raw);
 
     if let Some(json_str) = json_text
         && let Ok(parsed) = serde_json::from_str::<Value>(json_str)

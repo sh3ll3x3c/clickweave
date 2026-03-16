@@ -1056,10 +1056,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    /// Resolve a CDP element and click it. Returns the click result text.
+    /// Resolve a CDP element and perform an action (click or hover) on it.
+    /// Returns the action result text.
     #[allow(clippy::too_many_arguments)]
-    async fn resolve_and_click_cdp(
+    async fn execute_cdp_action(
         &self,
+        action: &str,
         target: &str,
         expected_role: Option<&str>,
         expected_href: Option<&str>,
@@ -1081,26 +1083,54 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
             .await?;
 
-        self.log(format!("CDP: clicking element uid='{}'", uid));
+        self.log(format!("CDP: {} element uid='{}'", action, uid));
         let result = mcp
-            .call_tool_on(cdp_server, "click", Some(serde_json::json!({ "uid": uid })))
+            .call_tool_on(cdp_server, action, Some(serde_json::json!({ "uid": uid })))
             .await
-            .map_err(|e| ExecutorError::Cdp(format!("click failed: {e}")))?;
+            .map_err(|e| ExecutorError::Cdp(format!("{} failed: {e}", action)))?;
 
         if result.is_error == Some(true) {
             return Err(ExecutorError::Cdp(format!(
-                "click error: {}",
+                "{} error: {}",
+                action,
                 Self::extract_result_text(&result)
             )));
         }
 
         self.record_event(
             node_run,
-            "cdp_click",
+            &format!("cdp_{}", action),
             serde_json::json!({ "target": target, "uid": uid }),
         );
 
         Ok(Self::extract_result_text(&result))
+    }
+
+    /// Resolve a CDP element and click it. Returns the click result text.
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_and_click_cdp(
+        &self,
+        target: &str,
+        expected_role: Option<&str>,
+        expected_href: Option<&str>,
+        expected_parent_role: Option<&str>,
+        expected_parent_name: Option<&str>,
+        cdp_server: &str,
+        mcp: &(impl ToolProvider + ?Sized),
+        node_run: Option<&NodeRun>,
+    ) -> ExecutorResult<String> {
+        self.execute_cdp_action(
+            "click",
+            target,
+            expected_role,
+            expected_href,
+            expected_parent_role,
+            expected_parent_name,
+            cdp_server,
+            mcp,
+            node_run,
+        )
+        .await
     }
 
     /// Resolve a CDP element and hover it. Returns the hover result text.
@@ -1116,38 +1146,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &(impl ToolProvider + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
-        let uid = self
-            .resolve_cdp_element_uid(
-                target,
-                expected_role,
-                expected_href,
-                expected_parent_role,
-                expected_parent_name,
-                cdp_server,
-                mcp,
-            )
-            .await?;
-
-        self.log(format!("CDP: hovering element uid='{}'", uid));
-        let result = mcp
-            .call_tool_on(cdp_server, "hover", Some(serde_json::json!({ "uid": uid })))
-            .await
-            .map_err(|e| ExecutorError::Cdp(format!("hover failed: {e}")))?;
-
-        if result.is_error == Some(true) {
-            return Err(ExecutorError::Cdp(format!(
-                "hover error: {}",
-                Self::extract_result_text(&result)
-            )));
-        }
-
-        self.record_event(
+        self.execute_cdp_action(
+            "hover",
+            target,
+            expected_role,
+            expected_href,
+            expected_parent_role,
+            expected_parent_name,
+            cdp_server,
+            mcp,
             node_run,
-            "cdp_hover",
-            serde_json::json!({ "target": target, "uid": uid }),
-        );
-
-        Ok(Self::extract_result_text(&result))
+        )
+        .await
     }
 
     /// Ask the LLM to find the best matching element in the CDP snapshot.

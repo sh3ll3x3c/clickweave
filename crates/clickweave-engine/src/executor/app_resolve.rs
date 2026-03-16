@@ -122,7 +122,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
         })?;
 
-        let json_text = extract_json_object(strip_code_block(raw_text)).ok_or_else(|| {
+        let json_text = parse_llm_json_response(raw_text).ok_or_else(|| {
             ExecutorError::AppResolution(format!(
                 "No JSON object found in LLM response (raw: {})",
                 raw_text
@@ -303,6 +303,11 @@ pub(crate) fn extract_json_object(text: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// Strip markdown code fences and extract the first JSON object from an LLM response.
+pub(crate) fn parse_llm_json_response(raw: &str) -> Option<&str> {
+    extract_json_object(strip_code_block(raw))
 }
 
 /// Strip optional markdown code fences (```` ```json ... ``` ```` or ```` ``` ... ``` ````)

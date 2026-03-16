@@ -138,14 +138,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
         })?;
 
-        let json_text =
-            super::app_resolve::extract_json_object(super::app_resolve::strip_code_block(raw_text))
-                .ok_or_else(|| {
-                    ExecutorError::ElementResolution(format!(
-                        "No JSON object found in LLM response (raw: {})",
-                        raw_text
-                    ))
-                })?;
+        let json_text = super::app_resolve::parse_llm_json_response(raw_text).ok_or_else(|| {
+            ExecutorError::ElementResolution(format!(
+                "No JSON object found in LLM response (raw: {})",
+                raw_text
+            ))
+        })?;
 
         let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
             ExecutorError::ElementResolution(format!(
@@ -285,14 +283,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
         })?;
 
-        let json_text =
-            super::app_resolve::extract_json_object(super::app_resolve::strip_code_block(raw_text))
-                .ok_or_else(|| {
-                    ExecutorError::ElementResolution(format!(
-                        "No JSON object found in LLM response (raw: {})",
-                        raw_text
-                    ))
-                })?;
+        let json_text = super::app_resolve::parse_llm_json_response(raw_text).ok_or_else(|| {
+            ExecutorError::ElementResolution(format!(
+                "No JSON object found in LLM response (raw: {})",
+                raw_text
+            ))
+        })?;
 
         let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
             ExecutorError::ElementResolution(format!(
