@@ -120,29 +120,14 @@ pub(crate) fn validate_outgoing_edges(workflow: &Workflow) -> Result<(), Validat
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_helpers::{dummy_condition, pos};
     use crate::{
-        ClickParams, Condition, EdgeOutput, EndLoopParams, IfParams, LiteralValue, LoopParams,
-        NodeType, Operator, Position, SwitchCase, SwitchParams, TypeTextParams, ValueRef, Workflow,
+        ClickParams, EdgeOutput, EndLoopParams, IfParams, LoopParams, NodeType, SwitchCase,
+        SwitchParams, TypeTextParams, Workflow,
     };
 
     use super::super::ValidationError;
     use super::super::validate_workflow;
-
-    fn dummy_condition() -> Condition {
-        Condition {
-            left: ValueRef::Literal {
-                value: LiteralValue::Bool { value: true },
-            },
-            operator: Operator::Equals,
-            right: ValueRef::Literal {
-                value: LiteralValue::Bool { value: true },
-            },
-        }
-    }
-
-    fn pos(x: f32, y: f32) -> Position {
-        Position { x, y }
-    }
 
     #[test]
     fn test_validate_multiple_outgoing_edges() {

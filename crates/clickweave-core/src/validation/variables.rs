@@ -60,17 +60,14 @@ pub(crate) fn validate_condition_variables(workflow: &Workflow) -> Result<(), Va
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_helpers::pos;
     use crate::{
         ClickParams, Condition, EdgeOutput, EndLoopParams, FindTextParams, IfParams, LiteralValue,
-        LoopParams, NodeType, Operator, Position, SwitchCase, SwitchParams, ValueRef, Workflow,
+        LoopParams, NodeType, Operator, SwitchCase, SwitchParams, ValueRef, Workflow,
     };
 
     use super::super::ValidationError;
     use super::super::validate_workflow;
-
-    fn pos(x: f32, y: f32) -> Position {
-        Position { x, y }
-    }
 
     #[test]
     fn test_validate_loop_valid_variable_reference() {

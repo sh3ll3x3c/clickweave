@@ -32,17 +32,9 @@ pub(crate) fn flush_text(
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_helpers::make_event;
     use crate::MouseButton;
     use crate::walkthrough::types::*;
-    use uuid::Uuid;
-
-    fn make_event(timestamp: u64, kind: WalkthroughEventKind) -> WalkthroughEvent {
-        WalkthroughEvent {
-            id: Uuid::new_v4(),
-            timestamp,
-            kind,
-        }
-    }
 
     #[test]
     fn test_contiguous_text_coalesced() {

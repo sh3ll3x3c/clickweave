@@ -1,6 +1,8 @@
 mod cycles;
 mod edges;
 mod loops;
+#[cfg(test)]
+mod test_helpers;
 mod variables;
 
 use std::collections::HashSet;
@@ -135,12 +137,9 @@ pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
 
 #[cfg(test)]
 mod tests {
+    use super::test_helpers::pos;
     use super::*;
-    use crate::{ClickParams, NodeType, Position, TypeTextParams, Workflow};
-
-    fn pos(x: f32, y: f32) -> Position {
-        Position { x, y }
-    }
+    use crate::{ClickParams, NodeType, TypeTextParams, Workflow};
 
     #[test]
     fn test_validate_empty_workflow() {

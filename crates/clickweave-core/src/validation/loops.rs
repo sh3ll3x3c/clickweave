@@ -61,29 +61,11 @@ pub(crate) fn validate_loop_pairing(workflow: &Workflow) -> Result<(), Validatio
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        ClickParams, Condition, EdgeOutput, EndLoopParams, LiteralValue, LoopParams, NodeType,
-        Operator, Position, ValueRef, Workflow,
-    };
+    use super::super::test_helpers::{dummy_condition, pos};
+    use crate::{ClickParams, EdgeOutput, EndLoopParams, LoopParams, NodeType, Workflow};
 
     use super::super::ValidationError;
     use super::super::validate_workflow;
-
-    fn dummy_condition() -> Condition {
-        Condition {
-            left: ValueRef::Literal {
-                value: LiteralValue::Bool { value: true },
-            },
-            operator: Operator::Equals,
-            right: ValueRef::Literal {
-                value: LiteralValue::Bool { value: true },
-            },
-        }
-    }
-
-    fn pos(x: f32, y: f32) -> Position {
-        Position { x, y }
-    }
 
     #[test]
     fn test_validate_valid_loop() {

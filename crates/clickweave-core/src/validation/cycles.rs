@@ -79,14 +79,11 @@ pub(crate) fn validate_no_illegal_cycles(workflow: &Workflow) -> Result<(), Vali
 
 #[cfg(test)]
 mod tests {
-    use crate::{ClickParams, NodeType, Position, Workflow};
+    use super::super::test_helpers::pos;
+    use crate::{ClickParams, NodeType, Workflow};
 
     use super::super::ValidationError;
     use super::super::validate_workflow;
-
-    fn pos(x: f32, y: f32) -> Position {
-        Position { x, y }
-    }
 
     #[test]
     fn test_validate_non_endloop_cycle_detected() {

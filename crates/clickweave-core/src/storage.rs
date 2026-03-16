@@ -389,18 +389,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_name() {
-        assert_eq!(sanitize_name("Open Calculator"), "open-calculator");
-        assert_eq!(sanitize_name("Click #5"), "click-5");
-        assert_eq!(sanitize_name("  My---Workflow  "), "my-workflow");
-        assert_eq!(sanitize_name("UPPER case"), "upper-case");
-        assert_eq!(sanitize_name("a/b\\c"), "a-b-c");
-        assert_eq!(sanitize_name(""), "unnamed");
-        assert_eq!(sanitize_name("---"), "unnamed");
-        assert_eq!(sanitize_name("   "), "unnamed");
-    }
-
-    #[test]
     fn test_create_and_load_run() {
         let (mut storage, dir) = temp_storage();
         storage.begin_execution().expect("begin execution");

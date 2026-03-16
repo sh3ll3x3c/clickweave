@@ -131,18 +131,11 @@ pub(crate) fn score_confidence(candidates: &[TargetCandidate]) -> ActionConfiden
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_helpers::make_event;
     use super::*;
     use crate::MouseButton;
     use crate::walkthrough::types::*;
     use uuid::Uuid;
-
-    fn make_event(timestamp: u64, kind: WalkthroughEventKind) -> WalkthroughEvent {
-        WalkthroughEvent {
-            id: Uuid::new_v4(),
-            timestamp,
-            kind,
-        }
-    }
 
     #[test]
     fn test_click_with_nearby_ocr_gets_medium_confidence() {
