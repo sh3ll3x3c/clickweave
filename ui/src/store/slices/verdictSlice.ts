@@ -87,7 +87,12 @@ export const createVerdictSlice: StateCreator<StoreState, [], [], VerdictSlice> 
     set((state) => ({
       verdictModalOpen: true,
       verdictBarVisible: true,
-      verdictStatus: state.verdictStatus === "none" ? "completed" : state.verdictStatus,
+      verdictStatus:
+        state.lastRunStatus === "failed" && state.verdictStatus === "none"
+          ? "failed"
+          : state.verdictStatus === "none"
+            ? "completed"
+            : state.verdictStatus,
     })),
   closeVerdictModal: () => set({ verdictModalOpen: false }),
 });

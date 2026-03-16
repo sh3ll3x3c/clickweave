@@ -34,7 +34,9 @@ export function VerdictBar() {
         : status === "warned"
           ? `PASSED with warnings — ${passed}/${total} checks`
           : status === "failed"
-            ? `FAILED — ${passed}/${total} checks passed`
+            ? total > 0
+              ? `FAILED — ${passed}/${total} checks passed`
+              : "FAILED"
             : "Test run completed — no checks";
 
     return (

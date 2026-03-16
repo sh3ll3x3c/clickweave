@@ -138,13 +138,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let tools = mcp.tools_as_openai();
 
-        let mut completed_normally = true;
+        let mut user_cancelled = false;
         let mut verification_failed = false;
 
         while let Some(node_id) = current {
             if self.is_cancelled() {
                 self.log("Workflow cancelled by user");
-                completed_normally = false;
+                user_cancelled = true;
                 break;
             }
 
@@ -207,7 +207,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             }
                             SupervisionAction::Abort => {
                                 self.log("Supervision: user chose Abort after loop exit");
-                                completed_normally = false;
                                 break;
                             }
                         }
@@ -446,7 +445,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         "Aborted by user during supervision".to_string(),
                     ));
                 }
-                completed_normally = false;
                 break;
             }
 
@@ -487,7 +485,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        if completed_normally || verification_failed {
+        if !user_cancelled {
             self.log("Workflow execution completed");
             self.emit(ExecutorEvent::WorkflowCompleted);
         }
