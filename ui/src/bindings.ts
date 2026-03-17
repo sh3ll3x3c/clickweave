@@ -243,11 +243,6 @@ async validateAppPath(path: string) : Promise<Result<DetectedCdpApp, CommandErro
 /** user-defined types **/
 
 export type ActionConfidence = "High" | "Medium" | "Low"
-/**
- * Structured error type for Tauri IPC commands.
- */
-export type CommandError = { kind: ErrorKind; message: string }
-export type ErrorKind = "Validation" | "Io" | "Llm" | "Mcp" | "AlreadyRunning" | "Cancelled" | "Internal"
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**
@@ -284,6 +279,10 @@ export type ClickTarget = { type: "Text"; text: string } | { type: "CdpElement";
  * window-relative coordinates via `list_windows`.
  */
 { type: "WindowControl"; action: WindowControlAction }
+/**
+ * Structured error type for Tauri IPC commands.
+ */
+export type CommandError = { kind: ErrorKind; message: string }
 export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
 /**
  * Persistent conversation session for a workflow.
@@ -316,6 +315,7 @@ export type EndLoopParams = {
  */
 loop_id: string }
 export type EndpointConfig = { base_url: string; model: string; api_key: string | null }
+export type ErrorKind = "Validation" | "Io" | "Llm" | "Mcp" | "AlreadyRunning" | "Cancelled" | "Internal"
 export type ExecutionMode = "Test" | "Run"
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
