@@ -62,6 +62,7 @@ export function GraphCanvas({
     workflow,
     hiddenNodeIds: loopState.hiddenNodeIds,
     collapsedLoops: loopState.collapsedLoops,
+    collapsedAppEdgeRewrites: new Map(),
     deletedNodeIdsRef,
     onEdgesChange,
     onRemoveExtraEdges,

@@ -25,6 +25,7 @@ interface UseEdgeSyncParams {
   workflow: Workflow;
   hiddenNodeIds: Set<string>;
   collapsedLoops: Set<string>;
+  collapsedAppEdgeRewrites: Map<string, string>;
   deletedNodeIdsRef: React.MutableRefObject<Set<string> | null>;
   onEdgesChange: (edges: Edge[]) => void;
   onRemoveExtraEdges: (edges: Edge[]) => void;
@@ -35,30 +36,49 @@ export function useEdgeSync({
   workflow,
   hiddenNodeIds,
   collapsedLoops,
+  collapsedAppEdgeRewrites,
   deletedNodeIdsRef,
   onEdgesChange,
   onRemoveExtraEdges,
   onConnect,
 }: UseEdgeSyncParams) {
-  const rfEdges: RFEdge[] = useMemo(
-    () =>
-      workflow.edges
-        .filter((edge) => {
-          if (hiddenNodeIds.has(edge.from) || hiddenNodeIds.has(edge.to)) return false;
-          if (edge.output?.type === "LoopBody" && collapsedLoops.has(edge.from)) return false;
-          return true;
-        })
-        .map((edge) => ({
-          id: `${edge.from}-${edge.to}-${edgeOutputToHandle(edge.output) ?? "default"}`,
-          source: edge.from,
-          target: edge.to,
-          sourceHandle: edgeOutputToHandle(edge.output),
-          label: getEdgeLabel(edge.output),
-          labelStyle: { fill: "var(--text-muted)", fontSize: 10 },
-          labelBgStyle: { fill: "var(--bg-panel)", opacity: 0.8 },
-        })),
-    [workflow.edges, hiddenNodeIds, collapsedLoops],
-  );
+  const rfEdges: RFEdge[] = useMemo(() => {
+    // Step 1: Rewrite edges for collapsed app groups
+    const rewritten: { from: string; to: string; output: EdgeOutput | null }[] = [];
+    const seen = new Set<string>();
+
+    for (const e of workflow.edges) {
+      const from = collapsedAppEdgeRewrites.get(e.from) ?? e.from;
+      const to = collapsedAppEdgeRewrites.get(e.to) ?? e.to;
+
+      // Internal edge (both endpoints in same collapsed group) — skip
+      if (from === to && collapsedAppEdgeRewrites.has(e.from)) continue;
+
+      // Deduplicate rewritten edges
+      const key = `${from}-${to}-${edgeOutputToHandle(e.output) ?? "default"}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      rewritten.push({ from, to, output: e.output });
+    }
+
+    // Step 2: Apply existing hidden-node and collapsed-loop filters
+    return rewritten
+      .filter((e) => {
+        if (hiddenNodeIds.has(e.from) || hiddenNodeIds.has(e.to)) return false;
+        if (e.output?.type === "LoopBody" && collapsedLoops.has(e.from)) return false;
+        return true;
+      })
+      .map((e) => ({
+        id: `${e.from}-${e.to}-${edgeOutputToHandle(e.output) ?? "default"}`,
+        source: e.from,
+        target: e.to,
+        sourceHandle: edgeOutputToHandle(e.output),
+        label: getEdgeLabel(e.output),
+        labelStyle: { fill: "var(--text-muted)", fontSize: 10 },
+        labelBgStyle: { fill: "var(--bg-panel)", opacity: 0.8 },
+      }));
+  }, [workflow.edges, hiddenNodeIds, collapsedLoops, collapsedAppEdgeRewrites]);
 
   // Internal RF edge state — preserves selection state across renders
   const [rfEdgeState, setRfEdgeState] = useState<RFEdge[]>([]);
@@ -99,27 +119,51 @@ export function useEdgeSync({
 
       // Normal path — propagate removals to the workflow store
       if (removals.length > 0) {
+        // Build reverse rewrite map for collapsed app groups
+        const reverseRewrite = new Map<string, Set<string>>();
+        for (const [memberId, anchorId] of collapsedAppEdgeRewrites) {
+          const anchors = reverseRewrite.get(anchorId) ?? new Set();
+          anchors.add(memberId);
+          reverseRewrite.set(anchorId, anchors);
+        }
+
         const updated = applyEdgeChanges(removals, rfEdgeState);
         const visibleEdges: Edge[] = updated.map((rfe) => {
           const handle = rfe.sourceHandle ?? undefined;
-          const original = workflow.edges.find(
+          let original = workflow.edges.find(
             (e) =>
               e.from === rfe.source &&
               e.to === rfe.target &&
               edgeOutputToHandle(e.output) === handle,
           );
+          if (!original) {
+            const sourceMembers = reverseRewrite.get(rfe.source);
+            const targetMembers = reverseRewrite.get(rfe.target);
+            if (sourceMembers || targetMembers) {
+              original = workflow.edges.find((e) => {
+                const fromMatch = e.from === rfe.source || sourceMembers?.has(e.from);
+                const toMatch = e.to === rfe.target || targetMembers?.has(e.to);
+                return fromMatch && toMatch && edgeOutputToHandle(e.output) === handle;
+              });
+            }
+          }
           return { from: rfe.source, to: rfe.target, output: original?.output ?? null };
         });
-        const hiddenEdges = workflow.edges.filter((edge) => {
-          if (hiddenNodeIds.has(edge.from) || hiddenNodeIds.has(edge.to)) return true;
-          if (edge.output?.type === "LoopBody" && collapsedLoops.has(edge.from)) return true;
+        const hiddenEdges = workflow.edges.filter((e) => {
+          if (hiddenNodeIds.has(e.from) || hiddenNodeIds.has(e.to)) return true;
+          if (e.output?.type === "LoopBody" && collapsedLoops.has(e.from)) return true;
+          if (collapsedAppEdgeRewrites.has(e.from) && collapsedAppEdgeRewrites.has(e.to)) {
+            const anchorFrom = collapsedAppEdgeRewrites.get(e.from);
+            const anchorTo = collapsedAppEdgeRewrites.get(e.to);
+            if (anchorFrom === anchorTo) return true;
+          }
           return false;
         });
         onEdgesChange([...visibleEdges, ...hiddenEdges]);
       }
       setRfEdgeState((prev) => applyEdgeChanges(changes, prev));
     },
-    [workflow.edges, onEdgesChange, onRemoveExtraEdges, hiddenNodeIds, collapsedLoops, rfEdgeState],
+    [workflow.edges, onEdgesChange, onRemoveExtraEdges, hiddenNodeIds, collapsedLoops, collapsedAppEdgeRewrites, rfEdgeState],
   );
 
   const handleConnect: OnConnect = useCallback(
