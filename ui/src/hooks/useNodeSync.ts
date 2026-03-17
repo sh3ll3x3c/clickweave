@@ -7,6 +7,7 @@ import {
 import type { AppKind, Workflow } from "../bindings";
 import { usesCdp } from "../utils/appKind";
 import { nodeMetadata, defaultNodeMetadata } from "../constants/nodeMetadata";
+import type { AppGroupMeta } from "./useAppGrouping";
 
 // Layout constants for loop group positioning
 const LOOP_HEADER_HEIGHT = 40;
@@ -15,6 +16,16 @@ const APPROX_NODE_WIDTH = 160;
 const APPROX_NODE_HEIGHT = 50;
 const MIN_GROUP_WIDTH = 300;
 const MIN_GROUP_HEIGHT = 150;
+
+// App group layout constants
+const APP_GROUP_HEADER_HEIGHT = 36;
+const APP_GROUP_PADDING = 20;
+
+/** Return layout constants for a group node type. */
+function groupConstants(parentType: string): { headerHeight: number; padding: number } {
+  if (parentType === "appGroup") return { headerHeight: APP_GROUP_HEADER_HEIGHT, padding: APP_GROUP_PADDING };
+  return { headerHeight: LOOP_HEADER_HEIGHT, padding: LOOP_PADDING };
+}
 
 function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | undefined {
   if (nt.type !== "Click") return undefined;
@@ -149,6 +160,12 @@ interface UseNodeSyncParams {
   endLoopIds: Set<string>;
   endLoopForLoop: Map<string, string>;
   toggleLoopCollapse: (loopId: string) => void;
+  // App grouping params
+  collapsedApps: Set<string>;
+  appGroups: Map<string, string[]>;
+  nodeToAppGroup: Map<string, string>;
+  appGroupMeta: Map<string, AppGroupMeta>;
+  toggleAppCollapse: (groupId: string) => void;
   onSelectNode: (id: string | null) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
@@ -165,6 +182,11 @@ export function useNodeSync({
   endLoopIds,
   endLoopForLoop,
   toggleLoopCollapse,
+  collapsedApps,
+  appGroups,
+  nodeToAppGroup,
+  appGroupMeta,
+  toggleAppCollapse,
   onSelectNode,
   onNodePositionsChange,
   onDeleteNodes,
@@ -181,9 +203,15 @@ export function useNodeSync({
       const wfNodeMap = new Map(workflow.nodes.map((n) => [n.id, n]));
       const appKindMap = buildAppKindMap(workflow);
 
+      // Build set of anchor IDs for app groups
+      const appGroupAnchors = new Set<string>();
+      for (const meta of appGroupMeta.values()) {
+        appGroupAnchors.add(meta.anchorId);
+      }
+
       const nodes: RFNode[] = [];
       const groupNodeIndices = new Map<string, number>();
-      const expandedLoopChildren = new Map<string, RFNode[]>();
+      const expandedGroupChildren = new Map<string, RFNode[]>();
 
       for (const node of workflow.nodes) {
         const existing = prevMap.get(node.id);
@@ -219,7 +247,7 @@ export function useNodeSync({
             });
           } else {
             const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
-            expandedLoopChildren.set(node.id, []);
+            expandedGroupChildren.set(node.id, []);
             const idx = nodes.length;
             nodes.push({
               ...base,
@@ -233,6 +261,106 @@ export function useNodeSync({
               },
             });
             groupNodeIndices.set(node.id, idx);
+          }
+          continue;
+        }
+
+        // App group anchor nodes (skip if inside a loop — loop takes precedence)
+        if (appGroupAnchors.has(node.id) && !nodeToLoops.has(node.id)) {
+          const groupId = nodeToAppGroup.get(node.id);
+          if (!groupId) continue;
+          const meta = appGroupMeta.get(groupId);
+          if (!meta) continue;
+          const memberIds = appGroups.get(groupId) ?? [];
+
+          if (collapsedApps.has(groupId)) {
+            // Collapsed — render as workflow pill using anchor's real ID
+            const base = toRFNode(node, selectedNode, activeNode, () => {
+              onDeleteNodes(memberIds);
+            }, appKindMap.get(node.id), existing);
+            nodes.push({
+              ...base,
+              type: "workflow",
+              data: {
+                ...base.data,
+                label: meta.appName,
+                color: meta.color,
+                icon: "AG",
+                bodyCount: memberIds.length,
+                onToggleCollapse: () => toggleAppCollapse(groupId),
+              },
+            });
+          } else {
+            // Expanded — emit synthetic parent + anchor as child
+            const parentPosition = existing?.position ?? { x: node.position.x, y: node.position.y };
+
+            // Synthetic group parent node
+            const parentIdx = nodes.length;
+            nodes.push({
+              id: groupId,
+              type: "appGroup",
+              position: parentPosition,
+              selected: false,
+              data: {
+                appName: meta.appName,
+                color: meta.color,
+                memberCount: memberIds.length,
+                isActive: node.id === activeNode,
+                onToggleCollapse: () => toggleAppCollapse(groupId),
+              },
+            });
+            groupNodeIndices.set(groupId, parentIdx);
+            expandedGroupChildren.set(groupId, []);
+
+            // Anchor as child inside the group
+            const anchorBase = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
+            const relativePosition = existing?.parentId === groupId
+              ? existing.position
+              : { x: APP_GROUP_PADDING, y: APP_GROUP_HEADER_HEIGHT + APP_GROUP_PADDING };
+            const childNode: typeof anchorBase = {
+              ...anchorBase,
+              parentId: groupId,
+              extent: "parent" as const,
+              position: relativePosition,
+              style: { ...anchorBase.style, transition: "opacity 150ms ease 50ms" },
+            };
+            nodes.push(childNode);
+            expandedGroupChildren.get(groupId)?.push(childNode);
+          }
+          continue;
+        }
+
+        // App group member nodes (non-anchor)
+        // Skip if this node is a loop body member — loop takes precedence (spec edge case)
+        const appGroup = nodeToAppGroup.get(node.id);
+        if (appGroup && !appGroupAnchors.has(node.id) && !nodeToLoops.has(node.id)) {
+          const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
+
+          if (collapsedApps.has(appGroup)) {
+            nodes.push({ ...base, hidden: true });
+          } else {
+            const meta = appGroupMeta.get(appGroup);
+            const anchorNode = meta ? wfNodeMap.get(meta.anchorId) : undefined;
+
+            let relativePosition = base.position;
+            if (existing?.parentId === appGroup) {
+              relativePosition = existing.position;
+            } else if (anchorNode) {
+              relativePosition = {
+                x: node.position.x - anchorNode.position.x + APP_GROUP_PADDING,
+                y: node.position.y - anchorNode.position.y + APP_GROUP_HEADER_HEIGHT + APP_GROUP_PADDING,
+              };
+            }
+
+            const childNode: typeof base = {
+              ...base,
+              parentId: appGroup,
+              extent: "parent" as const,
+              position: relativePosition,
+              style: { ...base.style, transition: "opacity 150ms ease 50ms" },
+            };
+            nodes.push(childNode);
+            expandedGroupChildren.get(appGroup)?.push(childNode);
           }
           continue;
         }
@@ -270,7 +398,7 @@ export function useNodeSync({
               },
             };
             nodes.push(childNode);
-            expandedLoopChildren.get(parentId)?.push(childNode);
+            expandedGroupChildren.get(parentId)?.push(childNode);
           }
           continue;
         }
@@ -281,7 +409,7 @@ export function useNodeSync({
       }
 
       // Size each expanded loop group node to contain all its children
-      for (const [loopId, children] of expandedLoopChildren) {
+      for (const [loopId, children] of expandedGroupChildren) {
         const idx = groupNodeIndices.get(loopId);
         if (idx === undefined) continue;
         const groupNode = nodes[idx];
@@ -323,6 +451,11 @@ export function useNodeSync({
     endLoopIds,
     endLoopForLoop,
     toggleLoopCollapse,
+    collapsedApps,
+    appGroups,
+    nodeToAppGroup,
+    appGroupMeta,
+    toggleAppCollapse,
   ]);
 
   // Sync external selectedNode changes into RF selection state
@@ -369,18 +502,21 @@ export function useNodeSync({
               affectedGroups.add(rfNode.parentId);
               const parentRfNode = nodeMap.get(rfNode.parentId);
               if (parentRfNode) {
+                const { headerHeight, padding } = groupConstants(parentRfNode.type ?? "loopGroup");
                 posUpdates.set(change.id, {
-                  x: change.position.x + parentRfNode.position.x - LOOP_PADDING,
-                  y: change.position.y + parentRfNode.position.y - LOOP_HEADER_HEIGHT - LOOP_PADDING,
+                  x: change.position.x + parentRfNode.position.x - padding,
+                  y: change.position.y + parentRfNode.position.y - headerHeight - padding,
                 });
               }
             } else {
               posUpdates.set(change.id, change.position);
               for (const child of updatedNodes) {
                 if (child.parentId === change.id) {
+                  const parentNode = nodeMap.get(change.id);
+                  const { headerHeight: ph, padding: pp } = groupConstants(parentNode?.type ?? "loopGroup");
                   posUpdates.set(child.id, {
-                    x: child.position.x + change.position.x - LOOP_PADDING,
-                    y: child.position.y + change.position.y - LOOP_HEADER_HEIGHT - LOOP_PADDING,
+                    x: child.position.x + change.position.x - pp,
+                    y: child.position.y + change.position.y - ph - pp,
                   });
                 }
               }
@@ -409,12 +545,13 @@ export function useNodeSync({
               maxX = Math.max(maxX, child.position.x + childW);
               maxY = Math.max(maxY, child.position.y + childH);
             }
+            const gc = groupConstants(updatedNodes[groupIdx].type ?? "loopGroup");
             updatedNodes[groupIdx] = {
               ...updatedNodes[groupIdx],
               style: {
                 ...updatedNodes[groupIdx].style,
-                width: Math.max(MIN_GROUP_WIDTH, maxX + LOOP_PADDING),
-                height: Math.max(MIN_GROUP_HEIGHT, maxY + LOOP_PADDING),
+                width: Math.max(MIN_GROUP_WIDTH, maxX + gc.padding),
+                height: Math.max(MIN_GROUP_HEIGHT, maxY + gc.padding),
               },
             };
           }
