@@ -1,6 +1,37 @@
-import type { Workflow } from "../bindings";
+import type { JsonValue, Workflow } from "../bindings";
 
 export const APP_GROUP_ID_PREFIX = "appgroup-";
+export const LAUNCH_APP_TOOL = "launch_app";
+
+type WfNode = Workflow["nodes"][number];
+
+/** True for FocusWindow(AppName) or McpToolCall(launch_app) — both act as app-group anchors. */
+export function isAppAnchorNode(n: WfNode | undefined): boolean {
+  if (!n) return false;
+  if (n.node_type.type === "FocusWindow" && n.node_type.method === "AppName") return true;
+  if (n.node_type.type === "McpToolCall" && n.node_type.tool_name === LAUNCH_APP_TOOL) return true;
+  return false;
+}
+
+/** Extract the app name from an anchor node (FocusWindow or launch_app McpToolCall). */
+export function anchorAppName(n: WfNode): string | null {
+  if (n.node_type.type === "FocusWindow") {
+    return n.node_type.value;
+  }
+  if (n.node_type.type === "McpToolCall") {
+    const appName = jsonField(n.node_type.arguments, "app_name");
+    return typeof appName === "string" ? appName : null;
+  }
+  return null;
+}
+
+/** Safely extract a field from a JsonValue that may be a record. */
+function jsonField(v: JsonValue, key: string): JsonValue | undefined {
+  if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+    return v[key];
+  }
+  return undefined;
+}
 
 export interface DagGraph {
   nodeById: Map<string, Workflow["nodes"][number]>;
@@ -53,13 +84,11 @@ export function buildAppNameMap(workflow: Workflow, dag?: DagGraph): Map<string,
     const id = queue[head++];
     const n = nodeById.get(id);
 
-    if (n?.node_type.type === "FocusWindow") {
-      const nt = n.node_type as { method: string; value: string | null };
-      if (nt.method === "AppName") {
-        result.set(id, nt.value);
-      } else {
-        result.set(id, null);
-      }
+    if (isAppAnchorNode(n)) {
+      result.set(id, anchorAppName(n!));
+    } else if (n?.node_type.type === "FocusWindow") {
+      // Non-AppName FocusWindow (WindowId, Pid) resets the app context
+      result.set(id, null);
     }
 
     const name = result.get(id);
@@ -100,10 +129,7 @@ export function computeAppMembers(
     const nodeObj = nodeById.get(id);
 
     if (hasAppName) {
-      if (
-        nodeObj?.node_type.type === "FocusWindow" &&
-        (nodeObj.node_type as { method: string }).method === "AppName"
-      ) {
+      if (isAppAnchorNode(nodeObj)) {
         const groupId = `${APP_GROUP_ID_PREFIX}${id}`;
         groups.set(groupId, [id]);
         nodeGroupAnchor.set(id, id);

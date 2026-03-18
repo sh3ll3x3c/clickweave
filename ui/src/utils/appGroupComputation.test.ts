@@ -51,6 +51,21 @@ describe("buildAppNameMap", () => {
     expect(map.get("c2")).toBe("Signal");
   });
 
+  it("propagates app name from launch_app McpToolCall downstream", () => {
+    const wf = makeWorkflow(
+      [
+        node("la1", "McpToolCall", { tool_name: "launch_app", arguments: { app_name: "Calculator" } }),
+        node("c1", "Click"),
+        node("t1", "TypeText", { text: "5" }),
+      ],
+      [edge("la1", "c1"), edge("c1", "t1")],
+    );
+    const map = buildAppNameMap(wf);
+    expect(map.get("la1")).toBe("Calculator");
+    expect(map.get("c1")).toBe("Calculator");
+    expect(map.get("t1")).toBe("Calculator");
+  });
+
   it("nodes with no upstream FocusWindow have no entry", () => {
     const wf = makeWorkflow(
       [node("a", "AiStep"), node("b", "Click")],
@@ -166,6 +181,38 @@ describe("computeAppMembers", () => {
     expect(groups.get("appgroup-fw1")).toEqual(["fw1", "c1"]);
     expect(groups.get("appgroup-fw2")).toEqual(["fw2", "c2"]);
     expect(groups.get("appgroup-fw3")).toEqual(["fw3", "c3"]);
+  });
+
+  it("groups launch_app McpToolCall as anchor with downstream nodes", () => {
+    const wf = makeWorkflow(
+      [
+        node("la1", "McpToolCall", { tool_name: "launch_app", arguments: { app_name: "Calculator" } }),
+        node("c1", "Click"),
+        node("c2", "Click"),
+      ],
+      [edge("la1", "c1"), edge("c1", "c2")],
+    );
+    const nameMap = buildAppNameMap(wf);
+    const groups = computeAppMembers(wf, nameMap);
+    expect(groups.size).toBe(1);
+    expect(groups.get("appgroup-la1")).toEqual(["la1", "c1", "c2"]);
+  });
+
+  it("creates separate groups for launch_app and FocusWindow with different apps", () => {
+    const wf = makeWorkflow(
+      [
+        node("la1", "McpToolCall", { tool_name: "launch_app", arguments: { app_name: "Calculator" } }),
+        node("c1", "Click"),
+        node("fw1", "FocusWindow", { method: "AppName", value: "TextEdit", bring_to_front: true }),
+        node("t1", "TypeText", { text: "hello" }),
+      ],
+      [edge("la1", "c1"), edge("c1", "fw1"), edge("fw1", "t1")],
+    );
+    const nameMap = buildAppNameMap(wf);
+    const groups = computeAppMembers(wf, nameMap);
+    expect(groups.size).toBe(2);
+    expect(groups.get("appgroup-la1")).toEqual(["la1", "c1"]);
+    expect(groups.get("appgroup-fw1")).toEqual(["fw1", "t1"]);
   });
 
   it("single FocusWindow with no children still forms a group", () => {

@@ -7,7 +7,7 @@ import {
 import type { AppKind, Workflow } from "../bindings";
 import { usesCdp } from "../utils/appKind";
 import { nodeMetadata, defaultNodeMetadata } from "../constants/nodeMetadata";
-import { buildDag, type DagGraph } from "../utils/appGroupComputation";
+import { buildDag, type DagGraph, isAppAnchorNode } from "../utils/appGroupComputation";
 import type { AppGroupMeta } from "./useAppGrouping";
 
 // Layout constants for loop group positioning
@@ -60,8 +60,13 @@ export function buildAppKindMap(workflow: Workflow, dag?: DagGraph): Map<string,
     const node = nodeById.get(id);
 
     if (node?.node_type.type === "FocusWindow") {
-      const kind = (node.node_type as { app_kind?: AppKind }).app_kind ?? "Native";
-      result.set(id, kind);
+      result.set(id, node.node_type.app_kind ?? "Native");
+    } else if (isAppAnchorNode(node)) {
+      // launch_app McpToolCall — extract app_kind from arguments
+      const args = node!.node_type.type === "McpToolCall" ? node!.node_type.arguments : null;
+      const kind = (typeof args === "object" && args !== null && !Array.isArray(args)
+        ? args.app_kind : undefined) as AppKind | undefined;
+      result.set(id, kind ?? "Native");
     }
 
     const kind = result.get(id);
