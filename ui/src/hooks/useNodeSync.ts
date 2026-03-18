@@ -819,6 +819,19 @@ export function useNodeSync({
                   x: change.position.x + parentRfNode.position.x - padding,
                   y: change.position.y + parentRfNode.position.y - headerHeight - padding,
                 });
+                // Persist children of nested synthetic group containers
+                if (groupAnchor) {
+                  for (const child of updatedNodes) {
+                    if (child.parentId === change.id) {
+                      const { headerHeight: ch, padding: cp } = groupConstants(rfNode.type ?? "userGroup");
+                      const childAnchor = userGroupMeta.get(child.id)?.anchorId ?? appGroupMeta.get(child.id)?.anchorId ?? child.id;
+                      posUpdates.set(childAnchor, {
+                        x: child.position.x + change.position.x + parentRfNode.position.x - padding - cp,
+                        y: child.position.y + change.position.y + parentRfNode.position.y - headerHeight - padding - ch - cp,
+                      });
+                    }
+                  }
+                }
               }
             } else {
               // If dragging a synthetic group parent, map position to its anchor node
