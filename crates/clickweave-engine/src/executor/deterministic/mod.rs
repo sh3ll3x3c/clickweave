@@ -231,13 +231,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             {
                 let expected = cdp::CdpExpected::from_click_target(click_target);
                 match self
-                    .resolve_and_click_cdp(
-                        target,
-                        &expected,
-                        &cdp_server,
-                        mcp,
-                        node_run.as_deref(),
-                    )
+                    .resolve_and_click_cdp(target, &expected, &cdp_server, mcp, node_run.as_deref())
                     .await
                 {
                     Ok(result_text) => {
