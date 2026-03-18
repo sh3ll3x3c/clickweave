@@ -812,7 +812,10 @@ export function useNodeSync({
               const parentRfNode = nodeMap.get(rfNode.parentId);
               if (parentRfNode) {
                 const { headerHeight, padding } = groupConstants(parentRfNode.type ?? "loopGroup");
-                posUpdates.set(change.id, {
+                // Synthetic group containers need anchor remapping even as children
+                const groupAnchor = userGroupMeta.get(change.id)?.anchorId ?? appGroupMeta.get(change.id)?.anchorId;
+                const posKey = groupAnchor ?? change.id;
+                posUpdates.set(posKey, {
                   x: change.position.x + parentRfNode.position.x - padding,
                   y: change.position.y + parentRfNode.position.y - headerHeight - padding,
                 });
