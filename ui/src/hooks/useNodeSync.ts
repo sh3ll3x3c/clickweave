@@ -516,10 +516,16 @@ export function useNodeSync({
           const existingGroupNode = prevMap.get(group.id);
 
           // Compute anchor's absolute position: if anchor is inside an auto-group
-          // (has parentId), its position is relative — add the parent's position.
+          // (has parentId pointing to an app group), its position is relative —
+          // add the parent's position. Skip when parent is a user group (set by
+          // a previous iteration) to avoid double-offset when subgroup is
+          // reparented back into that user group.
           let anchorAbsPosition = anchorNode?.position ?? { x: 0, y: 0 };
-          if (anchorNode?.parentId && !existingGroupNode) {
-            const parentIdx = nodeIndexById.get(anchorNode.parentId);
+          const anchorParentIsAutoGroup = anchorNode?.parentId
+            ? appGroups.has(anchorNode.parentId)
+            : false;
+          if (anchorParentIsAutoGroup && !existingGroupNode) {
+            const parentIdx = nodeIndexById.get(anchorNode!.parentId!);
             const parentNode = parentIdx !== undefined ? nodes[parentIdx] : undefined;
             if (parentNode) {
               anchorAbsPosition = {

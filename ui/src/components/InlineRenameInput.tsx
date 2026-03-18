@@ -15,9 +15,10 @@ export function InlineRenameInput({ label, onConfirm, onCancel }: InlineRenameIn
   }, []);
 
   const confirm = useCallback(() => {
-    if (value.trim()) onConfirm(value.trim());
+    const trimmed = value.trim();
+    if (trimmed && trimmed !== label) onConfirm(trimmed);
     else onCancel();
-  }, [value, onConfirm, onCancel]);
+  }, [value, label, onConfirm, onCancel]);
 
   return (
     <input
