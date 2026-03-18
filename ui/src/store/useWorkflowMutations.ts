@@ -10,10 +10,10 @@ export function autoDissolveGroups(groups: Workflow["groups"]): Workflow["groups
   let changed = true;
   while (changed) {
     changed = false;
-    const survivingIds = new Set(result.map((g) => g.id));
     const before = result.length;
     result = result.filter((g) => g.node_ids.length >= 2);
     if (result.length !== before) changed = true;
+    const survivingIds = new Set(result.map((g) => g.id));
     const after = result.length;
     result = result.filter((g) => !g.parent_group_id || survivingIds.has(g.parent_group_id));
     if (result.length !== after) changed = true;

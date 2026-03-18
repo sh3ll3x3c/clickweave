@@ -46,6 +46,29 @@ export function isConnectedSubgraph(nodeIds: string[], workflow: Workflow): bool
 }
 
 /**
+ * Check if the selection partially overlaps with any group in `memberGroups`.
+ * Returns an error message if partial overlap is found, or null if OK.
+ */
+function checkPartialOverlap(
+  selectedIds: string[],
+  selectedSet: Set<string>,
+  memberGroups: Iterable<[string, string[]]>,
+  label: string,
+): string | null {
+  for (const [, memberIds] of memberGroups) {
+    const memberSet = new Set(memberIds);
+    const overlappingCount = selectedIds.filter((id) => memberSet.has(id)).length;
+    if (overlappingCount === 0) continue;
+    const selectionFullyInside = selectedIds.every((id) => memberSet.has(id));
+    if (selectionFullyInside) continue;
+    const selectionFullyContains = overlappingCount === memberIds.length;
+    if (selectionFullyContains) continue;
+    return `Partial overlap with ${label} is not allowed. Include all or none of its nodes.`;
+  }
+  return null;
+}
+
+/**
  * Validate a proposed group creation.
  *
  * Rules:
@@ -111,47 +134,28 @@ export function validateGroupCreation(
   }
 
   // Check partial overlap with loop auto-groups.
-  // "Partial overlap" = the selection intersects the auto-group but neither
-  // fully contains it nor is fully contained within it.
-  for (const [, memberIds] of loopMembers) {
-    const autoGroupSet = new Set(memberIds);
-    const overlappingCount = memberIds.filter((id) => selectedSet.has(id)).length;
-    const selectionFullyInside = selectedIds.every((id) => autoGroupSet.has(id));
-    const selectionFullyContains = overlappingCount === memberIds.length;
-    if (overlappingCount > 0 && !selectionFullyInside && !selectionFullyContains) {
-      return {
-        valid: false,
-        error: "Partial overlap with a loop group is not allowed. Include all or none of its nodes.",
-      };
-    }
-  }
+  const loopOverlap = checkPartialOverlap(selectedIds, selectedSet, loopMembers, "a loop group");
+  if (loopOverlap) return { valid: false, error: loopOverlap };
 
   // Check partial overlap with app auto-groups.
-  for (const [, memberIds] of appGroups) {
-    const autoGroupSet = new Set(memberIds);
-    const overlappingCount = memberIds.filter((id) => selectedSet.has(id)).length;
-    const selectionFullyInside = selectedIds.every((id) => autoGroupSet.has(id));
-    const selectionFullyContains = overlappingCount === memberIds.length;
-    if (overlappingCount > 0 && !selectionFullyInside && !selectionFullyContains) {
-      return {
-        valid: false,
-        error: "Partial overlap with an app group is not allowed. Include all or none of its nodes.",
-      };
-    }
-  }
+  const appOverlap = checkPartialOverlap(selectedIds, selectedSet, appGroups, "an app group");
+  if (appOverlap) return { valid: false, error: appOverlap };
 
   // Check partial overlap with existing user groups.
-  for (const group of existingGroups) {
-    const groupSet = new Set(group.node_ids);
-    const overlappingCount = group.node_ids.filter((id) => selectedSet.has(id)).length;
-    const selectionFullyInside = selectedIds.every((id) => groupSet.has(id));
-    const selectionFullyContains = overlappingCount === group.node_ids.length;
-    if (overlappingCount > 0 && !selectionFullyInside && !selectionFullyContains) {
-      return {
-        valid: false,
-        error: `Partial overlap with group "${group.name}" is not allowed. Include all or none of its nodes.`,
-      };
-    }
+  const userGroupEntries: [string, string[]][] = existingGroups
+    .filter((g) => g.parent_group_id === null)
+    .map((g) => [g.id, g.node_ids]);
+  for (const [groupId, memberIds] of userGroupEntries) {
+    const memberSet = new Set(memberIds);
+    const overlappingCount = selectedIds.filter((id) => memberSet.has(id)).length;
+    if (overlappingCount === 0) continue;
+    if (selectedIds.every((id) => memberSet.has(id))) continue;
+    if (overlappingCount === memberIds.length) continue;
+    const groupName = existingGroups.find((g) => g.id === groupId)?.name ?? "unknown";
+    return {
+      valid: false,
+      error: `Partial overlap with group "${groupName}" is not allowed. Include all or none of its nodes.`,
+    };
   }
 
   return { valid: true, parentGroupId };
@@ -201,11 +205,13 @@ export function topologicalSortMembers(nodeIds: string[], workflow: Workflow): s
     }
   }
 
-  // If there's a cycle (shouldn't happen in a DAG workflow), append remaining.
+  // Early exit if all nodes were reached by Kahn's algorithm.
+  if (sorted.length === nodeIds.length) return sorted;
+
+  // Fallback for nodes not reached (cycle or disconnected).
+  const sortedSet = new Set(sorted);
   for (const id of nodeIds) {
-    if (!sorted.includes(id)) {
-      sorted.push(id);
-    }
+    if (!sortedSet.has(id)) sorted.push(id);
   }
 
   return sorted;

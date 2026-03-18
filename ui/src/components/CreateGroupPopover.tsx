@@ -1,13 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-
-const PALETTE = [
-  "#6366f1",
-  "#06b6d4",
-  "#10b981",
-  "#f59e0b",
-  "#ef4444",
-  "#ec4899",
-] as const;
+import { GROUP_PALETTE } from "../utils/color";
 
 interface CreateGroupPopoverProps {
   position: { x: number; y: number };
@@ -23,7 +15,7 @@ export function CreateGroupPopover({
   onCancel,
 }: CreateGroupPopoverProps) {
   const [name, setName] = useState("");
-  const [colorIndex, setColorIndex] = useState(defaultColorIndex % PALETTE.length);
+  const [colorIndex, setColorIndex] = useState(defaultColorIndex % GROUP_PALETTE.length);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -49,11 +41,11 @@ export function CreateGroupPopover({
         onCancel();
       } else if (e.key === "Tab") {
         e.preventDefault();
-        setColorIndex((prev) => (prev + 1) % PALETTE.length);
+        setColorIndex((prev) => (prev + 1) % GROUP_PALETTE.length);
       } else if (e.key === "Enter") {
         e.preventDefault();
         if (name.trim()) {
-          onConfirm(name.trim(), PALETTE[colorIndex]);
+          onConfirm(name.trim(), GROUP_PALETTE[colorIndex]);
         }
       }
     },
@@ -83,7 +75,7 @@ export function CreateGroupPopover({
         Color <span className="text-[10px] opacity-60">(Tab to cycle)</span>
       </label>
       <div className="mb-3 flex gap-2">
-        {PALETTE.map((color, i) => (
+        {GROUP_PALETTE.map((color, i) => (
           <button
             key={color}
             type="button"
@@ -110,11 +102,11 @@ export function CreateGroupPopover({
         <button
           type="button"
           onClick={() => {
-            if (name.trim()) onConfirm(name.trim(), PALETTE[colorIndex]);
+            if (name.trim()) onConfirm(name.trim(), GROUP_PALETTE[colorIndex]);
           }}
           disabled={!name.trim()}
           className="rounded px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
-          style={{ backgroundColor: PALETTE[colorIndex] }}
+          style={{ backgroundColor: GROUP_PALETTE[colorIndex] }}
         >
           Create
         </button>
@@ -122,5 +114,3 @@ export function CreateGroupPopover({
     </div>
   );
 }
-
-export { PALETTE as GROUP_PALETTE };

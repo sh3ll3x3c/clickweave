@@ -441,6 +441,12 @@ export function useNodeSync({
       const nodeIndexById = new Map<string, number>();
       for (let i = 0; i < nodes.length; i++) nodeIndexById.set(nodes[i].id, i);
 
+      // Pre-build reverse map: anchor node ID → app group ID
+      const anchorToAppGroup = new Map<string, string>();
+      for (const [agId, agMeta] of appGroupMeta) {
+        anchorToAppGroup.set(agMeta.anchorId, agId);
+      }
+
       for (const group of workflow.groups) {
         const meta = userGroupMeta.get(group.id);
         if (!meta) continue;
@@ -481,11 +487,10 @@ export function useNodeSync({
               nodes[idx] = { ...nodes[idx], hidden: true };
             }
             // Also hide synthetic app group containers whose anchor is a member
-            for (const [agId, agMeta] of appGroupMeta) {
-              if (agMeta.anchorId === nodeId) {
-                const agIdx = nodeIndexById.get(agId);
-                if (agIdx !== undefined) nodes[agIdx] = { ...nodes[agIdx], hidden: true };
-              }
+            const agId = anchorToAppGroup.get(nodeId);
+            if (agId) {
+              const agIdx = nodeIndexById.get(agId);
+              if (agIdx !== undefined) nodes[agIdx] = { ...nodes[agIdx], hidden: true };
             }
           }
         } else {
@@ -553,10 +558,10 @@ export function useNodeSync({
             userGroupChildren.push(nodes[idx]);
 
             // Also reparent any synthetic auto-group container whose anchor is this member
-            for (const [agId, agMeta] of appGroupMeta) {
-              if (agMeta.anchorId === nodeId && !collapsedApps.has(agId)) {
-                const agIdx = nodeIndexById.get(agId);
-                if (agIdx === undefined) continue;
+            const agId = anchorToAppGroup.get(nodeId);
+            if (agId && !collapsedApps.has(agId)) {
+              const agIdx = nodeIndexById.get(agId);
+              if (agIdx !== undefined) {
                 const agNode = nodes[agIdx];
 
                 let agRelPos: { x: number; y: number };
@@ -660,15 +665,15 @@ export function useNodeSync({
       // Expand collapsed app group anchor deletions to include all members
       if (removeIds.length > 0) {
         const expanded: string[] = [];
+        const expandedSet = new Set<string>();
+        const addUnique = (m: string) => { if (!expandedSet.has(m)) { expandedSet.add(m); expanded.push(m); } };
         for (const id of removeIds) {
           // User group container deletion → expand to all member nodes
           const ugMeta = userGroupMeta.get(id);
           if (ugMeta) {
             const group = workflow.groups.find((g) => g.id === id);
             if (group) {
-              for (const m of group.node_ids) {
-                if (!expanded.includes(m)) expanded.push(m);
-              }
+              for (const m of group.node_ids) addUnique(m);
             }
             continue;
           }
@@ -677,11 +682,9 @@ export function useNodeSync({
           const meta = groupId ? appGroupMeta.get(groupId) : undefined;
           if (meta?.anchorId === id && collapsedApps.has(groupId!)) {
             const members = appGroups.get(groupId!) ?? [];
-            for (const m of members) {
-              if (!expanded.includes(m)) expanded.push(m);
-            }
+            for (const m of members) addUnique(m);
           } else {
-            expanded.push(id);
+            addUnique(id);
           }
         }
         removeIds = expanded;
@@ -689,20 +692,20 @@ export function useNodeSync({
       // Expand collapsed user group pill deletions to include all members
       if (removeIds.length > 0) {
         const expanded: string[] = [];
+        const expandedSet = new Set<string>();
+        const addUnique = (m: string) => { if (!expandedSet.has(m)) { expandedSet.add(m); expanded.push(m); } };
         for (const id of removeIds) {
           const ugId = nodeToUserGroup.get(id);
           const ugMeta = ugId ? userGroupMeta.get(ugId) : undefined;
           if (ugMeta?.anchorId === id && collapsedUserGroups.has(ugId!)) {
             const group = workflow.groups.find((g) => g.id === ugId);
             if (group) {
-              for (const m of group.node_ids) {
-                if (!expanded.includes(m)) expanded.push(m);
-              }
+              for (const m of group.node_ids) addUnique(m);
             } else {
-              expanded.push(id);
+              addUnique(id);
             }
           } else {
-            if (!expanded.includes(id)) expanded.push(id);
+            addUnique(id);
           }
         }
         removeIds = expanded;

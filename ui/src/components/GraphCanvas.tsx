@@ -140,9 +140,13 @@ export function GraphCanvas({
       // Get the wrapper div's bounding rect so we can convert to relative position
       const target = (event as React.MouseEvent).currentTarget ?? (event.target as HTMLElement);
       const wrapperEl = (target as HTMLElement).closest?.("[data-graph-canvas-wrapper]") as HTMLElement | null;
-      const relativePos = wrapperEl
-        ? { x: event.clientX - wrapperEl.getBoundingClientRect().left, y: event.clientY - wrapperEl.getBoundingClientRect().top }
-        : pos;
+      let relativePos: { x: number; y: number };
+      if (wrapperEl) {
+        const rect = wrapperEl.getBoundingClientRect();
+        relativePos = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      } else {
+        relativePos = pos;
+      }
 
       const items: GroupContextMenuItem[] = [];
 
@@ -224,7 +228,7 @@ export function GraphCanvas({
           return;
         }
 
-        // Case 5: Single node — check if adjacent to existing groups for "Add to" option
+        // Case 4: Single node — check if adjacent to existing groups for "Add to" option
         const existingGroups = workflow.groups ?? [];
         for (const group of existingGroups) {
           const groupNodeSet = new Set(group.node_ids);
