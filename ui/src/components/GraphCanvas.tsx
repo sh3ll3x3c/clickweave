@@ -229,20 +229,26 @@ export function GraphCanvas({
         }
 
         // Case 4: Single node — check if adjacent to existing groups for "Add to" option
-        const existingGroups = workflow.groups ?? [];
-        for (const group of existingGroups) {
-          const groupNodeSet = new Set(group.node_ids);
-          // Skip if node is already in this group
-          if (groupNodeSet.has(rfNode.id)) continue;
-          // Skip if node is already in another user group
-          if (userGroupState.nodeToUserGroup.has(rfNode.id)) continue;
-          // Check if this node has an edge to any member of the group
-          const hasEdge = workflow.edges.some(
-            (e) =>
-              (e.from === rfNode.id && groupNodeSet.has(e.to)) ||
-              (e.to === rfNode.id && groupNodeSet.has(e.from)),
-          );
-          if (hasEdge) {
+        if (rfNode && !userGroupState.nodeToUserGroup.has(rfNode.id)) {
+          const existingGroups = workflow.groups ?? [];
+          for (const group of existingGroups) {
+            const groupNodeSet = new Set(group.node_ids);
+            if (groupNodeSet.has(rfNode.id)) continue;
+            // Check graph adjacency
+            const hasEdge = workflow.edges.some(
+              (e) =>
+                (e.from === rfNode.id && groupNodeSet.has(e.to)) ||
+                (e.to === rfNode.id && groupNodeSet.has(e.from)),
+            );
+            if (!hasEdge) continue;
+            // Validate: don't allow adding a node that would break auto-group invariants
+            // (e.g., adding one member of a loop without the rest)
+            const candidateIds = [...group.node_ids, rfNode.id];
+            const validation = validateGroupCreation(
+              candidateIds, workflow, existingGroups.filter((g) => g.id !== group.id),
+              loopState.loopMembers, appState.appGroups,
+            );
+            if (!validation.valid) continue;
             items.push({
               label: `Add to "${group.name}"`,
               action: () => onAddNodesToGroup(group.id, [rfNode.id]),
