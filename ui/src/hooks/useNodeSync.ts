@@ -277,11 +277,13 @@ export function useNodeSync({
             const parentPosition = existing?.position ?? { x: node.position.x, y: node.position.y };
 
             // Synthetic group parent node
+            const existingGroup = prevMap.get(groupId);
             const parentIdx = nodes.length;
             nodes.push({
               id: groupId,
               type: "appGroup",
-              position: parentPosition,
+              position: existingGroup?.position ?? parentPosition,
+              draggable: true,
               selected: false,
               data: {
                 appName: meta.appName,
@@ -489,7 +491,21 @@ export function useNodeSync({
       }
 
       setRfNodes((prev) => {
+        const prevParents = new Map(prev.map((n) => [n.id, n.parentId]));
         const updatedNodes = applyNodeChanges(changes, prev);
+
+        // Prevent React Flow from auto-parenting nodes into groups they don't belong to.
+        // Only allow parentId if it was already set (from our sync effect) or explicitly
+        // part of the change set.
+        for (const n of updatedNodes) {
+          if (n.parentId && n.parentId !== prevParents.get(n.id)) {
+            // Check if this node actually belongs to this group
+            if (nodeToAppGroup.get(n.id) !== n.parentId && !nodeToLoops.get(n.id)?.includes(n.parentId)) {
+              n.parentId = prevParents.get(n.id);
+              n.extent = prevParents.get(n.id) ? "parent" as const : undefined;
+            }
+          }
+        }
 
         const nodeMap = new Map(updatedNodes.map((n) => [n.id, n]));
         const posUpdates = new Map<string, { x: number; y: number }>();
@@ -508,7 +524,13 @@ export function useNodeSync({
                 });
               }
             } else {
-              posUpdates.set(change.id, change.position);
+              // If dragging a synthetic app group parent, map position to anchor node
+              const meta = appGroupMeta.get(change.id);
+              if (meta) {
+                posUpdates.set(meta.anchorId, change.position);
+              } else {
+                posUpdates.set(change.id, change.position);
+              }
               for (const child of updatedNodes) {
                 if (child.parentId === change.id) {
                   const parentNode = nodeMap.get(change.id);
@@ -559,7 +581,7 @@ export function useNodeSync({
         return updatedNodes;
       });
     },
-    [onNodePositionsChange, onSelectNode, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta],
+    [onNodePositionsChange, onSelectNode, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToLoops],
   );
 
   const handleNodeDragStart = useCallback(() => {
