@@ -7,3 +7,4 @@ node_modules
 .worktrees
 crates/clickweave-llm/eval/eval.toml
 crates/clickweave-llm/eval/results/
+.superpowers/
