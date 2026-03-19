@@ -24,7 +24,6 @@ function getEdgeLabel(output: EdgeOutput | null): string | undefined {
 interface UseEdgeSyncParams {
   workflow: Workflow;
   hiddenNodeIds: Set<string>;
-  collapsedLoops: Set<string>;
   collapsedAppEdgeRewrites: Map<string, string>;
   collapsedUserGroupEdgeRewrites: Map<string, string>;
   deletedNodeIdsRef: React.MutableRefObject<Set<string> | null>;
@@ -36,7 +35,6 @@ interface UseEdgeSyncParams {
 export function useEdgeSync({
   workflow,
   hiddenNodeIds,
-  collapsedLoops,
   collapsedAppEdgeRewrites,
   collapsedUserGroupEdgeRewrites,
   deletedNodeIdsRef,
@@ -59,6 +57,10 @@ export function useEdgeSync({
     const seen = new Set<string>();
 
     for (const e of workflow.edges) {
+      // LoopBody edges are always hidden — containment communicates the relationship.
+      // LoopDone edges are always visible — they show the loop exit connection.
+      if (e.output?.type === "LoopBody") continue;
+
       const from = combinedRewrites.get(e.from) ?? e.from;
       const to = combinedRewrites.get(e.to) ?? e.to;
 
@@ -73,11 +75,10 @@ export function useEdgeSync({
       rewritten.push({ from, to, output: e.output });
     }
 
-    // Step 2: Apply existing hidden-node and collapsed-loop filters
+    // Step 2: Apply remaining hidden-node filter
     return rewritten
       .filter((e) => {
         if (hiddenNodeIds.has(e.from) || hiddenNodeIds.has(e.to)) return false;
-        if (e.output?.type === "LoopBody" && collapsedLoops.has(e.from)) return false;
         return true;
       })
       .map((e) => ({
@@ -89,7 +90,7 @@ export function useEdgeSync({
         labelStyle: { fill: "var(--text-muted)", fontSize: 10 },
         labelBgStyle: { fill: "var(--bg-panel)", opacity: 0.8 },
       }));
-  }, [workflow.edges, hiddenNodeIds, collapsedLoops, combinedRewrites]);
+  }, [workflow.edges, hiddenNodeIds, combinedRewrites]);
 
   // Internal RF edge state — preserves selection state across renders
   const [rfEdgeState, setRfEdgeState] = useState<RFEdge[]>([]);
@@ -185,7 +186,7 @@ export function useEdgeSync({
         );
         const hiddenEdges = workflow.edges.filter((e) => {
           if (hiddenNodeIds.has(e.from) || hiddenNodeIds.has(e.to)) return true;
-          if (e.output?.type === "LoopBody" && collapsedLoops.has(e.from)) return true;
+          if (e.output?.type === "LoopBody") return true;
           // Internal edges within a collapsed group
           if (combinedRewrites.has(e.from) && combinedRewrites.has(e.to)) {
             const anchorFrom = combinedRewrites.get(e.from);
@@ -208,7 +209,7 @@ export function useEdgeSync({
       }
       setRfEdgeState((prev) => applyEdgeChanges(changes, prev));
     },
-    [workflow.edges, onEdgesChange, onRemoveExtraEdges, hiddenNodeIds, collapsedLoops, combinedRewrites, rfEdgeState],
+    [workflow.edges, onEdgesChange, onRemoveExtraEdges, hiddenNodeIds, combinedRewrites, rfEdgeState],
   );
 
   const handleConnect: OnConnect = useCallback(

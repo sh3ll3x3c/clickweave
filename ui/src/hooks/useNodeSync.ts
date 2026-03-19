@@ -163,6 +163,9 @@ interface UseNodeSyncParams {
   nodeToUserGroup: Map<string, string>;
   userGroupMeta: Map<string, UserGroupMeta>;
   toggleUserGroupCollapse: (groupId: string) => void;
+  renamingGroupId: string | null;
+  onRenameConfirm: (groupId: string, newName: string) => void;
+  onRenameCancel: () => void;
   onSelectNode: (id: string | null) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
@@ -188,6 +191,9 @@ export function useNodeSync({
   nodeToUserGroup,
   userGroupMeta,
   toggleUserGroupCollapse,
+  renamingGroupId,
+  onRenameConfirm,
+  onRenameCancel,
   onSelectNode,
   onNodePositionsChange,
   onDeleteNodes,
@@ -329,7 +335,7 @@ export function useNodeSync({
             const relativePosition = existing?.parentId === groupId
               ? existing.position
               : { x: APP_GROUP_PADDING, y: APP_GROUP_HEADER_HEIGHT + APP_GROUP_PADDING };
-            const childNode: typeof anchorBase = {
+            const childNode = {
               ...anchorBase,
               parentId: groupId,
               extent: "parent" as const,
@@ -364,7 +370,7 @@ export function useNodeSync({
               };
             }
 
-            const childNode: typeof base = {
+            const childNode = {
               ...base,
               parentId: appGroup,
               extent: "parent" as const,
@@ -420,27 +426,42 @@ export function useNodeSync({
         nodes.push(base);
       }
 
-      // Size each expanded loop group node to contain all its children
-      for (const [loopId, children] of expandedGroupChildren) {
-        const idx = groupNodeIndices.get(loopId);
+      // Size each expanded group node to contain all its children, then center them
+      for (const [groupId, children] of expandedGroupChildren) {
+        const idx = groupNodeIndices.get(groupId);
         if (idx === undefined) continue;
         const groupNode = nodes[idx];
+        const gc = groupConstants(groupNode.type ?? "loopGroup");
 
         let maxX = 0;
         let maxY = 0;
+        let maxChildW = 0;
         for (const child of children) {
           const measured = prevMap.get(child.id)?.measured;
           const childW = measured?.width ?? APPROX_NODE_WIDTH;
           const childH = measured?.height ?? APPROX_NODE_HEIGHT;
           maxX = Math.max(maxX, child.position.x + childW);
           maxY = Math.max(maxY, child.position.y + childH);
+          maxChildW = Math.max(maxChildW, childW);
         }
 
+        const containerW = Math.max(MIN_GROUP_WIDTH, maxX + gc.padding);
         groupNode.style = {
           ...groupNode.style,
-          width: Math.max(MIN_GROUP_WIDTH, maxX + LOOP_PADDING),
-          height: Math.max(MIN_GROUP_HEIGHT, maxY + LOOP_PADDING),
+          width: containerW,
+          height: Math.max(MIN_GROUP_HEIGHT, maxY + gc.padding),
         };
+
+        // Center children horizontally within the container
+        const centerX = (containerW - maxChildW) / 2;
+        if (centerX > gc.padding) {
+          for (const child of children) {
+            // Only center on initial layout (when child hasn't been manually positioned)
+            if (!prevMap.get(child.id)?.parentId) {
+              child.position = { x: centerX, y: child.position.y };
+            }
+          }
+        }
       }
 
       // ── Second pass: user group rendering ──────────────────────────
@@ -481,6 +502,9 @@ export function useNodeSync({
                 bodyCount: meta.flatMemberCount,
                 isUserGroupPill: true,
                 userGroupId: group.id,
+                isRenaming: renamingGroupId === group.id,
+                onRenameConfirm: (newName: string) => onRenameConfirm(group.id, newName),
+                onRenameCancel,
                 onToggleCollapse: () => toggleUserGroupCollapse(group.id),
               },
             };
@@ -505,9 +529,29 @@ export function useNodeSync({
           // ── Expanded: create synthetic container, reparent members ──
           const anchorNode = anchorIdx !== undefined ? nodes[anchorIdx] : undefined;
           const existingGroupNode = prevMap.get(group.id);
+
+          // Compute anchor's absolute position: if anchor is inside an auto-group
+          // (has parentId pointing to an app group), its position is relative —
+          // add the parent's position. Skip when parent is a user group (set by
+          // a previous iteration) to avoid double-offset when subgroup is
+          // reparented back into that user group.
+          let anchorAbsPosition = anchorNode?.position ?? { x: 0, y: 0 };
+          const anchorParentIsAutoGroup = anchorNode?.parentId
+            ? appGroups.has(anchorNode.parentId)
+            : false;
+          if (anchorParentIsAutoGroup && !existingGroupNode) {
+            const parentIdx = nodeIndexById.get(anchorNode!.parentId!);
+            const parentNode = parentIdx !== undefined ? nodes[parentIdx] : undefined;
+            if (parentNode) {
+              anchorAbsPosition = {
+                x: anchorAbsPosition.x + parentNode.position.x,
+                y: anchorAbsPosition.y + parentNode.position.y,
+              };
+            }
+          }
+
           const containerPosition = existingGroupNode?.position
-            ?? anchorNode?.position
-            ?? { x: 0, y: 0 };
+            ?? anchorAbsPosition;
 
           // Determine if the user group should be inside an auto-group.
           // Only check actual auto-group IDs (appGroups keys), NOT user group parents
@@ -522,7 +566,8 @@ export function useNodeSync({
             const autoGroupFullyWrapped = autoGroupMembers.every((m) => userGroupNodeSet.has(m));
             if (autoGroupFullyWrapped) {
               // User group wraps the auto-group — user group is the outer container
-              const autoGroupNode = nodes.find((n) => n.id === anchorAutoParent);
+              const autoGroupIdx = nodeIndexById.get(anchorAutoParent!);
+              const autoGroupNode = autoGroupIdx !== undefined ? nodes[autoGroupIdx] : undefined;
               containerParentId = autoGroupNode?.parentId;
             } else {
               // User group is inside the auto-group
@@ -546,6 +591,9 @@ export function useNodeSync({
               name: meta.name,
               color: meta.color,
               memberCount: meta.flatMemberCount,
+              isRenaming: renamingGroupId === group.id,
+              onRenameConfirm: (newName: string) => onRenameConfirm(group.id, newName),
+              onRenameCancel,
               onToggleCollapse: () => toggleUserGroupCollapse(group.id),
             },
           });
@@ -596,13 +644,11 @@ export function useNodeSync({
                 let agRelPos: { x: number; y: number };
                 if (agNode.parentId === group.id) {
                   agRelPos = agNode.position;
-                } else if (anchorNode) {
-                  agRelPos = {
-                    x: agNode.position.x - anchorNode.position.x + USER_GROUP_PADDING,
-                    y: agNode.position.y - anchorNode.position.y + USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING,
-                  };
                 } else {
-                  agRelPos = { x: USER_GROUP_PADDING, y: USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING };
+                  agRelPos = {
+                    x: agNode.position.x - anchorAbsPosition.x + USER_GROUP_PADDING,
+                    y: agNode.position.y - anchorAbsPosition.y + USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING,
+                  };
                 }
 
                 nodes[agIdx] = {
@@ -668,6 +714,9 @@ export function useNodeSync({
     nodeToUserGroup,
     userGroupMeta,
     toggleUserGroupCollapse,
+    renamingGroupId,
+    onRenameConfirm,
+    onRenameCancel,
   ]);
 
   // Sync external selectedNode changes into RF selection state
@@ -778,10 +827,26 @@ export function useNodeSync({
               const parentRfNode = nodeMap.get(rfNode.parentId);
               if (parentRfNode) {
                 const { headerHeight, padding } = groupConstants(parentRfNode.type ?? "loopGroup");
-                posUpdates.set(change.id, {
+                // Synthetic group containers need anchor remapping even as children
+                const groupAnchor = userGroupMeta.get(change.id)?.anchorId ?? appGroupMeta.get(change.id)?.anchorId;
+                const posKey = groupAnchor ?? change.id;
+                posUpdates.set(posKey, {
                   x: change.position.x + parentRfNode.position.x - padding,
                   y: change.position.y + parentRfNode.position.y - headerHeight - padding,
                 });
+                // Persist children of nested synthetic group containers
+                if (groupAnchor) {
+                  for (const child of updatedNodes) {
+                    if (child.parentId === change.id) {
+                      const { headerHeight: ch, padding: cp } = groupConstants(rfNode.type ?? "userGroup");
+                      const childAnchor = userGroupMeta.get(child.id)?.anchorId ?? appGroupMeta.get(child.id)?.anchorId ?? child.id;
+                      posUpdates.set(childAnchor, {
+                        x: child.position.x + change.position.x + parentRfNode.position.x - padding - cp,
+                        y: child.position.y + change.position.y + parentRfNode.position.y - headerHeight - padding - ch - cp,
+                      });
+                    }
+                  }
+                }
               }
             } else {
               // If dragging a synthetic group parent, map position to its anchor node

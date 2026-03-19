@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NodeRole } from "../bindings";
+import { InlineRenameInput } from "./InlineRenameInput";
 
 interface WorkflowNodeData {
   label: string;
@@ -15,10 +16,15 @@ interface WorkflowNodeData {
   bodyCount?: number;
   onToggleCollapse?: () => void;
   subtitle?: string;
+  isRenaming?: boolean;
+  hideSourceHandle?: boolean;
+  onRenameConfirm?: (newName: string) => void;
+  onRenameCancel?: () => void;
   [key: string]: unknown;
 }
 
 const CONTROL_FLOW_TYPES = new Set(["If", "Switch", "Loop", "EndLoop"]);
+const HANDLE_CLS = "!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]";
 
 function SourceHandles({ data }: { data: WorkflowNodeData }) {
   const { nodeType, switchCases } = data;
@@ -26,91 +32,48 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
   if (nodeType === "If") {
     return (
       <>
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="IfTrue"
-          className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-          style={{ borderColor: "#10b981", top: "30%" }}
-        />
-        <span
-          className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-          style={{ top: "26%" }}
-        >
-          T
-        </span>
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="IfFalse"
-          className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-          style={{ borderColor: "#ef4444", top: "70%" }}
-        />
-        <span
-          className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-          style={{ top: "66%" }}
-        >
-          F
-        </span>
+        <Handle type="source" position={Position.Right} id="IfTrue"
+          className={HANDLE_CLS} style={{ borderColor: "#10b981", top: "30%" }} />
+        <span className="absolute right-5 text-[8px] text-[var(--text-muted)]"
+          style={{ top: "26%" }}>T</span>
+        <Handle type="source" position={Position.Right} id="IfFalse"
+          className={HANDLE_CLS} style={{ borderColor: "#ef4444", top: "70%" }} />
+        <span className="absolute right-5 text-[8px] text-[var(--text-muted)]"
+          style={{ top: "66%" }}>F</span>
       </>
     );
   }
 
-  // Collapsed loops render here; expanded loops use LoopGroupNode
   if (nodeType === "Loop") {
     return (
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="LoopDone"
-        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-        style={{ borderColor: "#f59e0b" }}
-      />
+      <Handle type="source" position={Position.Right} id="LoopDone"
+        className={HANDLE_CLS} style={{ borderColor: "#f59e0b" }} />
     );
   }
 
   if (nodeType === "Switch") {
-    const totalHandles = switchCases.length + 1; // cases + default
+    const totalHandles = switchCases.length + 1;
     return (
       <>
         {switchCases.map((caseName, i) => {
           const pct = ((i + 1) / (totalHandles + 1)) * 100;
           return (
             <span key={caseName}>
-              <Handle
-                type="source"
-                position={Position.Right}
-                id={`SwitchCase:${caseName}`}
-                className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-                style={{ borderColor: "#10b981", top: `${pct}%` }}
-              />
-              <span
-                className="absolute right-5 text-[8px] text-[var(--text-muted)] whitespace-nowrap"
-                style={{ top: `${pct - 4}%` }}
-              >
-                {caseName}
-              </span>
+              <Handle type="source" position={Position.Right} id={`SwitchCase:${caseName}`}
+                className={HANDLE_CLS} style={{ borderColor: "#10b981", top: `${pct}%` }} />
+              <span className="absolute right-5 text-[8px] text-[var(--text-muted)] whitespace-nowrap"
+                style={{ top: `${pct - 4}%` }}>{caseName}</span>
             </span>
           );
         })}
-        {/* Default handle */}
         {(() => {
           const pct = (totalHandles / (totalHandles + 1)) * 100;
           return (
             <span>
-              <Handle
-                type="source"
-                position={Position.Right}
-                id="SwitchDefault"
-                className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-                style={{ borderColor: "#666", top: `${pct}%` }}
-              />
-              <span
-                className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-                style={{ top: `${pct - 4}%` }}
-              >
-                default
-              </span>
+              <Handle type="source" position={Position.Right} id="SwitchDefault"
+                className={HANDLE_CLS} style={{ borderColor: "#666", top: `${pct}%` }} />
+              <span className="absolute right-5 text-[8px] text-[var(--text-muted)]"
+                style={{ top: `${pct - 4}%` }}>default</span>
             </span>
           );
         })()}
@@ -118,15 +81,10 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
     );
   }
 
-  // EndLoop and regular nodes: single source handle
   return (
-    <Handle
-      type="source"
-      position={Position.Right}
-      className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-      style={{ borderColor: "var(--accent-coral)" }}
-      isConnectable={!data.hideSourceHandle}
-    />
+    <Handle type="source" position={Position.Right}
+      className={HANDLE_CLS} style={{ borderColor: "var(--accent-coral)" }}
+      isConnectable={!data.hideSourceHandle} />
   );
 }
 
@@ -147,6 +105,9 @@ export const WorkflowNode = memo(function WorkflowNode({
     bodyCount,
     onToggleCollapse,
     subtitle,
+    isRenaming,
+    onRenameConfirm,
+    onRenameCancel,
   } = d;
   const isVerification = role === "Verification";
   const isCollapsedGroup = bodyCount != null;
@@ -167,7 +128,7 @@ export const WorkflowNode = memo(function WorkflowNode({
       <Handle
         type="target"
         position={Position.Left}
-        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
+        className={HANDLE_CLS}
         style={{ borderColor: "var(--accent-green)" }}
       />
 
@@ -199,9 +160,13 @@ export const WorkflowNode = memo(function WorkflowNode({
           {icon}
         </div>
         <div className="flex flex-col min-w-0 max-w-[180px]">
-          <span className="text-xs font-medium text-[var(--text-primary)] truncate">
-            {label}
-          </span>
+          {isRenaming && onRenameConfirm && onRenameCancel ? (
+            <InlineRenameInput label={label} onConfirm={onRenameConfirm} onCancel={onRenameCancel} />
+          ) : (
+            <span className="text-xs font-medium text-[var(--text-primary)] truncate">
+              {label}
+            </span>
+          )}
           {subtitle && (
             <span className="text-[10px] text-[var(--text-muted)] truncate max-w-full">
               {subtitle}
