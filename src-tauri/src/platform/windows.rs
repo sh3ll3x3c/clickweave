@@ -411,10 +411,10 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
             let msg = wparam as u32;
             match msg {
                 WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
-                    let button = match msg {
-                        WM_LBUTTONDOWN => MouseButton::Left,
-                        WM_RBUTTONDOWN => MouseButton::Right,
-                        _ => MouseButton::Center,
+                    let (button, button_id) = match msg {
+                        WM_LBUTTONDOWN => (MouseButton::Left, 0u32),
+                        WM_RBUTTONDOWN => (MouseButton::Right, 1),
+                        _ => (MouseButton::Center, 2),
                     };
                     let x = hook_struct.pt.x as f64;
                     let y = hook_struct.pt.y as f64;
@@ -424,7 +424,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
                         let mut state = cell.borrow_mut();
                         if let Some(s) = state.as_mut() {
                             let click_count = s.click_tracker.register_click(
-                                msg,
+                                button_id,
                                 hook_struct.pt.x,
                                 hook_struct.pt.y,
                                 hook_struct.time as u64,
