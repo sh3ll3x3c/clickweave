@@ -8,9 +8,13 @@ use tracing::info;
 use super::{CaptureCommand, CaptureEvent, CaptureEventKind, MouseButton};
 
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Graphics::Gdi::*;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 #[cfg(target_os = "windows")]
@@ -627,6 +631,101 @@ fn get_unicode_char(vk: u32, scan_code: u32) -> Option<String> {
             Some(s)
         }
     })
+}
+
+// ---------------------------------------------------------------------------
+// Cursor region capture
+// ---------------------------------------------------------------------------
+
+/// Get the current cursor position in screen coordinates (physical pixels).
+#[cfg(target_os = "windows")]
+pub fn get_cursor_position() -> (f64, f64) {
+    unsafe {
+        let mut point = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut point) != 0 {
+            (point.x as f64, point.y as f64)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+}
+
+/// Capture a 64×64pt region (scaled by DPI) centered on the given screen
+/// coordinates. Returns `None` if any GDI call fails.
+#[cfg(target_os = "windows")]
+pub fn capture_cursor_region(center_x: f64, center_y: f64) -> Option<CursorRegionCapture> {
+    unsafe {
+        let dpi_scale = GetDpiForSystem() as f64 / 96.0;
+        let size_px = (CURSOR_REGION_HALF_PT * 2.0 * dpi_scale) as i32;
+        let origin_x = center_x as i32 - size_px / 2;
+        let origin_y = center_y as i32 - size_px / 2;
+
+        let screen_dc = GetDC(std::ptr::null_mut());
+        if screen_dc.is_null() {
+            return None;
+        }
+
+        let mem_dc = CreateCompatibleDC(screen_dc);
+        if mem_dc.is_null() {
+            ReleaseDC(std::ptr::null_mut(), screen_dc);
+            return None;
+        }
+
+        let bitmap = CreateCompatibleBitmap(screen_dc, size_px, size_px);
+        if bitmap.is_null() {
+            DeleteDC(mem_dc);
+            ReleaseDC(std::ptr::null_mut(), screen_dc);
+            return None;
+        }
+
+        let old_bitmap = SelectObject(mem_dc, bitmap);
+
+        let blt_ok = BitBlt(mem_dc, 0, 0, size_px, size_px, screen_dc, origin_x, origin_y, SRCCOPY);
+
+        let mut bgra_buf = vec![0u8; (size_px * size_px * 4) as usize];
+        let mut bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: size_px,
+                biHeight: size_px, // positive = bottom-up
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
+        };
+
+        let dib_ok = GetDIBits(
+            mem_dc,
+            bitmap,
+            0,
+            size_px as u32,
+            bgra_buf.as_mut_ptr() as *mut _,
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
+
+        // Cleanup GDI resources.
+        SelectObject(mem_dc, old_bitmap);
+        DeleteObject(bitmap);
+        DeleteDC(mem_dc);
+        ReleaseDC(std::ptr::null_mut(), screen_dc);
+
+        if blt_ok == 0 || dib_ok == 0 {
+            return None;
+        }
+
+        let width = size_px as u32;
+        let height = size_px as u32;
+        let rgba_bytes = bgra_bottom_up_to_rgba(&bgra_buf, width, height);
+
+        Some(CursorRegionCapture { rgba_bytes, width, height })
+    }
 }
 
 // ---------------------------------------------------------------------------
