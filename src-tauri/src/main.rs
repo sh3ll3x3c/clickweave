@@ -126,9 +126,12 @@ fn main() {
                 let _ = handle.emit(&format!("menu://{id}"), ());
             });
 
-            // Global emergency stop: Cmd+Shift+Escape works even when another app has focus
-            app.global_shortcut()
-                .on_shortcut("CommandOrControl+Shift+Escape", |app, _shortcut, event| {
+            // Global emergency stop: works even when another app has focus.
+            // Try preferred shortcut first, fall back if already taken (e.g. by Task Manager).
+            let stop_handler =
+                |app: &tauri::AppHandle,
+                 _shortcut: &tauri_plugin_global_shortcut::Shortcut,
+                 event: tauri_plugin_global_shortcut::ShortcutEvent| {
                     if event.state == ShortcutState::Pressed {
                         let state = app.state::<Mutex<ExecutorHandle>>();
                         let mut guard = state.lock().unwrap();
@@ -136,8 +139,28 @@ fn main() {
                             tracing::info!("Emergency stop triggered via global shortcut");
                         }
                     }
-                })
-                .expect("Failed to register global stop shortcut");
+                };
+            let shortcuts = [
+                "CommandOrControl+Shift+Escape",
+                "CommandOrControl+Alt+Escape",
+                "CommandOrControl+Shift+F12",
+            ];
+            let mut registered = false;
+            for shortcut in &shortcuts {
+                match app.global_shortcut().on_shortcut(*shortcut, stop_handler) {
+                    Ok(()) => {
+                        tracing::info!("Registered emergency stop shortcut: {shortcut}");
+                        registered = true;
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Could not register shortcut {shortcut}: {e}");
+                    }
+                }
+            }
+            if !registered {
+                tracing::warn!("No emergency stop shortcut could be registered");
+            }
 
             Ok(())
         })
