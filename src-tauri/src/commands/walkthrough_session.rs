@@ -1809,7 +1809,9 @@ async fn enrich_click_background(
     vlm_timeout: tokio::time::Duration,
     app_kind_cache: Arc<Mutex<HashMap<i32, AppKind>>>,
     target_pid: i32,
-    #[cfg(any(target_os = "macos", target_os = "windows"))] prehover_screenshot: Option<Arc<CursorRegionCapture>>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))] prehover_screenshot: Option<
+        Arc<CursorRegionCapture>,
+    >,
 ) {
     use base64::Engine;
     use clickweave_core::walkthrough::ScreenshotMeta;

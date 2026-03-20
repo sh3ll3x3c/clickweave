@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tracing::info;
 
-use super::{CaptureCommand, CaptureEvent, CaptureEventKind, CursorRegionCapture, MouseButton, CURSOR_REGION_HALF_PT};
+use super::{
+    CURSOR_REGION_HALF_PT, CaptureCommand, CaptureEvent, CaptureEventKind, CursorRegionCapture,
+    MouseButton,
+};
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
@@ -32,19 +35,19 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 pub fn vk_to_name(vk: u16) -> String {
     match vk {
         // Special keys.
-        0x0D => "return".to_string(),   // VK_RETURN
-        0x09 => "tab".to_string(),      // VK_TAB
-        0x20 => "space".to_string(),    // VK_SPACE
-        0x08 => "delete".to_string(),   // VK_BACK (backspace → "delete" matching macOS)
-        0x1B => "escape".to_string(),   // VK_ESCAPE
-        0x25 => "left".to_string(),     // VK_LEFT
-        0x26 => "up".to_string(),       // VK_UP
-        0x27 => "right".to_string(),    // VK_RIGHT
-        0x28 => "down".to_string(),     // VK_DOWN
-        0x24 => "home".to_string(),     // VK_HOME
-        0x23 => "end".to_string(),      // VK_END
-        0x21 => "pageup".to_string(),   // VK_PRIOR
-        0x22 => "pagedown".to_string(), // VK_NEXT
+        0x0D => "return".to_string(),        // VK_RETURN
+        0x09 => "tab".to_string(),           // VK_TAB
+        0x20 => "space".to_string(),         // VK_SPACE
+        0x08 => "delete".to_string(),        // VK_BACK (backspace → "delete" matching macOS)
+        0x1B => "escape".to_string(),        // VK_ESCAPE
+        0x25 => "left".to_string(),          // VK_LEFT
+        0x26 => "up".to_string(),            // VK_UP
+        0x27 => "right".to_string(),         // VK_RIGHT
+        0x28 => "down".to_string(),          // VK_DOWN
+        0x24 => "home".to_string(),          // VK_HOME
+        0x23 => "end".to_string(),           // VK_END
+        0x21 => "pageup".to_string(),        // VK_PRIOR
+        0x22 => "pagedown".to_string(),      // VK_NEXT
         0x2E => "forwarddelete".to_string(), // VK_DELETE (forward delete)
 
         // Function keys.
@@ -302,14 +305,8 @@ fn run_event_hooks(
     let thread_id = unsafe { GetCurrentThreadId() };
 
     // Install low-level mouse hook.
-    let mouse_hook = unsafe {
-        SetWindowsHookExW(
-            WH_MOUSE_LL,
-            Some(mouse_hook_proc),
-            std::ptr::null_mut(),
-            0,
-        )
-    };
+    let mouse_hook =
+        unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), std::ptr::null_mut(), 0) };
     if mouse_hook.is_null() {
         let _ = init_tx.send(Err("Failed to install WH_MOUSE_LL hook".to_string()));
         return;
@@ -458,11 +455,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
 
 /// Low-level keyboard hook callback.
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn keyboard_hook_proc(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         // SAFETY: lparam points to a KBDLLHOOKSTRUCT when code >= 0 for low-level keyboard hooks.
         let hook_struct = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
@@ -593,14 +586,16 @@ fn get_unicode_char(vk: u32, scan_code: u32) -> Option<String> {
         return None;
     }
 
-    String::from_utf16(&buf[..result as usize]).ok().and_then(|s| {
-        // Filter out control characters (e.g., from arrow keys, function keys).
-        if s.chars().all(|c| c.is_control()) {
-            None
-        } else {
-            Some(s)
-        }
-    })
+    String::from_utf16(&buf[..result as usize])
+        .ok()
+        .and_then(|s| {
+            // Filter out control characters (e.g., from arrow keys, function keys).
+            if s.chars().all(|c| c.is_control()) {
+                None
+            } else {
+                Some(s)
+            }
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -650,7 +645,9 @@ pub fn capture_cursor_region(center_x: f64, center_y: f64) -> Option<CursorRegio
 
         let old_bitmap = SelectObject(mem_dc, bitmap);
 
-        let blt_ok = BitBlt(mem_dc, 0, 0, size_px, size_px, screen_dc, origin_x, origin_y, SRCCOPY);
+        let blt_ok = BitBlt(
+            mem_dc, 0, 0, size_px, size_px, screen_dc, origin_x, origin_y, SRCCOPY,
+        );
 
         let mut bgra_buf = vec![0u8; (size_px * size_px * 4) as usize];
         let mut bmi = BITMAPINFO {
@@ -667,7 +664,12 @@ pub fn capture_cursor_region(center_x: f64, center_y: f64) -> Option<CursorRegio
                 biClrUsed: 0,
                 biClrImportant: 0,
             },
-            bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
+            bmiColors: [RGBQUAD {
+                rgbBlue: 0,
+                rgbGreen: 0,
+                rgbRed: 0,
+                rgbReserved: 0,
+            }],
         };
 
         let dib_ok = GetDIBits(
@@ -694,7 +696,11 @@ pub fn capture_cursor_region(center_x: f64, center_y: f64) -> Option<CursorRegio
         let height = size_px as u32;
         let rgba_bytes = bgra_bottom_up_to_rgba(&bgra_buf, width, height);
 
-        Some(CursorRegionCapture { rgba_bytes, width, height })
+        Some(CursorRegionCapture {
+            rgba_bytes,
+            width,
+            height,
+        })
     }
 }
 

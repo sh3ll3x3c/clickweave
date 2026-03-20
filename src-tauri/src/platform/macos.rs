@@ -428,7 +428,7 @@ unsafe extern "C" {
 use core_graphics::display::{CGDisplay, CGPoint, CGRect, CGSize};
 use core_graphics::window::{kCGNullWindowID, kCGWindowListOptionOnScreenOnly};
 
-use super::{CursorRegionCapture, CURSOR_REGION_HALF_PT};
+use super::{CURSOR_REGION_HALF_PT, CursorRegionCapture};
 
 /// Get the current cursor position in screen coordinates (points).
 pub fn get_cursor_position() -> (f64, f64) {
