@@ -144,7 +144,7 @@ pub fn bundle_path_from_pid(pid: i32) -> Option<std::path::PathBuf> {
 
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
-        if handle == 0 {
+        if handle.is_null() {
             return None;
         }
         let mut buf = vec![0u16; 1024];
