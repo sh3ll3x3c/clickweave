@@ -12,17 +12,47 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_specta::{Builder, collect_commands};
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Idiomatic per-platform app data directory.
+///
+/// - macOS: `~/Library/Application Support/com.clickweave.app/` (reverse-DNS is the convention)
+/// - Windows: `%APPDATA%\Clickweave\` (product name is the convention)
+/// - Linux: `$XDG_DATA_HOME/clickweave/` or `~/.local/share/clickweave/`
+fn app_data_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        std::path::PathBuf::from(std::env::var("HOME").expect("HOME should be set"))
+            .join("Library/Application Support/com.clickweave.app")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::path::PathBuf::from(std::env::var("APPDATA").expect("APPDATA should be set"))
+            .join("Clickweave")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::path::PathBuf::from(std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").expect("HOME should be set");
+            format!("{home}/.local/share")
+        }))
+        .join("clickweave")
+    }
+}
+
 fn log_dir() -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
         std::path::PathBuf::from(std::env::var("HOME").expect("HOME should be set"))
             .join("Library/Logs/Clickweave")
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        std::path::PathBuf::from(std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA should be set"))
+            .join("Clickweave")
             .join("logs")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        app_data_dir().join("logs")
     }
 }
 
@@ -113,10 +143,7 @@ fn main() {
         .invoke_handler(builder.invoke_handler())
         .menu(menu::build_menu)
         .setup(move |app| {
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to resolve app data dir");
+            let app_data_dir = app_data_dir();
             std::fs::create_dir_all(&app_data_dir).ok();
             app.manage(AppDataDir(app_data_dir));
             builder.mount_events(app);

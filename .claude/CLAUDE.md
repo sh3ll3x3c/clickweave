@@ -1,6 +1,8 @@
 ## Run Trace Logs
 - **Saved projects:** `<project>/.clickweave/runs/<workflow_name>/<execution_dir>/<node_name>/`
-- **Unsaved projects:** `~/Library/Application Support/com.clickweave.app/runs/<workflow_name>_<short_uuid>/<execution_dir>/<node_name>/`
+- **Unsaved projects (macOS):** `~/Library/Application Support/com.clickweave.app/runs/<workflow_name>_<short_uuid>/<execution_dir>/<node_name>/`
+- **Unsaved projects (Windows):** `%APPDATA%\Clickweave\runs\<workflow_name>_<short_uuid>\<execution_dir>\<node_name>\`
+- **Unsaved projects (Linux):** `$XDG_DATA_HOME/clickweave/runs/<workflow_name>_<short_uuid>/<execution_dir>/<node_name>/`
 - `<workflow_name>` — sanitized workflow name (lowercase, dashes)
 - `<execution_dir>` — `YYYY-MM-DD_HH-MM-SS_<short_uuid>` per workflow execution
 - `<node_name>` — sanitized node name (e.g., `launch-calculator/`)
@@ -9,8 +11,21 @@
 - `artifacts/` — output artifacts from the run
 - **When debugging runtime issues**, always check the most recent run logs first — read `events.jsonl` for each node to understand the actual execution flow before proposing fixes
 
+## Walkthrough Session Logs
+- **Saved projects:** `<project>/.clickweave/walkthroughs/<session_dir>/`
+- **Unsaved projects (macOS):** `~/Library/Application Support/com.clickweave.app/walkthroughs/<session_dir>/`
+- **Unsaved projects (Windows):** `%APPDATA%\Clickweave\walkthroughs\<session_dir>\`
+- **Unsaved projects (Linux):** `$XDG_DATA_HOME/clickweave/walkthroughs/<session_dir>/`
+- `session.json` — session metadata
+- `events.jsonl` — raw walkthrough events
+- `actions.json` — extracted actions
+- `draft.json` — generated workflow draft
+- `artifacts/` — screenshots and other captured artifacts
+
 ## Application Logs
 - **macOS:** `~/Library/Logs/Clickweave/clickweave.YYYY-MM-DD.txt`
+- **Windows:** `%LOCALAPPDATA%\Clickweave\logs\clickweave.YYYY-MM-DD.txt`
+- **Linux:** `$XDG_DATA_HOME/clickweave/logs/clickweave.YYYY-MM-DD.txt` (fallback: `~/.local/share/clickweave/logs/`)
 - JSON-formatted, daily rotation
 - Configured in `src-tauri/src/main.rs` (`log_dir()` + tracing subscriber setup)
 
