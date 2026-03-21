@@ -1,3 +1,4 @@
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { EndpointConfig } from "../store/useAppStore";
 import { Modal } from "./Modal";
 
@@ -201,15 +202,31 @@ export function SettingsModal({
               <label className="mb-1 block text-xs text-[var(--text-secondary)]">
                 Binary path
               </label>
-              <input
-                type="text"
-                value={mcpCommand === "npx" ? "" : mcpCommand}
-                onChange={(e) =>
-                  onMcpCommandChange(e.target.value.trim() || "npx")
-                }
-                placeholder="Default (npx)"
-                className={`${inputClass} placeholder-[var(--text-muted)]`}
-              />
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={mcpCommand === "npx" ? "" : mcpCommand}
+                  onChange={(e) =>
+                    onMcpCommandChange(e.target.value.trim() || "npx")
+                  }
+                  placeholder="Default (npx)"
+                  className={`${inputClass} placeholder-[var(--text-muted)]`}
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const path = await openDialog({
+                      title: "Select native-devtools-mcp binary",
+                      multiple: false,
+                      directory: false,
+                    });
+                    if (path) onMcpCommandChange(path);
+                  }}
+                  className="shrink-0 rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                >
+                  Browse
+                </button>
+              </div>
               <p className="mt-1 text-[10px] text-[var(--text-muted)]">
                 Leave empty to use npx, or set a path to a local binary
               </p>
