@@ -986,12 +986,21 @@ pub(super) async fn process_capture_events(
     if let Some(ref mcp) = mcp {
         for (app_name, &port) in &cdp_state {
             // Reconnect to this app's CDP port.
-            if let Err(e) = mcp
+            match mcp
                 .call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
                 .await
             {
-                tracing::debug!("CDP reconnect for hover retrieval failed for '{app_name}': {e}");
-                continue;
+                Err(e) => {
+                    tracing::debug!(
+                        "CDP reconnect for hover retrieval failed for '{app_name}': {e}"
+                    );
+                    continue;
+                }
+                Ok(r) if r.is_error == Some(true) => {
+                    tracing::debug!("CDP reconnect for hover retrieval rejected for '{app_name}'");
+                    continue;
+                }
+                Ok(_) => {}
             }
 
             // Stop the hover interval + flush pending dwell.
@@ -1468,12 +1477,19 @@ async fn cdp_retrieve_click(
     click_timestamp: u64,
 ) {
     // Reconnect to this app's CDP port.
-    if let Err(e) = mcp
+    match mcp
         .call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
         .await
     {
-        tracing::debug!("CDP reconnect for click retrieve failed for {click_event_id}: {e}");
-        return;
+        Err(e) => {
+            tracing::debug!("CDP reconnect for click retrieve failed for {click_event_id}: {e}");
+            return;
+        }
+        Ok(r) if r.is_error == Some(true) => {
+            tracing::debug!("CDP reconnect for click retrieve rejected for {click_event_id}");
+            return;
+        }
+        Ok(_) => {}
     }
 
     // Poll the click queue with retries.  The macOS event tap fires before the

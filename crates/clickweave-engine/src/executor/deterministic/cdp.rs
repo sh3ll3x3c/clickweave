@@ -340,19 +340,51 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok(())
     }
 
-    /// Connect to CDP and poll until ready.
+    /// Connect to CDP with retries (the debug endpoint may not be ready
+    /// immediately after app launch), then poll until pages are available.
     async fn cdp_connect_and_poll(
         &self,
         app_name: &str,
         port: u16,
         mcp: &(impl Mcp + ?Sized),
     ) -> ExecutorResult<()> {
-        mcp.call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
-            .await
-            .map_err(|e| {
-                ExecutorError::Cdp(format!("Failed to connect CDP for '{}': {}", app_name, e))
-            })?;
-        self.poll_cdp_ready(app_name, mcp, 30).await
+        let connect_args = serde_json::json!({"port": port});
+        let mut last_err = String::new();
+        for attempt in 0..10 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            match mcp
+                .call_tool("cdp_connect", Some(connect_args.clone()))
+                .await
+            {
+                Ok(r) if r.is_error != Some(true) => {
+                    return self.poll_cdp_ready(app_name, mcp, 30).await;
+                }
+                Ok(r) => {
+                    last_err = Self::extract_result_text(&r);
+                    tracing::debug!(
+                        "cdp_connect attempt {} for '{}': {}",
+                        attempt + 1,
+                        app_name,
+                        last_err
+                    );
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                    tracing::debug!(
+                        "cdp_connect attempt {} for '{}': {}",
+                        attempt + 1,
+                        app_name,
+                        last_err
+                    );
+                }
+            }
+        }
+        Err(ExecutorError::Cdp(format!(
+            "Failed to connect CDP for '{}' after 10 attempts: {}",
+            app_name, last_err
+        )))
     }
 
     /// Try to connect CDP to an app, returning true on success.
