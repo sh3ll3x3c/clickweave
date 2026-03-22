@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod mcp_resolve;
 mod menu;
 mod platform;
 
@@ -86,6 +87,7 @@ fn main() {
 
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
         ping,
+        get_mcp_status,
         pick_workflow_file,
         pick_save_file,
         open_project,
@@ -152,6 +154,18 @@ fn main() {
                 let id = event.id().as_ref();
                 let _ = handle.emit(&format!("menu://{id}"), ());
             });
+
+            // Check MCP sidecar availability at startup.
+            match mcp_resolve::resolve_mcp_binary() {
+                Ok(path) => {
+                    tracing::info!("MCP sidecar available: {path}");
+                    app.manage(McpStatus(Ok(path)));
+                }
+                Err(e) => {
+                    tracing::warn!("MCP sidecar not available: {e}");
+                    app.manage(McpStatus(Err(e.to_string())));
+                }
+            }
 
             // Global emergency stop: works even when another app has focus.
             // Try preferred shortcut first, fall back if already taken (e.g. by Task Manager).
