@@ -1200,6 +1200,15 @@ async fn setup_cdp_apps(
 ) -> HashMap<String, u16> {
     let mut state: HashMap<String, u16> = HashMap::new();
 
+    if !mcp.has_tool("cdp_connect") {
+        tracing::warn!(
+            "MCP server does not support CDP tools (cdp_connect not available). \
+             Skipping CDP setup for {} app(s).",
+            cdp_apps.len()
+        );
+        return state;
+    }
+
     for cdp_app in cdp_apps {
         // Check for cancellation between apps.
         if *cancel.borrow() {

@@ -178,6 +178,11 @@ impl McpClient {
         &self.tools
     }
 
+    /// Check whether a tool with the given name is available.
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.tools.iter().any(|t| t.name == name)
+    }
+
     /// Call a tool by name with arguments
     pub async fn call_tool(&self, name: &str, arguments: Option<Value>) -> Result<ToolCallResult> {
         let params = ToolCallParams {
