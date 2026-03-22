@@ -2,7 +2,7 @@ use base64::Engine;
 use clickweave_core::walkthrough::{
     ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughEvent, WalkthroughEventKind,
 };
-use clickweave_mcp::McpRouter;
+use clickweave_mcp::McpClient;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -51,7 +51,7 @@ use crate::platform::CURSOR_REGION_HALF_PT as CROP_HALF_SIZE_PTS;
 ///
 /// Returns accessibility, screenshot, and OCR events if successful.
 pub(super) async fn enrich_click(
-    mcp: &McpRouter,
+    mcp: &McpClient,
     session_dir: &std::path::Path,
     x: f64,
     y: f64,

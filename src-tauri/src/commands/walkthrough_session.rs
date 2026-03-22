@@ -7,7 +7,7 @@ use clickweave_core::walkthrough::{
     ScreenshotKind, WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
     WalkthroughStorage,
 };
-use clickweave_mcp::McpRouter;
+use clickweave_mcp::McpClient;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
@@ -472,13 +472,12 @@ pub(super) async fn process_capture_events(
     cdp_apps: Vec<CdpAppConfig>,
     hover_dwell_ms: u64,
 ) {
-    // Spawn the MCP server for enrichment (screenshots + OCR).
-    let mut mcp_raw = spawn_mcp(&mcp_command).await;
+    // Spawn the MCP client for enrichment (screenshots + OCR).
+    let mcp_raw = spawn_mcp(&mcp_command).await;
 
-    // Set up CDP servers for selected apps before wrapping in Arc
-    // (spawn_server requires &mut).
-    let cdp_state: HashMap<String, String> = if !cdp_apps.is_empty() {
-        if let Some(ref mut mcp) = mcp_raw {
+    // Set up CDP connections for selected apps before wrapping in Arc.
+    let cdp_state: HashMap<String, u16> = if !cdp_apps.is_empty() {
+        if let Some(ref mcp) = mcp_raw {
             setup_cdp_apps(&cdp_apps, mcp, &app, &mut cancel, hover_dwell_ms).await
         } else {
             tracing::warn!("No MCP server available for CDP setup");
@@ -510,7 +509,7 @@ pub(super) async fn process_capture_events(
     }
 
     // Wrap in Arc so background enrichment tasks can share it.
-    let mcp: Option<std::sync::Arc<McpRouter>> = mcp_raw.map(std::sync::Arc::new);
+    let mcp: Option<std::sync::Arc<McpClient>> = mcp_raw.map(std::sync::Arc::new);
 
     // Initialize VLM backend if planner config is available.
     let vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>> =
@@ -566,7 +565,7 @@ pub(super) async fn process_capture_events(
     // sequentially — otherwise independent tasks race and steal each other's
     // entries.  A single consumer task drains this channel in FIFO order.
     struct CdpClickRequest {
-        server_name: String,
+        port: u16,
         click_event_id: Uuid,
         click_timestamp: u64,
     }
@@ -623,7 +622,7 @@ pub(super) async fn process_capture_events(
                 if let Some(ref mcp) = mcp_for_cdp {
                     cdp_retrieve_click(
                         mcp,
-                        &req.server_name,
+                        req.port,
                         &app_for_cdp,
                         &storage_for_cdp,
                         &dir_for_cdp,
@@ -742,12 +741,12 @@ pub(super) async fn process_capture_events(
 
                     // Queue CDP click retrieval (processed sequentially to
                     // preserve FIFO ordering with the JS click listener).
-                    if let Some(server_name) = task_app_name
+                    if let Some(&port) = task_app_name
                         .as_deref()
                         .and_then(|name| cdp_state.get(name))
                     {
                         let _ = cdp_tx.send(CdpClickRequest {
-                            server_name: server_name.clone(),
+                            port,
                             click_event_id: click_event.id,
                             click_timestamp: capture.timestamp,
                         });
@@ -985,20 +984,25 @@ pub(super) async fn process_capture_events(
     // listener has been tracking element transitions in real-time; we now
     // stop it, flush any pending dwell, and retrieve the collected entries.
     if let Some(ref mcp) = mcp {
-        for (app_name, server_name) in &cdp_state {
-            ensure_cdp_page_selected(mcp, server_name).await;
+        for (app_name, &port) in &cdp_state {
+            // Reconnect to this app's CDP port.
+            if let Err(e) = mcp
+                .call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
+                .await
+            {
+                tracing::debug!("CDP reconnect for hover retrieval failed for '{app_name}': {e}");
+                continue;
+            }
 
             // Stop the hover interval + flush pending dwell.
             let stop_args = serde_json::json!({ "function": CDP_STOP_HOVER_JS });
-            let _ = mcp
-                .call_tool_on(server_name, "evaluate_script", Some(stop_args))
-                .await;
+            let _ = mcp.call_tool("cdp_evaluate_script", Some(stop_args)).await;
 
             // Retrieve all collected hover entries.
             let retrieve_args = serde_json::json!({ "function": CDP_RETRIEVE_HOVERS_JS });
             let result = match tokio::time::timeout(
                 CDP_SNAPSHOT_TIMEOUT,
-                mcp.call_tool_on(server_name, "evaluate_script", Some(retrieve_args)),
+                mcp.call_tool("cdp_evaluate_script", Some(retrieve_args)),
             )
             .await
             {
@@ -1062,6 +1066,9 @@ pub(super) async fn process_capture_events(
             if count > 0 {
                 tracing::info!("Persisted {count} CDP hover events from '{app_name}'");
             }
+
+            // Disconnect so the next app can connect.
+            let _ = mcp.call_tool("cdp_disconnect", None).await;
         }
     }
 
@@ -1180,42 +1187,25 @@ pub(super) fn rand_ephemeral_port() -> u16 {
     49152 + (raw % range) as u16
 }
 
-/// Build the McpServerConfig for a chrome-devtools-mcp connected to a specific port.
-pub(super) fn cdp_server_config(server_name: &str, port: u16) -> clickweave_mcp::McpServerConfig {
-    clickweave_mcp::McpServerConfig {
-        name: server_name.to_string(),
-        command: "npx".into(),
-        args: vec![
-            "-y".into(),
-            "chrome-devtools-mcp".into(),
-            format!("--browserUrl=http://127.0.0.1:{}", port),
-        ],
-    }
-}
-
-/// Set up CDP servers for user-selected apps.
+/// Set up CDP connections for user-selected apps.
 ///
 /// For each app: quit the running instance, relaunch with
-/// `--remote-debugging-port`, spawn a chrome-devtools-mcp server, and
-/// poll until ready. Returns a map of app_name → CDP server name.
+/// `--remote-debugging-port`, connect via `cdp_connect`, inject
+/// listeners, and disconnect. Returns a map of app_name → CDP port.
 async fn setup_cdp_apps(
     cdp_apps: &[CdpAppConfig],
-    mcp: &mut McpRouter,
+    mcp: &McpClient,
     app: &tauri::AppHandle,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     hover_dwell_ms: u64,
-) -> HashMap<String, String> {
-    use clickweave_core::cdp::cdp_server_name;
-
-    let mut state: HashMap<String, String> = HashMap::new();
+) -> HashMap<String, u16> {
+    let mut state: HashMap<String, u16> = HashMap::new();
 
     for cdp_app in cdp_apps {
         // Check for cancellation between apps.
         if *cancel.borrow() {
             break;
         }
-
-        let server_name = cdp_server_name(&cdp_app.name);
 
         // Check if the app is already running with a debug port — if so, skip
         // the quit/relaunch cycle and reuse the existing port.
@@ -1333,43 +1323,24 @@ async fn setup_cdp_apps(
 
         emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Connecting);
 
-        // Spawn the CDP server.
-        let config = cdp_server_config(&server_name, port);
-        if let Err(e) = mcp.spawn_server(&config).await {
-            tracing::warn!("Failed to spawn CDP server for '{}': {}", cdp_app.name, e);
-            emit_cdp_progress(
-                app,
-                &cdp_app.name,
-                CdpSetupStatus::Failed {
-                    reason: e.to_string(),
-                },
-            );
-            continue;
-        }
-
-        // Poll until ready (10s timeout), with cancellation.
-        let ready = tokio::select! {
+        // Connect to this app's CDP port (with cancellation + polling).
+        let connect_result = tokio::select! {
             biased;
             _ = cancel.changed() => {
-                tracing::info!("CDP setup cancelled during poll for '{}'", cdp_app.name);
+                tracing::info!("CDP setup cancelled during connect for '{}'", cdp_app.name);
                 break;
             }
-            result = poll_cdp_ready(mcp, &server_name, 10) => result,
+            result = poll_cdp_ready(mcp, port, 10) => result,
         };
 
-        match ready {
+        match connect_result {
             Ok(()) => {
-                tracing::info!(
-                    "CDP connected to '{}' (port {}, server '{}')",
-                    cdp_app.name,
-                    port,
-                    server_name,
-                );
+                tracing::info!("CDP connected to '{}' (port {})", cdp_app.name, port,);
 
                 // Inject click listener for record-time element capture.
                 let inject_args = serde_json::json!({ "function": CDP_CLICK_LISTENER_JS });
                 let inject_ok = match mcp
-                    .call_tool_on(&server_name, "evaluate_script", Some(inject_args))
+                    .call_tool("cdp_evaluate_script", Some(inject_args))
                     .await
                 {
                     Ok(r) if r.is_error != Some(true) => {
@@ -1398,10 +1369,7 @@ async fn setup_cdp_apps(
                     let hover_js = CDP_HOVER_LISTENER_JS
                         .replace("__CW_MIN_DWELL__", &hover_dwell_ms.to_string());
                     let hover_args = serde_json::json!({ "function": hover_js });
-                    match mcp
-                        .call_tool_on(&server_name, "evaluate_script", Some(hover_args))
-                        .await
-                    {
+                    match mcp.call_tool("cdp_evaluate_script", Some(hover_args)).await {
                         Ok(r) if r.is_error != Some(true) => {
                             tracing::info!("Injected hover listener into '{}'", cdp_app.name);
                         }
@@ -1422,9 +1390,12 @@ async fn setup_cdp_apps(
                     }
                 }
 
+                // Disconnect so the next app can connect.
+                let _ = mcp.call_tool("cdp_disconnect", None).await;
+
                 if inject_ok {
                     emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Ready);
-                    state.insert(cdp_app.name.clone(), server_name);
+                    state.insert(cdp_app.name.clone(), port);
                 } else {
                     emit_cdp_progress(
                         app,
@@ -1436,7 +1407,7 @@ async fn setup_cdp_apps(
                 }
             }
             Err(e) => {
-                tracing::warn!("CDP poll failed for '{}': {}", cdp_app.name, e);
+                tracing::warn!("CDP connect failed for '{}': {}", cdp_app.name, e);
                 emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason: e });
             }
         }
@@ -1445,79 +1416,37 @@ async fn setup_cdp_apps(
     state
 }
 
-/// Poke `list_pages` to trigger chrome-devtools-mcp's auto-selection side effect.
-///
-/// In multi-tab browser sessions the MCP server may have a stale page selection.
-/// Calling `list_pages` ensures the active page is selected before subsequent
-/// `evaluate_script` or `take_snapshot` calls.
-async fn ensure_cdp_page_selected(mcp: &McpRouter, server_name: &str) {
-    match tokio::time::timeout(
-        CDP_SNAPSHOT_TIMEOUT,
-        mcp.call_tool_on(server_name, "list_pages", Some(serde_json::json!({}))),
-    )
-    .await
-    {
-        Ok(Err(e)) => {
-            tracing::debug!("CDP list_pages refresh failed for '{server_name}': {e}");
-        }
-        Err(_) => {
-            tracing::debug!("CDP list_pages refresh timed out for '{server_name}'");
-        }
-        Ok(Ok(_)) => {}
-    }
-}
-
-/// Poll `list_pages` on a CDP server until it returns at least one page.
-async fn poll_cdp_ready(
-    mcp: &McpRouter,
-    server_name: &str,
-    timeout_secs: u64,
-) -> Result<(), String> {
+/// Poll `cdp_connect` + `cdp_list_pages` until a page is available.
+async fn poll_cdp_ready(mcp: &McpClient, port: u16, timeout_secs: u64) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 
     loop {
+        // Try connecting to the CDP port.
         match mcp
-            .call_tool_on(server_name, "list_pages", Some(serde_json::json!({})))
+            .call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
             .await
         {
-            Ok(result) if result.is_error != Some(true) => {
-                let text: String = result
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_text())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                // Page index may be 0-based or 1-based depending on MCP
-                // server version — check for any "N: <url>" page entry.
-                if text.lines().any(|l| {
-                    l.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) && l.contains(": ")
-                }) {
-                    return Ok(());
-                }
-                tracing::debug!(
-                    "CDP list_pages for '{}' returned but no pages yet: {:?}",
-                    server_name,
-                    &text[..text.len().min(500)]
-                );
+            Ok(r) if r.is_error != Some(true) => {
+                // Connection succeeded — cdp_connect auto-selects the first page.
+                return Ok(());
             }
-            Ok(result) => {
-                let text: String = result
+            Ok(r) => {
+                let text: String = r
                     .content
                     .iter()
                     .filter_map(|c| c.as_text())
                     .collect::<Vec<_>>()
                     .join("\n");
-                tracing::debug!("CDP list_pages error for '{}': {}", server_name, text);
+                tracing::debug!("cdp_connect error for port {port}: {text}");
             }
             Err(e) => {
-                tracing::debug!("CDP list_pages call failed for '{}': {}", server_name, e);
+                tracing::debug!("cdp_connect call failed for port {port}: {e}");
             }
         }
 
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
-                "Timed out waiting for CDP server '{}' to be ready ({}s)",
-                server_name, timeout_secs
+                "Timed out waiting for CDP on port {port} to be ready ({timeout_secs}s)",
             ));
         }
 
@@ -1535,23 +1464,10 @@ pub(super) fn emit_cdp_progress(app: &tauri::AppHandle, app_name: &str, status: 
     );
 }
 
-/// Extract the JSON payload from a chrome-devtools-mcp `evaluate_script` response.
+/// Extract the JSON payload from a `cdp_evaluate_script` response.
 ///
-/// The tool wraps results in markdown:
-/// ```text
-/// Script ran on page and returned:
-/// ```json
-/// <value>
-/// ```
-/// ```
+/// Native-devtools returns raw JSON without markdown fences.
 fn extract_eval_result(text: &str) -> &str {
-    // Look for content between ```json and ``` fences.
-    if let Some(start) = text.find("```json\n") {
-        let json_start = start + "```json\n".len();
-        if let Some(end) = text[json_start..].find("\n```") {
-            return text[json_start..json_start + end].trim();
-        }
-    }
     text.trim()
 }
 
@@ -1560,15 +1476,22 @@ fn extract_eval_result(text: &str) -> &str {
 /// Returns a `CdpClickResolved` event if data is available, or None if the
 /// click landed outside the CDP app / listener was lost.
 async fn cdp_retrieve_click(
-    mcp: &McpRouter,
-    server_name: &str,
+    mcp: &McpClient,
+    port: u16,
     app: &tauri::AppHandle,
     storage: &WalkthroughStorage,
     session_dir: &std::path::Path,
     click_event_id: Uuid,
     click_timestamp: u64,
 ) {
-    ensure_cdp_page_selected(mcp, server_name).await;
+    // Reconnect to this app's CDP port.
+    if let Err(e) = mcp
+        .call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
+        .await
+    {
+        tracing::debug!("CDP reconnect for click retrieve failed for {click_event_id}: {e}");
+        return;
+    }
 
     // Poll the click queue with retries.  The macOS event tap fires before the
     // click is delivered to the app, so the JS click event may not have pushed
@@ -1580,7 +1503,7 @@ async fn cdp_retrieve_click(
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 
         let retrieve_args = serde_json::json!({ "function": CDP_RETRIEVE_CLICK_JS });
-        let call_fut = mcp.call_tool_on(server_name, "evaluate_script", Some(retrieve_args));
+        let call_fut = mcp.call_tool("cdp_evaluate_script", Some(retrieve_args));
         let result = match tokio::time::timeout(CDP_SNAPSHOT_TIMEOUT, call_fut).await {
             Ok(Ok(r)) if r.is_error != Some(true) => r,
             Ok(Ok(r)) => {
@@ -1617,10 +1540,7 @@ async fn cdp_retrieve_click(
 
         // Check listener health and re-inject if lost (single MCP call).
         let check_args = serde_json::json!({ "function": CDP_CHECK_AND_REINJECT_JS });
-        match mcp
-            .call_tool_on(server_name, "evaluate_script", Some(check_args))
-            .await
-        {
+        match mcp.call_tool("cdp_evaluate_script", Some(check_args)).await {
             Ok(r) => {
                 let raw: String = r.content.iter().filter_map(|c| c.as_text()).collect();
                 let status = extract_eval_result(&raw);
@@ -1706,27 +1626,25 @@ async fn cdp_retrieve_click(
 // MCP helpers
 // ---------------------------------------------------------------------------
 
-pub(super) async fn spawn_mcp(mcp_command: &str) -> Option<McpRouter> {
-    let configs = clickweave_mcp::default_server_configs(mcp_command);
-    match McpRouter::spawn(&configs).await {
-        Ok(router) => {
+pub(super) async fn spawn_mcp(mcp_command: &str) -> Option<McpClient> {
+    match McpClient::spawn_native(mcp_command).await {
+        Ok(client) => {
             tracing::info!(
-                "MCP router spawned for walkthrough enrichment: {} servers, {} tools",
-                router.server_count(),
-                router.tools().len()
+                "MCP client spawned for walkthrough enrichment: {} tools",
+                client.tools().len()
             );
-            Some(router)
+            Some(client)
         }
         Err(e) => {
             tracing::warn!(
-                "Failed to spawn MCP servers for walkthrough: {e}. Continuing without enrichment."
+                "Failed to spawn MCP client for walkthrough: {e}. Continuing without enrichment."
             );
             None
         }
     }
 }
 
-pub(super) async fn populate_app_cache(mcp: &McpRouter, cache: &mut HashMap<i32, CachedApp>) {
+pub(super) async fn populate_app_cache(mcp: &McpClient, cache: &mut HashMap<i32, CachedApp>) {
     let result = mcp
         .call_tool(
             "list_apps",
@@ -1762,7 +1680,7 @@ pub(super) async fn populate_app_cache(mcp: &McpRouter, cache: &mut HashMap<i32,
 
 async fn resolve_app_name(
     pid: i32,
-    mcp: &Option<std::sync::Arc<McpRouter>>,
+    mcp: &Option<std::sync::Arc<McpClient>>,
     cache: &mut HashMap<i32, CachedApp>,
 ) -> String {
     if let Some(cached) = cache.get(&pid) {
@@ -1797,7 +1715,7 @@ async fn resolve_app_name(
 /// The crop and VLM resolution run concurrently — neither depends on the other.
 #[allow(clippy::too_many_arguments)]
 async fn enrich_click_background(
-    mcp: std::sync::Arc<McpRouter>,
+    mcp: std::sync::Arc<McpClient>,
     vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>>,
     app: tauri::AppHandle,
     storage: WalkthroughStorage,
@@ -2106,22 +2024,5 @@ mod tests {
                 "port {port} outside ephemeral range"
             );
         }
-    }
-
-    // --- cdp_server_config ---
-
-    #[test]
-    fn cdp_server_config_builds_correctly() {
-        let config = cdp_server_config("cdp:Discord", 9222);
-        assert_eq!(config.name, "cdp:Discord");
-        assert_eq!(config.command, "npx");
-        assert_eq!(
-            config.args,
-            vec![
-                "-y",
-                "chrome-devtools-mcp",
-                "--browserUrl=http://127.0.0.1:9222"
-            ]
-        );
     }
 }
