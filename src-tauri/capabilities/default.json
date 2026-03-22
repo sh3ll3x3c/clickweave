@@ -19,6 +19,15 @@
     "core:window:allow-destroy",
     "core:window:allow-close",
     "core:window:allow-current-monitor",
-    "core:window:allow-set-focus"
+    "core:window:allow-set-focus",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/native-devtools-mcp",
+          "sidecar": true
+        }
+      ]
+    }
   ]
 }

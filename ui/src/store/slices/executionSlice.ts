@@ -51,7 +51,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   },
 
   runWorkflow: async () => {
-    const { workflow, projectPath, agentConfig, vlmConfig, vlmEnabled, plannerConfig, mcpCommand, executionMode, pushLog } = get();
+    const { workflow, projectPath, agentConfig, vlmConfig, vlmEnabled, plannerConfig, executionMode, pushLog } = get();
 
     const graphErrors = validateSingleGraph(workflow.nodes, workflow.edges);
     if (graphErrors.length > 0) {
@@ -67,7 +67,6 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       agent: toEndpoint(agentConfig),
       vlm: vlmEnabled ? toEndpoint(vlmConfig) : null,
       planner: toEndpoint(plannerConfig),
-      mcp_command: mcpCommand,
       execution_mode: executionMode,
     };
     const result = await commands.runWorkflow(request);

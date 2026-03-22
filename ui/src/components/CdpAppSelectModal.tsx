@@ -14,7 +14,6 @@ type ModalPhase = "detecting" | "selection" | "setup";
 
 interface Props {
   open: boolean;
-  mcpCommand: string;
   cdpProgress: CdpSetupProgress[];
   onStart: (cdpApps: CdpAppConfig[]) => void;
   onSkip: () => void;
@@ -23,7 +22,6 @@ interface Props {
 
 export function CdpAppSelectModal({
   open: isOpen,
-  mcpCommand,
   cdpProgress,
   onStart,
   onSkip,
@@ -45,7 +43,7 @@ export function CdpAppSelectModal({
     setAddedPaths(new Map());
     setError(null);
 
-    commands.detectCdpApps(mcpCommand).then((result) => {
+    commands.detectCdpApps().then((result) => {
       if (result.status === "ok") {
         setApps(result.data);
         setPhase("selection");
@@ -54,7 +52,7 @@ export function CdpAppSelectModal({
         setPhase("selection");
       }
     });
-  }, [isOpen, mcpCommand]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

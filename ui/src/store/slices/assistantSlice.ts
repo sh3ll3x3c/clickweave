@@ -62,7 +62,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   },
 
   sendAssistantMessage: async (message) => {
-    const { plannerConfig, allowAiTransforms, allowAgentSteps, mcpCommand, maxRepairAttempts, pushLog } = get();
+    const { plannerConfig, allowAiTransforms, allowAgentSteps, maxRepairAttempts, pushLog } = get();
     set({ assistantLoading: true, assistantError: null, assistantRetrying: false });
 
     // Capture conversation state BEFORE adding the user message -- the backend
@@ -94,7 +94,6 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
         planner: toEndpoint(plannerConfig),
         allow_ai_transforms: allowAiTransforms,
         allow_agent_steps: allowAgentSteps,
-        mcp_command: mcpCommand,
         max_repair_attempts: maxRepairAttempts,
       };
 

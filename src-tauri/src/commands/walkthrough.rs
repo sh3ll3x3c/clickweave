@@ -78,8 +78,10 @@ pub enum CdpSetupStatus {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn detect_cdp_apps(mcp_command: String) -> Result<Vec<DetectedCdpApp>, CommandError> {
-    let mcp = spawn_mcp(&mcp_command)
+pub async fn detect_cdp_apps() -> Result<Vec<DetectedCdpApp>, CommandError> {
+    let mcp_binary =
+        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
+    let mcp = spawn_mcp(&mcp_binary)
         .await
         .ok_or(CommandError::mcp("Failed to spawn MCP server"))?;
 
@@ -136,13 +138,17 @@ fn emit_state(app: &tauri::AppHandle, status: WalkthroughStatus) {
 pub async fn start_walkthrough(
     app: tauri::AppHandle,
     workflow_id: String,
-    mcp_command: String,
     project_path: Option<String>,
     planner: Option<super::types::EndpointConfig>,
     cdp_apps: Vec<CdpAppConfig>,
     hover_dwell_threshold: Option<u64>,
 ) -> Result<(), CommandError> {
     let wf_id = parse_uuid(&workflow_id, "workflow")?;
+
+    // Resolve MCP binary before acquiring the session lock so a failure
+    // doesn't leave walkthrough state wedged as "already running".
+    let mcp_binary_path =
+        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
 
     // Set up session and storage under the lock, then release it before
     // spawning async work (which needs the app handle, not the lock).
@@ -179,8 +185,6 @@ pub async fn start_walkthrough(
         guard.session = Some(session);
         guard.session_dir = Some(session_dir.clone());
         guard.storage = Some(storage);
-        guard.mcp_command = Some(mcp_command.clone());
-
         // Fresh cancellation channel for this session.
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         guard.cancel_tx = cancel_tx;
@@ -201,7 +205,6 @@ pub async fn start_walkthrough(
         guard.session = None;
         guard.session_dir = None;
         guard.storage = None;
-        guard.mcp_command = None;
     };
 
     // Start the platform event tap and processing loop.
@@ -219,11 +222,12 @@ pub async fn start_walkthrough(
 
         let emit_handle = app.clone();
         let hover_dwell_ms = hover_dwell_threshold.unwrap_or(2000);
+        let mcp_path = mcp_binary_path.clone();
         let processing_task = tauri::async_runtime::spawn(async move {
             process_capture_events(
                 emit_handle,
                 event_rx,
-                mcp_command,
+                mcp_path,
                 planner,
                 processing_storage,
                 session_dir,
@@ -254,11 +258,12 @@ pub async fn start_walkthrough(
 
         let emit_handle = app.clone();
         let hover_dwell_ms = hover_dwell_threshold.unwrap_or(2000);
+        let mcp_path = mcp_binary_path.clone();
         let processing_task = tauri::async_runtime::spawn(async move {
             process_capture_events(
                 emit_handle,
                 event_rx,
-                mcp_command,
+                mcp_path,
                 planner,
                 processing_storage,
                 session_dir,
@@ -605,7 +610,6 @@ pub async fn cancel_walkthrough(app: tauri::AppHandle) -> Result<(), CommandErro
 
         guard.session = None;
         guard.storage = None;
-        guard.mcp_command = None;
 
         (task, dir)
     };

@@ -46,7 +46,7 @@ export const createWalkthroughRecordingSlice: StateCreator<StoreState, [], [], W
   closeCdpModal: () => _set({ walkthroughCdpModalOpen: false }),
 
   startWalkthrough: async (cdpApps: CdpAppConfig[] = []) => {
-    const { workflow, mcpCommand, projectPath, pushLog, plannerConfig } = get();
+    const { workflow, projectPath, pushLog, plannerConfig } = get();
     _set({
       walkthroughError: null,
       walkthroughEvents: [],
@@ -62,7 +62,7 @@ export const createWalkthroughRecordingSlice: StateCreator<StoreState, [], [], W
       ? toEndpoint(plannerConfig)
       : null;
     const { hoverDwellThreshold } = get();
-    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner, cdpApps, hoverDwellThreshold);
+    const result = await commands.startWalkthrough(workflow.id, projectPath ?? null, planner, cdpApps, hoverDwellThreshold);
     if (result.status === "error") {
       const msg = errorMessage(result.error);
       _set({ walkthroughError: msg, walkthroughCdpModalOpen: false });

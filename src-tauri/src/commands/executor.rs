@@ -72,7 +72,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     let emit_handle = app.clone();
     let cleanup_handle = emit_handle.clone();
 
-    let mcp_command = request.mcp_command.clone();
+    let mcp_binary_path =
+        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
     let cancel_token = CancellationToken::new();
     let executor_token = cancel_token.clone();
 
@@ -82,7 +83,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             agent_config,
             vlm_config,
             supervision_config,
-            mcp_command,
+            mcp_binary_path,
             request.execution_mode,
             project_path,
             event_tx,

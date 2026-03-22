@@ -28,7 +28,7 @@ High-level flow in `run()`:
 
 1. Emit `StateChanged(Running)`
 2. Log agent/VLM model info
-3. Spawn MCP server via `McpClient::spawn_native()`
+3. Spawn MCP server via `McpClient::spawn(path, &[])`
 4. `RunStorage::begin_execution()`
 5. Find entry points
 6. Walk graph (with inline verification for Verification-role nodes and per-step supervision in Test mode)

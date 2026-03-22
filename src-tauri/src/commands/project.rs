@@ -3,6 +3,7 @@ use super::types::*;
 use clickweave_core::{NodeType, Workflow, validate_workflow};
 use clickweave_llm::planner::conversation::ConversationSession;
 use std::path::PathBuf;
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
@@ -10,6 +11,14 @@ use uuid::Uuid;
 #[specta::specta]
 pub fn ping() -> String {
     "pong".to_string()
+}
+
+/// Returns Ok(path) if the MCP sidecar was found at startup, or Err(reason) if not.
+#[tauri::command]
+#[specta::specta]
+pub fn get_mcp_status(app: tauri::AppHandle) -> Result<String, String> {
+    let status = app.state::<McpStatus>();
+    status.0.clone()
 }
 
 #[tauri::command]

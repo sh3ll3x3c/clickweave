@@ -131,7 +131,7 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **SettingsSlice** (`settingsSlice.ts`)
 
-- `plannerConfig`, `agentConfig`, `vlmConfig`, `vlmEnabled`, `mcpCommand`, `maxRepairAttempts`, `hoverDwellThreshold`
+- `plannerConfig`, `agentConfig`, `vlmConfig`, `vlmEnabled`, `maxRepairAttempts`, `hoverDwellThreshold`
 - persistence via `store/settings.ts` (`settings.json` through Tauri plugin-store)
 
 **UiSlice** (`uiSlice.ts`)
@@ -242,9 +242,10 @@ From `ui/src/store/state.ts` and `settings.ts`:
 
 - endpoint default: `http://localhost:1234/v1`, model `local`, empty API key
 - `vlmEnabled`: `false`
-- `mcpCommand`: `"npx"`
 - `maxRepairAttempts`: `3`
 - `hoverDwellThreshold`: `2000`
+
+`mcpCommand` was removed — the MCP binary is now resolved automatically by the backend.
 
 `maxRepairAttempts` is clamped to `0..10` in `settingsSlice.ts`.
 

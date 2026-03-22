@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { commands } from "../bindings";
 import { useStore } from "../store/useAppStore";
 import type { NodeVerdict } from "../store/slices/verdictSlice";
 import type { WalkthroughStatus } from "../store/slices/walkthroughSlice";
@@ -119,6 +120,15 @@ export function useExecutorEvents() {
       console.error("Failed to subscribe to Tauri events:", err);
       useStore.getState().pushLog(`Critical: event listeners failed to initialize: ${err}`);
       return [] as (() => void)[];
+    });
+
+    // Check MCP sidecar status on mount.
+    commands.getMcpStatus().then((result) => {
+      if (result.status === "ok") {
+        useStore.getState().pushLog(`MCP sidecar ready: ${result.data}`);
+      } else {
+        useStore.getState().pushLog(`⚠ MCP sidecar not found: ${result.error}. Workflow execution, planning, and walkthroughs will fail.`);
+      }
     });
 
     return () => {

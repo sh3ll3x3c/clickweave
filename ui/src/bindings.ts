@@ -8,6 +8,17 @@ export const commands = {
 async ping() : Promise<string> {
     return await TAURI_INVOKE("ping");
 },
+/**
+ * Returns Ok(path) if the MCP sidecar was found at startup, or Err(reason) if not.
+ */
+async getMcpStatus() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_mcp_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async pickWorkflowFile() : Promise<Result<string | null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("pick_workflow_file") };
@@ -150,9 +161,9 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, Co
     else return { status: "error", error: e  as any };
 }
 },
-async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[], hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
+async startWalkthrough(workflowId: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[], hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner, cdpApps, hoverDwellThreshold }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, projectPath, planner, cdpApps, hoverDwellThreshold }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -214,9 +225,9 @@ async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath
     else return { status: "error", error: e  as any };
 }
 },
-async detectCdpApps(mcpCommand: string) : Promise<Result<DetectedCdpApp[], CommandError>> {
+async detectCdpApps() : Promise<Result<DetectedCdpApp[], CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("detect_cdp_apps", { mcpCommand }) };
+    return { status: "ok", data: await TAURI_INVOKE("detect_cdp_apps") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -257,7 +268,7 @@ export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
-export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string; max_repair_attempts: number }
+export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; max_repair_attempts: number }
 export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[] }
 /**
  * User-selected app for CDP during walkthrough.
@@ -355,12 +366,12 @@ export type NodeRun = { run_id: string; node_id: string; node_name?: string; exe
 export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | ({ type: "If" } & IfParams) | ({ type: "Switch" } & SwitchParams) | ({ type: "Loop" } & LoopParams) | ({ type: "EndLoop" } & EndLoopParams)
 export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
 export type Operator = "Equals" | "NotEquals" | "GreaterThan" | "LessThan" | "GreaterThanOrEqual" | "LessThanOrEqual" | "Contains" | "NotContains" | "IsEmpty" | "IsNotEmpty"
-export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
+export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean }
 /**
  * Compact summary of what a patch did (for conversation context, not the full patch).
  */
 export type PatchSummary = { added: number; removed: number; updated: number; added_names?: string[]; removed_names?: string[]; updated_names?: string[]; description?: string | null }
-export type PlanRequest = { intent: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
+export type PlanRequest = { intent: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean }
 export type PlanResponse = { workflow: Workflow; warnings: string[] }
 export type Position = { x: number; y: number }
 export type PressKeyParams = { key: string; modifiers: string[] }
@@ -374,7 +385,7 @@ export type RunRequest = { workflow: Workflow; project_path: string | null; agen
 /**
  * Planner LLM used for supervision in Test mode.
  */
-planner: EndpointConfig | null; mcp_command: string; execution_mode: ExecutionMode }
+planner: EndpointConfig | null; execution_mode: ExecutionMode }
 export type RunStatus = "Ok" | "Failed" | "Stopped"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 /**
