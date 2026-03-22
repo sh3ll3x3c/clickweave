@@ -49,7 +49,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .call_tool("cdp_list_pages", Some(serde_json::json!({})))
             .await;
 
-        // 2. Take CDP snapshot
+        // Take CDP snapshot
         self.log(format!("CDP: taking snapshot to find '{}'", target));
         let snapshot_result = mcp
             .call_tool("cdp_take_snapshot", Some(serde_json::json!({})))
@@ -67,7 +67,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let snapshot_text = Self::extract_result_text(&snapshot_result);
 
-        // 3. Find matching elements
+        // Find matching elements
         let mut matches = find_elements_in_snapshot(&snapshot_text, target);
         clickweave_core::cdp::narrow_matches(&mut matches, expected.role, expected.href);
         clickweave_core::cdp::narrow_by_parent(
@@ -356,18 +356,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Try to connect CDP to an app, returning true on success.
+    /// Disconnects on failure to avoid leaving a stale connection.
     async fn try_cdp_connect(&self, app_name: &str, port: u16, mcp: &(impl Mcp + ?Sized)) -> bool {
-        let connect_args = serde_json::json!({
-            "port": port,
-        });
         if mcp
-            .call_tool("cdp_connect", Some(connect_args))
+            .call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
             .await
             .is_err()
         {
             return false;
         }
-        self.poll_cdp_ready(app_name, mcp, 5).await.is_ok()
+        if self.poll_cdp_ready(app_name, mcp, 5).await.is_ok() {
+            true
+        } else {
+            let _ = mcp.call_tool("cdp_disconnect", None).await;
+            false
+        }
     }
 
     /// Quit the app, confirm it exited, relaunch with --remote-debugging-port.
