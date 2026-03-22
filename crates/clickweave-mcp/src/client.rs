@@ -54,6 +54,19 @@ impl McpClient {
         Self::spawn("npx", &["-y", "native-devtools-mcp"]).await
     }
 
+    /// Spawn native-devtools-mcp using the given command.
+    ///
+    /// `mcp_command` controls how to start the server:
+    /// - `"npx"` spawns via `npx -y native-devtools-mcp`
+    /// - Any other value is used as a direct binary path
+    pub async fn spawn_native(mcp_command: &str) -> Result<Self> {
+        if mcp_command == "npx" {
+            Self::spawn("npx", &["-y", "native-devtools-mcp"]).await
+        } else {
+            Self::spawn(mcp_command, &[]).await
+        }
+    }
+
     fn next_id(&self) -> u64 {
         self.request_id.fetch_add(1, Ordering::SeqCst)
     }
