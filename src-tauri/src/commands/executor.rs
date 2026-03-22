@@ -72,7 +72,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     let emit_handle = app.clone();
     let cleanup_handle = emit_handle.clone();
 
-    let mcp_configs = clickweave_mcp::default_server_configs(&request.mcp_command);
+    let mcp_command = request.mcp_command.clone();
     let cancel_token = CancellationToken::new();
     let executor_token = cancel_token.clone();
 
@@ -82,7 +82,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             agent_config,
             vlm_config,
             supervision_config,
-            mcp_configs,
+            mcp_command,
             request.execution_mode,
             project_path,
             event_tx,

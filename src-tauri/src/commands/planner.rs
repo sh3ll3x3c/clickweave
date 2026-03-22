@@ -1,16 +1,15 @@
 use super::error::CommandError;
 use super::types::*;
-use clickweave_mcp::{McpRouter, default_server_configs};
+use clickweave_mcp::McpClient;
 
 pub(crate) async fn fetch_mcp_tool_schemas(
     mcp_command: &str,
 ) -> Result<Vec<serde_json::Value>, CommandError> {
-    let configs = default_server_configs(mcp_command);
-    let mut router = McpRouter::spawn(&configs)
+    let mut client = McpClient::spawn_native(mcp_command)
         .await
-        .map_err(|e| CommandError::mcp(format!("Failed to spawn MCP servers: {}", e)))?;
-    let tools = router.tools_as_openai();
-    router.kill_all();
+        .map_err(|e| CommandError::mcp(format!("Failed to spawn MCP server: {}", e)))?;
+    let tools = client.tools_as_openai();
+    let _ = client.kill();
     Ok(tools)
 }
 
