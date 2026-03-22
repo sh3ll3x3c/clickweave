@@ -108,9 +108,9 @@ All endpoints use the OpenAI-compatible `/v1/chat/completions` format. Works wit
 
 ### CDP / Electron / Chrome DevTools Protocol
 
-For Electron and Chrome-family apps, Clickweave can spawn a [chrome-devtools-mcp](https://github.com/anthropics/chrome-devtools-mcp) server to get element-level precision:
+For Electron and Chrome-family apps, Clickweave uses the built-in CDP tools in `native-devtools-mcp` to get element-level precision:
 - **Automatic detection:** Electron apps are detected by framework directory checks; Chrome-family browsers are matched by bundle ID
-- **Lazy spawning:** CDP servers are spawned per-app only when needed, managed by `McpRouter` alongside the primary `native-devtools-mcp` server
+- **Single server:** CDP tools (`cdp_connect`, `cdp_click`, `cdp_take_snapshot`, etc.) run on the same `native-devtools-mcp` server — no separate process needed
 - **Walkthrough integration:** during recording, detected CDP apps trigger a selection modal for the user to choose the target page
 
 ### Local-First & Cross-Platform
