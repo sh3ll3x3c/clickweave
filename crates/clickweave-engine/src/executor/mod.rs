@@ -24,11 +24,38 @@ use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+/// Minimal trait for MCP tool invocation, used to enable test stubs.
+#[allow(dead_code)] // tools_as_openai used via McpClient, kept for API symmetry
+pub(crate) trait Mcp: Send + Sync {
+    fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> impl Future<Output = anyhow::Result<clickweave_mcp::ToolCallResult>> + Send;
+
+    fn tools_as_openai(&self) -> Vec<serde_json::Value>;
+}
+
+impl Mcp for clickweave_mcp::McpClient {
+    fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> impl Future<Output = anyhow::Result<clickweave_mcp::ToolCallResult>> + Send {
+        clickweave_mcp::McpClient::call_tool(self, name, arguments)
+    }
+
+    fn tools_as_openai(&self) -> Vec<serde_json::Value> {
+        clickweave_mcp::McpClient::tools_as_openai(self)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutorState {
@@ -83,7 +110,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     supervision: Option<C>,
     /// Dedicated VLM for screenshot verification: low max_tokens, thinking disabled.
     verdict_vlm: Option<LlmClient>,
-    mcp_configs: Vec<clickweave_mcp::McpServerConfig>,
+    mcp_command: String,
     execution_mode: ExecutionMode,
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
@@ -100,8 +127,8 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     /// Set by eval_control_flow when a loop exits; consumed by the main loop
     /// to run a deferred visual verification after the loop completes.
     pending_loop_exit: Option<PendingLoopExit>,
-    /// Maps app name → CDP MCP server name in the McpRouter.
-    cdp_servers: HashMap<String, String>,
+    /// The app name for which a CDP connection is active (via cdp_connect).
+    cdp_connected_app: Option<String>,
     cancel_token: CancellationToken,
     /// Hint from a previous supervision failure, threaded into disambiguation
     /// prompts on retry so the LLM picks a different match.
@@ -146,7 +173,7 @@ impl WorkflowExecutor {
         agent_config: LlmConfig,
         vlm_config: Option<LlmConfig>,
         supervision_config: Option<LlmConfig>,
-        mcp_configs: Vec<clickweave_mcp::McpServerConfig>,
+        mcp_command: String,
         execution_mode: ExecutionMode,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
@@ -165,7 +192,7 @@ impl WorkflowExecutor {
             vlm: vlm_config.map(|c| LlmClient::new(c.with_thinking(false))),
             supervision: supervision_config.map(|c| LlmClient::new(c.with_thinking(false))),
             verdict_vlm,
-            mcp_configs,
+            mcp_command,
             execution_mode,
             project_path,
             event_tx,
@@ -178,7 +205,7 @@ impl WorkflowExecutor {
             supervision_history: RwLock::new(Vec::new()),
             runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
-            cdp_servers: HashMap::new(),
+            cdp_connected_app: None,
             cancel_token,
             supervision_hint: None,
             tried_click_indices: RwLock::new(Vec::new()),
@@ -290,10 +317,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .map(|(name, _)| name.clone())
     }
 
-    /// Get the CDP server name for the currently focused app, if one is registered.
-    pub(crate) fn focused_cdp_server(&self) -> Option<String> {
-        let app_name = self.focused_app_name()?;
-        self.cdp_servers.get(&app_name).cloned()
+    /// Check whether a CDP connection is active for the currently focused app.
+    pub(crate) fn cdp_connected_to_focused_app(&self) -> bool {
+        let Some(app_name) = self.focused_app_name() else {
+            return false;
+        };
+        self.cdp_connected_app.as_deref() == Some(app_name.as_str())
     }
 
     pub(crate) fn focused_app_kind(&self) -> AppKind {

@@ -1,7 +1,8 @@
+use super::Mcp;
 use super::{ExecutorCommand, ExecutorEvent, ExecutorResult, ExecutorState, WorkflowExecutor};
 use clickweave_core::{ExecutionMode, NodeRole, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::{McpRouter, ToolProvider};
+use clickweave_mcp::McpClient;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
@@ -38,7 +39,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_name: &str,
         node_type: &NodeType,
         tools: &[Value],
-        mcp: &mut McpRouter,
+        mcp: &McpClient,
         timeout_ms: Option<u64>,
         retries: u32,
         node_run: &mut Option<NodeRun>,
@@ -100,22 +101,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.log("VLM not configured — images sent directly to agent");
         }
 
-        let mcp_result = McpRouter::spawn(&self.mcp_configs).await;
+        let mcp_result = McpClient::spawn_native(&self.mcp_command).await;
 
-        let mut mcp = match mcp_result {
+        let mcp = match mcp_result {
             Ok(m) => m,
             Err(e) => {
-                self.emit_error(format!("Failed to spawn MCP servers: {}", e));
+                self.emit_error(format!("Failed to spawn MCP server: {}", e));
                 self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
                 return;
             }
         };
 
-        self.log(format!(
-            "MCP router ready: {} servers, {} tools",
-            mcp.server_count(),
-            mcp.tools().len()
-        ));
+        self.log(format!("MCP ready: {} tools", mcp.tools().len()));
 
         match self.storage.begin_execution() {
             Ok(exec_dir) => self.log(format!("Execution dir: {}", exec_dir)),
@@ -262,7 +259,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         &node_name,
                         &node_type,
                         &tools,
-                        &mut mcp,
+                        &mcp,
                         timeout_ms,
                         retries,
                         &mut node_run,
@@ -491,7 +488,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_type: &NodeType,
         expected_outcome: Option<&str>,
         node_result: &Value,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
     ) -> Option<clickweave_core::NodeVerdict> {
         if matches!(node_type, NodeType::TakeScreenshot(_)) {
             let Some(outcome) = expected_outcome else {

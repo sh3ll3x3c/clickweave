@@ -1,8 +1,8 @@
+use super::super::Mcp;
 use super::super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use super::select_best_window;
 use clickweave_core::{ClickParams, NodeRun, NodeType, WindowControlAction};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::ToolProvider;
 use serde_json::Value;
 
 /// Compute the click coordinates for a window control action given window bounds.
@@ -30,7 +30,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn resolve_window_control_click(
         &self,
         action: clickweave_core::WindowControlAction,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {

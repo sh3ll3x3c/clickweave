@@ -1,8 +1,9 @@
 use super::super::*;
+use crate::executor::Mcp;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_llm::{ChatBackend, ChatResponse, Choice, Content, ContentPart, Message};
-use clickweave_mcp::{ToolCallResult, ToolContent, ToolProvider};
+use clickweave_mcp::{ToolCallResult, ToolContent};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -36,7 +37,7 @@ pub(super) fn make_test_executor() -> WorkflowExecutor<StubBackend> {
         workflow,
         StubBackend,
         None,
-        vec![],
+        String::new(),
         ExecutionMode::Run,
         None,
         tx,
@@ -90,13 +91,14 @@ impl ChatBackend for ScriptedBackend {
     }
 }
 
-/// A stub ToolProvider that returns queued responses and records calls.
+/// A stub Mcp implementation that returns queued responses and records calls.
 ///
 /// Use `push_response` to queue tool call results in FIFO order. When a tool
 /// is called, the next queued response is returned. If no responses are queued,
 /// the call panics (test misconfiguration).
 ///
 /// Call history is recorded in `calls` for assertions.
+#[allow(dead_code)] // openai_tools read by Mcp::tools_as_openai
 pub(super) struct StubToolProvider {
     responses: Mutex<Vec<ToolCallResult>>,
     calls: Mutex<Vec<(String, Option<Value>)>>,
@@ -137,7 +139,7 @@ impl StubToolProvider {
     }
 }
 
-impl ToolProvider for StubToolProvider {
+impl Mcp for StubToolProvider {
     async fn call_tool(
         &self,
         name: &str,
@@ -168,7 +170,7 @@ pub(super) fn make_scripted_executor(responses: Vec<&str>) -> WorkflowExecutor<S
         workflow,
         ScriptedBackend::new(responses),
         None,
-        vec![],
+        String::new(),
         ExecutionMode::Run,
         None,
         tx,
@@ -202,7 +204,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         workflow: Workflow,
         agent: C,
         vlm: Option<C>,
-        mcp_configs: Vec<clickweave_mcp::McpServerConfig>,
+        mcp_command: String,
         execution_mode: ExecutionMode,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
@@ -216,7 +218,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             vlm,
             supervision: None,
             verdict_vlm: None,
-            mcp_configs,
+            mcp_command,
             execution_mode,
             project_path,
             event_tx,
@@ -229,7 +231,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             supervision_history: RwLock::new(Vec::new()),
             runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
-            cdp_servers: HashMap::new(),
+            cdp_connected_app: None,
             cancel_token,
             supervision_hint: None,
             tried_click_indices: RwLock::new(Vec::new()),
@@ -248,7 +250,7 @@ pub(super) fn make_executor_with_workflow(workflow: Workflow) -> WorkflowExecuto
         workflow,
         StubBackend,
         None,
-        vec![],
+        String::new(),
         ExecutionMode::Run,
         None,
         tx,

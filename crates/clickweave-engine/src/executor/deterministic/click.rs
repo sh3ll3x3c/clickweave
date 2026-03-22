@@ -1,9 +1,9 @@
+use super::super::Mcp;
 use super::super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use super::truncate_for_error;
 use clickweave_core::decision_cache::cache_key;
 use clickweave_core::{ClickParams, NodeRun, NodeType};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::ToolProvider;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -11,7 +11,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn resolve_click_target(
         &self,
         node_id: Uuid,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
@@ -34,7 +34,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn resolve_click_target_by_image(
         &self,
         _node_id: Uuid,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
@@ -61,7 +61,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         node_id: Uuid,
         target: &str,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<(f64, f64)> {
         let scoped_app = self.focused_app_name();
@@ -177,7 +177,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn resolve_target_by_image(
         &self,
         template_b64: &str,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<(f64, f64)> {
         self.log("Resolving target by image template".to_string());
@@ -292,7 +292,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_id: Uuid,
         original_args: &Value,
         original_result_text: &str,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> Option<String> {
         let retry_args = self

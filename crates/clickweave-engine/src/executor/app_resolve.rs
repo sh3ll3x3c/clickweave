@@ -1,8 +1,8 @@
+use super::Mcp;
 use super::{ExecutorError, ExecutorResult, ResolvedApp, WorkflowExecutor};
 use clickweave_core::decision_cache::{self, AppResolution};
 use clickweave_core::{ExecutionMode, FocusMethod, NodeRun, NodeType};
 use clickweave_llm::{ChatBackend, Message};
-use clickweave_mcp::ToolProvider;
 use serde_json::Value;
 use tracing::debug;
 use uuid::Uuid;
@@ -16,7 +16,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         node_id: Uuid,
         user_input: &str,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<ResolvedApp> {
         // Check in-memory cache first (populated during this execution)
@@ -201,7 +201,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn lookup_app_pid(
         &self,
         app_name: &str,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
     ) -> ExecutorResult<i32> {
         let result = mcp
             .call_tool(

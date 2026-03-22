@@ -10,7 +10,7 @@ use clickweave_core::{
     tool_mapping,
 };
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::{McpRouter, ToolCallResult};
+use clickweave_mcp::{McpClient, ToolCallResult};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -61,7 +61,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &mut self,
         node_id: Uuid,
         node_type: &NodeType,
-        mcp: &mut McpRouter,
+        mcp: &McpClient,
         mut node_run: Option<&mut NodeRun>,
     ) -> ExecutorResult<Value> {
         // Reset per-execution; set to true only on CDP click success.
@@ -75,18 +75,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             // CDP path: try hover via chrome-devtools-mcp for Electron/Chrome apps
             if app_kind.uses_cdp()
-                && let Some(cdp_server) = self.focused_cdp_server()
+                && self.cdp_connected_to_focused_app()
                 && let Some(target) = &p.target
             {
                 let expected = cdp::CdpExpected::from_click_target(target);
                 match self
-                    .resolve_and_hover_cdp(
-                        target.text(),
-                        &expected,
-                        &cdp_server,
-                        mcp,
-                        node_run.as_deref(),
-                    )
+                    .resolve_and_hover_cdp(target.text(), &expected, mcp, node_run.as_deref())
                     .await
                 {
                     Ok(result_text) => {
@@ -226,12 +220,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let target = click_target.text();
             let app_kind = self.focused_app_kind();
 
-            if app_kind.uses_cdp()
-                && let Some(cdp_server) = self.focused_cdp_server()
-            {
+            if app_kind.uses_cdp() && self.cdp_connected_to_focused_app() {
                 let expected = cdp::CdpExpected::from_click_target(click_target);
                 match self
-                    .resolve_and_click_cdp(target, &expected, &cdp_server, mcp, node_run.as_deref())
+                    .resolve_and_click_cdp(target, &expected, mcp, node_run.as_deref())
                     .await
                 {
                     Ok(result_text) => {

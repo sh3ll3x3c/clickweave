@@ -1,14 +1,14 @@
+use super::super::Mcp;
 use super::super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::{HoverParams, NodeRun, NodeType};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::ToolProvider;
 use uuid::Uuid;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn resolve_hover_target(
         &self,
         node_id: Uuid,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         params: &HoverParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
@@ -30,7 +30,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn resolve_hover_target_by_image(
         &self,
         _node_id: Uuid,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         params: &HoverParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {

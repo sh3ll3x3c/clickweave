@@ -1,7 +1,8 @@
+use super::Mcp;
 use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::NodeType;
 use clickweave_llm::{ChatBackend, Message};
-use clickweave_mcp::{ToolContent, ToolProvider};
+use clickweave_mcp::ToolContent;
 use serde_json::Value;
 use tracing::debug;
 
@@ -30,7 +31,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         node_name: &str,
         node_type: &NodeType,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
     ) -> VerificationResult {
         // Skip verification for read-only nodes (find_text, find_image,
         // take_screenshot, list_windows). These produce their own definitive
@@ -86,7 +87,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn verify_loop_exit(
         &self,
         loop_exit: &PendingLoopExit,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
     ) -> VerificationResult {
         debug!(
             loop_name = loop_exit.loop_name.as_str(),
@@ -269,10 +270,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Waits briefly for UI animations to settle, then tries an app-scoped
     /// window screenshot up to 3 times with 500ms delays (the window may not
     /// be ready right after `launch_app`).
-    async fn capture_verification_screenshot(
-        &self,
-        mcp: &(impl ToolProvider + ?Sized),
-    ) -> Option<String> {
+    async fn capture_verification_screenshot(&self, mcp: &(impl Mcp + ?Sized)) -> Option<String> {
         // Let UI animations/transitions settle before capturing.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -298,7 +296,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Call `take_screenshot` and extract the base64-encoded image from the result.
     pub(crate) async fn extract_screenshot_image(
         &self,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         args: Value,
     ) -> Option<String> {
         let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
@@ -317,7 +315,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// (used by find_image for server-side coordinate conversion).
     pub(crate) async fn take_screenshot_with_id(
         &self,
-        mcp: &(impl ToolProvider + ?Sized),
+        mcp: &(impl Mcp + ?Sized),
         args: Value,
     ) -> Option<(String, Option<String>)> {
         let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
