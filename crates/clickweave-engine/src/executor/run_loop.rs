@@ -101,7 +101,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.log("VLM not configured — images sent directly to agent");
         }
 
-        let mcp_result = McpClient::spawn_native(&self.mcp_command).await;
+        let mcp_result = McpClient::spawn(&self.mcp_binary_path, &[]).await;
 
         let mcp = match mcp_result {
             Ok(m) => m,

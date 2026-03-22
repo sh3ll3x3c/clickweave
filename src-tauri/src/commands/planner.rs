@@ -2,12 +2,12 @@ use super::error::CommandError;
 use super::types::*;
 use clickweave_mcp::McpClient;
 
-pub(crate) async fn fetch_mcp_tool_schemas(
-    mcp_command: &str,
-) -> Result<Vec<serde_json::Value>, CommandError> {
-    let mut client = McpClient::spawn_native(mcp_command)
+pub(crate) async fn fetch_mcp_tool_schemas() -> Result<Vec<serde_json::Value>, CommandError> {
+    let mcp_binary =
+        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
+    let mut client = McpClient::spawn(&mcp_binary, &[])
         .await
-        .map_err(|e| CommandError::mcp(format!("Failed to spawn MCP server: {}", e)))?;
+        .map_err(|e| CommandError::mcp(format!("Failed to spawn MCP server: {e}")))?;
     let tools = client.tools_as_openai();
     let _ = client.kill();
     Ok(tools)
@@ -16,7 +16,7 @@ pub(crate) async fn fetch_mcp_tool_schemas(
 #[tauri::command]
 #[specta::specta]
 pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, CommandError> {
-    let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
+    let tools = fetch_mcp_tool_schemas().await?;
     let planner_config = request.planner.into_llm_config(None);
 
     let result = clickweave_llm::planner::plan_workflow(
@@ -38,7 +38,7 @@ pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, Command
 #[tauri::command]
 #[specta::specta]
 pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, CommandError> {
-    let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
+    let tools = fetch_mcp_tool_schemas().await?;
     let planner_config = request.planner.into_llm_config(None);
 
     let result = clickweave_llm::planner::patch_workflow(

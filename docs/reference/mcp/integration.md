@@ -23,8 +23,9 @@ File: `crates/clickweave-mcp/src/client.rs`
 
 | Method | Behavior |
 |--------|----------|
-| `McpClient::spawn_native(mcp_command)` | `"npx"` → runs `npx -y native-devtools-mcp`; anything else → direct binary path |
-| `McpClient::spawn(cmd, args)` | runs provided command and args |
+| `McpClient::spawn(cmd, args)` | runs provided command and args directly |
+
+`spawn_native()` was removed. Callers now use `McpClient::spawn(path, &[])` with a binary path resolved by `mcp_resolve::resolve_mcp_binary()` in the Tauri command layer.
 
 ### Initialization Sequence
 
@@ -126,17 +127,11 @@ Unknown tool names map to `McpToolCall` only if present in known tool schema lis
 
 ## Configuration
 
-UI settings store `mcpCommand`:
-
-- `"npx"` → spawns native-devtools via `npx -y native-devtools-mcp`
-- any other string → used as direct binary path
-
-The `mcpCommand` string is passed to `McpClient::spawn_native()` in the executor and planner Tauri commands.
+The MCP binary path is resolved automatically by `mcp_resolve::resolve_mcp_binary()` in the Tauri command layer — no user-facing `mcpCommand` setting is required. The resolved path is passed directly to `McpClient::spawn(path, &[])`.
 
 Relevant files:
 
-- `ui/src/store/settings.ts`
-- `ui/src/components/SettingsModal.tsx`
+- `src-tauri/src/mcp_resolve.rs`
 - `src-tauri/src/commands/planner.rs`
 - `src-tauri/src/commands/executor.rs`
 - `crates/clickweave-engine/src/executor/run_loop.rs`

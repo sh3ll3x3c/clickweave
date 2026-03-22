@@ -73,13 +73,12 @@ function App() {
     })),
   );
 
-  const { plannerConfig, agentConfig, vlmConfig, vlmEnabled, mcpCommand, maxRepairAttempts, hoverDwellThreshold } = useStore(
+  const { plannerConfig, agentConfig, vlmConfig, vlmEnabled, maxRepairAttempts, hoverDwellThreshold } = useStore(
     useShallow((s) => ({
       plannerConfig: s.plannerConfig,
       agentConfig: s.agentConfig,
       vlmConfig: s.vlmConfig,
       vlmEnabled: s.vlmEnabled,
-      mcpCommand: s.mcpCommand,
       maxRepairAttempts: s.maxRepairAttempts,
       hoverDwellThreshold: s.hoverDwellThreshold,
     })),
@@ -111,7 +110,6 @@ function App() {
   const setAgentConfig = useStore((s) => s.setAgentConfig);
   const setVlmConfig = useStore((s) => s.setVlmConfig);
   const setVlmEnabled = useStore((s) => s.setVlmEnabled);
-  const setMcpCommand = useStore((s) => s.setMcpCommand);
   const setMaxRepairAttempts = useStore((s) => s.setMaxRepairAttempts);
   const setHoverDwellThreshold = useStore((s) => s.setHoverDwellThreshold);
   const setExecutionMode = useStore((s) => s.setExecutionMode);
@@ -306,7 +304,6 @@ function App() {
         agentConfig={agentConfig}
         vlmConfig={vlmConfig}
         vlmEnabled={vlmEnabled}
-        mcpCommand={mcpCommand}
         maxRepairAttempts={maxRepairAttempts}
         hoverDwellThreshold={hoverDwellThreshold}
         onClose={() => setShowSettings(false)}
@@ -314,7 +311,6 @@ function App() {
         onAgentConfigChange={setAgentConfig}
         onVlmConfigChange={setVlmConfig}
         onVlmEnabledChange={setVlmEnabled}
-        onMcpCommandChange={setMcpCommand}
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
         onHoverDwellThresholdChange={setHoverDwellThreshold}
       />
@@ -330,7 +326,6 @@ function App() {
 
       <CdpAppSelectModal
         open={cdpModalOpen}
-        mcpCommand={mcpCommand}
         cdpProgress={cdpProgress}
         onStart={(cdpApps) => useStore.getState().startWalkthrough(cdpApps)}
         onSkip={() => { useStore.getState().closeCdpModal(); useStore.getState().startWalkthrough([]); }}

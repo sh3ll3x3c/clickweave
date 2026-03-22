@@ -19,7 +19,6 @@ export const DEFAULT_ENDPOINT: EndpointConfig = {
 };
 
 export const DEFAULT_VLM_ENABLED = false;
-export const DEFAULT_MCP_COMMAND = "npx";
 
 export function makeDefaultWorkflow(): Workflow {
   return {

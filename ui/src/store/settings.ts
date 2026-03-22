@@ -1,13 +1,12 @@
 import { load } from "@tauri-apps/plugin-store";
 import type { EndpointConfig } from "./state";
-import { DEFAULT_ENDPOINT, DEFAULT_MCP_COMMAND, DEFAULT_VLM_ENABLED } from "./state";
+import { DEFAULT_ENDPOINT, DEFAULT_VLM_ENABLED } from "./state";
 
 export interface PersistedSettings {
   plannerConfig: EndpointConfig;
   agentConfig: EndpointConfig;
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
-  mcpCommand: string;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
 }
@@ -17,7 +16,6 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   agentConfig: DEFAULT_ENDPOINT,
   vlmConfig: DEFAULT_ENDPOINT,
   vlmEnabled: DEFAULT_VLM_ENABLED,
-  mcpCommand: DEFAULT_MCP_COMMAND,
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
 };
@@ -33,7 +31,6 @@ export async function loadSettings(): Promise<PersistedSettings> {
   const agentConfig = await store.get<EndpointConfig>("agentConfig");
   const vlmConfig = await store.get<EndpointConfig>("vlmConfig");
   const vlmEnabled = await store.get<boolean>("vlmEnabled");
-  const mcpCommand = await store.get<string>("mcpCommand");
   const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
   const hoverDwellThreshold = await store.get<number>("hoverDwellThreshold");
   return {
@@ -41,7 +38,6 @@ export async function loadSettings(): Promise<PersistedSettings> {
     agentConfig: agentConfig ?? fallback,
     vlmConfig: vlmConfig ?? SETTINGS_DEFAULTS.vlmConfig,
     vlmEnabled: vlmEnabled ?? SETTINGS_DEFAULTS.vlmEnabled,
-    mcpCommand: mcpCommand ?? SETTINGS_DEFAULTS.mcpCommand,
     maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
     hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
   };

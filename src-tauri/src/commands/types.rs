@@ -9,6 +9,10 @@ use tauri::Manager;
 
 pub struct AppDataDir(pub PathBuf);
 
+/// MCP sidecar resolution result, checked once at startup.
+/// Ok(path) = binary found, Err(reason) = missing or invalid.
+pub struct McpStatus(pub Result<String, String>);
+
 pub fn resolve_storage(
     app: &tauri::AppHandle,
     project_path: &Option<String>,
@@ -90,7 +94,6 @@ pub struct RunRequest {
     pub vlm: Option<EndpointConfig>,
     /// Planner LLM used for supervision in Test mode.
     pub planner: Option<EndpointConfig>,
-    pub mcp_command: String,
     pub execution_mode: ExecutionMode,
 }
 
@@ -100,7 +103,6 @@ pub struct PlanRequest {
     pub planner: EndpointConfig,
     pub allow_ai_transforms: bool,
     pub allow_agent_steps: bool,
-    pub mcp_command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -116,7 +118,6 @@ pub struct PatchRequest {
     pub planner: EndpointConfig,
     pub allow_ai_transforms: bool,
     pub allow_agent_steps: bool,
-    pub mcp_command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -201,7 +202,6 @@ pub struct AssistantChatRequest {
     pub planner: EndpointConfig,
     pub allow_ai_transforms: bool,
     pub allow_agent_steps: bool,
-    pub mcp_command: String,
     pub max_repair_attempts: u32,
 }
 

@@ -37,7 +37,7 @@ pub async fn assistant_chat(
 
     let emit_handle = app.clone();
     let join_handle = tokio::task::spawn(async move {
-        let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
+        let tools = fetch_mcp_tool_schemas().await?;
         let config = request.planner.into_llm_config(None);
         let session = ConversationSession {
             messages: request.history,

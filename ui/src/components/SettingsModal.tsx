@@ -1,4 +1,3 @@
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { EndpointConfig } from "../store/useAppStore";
 import { Modal } from "./Modal";
 
@@ -8,7 +7,6 @@ interface SettingsModalProps {
   agentConfig: EndpointConfig;
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
-  mcpCommand: string;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
   onClose: () => void;
@@ -16,7 +14,6 @@ interface SettingsModalProps {
   onAgentConfigChange: (config: EndpointConfig) => void;
   onVlmConfigChange: (config: EndpointConfig) => void;
   onVlmEnabledChange: (enabled: boolean) => void;
-  onMcpCommandChange: (cmd: string) => void;
   onMaxRepairAttemptsChange: (n: number) => void;
   onHoverDwellThresholdChange: (ms: number) => void;
 }
@@ -90,7 +87,6 @@ export function SettingsModal({
   agentConfig,
   vlmConfig,
   vlmEnabled,
-  mcpCommand,
   maxRepairAttempts,
   hoverDwellThreshold,
   onClose,
@@ -98,7 +94,6 @@ export function SettingsModal({
   onAgentConfigChange,
   onVlmConfigChange,
   onVlmEnabledChange,
-  onMcpCommandChange,
   onMaxRepairAttemptsChange,
   onHoverDwellThresholdChange,
 }: SettingsModalProps) {
@@ -187,48 +182,6 @@ export function SettingsModal({
               />
               <p className="mt-1 text-[10px] text-[var(--text-muted)]">
                 Validate patches and retry on failure. 0 = skip validation, 1 = validate only, 2+ = validate and retry.
-              </p>
-            </div>
-          </div>
-
-          <div>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              native-devtools-mcp
-            </h3>
-            <p className="mb-2 text-[10px] text-[var(--text-muted)]">
-              Provides browser automation and screenshot tools for workflow execution.
-            </p>
-            <div>
-              <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-                Binary path
-              </label>
-              <div className="flex gap-1.5">
-                <input
-                  type="text"
-                  value={mcpCommand === "npx" ? "" : mcpCommand}
-                  onChange={(e) =>
-                    onMcpCommandChange(e.target.value.trim() || "npx")
-                  }
-                  placeholder="Default (npx)"
-                  className={`${inputClass} placeholder-[var(--text-muted)]`}
-                />
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const path = await openDialog({
-                      title: "Select native-devtools-mcp binary",
-                      multiple: false,
-                      directory: false,
-                    });
-                    if (path) onMcpCommandChange(path);
-                  }}
-                  className="shrink-0 rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-                >
-                  Browse
-                </button>
-              </div>
-              <p className="mt-1 text-[10px] text-[var(--text-muted)]">
-                Leave empty to use npx, or set a path to a local binary
               </p>
             </div>
           </div>

@@ -379,7 +379,6 @@ pub struct WalkthroughHandle {
     pub session: Option<WalkthroughSession>,
     pub session_dir: Option<std::path::PathBuf>,
     pub(super) storage: Option<WalkthroughStorage>,
-    pub(super) mcp_command: Option<String>,
     #[cfg(target_os = "macos")]
     pub(super) event_tap: Option<MacOSEventTap>,
     #[cfg(target_os = "windows")]
@@ -396,7 +395,6 @@ impl Default for WalkthroughHandle {
             session: None,
             session_dir: None,
             storage: None,
-            mcp_command: None,
             #[cfg(target_os = "macos")]
             event_tap: None,
             #[cfg(target_os = "windows")]
@@ -464,7 +462,7 @@ impl WalkthroughHandle {
 pub(super) async fn process_capture_events(
     app: tauri::AppHandle,
     mut event_rx: tokio::sync::mpsc::UnboundedReceiver<CaptureEvent>,
-    mcp_command: String,
+    mcp_binary_path: String,
     planner: Option<super::types::EndpointConfig>,
     storage: WalkthroughStorage,
     session_dir: std::path::PathBuf,
@@ -473,7 +471,7 @@ pub(super) async fn process_capture_events(
     hover_dwell_ms: u64,
 ) {
     // Spawn the MCP client for enrichment (screenshots + OCR).
-    let mcp_raw = spawn_mcp(&mcp_command).await;
+    let mcp_raw = spawn_mcp(&mcp_binary_path).await;
 
     // Set up CDP connections for selected apps before wrapping in Arc.
     let cdp_state: HashMap<String, u16> = if !cdp_apps.is_empty() {
@@ -1634,8 +1632,8 @@ async fn cdp_retrieve_click(
 // MCP helpers
 // ---------------------------------------------------------------------------
 
-pub(super) async fn spawn_mcp(mcp_command: &str) -> Option<McpClient> {
-    match McpClient::spawn_native(mcp_command).await {
+pub(super) async fn spawn_mcp(mcp_binary_path: &str) -> Option<McpClient> {
+    match McpClient::spawn(mcp_binary_path, &[]).await {
         Ok(client) => {
             tracing::info!(
                 "MCP client spawned for walkthrough enrichment: {} tools",

@@ -111,7 +111,7 @@ UI
 
 ### Execution
 
-`RunRequest` carries `workflow`, `agent`, `vlm`, `planner` (supervision LLM), `mcp_command`, and `execution_mode` (`ExecutionMode::Test` or `ExecutionMode::Run`).
+`RunRequest` carries `workflow`, `agent`, `vlm`, `planner` (supervision LLM), and `execution_mode` (`ExecutionMode::Test` or `ExecutionMode::Run`). The MCP binary path is resolved automatically by the Tauri command layer.
 
 ```
 UI
@@ -159,7 +159,7 @@ Three `Mutex`-wrapped handles are registered as Tauri managed state:
 |--------|-------|---------|
 | `ExecutorHandle` | `cancel_token: Option<CancellationToken>`, `cmd_tx: Option<Sender<ExecutorCommand>>`, `task_handle: Option<JoinHandle<()>>` | Cancels the executor task via token (graceful) then abort (forceful); `cmd_tx` sends `Resume`/`Skip`/`Abort` commands |
 | `AssistantHandle` | `Option<AbortHandle>` | Cancels in-flight assistant LLM call |
-| `WalkthroughHandle` | `session`, `session_dir`, `storage`, `mcp_command`, `event_tap`, `processing_task`, `cancel_tx` | Manages walkthrough recording session lifecycle, event capture, and cancellation |
+| `WalkthroughHandle` | `session`, `session_dir`, `storage`, `event_tap`, `processing_task`, `cancel_tx` | Manages walkthrough recording session lifecycle, event capture, and cancellation |
 
 ### Command Summary
 

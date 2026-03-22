@@ -1,6 +1,6 @@
 import type { StateCreator } from "zustand";
 import type { EndpointConfig } from "../state";
-import { DEFAULT_ENDPOINT, DEFAULT_MCP_COMMAND, DEFAULT_VLM_ENABLED } from "../state";
+import { DEFAULT_ENDPOINT, DEFAULT_VLM_ENABLED } from "../state";
 import { loadSettings, saveSetting } from "../settings";
 import type { PersistedSettings } from "../settings";
 import type { StoreState } from "./types";
@@ -10,7 +10,6 @@ export interface SettingsSlice {
   agentConfig: EndpointConfig;
   vlmConfig: EndpointConfig;
   vlmEnabled: boolean;
-  mcpCommand: string;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
   _settingsLoaded: boolean;
@@ -20,7 +19,6 @@ export interface SettingsSlice {
   setAgentConfig: (config: EndpointConfig) => void;
   setVlmConfig: (config: EndpointConfig) => void;
   setVlmEnabled: (enabled: boolean) => void;
-  setMcpCommand: (cmd: string) => void;
   setMaxRepairAttempts: (n: number) => void;
   setHoverDwellThreshold: (ms: number) => void;
 }
@@ -47,7 +45,6 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   agentConfig: DEFAULT_ENDPOINT,
   vlmConfig: DEFAULT_ENDPOINT,
   vlmEnabled: DEFAULT_VLM_ENABLED,
-  mcpCommand: DEFAULT_MCP_COMMAND,
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
   _settingsLoaded: false,
@@ -62,7 +59,6 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           agentConfig: s.agentConfig,
           vlmConfig: s.vlmConfig,
           vlmEnabled: s.vlmEnabled,
-          mcpCommand: s.mcpCommand,
           maxRepairAttempts: clampInt(s.maxRepairAttempts, 0, 10, 3),
           hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 2000),
         });
@@ -74,7 +70,6 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   setAgentConfig: (config) => persistSetting("agentConfig", config, set),
   setVlmConfig: (config) => persistSetting("vlmConfig", config, set),
   setVlmEnabled: (enabled) => persistSetting("vlmEnabled", enabled, set),
-  setMcpCommand: (cmd) => persistSetting("mcpCommand", cmd, set),
   setMaxRepairAttempts: (n) => persistSetting("maxRepairAttempts", clampInt(n, 0, 10, 3), set),
   setHoverDwellThreshold: (ms) => persistSetting("hoverDwellThreshold", clampInt(ms, 100, 10000, 2000), set),
 });
