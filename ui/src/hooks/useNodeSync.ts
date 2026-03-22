@@ -476,7 +476,7 @@ export function useNodeSync({
         anchorToAppGroup.set(agMeta.anchorId, agId);
       }
 
-      for (const group of workflow.groups) {
+      for (const group of workflow.groups ?? []) {
         const meta = userGroupMeta.get(group.id);
         if (!meta) continue;
         if (group.node_ids.length === 0) continue;
@@ -749,7 +749,7 @@ export function useNodeSync({
           // User group container deletion → expand to all member nodes
           const ugMeta = userGroupMeta.get(id);
           if (ugMeta) {
-            const group = workflow.groups.find((g) => g.id === id);
+            const group = workflow.groups?.find((g) => g.id === id);
             if (group) {
               for (const m of group.node_ids) addUnique(m);
             }
@@ -776,7 +776,7 @@ export function useNodeSync({
           const ugId = nodeToUserGroup.get(id);
           const ugMeta = ugId ? userGroupMeta.get(ugId) : undefined;
           if (ugMeta?.anchorId === id && collapsedUserGroups.has(ugId!)) {
-            const group = workflow.groups.find((g) => g.id === ugId);
+            const group = workflow.groups?.find((g) => g.id === ugId);
             if (group) {
               for (const m of group.node_ids) addUnique(m);
             } else {
