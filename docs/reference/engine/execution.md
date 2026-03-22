@@ -21,14 +21,14 @@ Execution starts at Tauri command `run_workflow` (`src-tauri/src/commands/execut
 | `runtime_verdicts` | `Vec<NodeVerdict>` | Accumulated inline verification verdicts from Verification-role nodes |
 | `pending_loop_exit` | `Option<PendingLoopExit>` | Set when a loop exits; consumed by the main loop to run deferred verification |
 | `verdict_vlm` | `Option<LlmClient>` | Dedicated VLM for screenshot verification with low max_tokens and thinking disabled |
-| `cdp_servers` | `HashMap<String, String>` | Maps app name → CDP MCP server name in the McpRouter |
+| `cdp_connected_app` | `Option<String>` | The app currently connected via CDP (one connection at a time) |
 | `cancel_token` | `CancellationToken` | Graceful cancellation signal (replaces the removed `ExecutorCommand::Stop`) |
 
 High-level flow in `run()`:
 
 1. Emit `StateChanged(Running)`
 2. Log agent/VLM model info
-3. Spawn MCP servers via `McpRouter` (one or more `McpServerConfig`s)
+3. Spawn MCP server via `McpClient::spawn_native()`
 4. `RunStorage::begin_execution()`
 5. Find entry points
 6. Walk graph (with inline verification for Verification-role nodes and per-step supervision in Test mode)
@@ -134,7 +134,7 @@ Special handling:
 - `TakeScreenshot(Window)` with target app name: same app-resolution path
 - `launch_app` implicitly sets `focused_app` to the launched app name
 - `Click` with `template_image` and no coordinates: resolve via `find_image` using the template
-- CDP click path: for apps with `AppKind` that `uses_cdp()`, attempt CDP-based click (snapshot + uid click via `chrome-devtools-mcp`) before falling back to native `find_text`
+- CDP click path: for apps with `AppKind` that `uses_cdp()`, attempt CDP-based click (snapshot + uid click via `cdp_click`) before falling back to native `find_text`
 
 App resolution and element resolution use `reasoning_backend()` priority: supervision LLM (planner-class) -> VLM -> agent. The small agent model often has insufficient context for these prompts.
 

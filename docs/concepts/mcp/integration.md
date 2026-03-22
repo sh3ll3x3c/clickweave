@@ -6,8 +6,8 @@ MCP is the runtime boundary between Clickweave and external automation capabilit
 
 - Clickweave does not directly automate OS/browser surfaces.
 - It delegates concrete operations to MCP server subprocesses, communicating via JSON-RPC 2.0 over stdio (stdin/stdout pipes).
-- Multiple servers are managed by `McpRouter`, which merges tool lists and routes `call_tool` requests to the owning server.
-- The primary server (`native-devtools-mcp`) is always spawned. CDP servers (`chrome-devtools-mcp`) are spawned lazily per-app when an Electron or Chrome-family app is targeted.
+- A single `McpClient` manages the connection to the `native-devtools-mcp` server, which provides both native desktop tools and CDP browser tools.
+- For Electron/Chrome apps, the executor calls `cdp_connect(port)` to enable browser automation tools on the same server. Only one CDP connection is active at a time.
 - The executor stays focused on orchestration, retries, and state.
 
 ## Lifecycle Model
@@ -15,7 +15,7 @@ MCP is the runtime boundary between Clickweave and external automation capabilit
 There are two distinct spawn lifecycles:
 
 - **Planning**: The primary MCP server is spawned briefly to fetch tool schemas (`tools_as_openai()` converts MCP tool definitions to OpenAI function-calling format for use in LLM prompts), then torn down immediately.
-- **Execution**: The primary MCP server is spawned at the start of a workflow run. Additional CDP servers may be spawned lazily during the run when the executor encounters Electron or Chrome-family apps. All servers stay alive for tool calls during the graph walk and are terminated when the run completes (via Rust `Drop`, which ensures cleanup even on errors).
+- **Execution**: The MCP server is spawned at the start of a workflow run. When the executor encounters Electron or Chrome-family apps, it calls `cdp_connect(port)` to enable CDP tools on the same server. The server stays alive for tool calls during the graph walk and is terminated when the run completes (via Rust `Drop`, which ensures cleanup even on errors).
 
 Within each lifecycle: initialize the connection, query available tools and schemas, call tools as needed, tear down.
 

@@ -49,11 +49,6 @@ impl McpClient {
         Ok(client)
     }
 
-    /// Spawn using npx (cross-platform default)
-    pub async fn spawn_npx() -> Result<Self> {
-        Self::spawn("npx", &["-y", "native-devtools-mcp"]).await
-    }
-
     /// Spawn native-devtools-mcp using the given command.
     ///
     /// `mcp_command` controls how to start the server:

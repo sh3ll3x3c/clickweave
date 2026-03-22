@@ -1,8 +1,6 @@
 # MCP Integration (Reference)
 
-Verified at commit: `5df5bb1`
-
-Clickweave executes desktop/browser automation by spawning MCP server subprocesses and talking JSON-RPC over stdio. Multiple servers are managed by `McpRouter`, which merges tool lists and routes `call_tool` requests to the owning server.
+Clickweave executes desktop/browser automation by spawning a single MCP server subprocess (`native-devtools-mcp`) and talking JSON-RPC over stdio via `McpClient`.
 
 ## Architecture
 
@@ -10,57 +8,10 @@ Clickweave executes desktop/browser automation by spawning MCP server subprocess
 clickweave-engine
     |
     v
-clickweave-mcp::McpRouter
-    |
-    +--- McpClient  <--- JSON-RPC --->  native-devtools-mcp  (primary, always)
-    |
-    +--- McpClient  <--- JSON-RPC --->  chrome-devtools-mcp   (spawned lazily per CDP app)
+clickweave-mcp::McpClient  <--- JSON-RPC --->  native-devtools-mcp
 ```
 
-## McpRouter
-
-File: `crates/clickweave-mcp/src/router.rs`
-
-### McpServerConfig
-
-```rust
-pub struct McpServerConfig {
-    pub name: String,      // display name (e.g. "native-devtools")
-    pub command: String,    // binary or "npx"
-    pub args: Vec<String>,  // e.g. ["-y", "native-devtools-mcp"]
-}
-```
-
-### Spawn & Tool Routing
-
-`McpRouter::spawn(configs)` spawns all configured servers concurrently via `JoinSet`:
-
-- **Primary server** (index 0): failure is fatal — returns `Err`.
-- **Non-primary servers**: failure logs a warning and continues without that server.
-
-After spawning, the router builds a merged tool list. On tool-name conflicts, **first server wins** — the duplicate is logged and skipped.
-
-### default_server_configs
-
-`default_server_configs(mcp_command)` builds a single-server config (native-devtools only). CDP servers are spawned lazily per-app by the executor via `spawn_server()`.
-
-| Server | Command | Args |
-|--------|---------|------|
-| `native-devtools` | `mcp_command` (or `npx` with `-y native-devtools-mcp`) | varies |
-
-### Key Methods
-
-| Method | Behavior |
-|--------|----------|
-| `spawn(configs)` | Spawn all servers, build routing table |
-| `call_tool(name, args)` | Route to owning server; falls back to trying each server if tool not in cached ownership (handles dynamically added tools) |
-| `tools()` | Merged tool list |
-| `tools_as_openai()` | OpenAI function-calling format |
-| `server_count()` | Number of active servers |
-| `kill_all()` | Kill all server processes |
-| `call_tool_on(server, name, args)` | Route to a specific server by name |
-| `has_server(name)` | Check whether a named server is connected |
-| `spawn_server(config)` | Spawn a single MCP server at runtime and add to routing table |
+A single `McpClient` handles both native desktop tools (click, find_text, etc.) and CDP browser tools (cdp_connect, cdp_click, cdp_take_snapshot, etc.). CDP tools are gated behind a `cdp_connect(port)` call on the server side.
 
 ## McpClient Lifecycle
 
@@ -70,7 +21,7 @@ File: `crates/clickweave-mcp/src/client.rs`
 
 | Method | Behavior |
 |--------|----------|
-| `McpClient::spawn_npx()` | runs `npx -y native-devtools-mcp` |
+| `McpClient::spawn_native(mcp_command)` | `"npx"` → runs `npx -y native-devtools-mcp`; anything else → direct binary path |
 | `McpClient::spawn(cmd, args)` | runs provided command and args |
 
 ### Initialization Sequence
@@ -92,6 +43,14 @@ File: `crates/clickweave-mcp/src/client.rs`
 - `image` (`{ type: "image", data, mimeType }`)
 
 If `is_error == true`, higher layers treat it as a tool failure.
+
+### CDP Connection
+
+For Electron/Chrome apps, the executor calls:
+- `cdp_connect({"port": N})` — connect to app's remote debugging port
+- `cdp_disconnect` — disconnect before switching to a different app
+
+CDP tools (`cdp_click`, `cdp_take_snapshot`, `cdp_evaluate_script`, etc.) are only available while connected. Only one CDP connection at a time is supported — switching apps requires disconnect/reconnect.
 
 ### Concurrency
 
@@ -165,10 +124,10 @@ Unknown tool names map to `McpToolCall` only if present in known tool schema lis
 
 UI settings store `mcpCommand`:
 
-- `"npx"` => `default_server_configs("npx")` spawns native-devtools via npx
-- any other string => used as direct command for native-devtools
+- `"npx"` → spawns native-devtools via `npx -y native-devtools-mcp`
+- any other string → used as direct binary path
 
-The `mcpCommand` string is converted to `Vec<McpServerConfig>` via `default_server_configs()` in both the planner and executor Tauri commands.
+The `mcpCommand` string is passed to `McpClient::spawn_native()` in the executor and planner Tauri commands.
 
 Relevant files:
 
@@ -212,8 +171,7 @@ If proactive detection classifies an app as `Native` but accessibility enrichmen
 
 | File | Role |
 |------|------|
-| `crates/clickweave-mcp/src/router.rs` | McpRouter, McpServerConfig, default_server_configs |
-| `crates/clickweave-mcp/src/client.rs` | spawn, init, tools/list, tools/call |
+| `crates/clickweave-mcp/src/client.rs` | McpClient: spawn, init, tools/list, tools/call |
 | `crates/clickweave-mcp/src/protocol.rs` | protocol data types |
 | `crates/clickweave-mcp/src/lib.rs` | re-exports |
 | `crates/clickweave-core/src/tool_mapping.rs` | shared node/tool mapping |
