@@ -1,6 +1,6 @@
 # Architecture Overview (Reference)
 
-Verified at commit: `5df5bb1`
+Verified at commit: `cdabe41`
 
 Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
 
@@ -40,12 +40,12 @@ src-tauri
 |--------|---------|
 | `workflow.rs` | Core types: `Workflow`, `Node`, `Edge`, `NodeType`, `ExecutionMode`, `NodeRole` |
 | `node_params.rs` | Parameter structs for all node types (re-exported via `pub use`) |
-| `validation.rs` | `validate_workflow()` graph validation |
+| `validation/` | `validate_workflow()` graph validation (submodules: `cycles.rs`, `edges.rs`, `loops.rs`, `variables.rs`) |
 | `runtime.rs` | `RuntimeContext` variable store + condition evaluation + loop counters |
 | `storage.rs` | `RunStorage` execution/run/event/artifact persistence, `cache_path()` for decision cache |
 | `decision_cache.rs` | `DecisionCache` — persists LLM decisions (click disambiguation, element/app resolution, CDP port) as `decisions.json` for replay in Run mode |
 | `tool_mapping.rs` | `NodeType` ↔ MCP tool invocation mapping |
-| `cdp.rs` | Shared CDP (Chrome DevTools Protocol) utilities: server naming, snapshot search |
+| `cdp.rs` | Shared CDP (Chrome DevTools Protocol) utilities: snapshot search, element matching, `rand_ephemeral_port()` |
 | `app_detection.rs` | App classification (Electron, Chrome, native) from bundle ID / path / PID |
 | `walkthrough/` | Walkthrough recording types, event normalization, draft synthesis, session storage (submodules: `types.rs`, `synthesis.rs`, `storage.rs`) |
 

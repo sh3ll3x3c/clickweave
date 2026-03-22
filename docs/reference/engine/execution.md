@@ -1,6 +1,6 @@
 # Workflow Execution (Reference)
 
-Verified at commit: `5df5bb1`
+Verified at commit: `cdabe41`
 
 The engine executes a workflow graph sequentially, evaluating control-flow nodes in place and dispatching execution nodes to MCP tools or an AI-step tool loop.
 

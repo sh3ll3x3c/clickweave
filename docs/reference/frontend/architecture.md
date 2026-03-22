@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `5df5bb1`
+Verified at commit: `cdabe41`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -105,6 +105,8 @@ ui/src/
 - `LogSlice`
 - `VerdictSlice`
 - `WalkthroughSlice`
+- `WalkthroughRecordingSlice`
+- `WalkthroughReviewSlice`
 - `UiSlice`
 
 Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/src/store/useAppStore.ts`.
@@ -156,9 +158,20 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **WalkthroughSlice** (`walkthroughSlice.ts`)
 
-- `walkthroughStatus`, `walkthroughPanelOpen`, `walkthroughError`, `walkthroughEvents`, `walkthroughActions`, `walkthroughDraft`, `walkthroughWarnings`, `walkthroughAnnotations`, `walkthroughActionNodeMap`, `walkthroughCdpModalOpen`, `walkthroughCdpProgress`
-- actions: `startWalkthrough(cdpApps?)`, `pauseWalkthrough`, `resumeWalkthrough`, `stopWalkthrough`, `cancelWalkthrough`, `fetchWalkthroughDraft`, `applyDraftToCanvas`, `discardDraft`, `openCdpModal`, `closeCdpModal`, `pushCdpProgress`, annotation editing actions (`deleteNode`, `restoreNode`, `renameNode`, `overrideTarget`, `promoteToVariable`, etc.)
+- `walkthroughStatus`, `walkthroughPanelOpen`, `walkthroughError`, `walkthroughEvents`, `walkthroughActions`, `walkthroughDraft`, `walkthroughWarnings`, `walkthroughCdpModalOpen`, `walkthroughCdpProgress`
+- actions: `startWalkthrough(cdpApps?)`, `pauseWalkthrough`, `resumeWalkthrough`, `stopWalkthrough`, `cancelWalkthrough`, `fetchWalkthroughDraft`, `discardDraft`, `openCdpModal`, `closeCdpModal`, `pushCdpProgress`
 - manages recording bar overlay window lifecycle and CDP app selection modal
+
+**WalkthroughRecordingSlice** (`walkthroughRecordingSlice.ts`)
+
+- Recording-specific state split from WalkthroughSlice
+- Manages recording lifecycle, event capture, and CDP setup progress
+
+**WalkthroughReviewSlice** (`walkthroughReviewSlice.ts`)
+
+- Review/annotation state split from WalkthroughSlice
+- `walkthroughAnnotations`, `walkthroughActionNodeMap`
+- actions: annotation editing (`deleteNode`, `restoreNode`, `renameNode`, `overrideTarget`, `promoteToVariable`, etc.), `applyDraftToCanvas`
 
 ## App Event Wiring
 
@@ -189,6 +202,8 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 - `useLoopGrouping` — loop collapse state, hidden node tracking
 - `useNodeSync` — RF node state, position tracking, selection sync
 - `useEdgeSync` — RF edge filtering, change handling, connect
+- `useAppGrouping` — auto-group nodes by target app
+- `useUserGrouping` — user-created node groups
 
 ### Node type keys
 
@@ -196,6 +211,8 @@ Registered node types:
 
 - `workflow` -> `WorkflowNode`
 - `loopGroup` -> `LoopGroupNode`
+- `appGroup` -> `AppGroupNode` (auto-generated groups by app)
+- `userGroup` -> `UserGroupNode` (user-created groups)
 
 ### Behavior
 
@@ -266,13 +283,17 @@ Do not edit manually.
 | `ui/src/store/useAppStore.ts` | composed Zustand store hook |
 | `ui/src/store/useWorkflowMutations.ts` | node/edge mutation helpers with history push (`removeEdgesOnly` for silent edge removal) |
 | `ui/src/store/slices/types.ts` | `StoreState` composition |
-| `ui/src/store/slices/walkthroughSlice.ts` | walkthrough recording state and actions |
+| `ui/src/store/slices/walkthroughSlice.ts` | walkthrough lifecycle state and CDP modal |
+| `ui/src/store/slices/walkthroughRecordingSlice.ts` | recording-specific state and event capture |
+| `ui/src/store/slices/walkthroughReviewSlice.ts` | review annotations and draft application |
 | `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
 | `ui/src/store/settings.ts` | persisted settings I/O |
 | `ui/src/components/SupervisionModal.tsx` | supervision pause modal (retry / skip / abort) |
 | `ui/src/hooks/useLoopGrouping.ts` | loop collapse state, hidden node tracking |
 | `ui/src/hooks/useNodeSync.ts` | RF node state, position tracking, selection sync |
 | `ui/src/hooks/useEdgeSync.ts` | RF edge filtering, change handling |
+| `ui/src/hooks/useAppGrouping.ts` | auto-group nodes by target app |
+| `ui/src/hooks/useUserGrouping.ts` | user-created node groups |
 | `ui/src/hooks/useWorkflowActions.ts` | workflow mutation dispatchers (wraps `useWorkflowMutations`) |
 | `ui/src/hooks/useEscapeKey.ts` | global Escape key handler that closes panels in priority order |
 | `ui/src/hooks/useHorizontalResize.ts` | horizontal panel resize drag handle |

@@ -1,6 +1,6 @@
 # Planning & LLM Retry Logic (Reference)
 
-Verified at commit: `5df5bb1`
+Verified at commit: `cdabe41`
 
 Planner/assistant flows layer retries and parsing tolerance to handle malformed LLM output.
 

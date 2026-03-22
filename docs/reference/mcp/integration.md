@@ -1,5 +1,7 @@
 # MCP Integration (Reference)
 
+Verified at commit: `cdabe41`
+
 Clickweave executes desktop/browser automation by spawning a single MCP server subprocess (`native-devtools-mcp`) and talking JSON-RPC over stdio via `McpClient`.
 
 ## Architecture
@@ -36,6 +38,8 @@ File: `crates/clickweave-mcp/src/client.rs`
 ### Tool Calls
 
 `call_tool(name, arguments)` sends `tools/call` and returns `ToolCallResult`.
+
+`has_tool(name)` checks whether a tool is in the cached tool list (used to gate CDP paths when the server lacks CDP support).
 
 `ToolCallResult.content` items are:
 
