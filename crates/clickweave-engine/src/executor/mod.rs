@@ -146,6 +146,9 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     /// `cdp_list_pages` until the URL moves away from NTP/blank so that
     /// supervision fires when Chrome is already loading the destination page.
     last_typed_url: Option<String>,
+    /// Persistent Chrome user-data-dir path for `--remote-debugging-port` sessions.
+    /// When set, used as `--user-data-dir` instead of a hardcoded path.
+    chrome_profile_path: Option<PathBuf>,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -183,6 +186,7 @@ impl WorkflowExecutor {
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
         cancel_token: CancellationToken,
+        chrome_profile_path: Option<PathBuf>,
     ) -> Self {
         let decision_cache = DecisionCache::load(&storage.cache_path())
             .unwrap_or_else(|| DecisionCache::new(workflow.id));
@@ -217,6 +221,7 @@ impl WorkflowExecutor {
             last_click_was_cdp: false,
             last_url_navigation_was_cdp: false,
             last_typed_url: None,
+            chrome_profile_path,
         }
     }
 }

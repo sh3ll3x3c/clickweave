@@ -232,6 +232,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             last_click_was_cdp: false,
             last_url_navigation_was_cdp: false,
             last_typed_url: None,
+            chrome_profile_path: None,
         }
     }
 }

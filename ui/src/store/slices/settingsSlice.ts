@@ -1,4 +1,5 @@
 import type { StateCreator } from "zustand";
+import { commands } from "../../bindings";
 import type { EndpointConfig } from "../state";
 import { DEFAULT_ENDPOINT, DEFAULT_VLM_ENABLED } from "../state";
 import { loadSettings, saveSetting } from "../settings";
@@ -12,6 +13,8 @@ export interface SettingsSlice {
   vlmEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  selectedChromeProfileId: string | null;
+  chromeProfileConfigured: boolean;
   _settingsLoaded: boolean;
 
   loadSettingsFromDisk: () => void;
@@ -21,6 +24,8 @@ export interface SettingsSlice {
   setVlmEnabled: (enabled: boolean) => void;
   setMaxRepairAttempts: (n: number) => void;
   setHoverDwellThreshold: (ms: number) => void;
+  setSelectedChromeProfileId: (id: string) => void;
+  checkChromeProfileConfigured: () => Promise<void>;
 }
 
 function persistSetting<K extends keyof PersistedSettings>(
@@ -47,6 +52,8 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   vlmEnabled: DEFAULT_VLM_ENABLED,
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
+  selectedChromeProfileId: null,
+  chromeProfileConfigured: true,
   _settingsLoaded: false,
 
   loadSettingsFromDisk: () => {
@@ -61,7 +68,9 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           vlmEnabled: s.vlmEnabled,
           maxRepairAttempts: clampInt(s.maxRepairAttempts, 0, 10, 3),
           hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 2000),
+          selectedChromeProfileId: s.selectedChromeProfileId,
         });
+        get().checkChromeProfileConfigured();
       })
       .catch((e) => console.error("Failed to load settings:", e));
   },
@@ -72,4 +81,20 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   setVlmEnabled: (enabled) => persistSetting("vlmEnabled", enabled, set),
   setMaxRepairAttempts: (n) => persistSetting("maxRepairAttempts", clampInt(n, 0, 10, 3), set),
   setHoverDwellThreshold: (ms) => persistSetting("hoverDwellThreshold", clampInt(ms, 100, 10000, 2000), set),
+  setSelectedChromeProfileId: (id) => {
+    if (id === get().selectedChromeProfileId) return;
+    persistSetting("selectedChromeProfileId", id, set);
+    get().checkChromeProfileConfigured();
+  },
+  checkChromeProfileConfigured: async () => {
+    const profileId = get().selectedChromeProfileId;
+    if (!profileId) {
+      set({ chromeProfileConfigured: false });
+      return;
+    }
+    const result = await commands.isChromeProfileConfigured(profileId);
+    if (result.status === "ok") {
+      set({ chromeProfileConfigured: result.data });
+    }
+  },
 });

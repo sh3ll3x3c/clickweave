@@ -638,6 +638,55 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             AppKind::Native
         };
 
+        // For Chrome-family launch_app with a configured profile: kill only the
+        // Chrome instance running this profile (leave the user's default Chrome
+        // alone), then launch Chrome directly with --user-data-dir. We bypass the
+        // MCP launch_app tool which refuses when any Chrome is already running.
+        if tool_name == "launch_app"
+            && launch_app_kind == AppKind::ChromeBrowser
+            && let Some(ref profile_path) = self.chrome_profile_path
+        {
+            let dir = profile_path.to_string_lossy().to_string();
+            self.log(format!("Launching Chrome with profile: {}", dir));
+
+            kill_chrome_profile_instance(&dir).await;
+
+            launch_chrome_with_profile(&dir)
+                .await
+                .map_err(|e| ExecutorError::ToolCall {
+                    tool: "launch_app".to_string(),
+                    message: format!("Failed to launch Chrome with profile: {e}"),
+                })?;
+
+            self.record_event(
+                node_run.as_deref(),
+                "tool_call",
+                serde_json::json!({
+                    "name": "launch_app",
+                    "args": {"app_name": launch_app_name, "user_data_dir": dir},
+                }),
+            );
+
+            // Wait for Chrome to start up before continuing.
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            if let Some(name) = &launch_app_name {
+                *self.write_focused_app() = Some((name.clone(), launch_app_kind));
+                if launch_app_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
+                    self.ensure_cdp_connected(node_id, name, mcp, node_run.as_deref())
+                        .await?;
+                }
+            }
+
+            let result_text = format!("Launched Chrome with profile {}", dir);
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({"name": "launch_app", "text": &result_text}),
+            );
+            return Ok(Self::parse_result_text(&result_text));
+        }
+
         self.record_event(
             node_run.as_deref(),
             "tool_call",
@@ -744,6 +793,104 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             Value::String(text.to_string())
         })
     }
+}
+
+/// Kill only Chrome processes running with a specific `--user-data-dir`,
+/// leaving the user's default Chrome instance untouched.
+async fn kill_chrome_profile_instance(profile_dir: &str) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Use pkill to kill processes matching the specific --user-data-dir.
+        // Anchoring to "Google Chrome" avoids matching pgrep's own command line.
+        let pattern = format!("Google Chrome.*--user-data-dir={}", profile_dir);
+        let _ = tokio::process::Command::new("pkill")
+            .args(["-f", &pattern])
+            .output()
+            .await;
+
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let still_alive = tokio::process::Command::new("pgrep")
+                .args(["-f", &pattern])
+                .output()
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !still_alive {
+                break;
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = tokio::process::Command::new("taskkill")
+            .args([
+                "/F",
+                "/FI",
+                &format!("WINDOWTITLE eq *--user-data-dir={}*", profile_dir),
+            ])
+            .output()
+            .await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// Launch Chrome directly with `--user-data-dir` and optional extra args,
+/// bypassing MCP `launch_app` which refuses when any Chrome is already running.
+async fn spawn_chrome(args: &[String]) -> Result<(), String> {
+    use std::process::Stdio;
+
+    #[cfg(target_os = "macos")]
+    let result = tokio::process::Command::new(
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    )
+    .args(args)
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn();
+
+    #[cfg(target_os = "windows")]
+    let result = tokio::process::Command::new("chrome")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    #[cfg(target_os = "linux")]
+    let result = tokio::process::Command::new("google-chrome")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    result
+        .map(|_| ())
+        .map_err(|e| format!("Failed to spawn Chrome: {e}"))
+}
+
+async fn launch_chrome_with_profile(profile_dir: &str) -> Result<(), String> {
+    spawn_chrome(&[
+        format!("--user-data-dir={}", profile_dir),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+    ])
+    .await
+}
+
+async fn launch_chrome_with_profile_and_debug_port(
+    profile_dir: &str,
+    port: u16,
+) -> Result<(), String> {
+    spawn_chrome(&[
+        format!("--user-data-dir={}", profile_dir),
+        format!("--remote-debugging-port={}", port),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+    ])
+    .await
 }
 
 #[cfg(test)]
