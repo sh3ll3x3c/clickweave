@@ -84,17 +84,12 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   setSelectedChromeProfileId: (id) => {
     if (id === get().selectedChromeProfileId) return;
     persistSetting("selectedChromeProfileId", id, set);
-    get().checkChromeProfileConfigured();
+    set({ chromeProfileConfigured: true });
   },
   checkChromeProfileConfigured: async () => {
-    const profileId = get().selectedChromeProfileId;
-    if (!profileId) {
-      set({ chromeProfileConfigured: false });
-      return;
-    }
-    const result = await commands.isChromeProfileConfigured(profileId);
-    if (result.status === "ok") {
-      set({ chromeProfileConfigured: result.data });
-    }
+    // A profile is "configured" if one is selected. Chrome creates its
+    // internal files (Default/Preferences) on first launch, so checking
+    // file existence is too strict for a warning banner.
+    set({ chromeProfileConfigured: !!get().selectedChromeProfileId });
   },
 });
