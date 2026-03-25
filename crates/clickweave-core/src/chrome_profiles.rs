@@ -41,19 +41,22 @@ impl ChromeProfileStore {
 
     pub fn load_profiles(&self) -> Vec<ChromeProfile> {
         let path = self.base_dir.join("profiles.json");
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => serde_json::from_str::<ProfilesFile>(&contents)
-                .unwrap_or_default()
-                .profiles
-                .into_iter()
-                .map(|e| ChromeProfile {
-                    id: e.id,
-                    name: e.name,
-                    google_email: None,
-                })
-                .collect(),
+        let entries: Vec<ProfileEntry> = match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                serde_json::from_str::<ProfilesFile>(&contents)
+                    .unwrap_or_default()
+                    .profiles
+            }
             Err(_) => Vec::new(),
-        }
+        };
+        entries
+            .into_iter()
+            .map(|e| ChromeProfile {
+                google_email: self.read_google_email(&e.id),
+                id: e.id,
+                name: e.name,
+            })
+            .collect()
     }
 
     fn save_profiles(&self, profiles: &[ChromeProfile]) -> std::io::Result<()> {
@@ -210,5 +213,28 @@ mod tests {
         let base = TempDir::new().unwrap();
         let store = ChromeProfileStore::new(base.path().to_path_buf());
         assert_eq!(store.read_google_email("nonexistent"), None);
+    }
+
+    #[test]
+    fn load_profiles_populates_google_email() {
+        let base = TempDir::new().unwrap();
+        let store = ChromeProfileStore::new(base.path().to_path_buf());
+        store.create_profile("Work").unwrap();
+
+        // Set up a Preferences file with a signed-in account
+        let prefs_dir = base.path().join("work/Default");
+        std::fs::create_dir_all(&prefs_dir).unwrap();
+        std::fs::write(
+            prefs_dir.join("Preferences"),
+            r#"{"account_info": [{"email": "work@company.com"}]}"#,
+        )
+        .unwrap();
+
+        let profiles = store.load_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0].google_email,
+            Some("work@company.com".to_string())
+        );
     }
 }
