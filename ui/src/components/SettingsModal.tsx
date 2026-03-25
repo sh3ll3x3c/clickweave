@@ -95,6 +95,8 @@ function ChromeProfileSection({
 }) {
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [loading, setLoading] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [showNewInput, setShowNewInput] = useState(false);
   const selectedProfileIdRef = useRef(selectedProfileId);
   selectedProfileIdRef.current = selectedProfileId;
   const onProfileChangeRef = useRef(onProfileChange);
@@ -118,11 +120,12 @@ function ChromeProfileSection({
   }, []);
 
   const handleCreate = async () => {
-    const name = window.prompt("Profile name:");
-    if (!name?.trim()) return;
-    const result = await commands.createChromeProfile(name.trim());
+    if (!newName.trim()) return;
+    const result = await commands.createChromeProfile(newName.trim());
     if (result.status === "ok") {
       onProfileChange(result.data.id);
+      setNewName("");
+      setShowNewInput(false);
       fetchProfiles();
     }
   };
@@ -154,13 +157,33 @@ function ChromeProfileSection({
           ))}
         </select>
         <button
-          onClick={handleCreate}
+          onClick={() => setShowNewInput(!showNewInput)}
           className="shrink-0 rounded bg-[var(--bg-input)] px-2 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
           title="New profile"
         >
           +
         </button>
       </div>
+      {showNewInput && (
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+            placeholder="Profile name"
+            autoFocus
+            className={`${inputClass} placeholder-[var(--text-muted)]`}
+          />
+          <button
+            onClick={handleCreate}
+            disabled={!newName.trim()}
+            className="shrink-0 rounded bg-[var(--accent-coral)] px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+          >
+            Create
+          </button>
+        </div>
+      )}
       <button
         onClick={handleConfigure}
         disabled={!selectedProfileId}
