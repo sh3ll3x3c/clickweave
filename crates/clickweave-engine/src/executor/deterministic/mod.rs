@@ -555,8 +555,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             // Lazy CDP connection for Electron/Chrome apps.
             if app_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
-                self.ensure_cdp_connected(node_id, &app.name, mcp, node_run.as_deref())
-                    .await?;
+                let profile_path =
+                    self.resolve_chrome_profile_path(p.chrome_profile_id.as_deref())?;
+                self.ensure_cdp_connected(
+                    node_id,
+                    &app.name,
+                    mcp,
+                    node_run.as_deref(),
+                    profile_path.as_deref(),
+                )
+                .await?;
                 // Re-resolve PID -- it may have changed if the app was relaunched.
                 app = self
                     .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
@@ -570,6 +578,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 value: Some(app.pid.to_string()),
                 bring_to_front: p.bring_to_front,
                 app_kind,
+                chrome_profile_id: p.chrome_profile_id.clone(),
             });
             &resolved_fw
         } else {
@@ -638,25 +647,41 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             AppKind::Native
         };
 
+        let launch_chrome_profile = if tool_name == "launch_app" {
+            args.as_ref()
+                .and_then(|a| a.get("chrome_profile"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+
         // For Chrome-family launch_app with a configured profile: kill only the
         // Chrome instance running this profile (leave the user's default Chrome
         // alone), then launch Chrome directly with --user-data-dir. We bypass the
         // MCP launch_app tool which refuses when any Chrome is already running.
         if tool_name == "launch_app"
             && launch_app_kind == AppKind::ChromeBrowser
-            && let Some(ref profile_path) = self.chrome_profile_path
+            && let Some(profile_path) =
+                self.resolve_chrome_profile_path(launch_chrome_profile.as_deref())?
         {
             let dir = profile_path.to_string_lossy().to_string();
             self.log(format!("Launching Chrome with profile: {}", dir));
 
-            kill_chrome_profile_instance(&dir).await;
+            let use_cdp = launch_app_kind.uses_cdp() && mcp.has_tool("cdp_connect");
 
-            launch_chrome_with_profile(&dir)
-                .await
-                .map_err(|e| ExecutorError::ToolCall {
-                    tool: "launch_app".to_string(),
-                    message: format!("Failed to launch Chrome with profile: {e}"),
-                })?;
+            if !use_cdp {
+                // No CDP available: launch now without debug port.
+                kill_chrome_profile_instance(&dir).await;
+                launch_chrome_with_profile(&dir)
+                    .await
+                    .map_err(|e| ExecutorError::ToolCall {
+                        tool: "launch_app".to_string(),
+                        message: format!("Failed to launch Chrome with profile: {e}"),
+                    })?;
+                // Wait for Chrome to start up before continuing.
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
 
             self.record_event(
                 node_run.as_deref(),
@@ -667,14 +692,26 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }),
             );
 
-            // Wait for Chrome to start up before continuing.
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
             if let Some(name) = &launch_app_name {
                 *self.write_focused_app() = Some((name.clone(), launch_app_kind));
-                if launch_app_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
-                    self.ensure_cdp_connected(node_id, name, mcp, node_run.as_deref())
-                        .await?;
+                if use_cdp {
+                    // Force-disconnect any existing CDP session: a new profile
+                    // launch kills the previous Chrome instance, so any old CDP
+                    // connection is stale. Without this, ensure_cdp_connected
+                    // short-circuits on the app name match and never connects
+                    // to the new profile's Chrome instance.
+                    if self.cdp_connected_app.is_some() {
+                        let _ = mcp.call_tool("cdp_disconnect", None).await;
+                        self.cdp_connected_app = None;
+                    }
+                    self.ensure_cdp_connected(
+                        node_id,
+                        name,
+                        mcp,
+                        node_run.as_deref(),
+                        Some(profile_path.as_path()),
+                    )
+                    .await?;
                 }
             }
 
@@ -715,8 +752,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             // Lazy CDP connection for Electron/Chrome apps (same as FocusWindow path).
             if launch_app_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
-                self.ensure_cdp_connected(node_id, name, mcp, node_run.as_deref())
-                    .await?;
+                let profile_path = self.resolve_chrome_profile_path(None)?;
+                self.ensure_cdp_connected(
+                    node_id,
+                    name,
+                    mcp,
+                    node_run.as_deref(),
+                    profile_path.as_deref(),
+                )
+                .await?;
             }
         }
 
