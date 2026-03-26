@@ -1,4 +1,4 @@
-use clickweave_core::{NodeType, Workflow, tool_mapping};
+use clickweave_core::{NodeType, Workflow, chrome_profiles::ChromeProfile, tool_mapping};
 use serde_json::Value;
 
 /// Build the planner system prompt.
@@ -10,6 +10,7 @@ pub(crate) fn planner_system_prompt(
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
     template_override: Option<&str>,
+    chrome_profiles: Option<&[ChromeProfile]>,
 ) -> String {
     let tool_list = serde_json::to_string_pretty(tools_json).unwrap_or_default();
 
@@ -92,11 +93,33 @@ Verification failures stop the workflow immediately (fail-fast).
 
 Use `"role": "Verification"` when the user asks to **verify**, **check**, **confirm**, or **assert** a result. Do NOT use it for navigation lookups (e.g., finding a button to click)."#);
 
+    let chrome_profiles_section = match chrome_profiles {
+        Some(profiles) if profiles.len() > 1 => {
+            let mut lines = String::from(
+                "\n## Chrome profiles\n\nAvailable Chrome profiles for browser sessions:\n",
+            );
+            for p in profiles {
+                match &p.google_email {
+                    Some(email) => {
+                        lines.push_str(&format!("- \"{}\" (signed in as {})\n", p.name, email))
+                    }
+                    None => lines.push_str(&format!("- \"{}\"\n", p.name)),
+                }
+            }
+            lines.push_str(
+                "\nWhen the user specifies which Chrome profile to use, add `\"chrome_profile\": \"<name>\"` to the launch_app arguments alongside `\"app_kind\": \"ChromeBrowser\"`. Use the exact profile name shown in quotes above (do NOT include the email). Only include this when explicitly requested.",
+            );
+            lines
+        }
+        _ => String::new(),
+    };
+
     let template = template_override.unwrap_or(include_str!("../../prompts/planner.md"));
 
     template
         .replace("{{tool_list}}", &tool_list)
         .replace("{{step_types}}", &step_types)
+        .replace("{{chrome_profiles}}", &chrome_profiles_section)
 }
 
 /// Build the patcher system prompt.
@@ -227,9 +250,16 @@ pub(crate) fn assistant_system_prompt(
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
     run_context: Option<&str>,
+    chrome_profiles: Option<&[ChromeProfile]>,
 ) -> String {
     if workflow.nodes.is_empty() {
-        let base = planner_system_prompt(tools_json, allow_ai_transforms, allow_agent_steps, None);
+        let base = planner_system_prompt(
+            tools_json,
+            allow_ai_transforms,
+            allow_agent_steps,
+            None,
+            chrome_profiles,
+        );
         let mut prompt = format!(
             "You are a conversational workflow assistant for UI automation. \
              You help users create and modify workflows through natural dialogue.\n\n\

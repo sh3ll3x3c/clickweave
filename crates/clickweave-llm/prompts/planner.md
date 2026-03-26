@@ -49,6 +49,7 @@ Before outputting, verify: count nodes with zero incoming edges. If more than 1,
 - Output ONLY valid JSON. No explanation, no markdown fences.
 - For Chrome-family browsers (Chrome, Brave, Edge, Arc, Chromium), add `"app_kind": "ChromeBrowser"` to launch_app/focus_window arguments. For all other apps, omit app_kind (defaults to Native). Do NOT guess Electron apps — the executor detects those automatically.
 - For Chrome navigation: after launch_app, type the URL directly with type_text, then press return. Do NOT use press_key shortcuts (e.g. Cmd+N, Cmd+T) to open new windows or tabs — the launch_app node already provides a usable window.
+{{chrome_profiles}}
 
 ## Conditional example
 

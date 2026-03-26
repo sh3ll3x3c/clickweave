@@ -262,6 +262,8 @@ pub struct FocusWindowParams {
     pub bring_to_front: bool,
     #[serde(default)]
     pub app_kind: AppKind,
+    #[serde(default)]
+    pub chrome_profile_id: Option<String>,
 }
 
 impl Default for FocusWindowParams {
@@ -271,6 +273,7 @@ impl Default for FocusWindowParams {
             value: None,
             bring_to_front: true,
             app_kind: AppKind::Native,
+            chrome_profile_id: None,
         }
     }
 }

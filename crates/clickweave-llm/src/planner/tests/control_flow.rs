@@ -243,10 +243,17 @@ async fn test_infer_loop_edges_from_unlabeled() {
     ]}"#;
 
     let mock = MockBackend::single(response);
-    let result =
-        plan_workflow_with_backend(&mock, "Loop test", &sample_tools(), false, false, None)
-            .await
-            .unwrap();
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Loop test",
+        &sample_tools(),
+        false,
+        false,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let wf = &result.workflow;
     let loop_node = wf
@@ -303,6 +310,7 @@ async fn test_infer_loop_reroutes_back_edge_through_endloop() {
         &sample_tools(),
         false,
         false,
+        None,
         None,
     )
     .await
@@ -402,6 +410,7 @@ async fn test_infer_loop_clears_stale_output_on_rerouted_back_edge() {
         false,
         false,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -448,9 +457,10 @@ async fn test_infer_if_edges_from_unlabeled() {
     ]}"#;
 
     let mock = MockBackend::single(response);
-    let result = plan_workflow_with_backend(&mock, "If check", &sample_tools(), false, false, None)
-        .await
-        .unwrap();
+    let result =
+        plan_workflow_with_backend(&mock, "If check", &sample_tools(), false, false, None, None)
+            .await
+            .unwrap();
 
     let wf = &result.workflow;
     let if_node = wf
@@ -566,6 +576,7 @@ async fn test_infer_loop_reroutes_body_back_edge_when_endloop_edge_already_exist
         false,
         false,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -648,6 +659,7 @@ async fn test_infer_loop_reroutes_if_false_back_edge_to_loop() {
         false,
         false,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -722,6 +734,7 @@ async fn test_infer_loop_removes_stray_endloop_forward_edge_when_loop_done_exist
         &sample_tools(),
         false,
         false,
+        None,
         None,
     )
     .await
@@ -828,6 +841,7 @@ async fn test_unknown_step_type_skipped_not_fatal() {
         false,
         false,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -856,6 +870,7 @@ async fn test_malformed_node_missing_fields_skipped() {
         &sample_tools(),
         false,
         false,
+        None,
         None,
     )
     .await
@@ -889,6 +904,7 @@ async fn test_malformed_edge_unknown_output_type_skipped() {
         false,
         false,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -918,6 +934,7 @@ async fn test_malformed_flat_step_skipped() {
         &sample_tools(),
         false,
         false,
+        None,
         None,
     )
     .await

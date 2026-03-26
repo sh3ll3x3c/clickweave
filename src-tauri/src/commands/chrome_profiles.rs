@@ -3,7 +3,7 @@ use super::types::AppDataDir;
 use clickweave_core::chrome_profiles::{ChromeProfile, ChromeProfileStore};
 use tauri::Manager;
 
-fn get_store(app: &tauri::AppHandle) -> ChromeProfileStore {
+pub(super) fn get_store(app: &tauri::AppHandle) -> ChromeProfileStore {
     let app_data = app.state::<AppDataDir>();
     ChromeProfileStore::new(app_data.0.join("chrome-profiles"))
 }

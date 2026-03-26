@@ -5,7 +5,9 @@ use super::repair::chat_with_repair;
 use super::{PlanResult, PlanStep, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::{Context, Result, anyhow};
-use clickweave_core::{Edge, Node, NodeRole, Workflow, validate_workflow};
+use clickweave_core::{
+    Edge, Node, NodeRole, Workflow, chrome_profiles::ChromeProfile, validate_workflow,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, info};
@@ -30,6 +32,7 @@ pub async fn plan_workflow(
     mcp_tools_openai: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
+    chrome_profiles: Option<&[ChromeProfile]>,
 ) -> Result<PlanResult> {
     let planner = LlmClient::new(planner_config);
     plan_workflow_with_backend(
@@ -39,6 +42,7 @@ pub async fn plan_workflow(
         allow_ai_transforms,
         allow_agent_steps,
         None,
+        chrome_profiles,
     )
     .await
 }
@@ -55,12 +59,14 @@ pub async fn plan_workflow_with_backend(
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
     prompt_template: Option<&str>,
+    chrome_profiles: Option<&[ChromeProfile]>,
 ) -> Result<PlanResult> {
     let system = planner_system_prompt(
         mcp_tools_openai,
         allow_ai_transforms,
         allow_agent_steps,
         prompt_template,
+        chrome_profiles,
     );
     let user_msg = format!("Plan a workflow for: {}", intent);
 

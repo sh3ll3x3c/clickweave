@@ -15,9 +15,20 @@ pub(crate) async fn fetch_mcp_tool_schemas() -> Result<Vec<serde_json::Value>, C
 
 #[tauri::command]
 #[specta::specta]
-pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, CommandError> {
+pub async fn plan_workflow(
+    app: tauri::AppHandle,
+    request: PlanRequest,
+) -> Result<PlanResponse, CommandError> {
     let tools = fetch_mcp_tool_schemas().await?;
     let planner_config = request.planner.into_llm_config(None);
+
+    let chrome_profiles = super::chrome_profiles::get_store(&app).load_profiles();
+
+    let profiles_ref = if chrome_profiles.len() > 1 {
+        Some(chrome_profiles.as_slice())
+    } else {
+        None
+    };
 
     let result = clickweave_llm::planner::plan_workflow(
         &request.intent,
@@ -25,6 +36,7 @@ pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, Command
         &tools,
         request.allow_ai_transforms,
         request.allow_agent_steps,
+        profiles_ref,
     )
     .await
     .map_err(|e| CommandError::llm(format!("Planning failed: {}", e)))?;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ChromeProfile } from "../bindings";
 import { commands } from "../bindings";
 import type { EndpointConfig } from "../store/useAppStore";
@@ -12,7 +12,6 @@ interface SettingsModalProps {
   vlmEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
-  selectedChromeProfileId: string | null;
   onClose: () => void;
   onPlannerConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
@@ -20,7 +19,6 @@ interface SettingsModalProps {
   onVlmEnabledChange: (enabled: boolean) => void;
   onMaxRepairAttemptsChange: (n: number) => void;
   onHoverDwellThresholdChange: (ms: number) => void;
-  onSelectedChromeProfileIdChange: (id: string) => void;
 }
 
 const inputClass =
@@ -86,30 +84,24 @@ function ConfigSection({
   );
 }
 
-function ChromeProfileSection({
-  selectedProfileId,
-  onProfileChange,
-}: {
-  selectedProfileId: string | null;
-  onProfileChange: (id: string) => void;
-}) {
+function ChromeProfileSection() {
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [loading, setLoading] = useState(false);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [showNewInput, setShowNewInput] = useState(false);
-  const selectedProfileIdRef = useRef(selectedProfileId);
-  selectedProfileIdRef.current = selectedProfileId;
-  const onProfileChangeRef = useRef(onProfileChange);
-  onProfileChangeRef.current = onProfileChange;
 
   const fetchProfiles = async () => {
     setLoading(true);
     const result = await commands.listChromeProfiles();
     if (result.status === "ok") {
       setProfiles(result.data);
-      if (!selectedProfileIdRef.current && result.data.length > 0) {
-        onProfileChangeRef.current(result.data[0].id);
-      }
+      setSelectedProfileId((prev) => {
+        if (!prev && result.data.length > 0) {
+          return result.data[0].id;
+        }
+        return prev;
+      });
     }
     setLoading(false);
   };
@@ -123,7 +115,7 @@ function ChromeProfileSection({
     if (!newName.trim()) return;
     const result = await commands.createChromeProfile(newName.trim());
     if (result.status === "ok") {
-      onProfileChange(result.data.id);
+      setSelectedProfileId(result.data.id);
       setNewName("");
       setShowNewInput(false);
       fetchProfiles();
@@ -146,7 +138,7 @@ function ChromeProfileSection({
       <div className="flex items-center gap-2">
         <select
           value={selectedProfileId ?? ""}
-          onChange={(e) => onProfileChange(e.target.value)}
+          onChange={(e) => setSelectedProfileId(e.target.value)}
           disabled={loading || profiles.length === 0}
           className={inputClass}
         >
@@ -206,7 +198,6 @@ export function SettingsModal({
   vlmEnabled,
   maxRepairAttempts,
   hoverDwellThreshold,
-  selectedChromeProfileId,
   onClose,
   onPlannerConfigChange,
   onAgentConfigChange,
@@ -214,7 +205,6 @@ export function SettingsModal({
   onVlmEnabledChange,
   onMaxRepairAttemptsChange,
   onHoverDwellThresholdChange,
-  onSelectedChromeProfileIdChange,
 }: SettingsModalProps) {
   return (
     <Modal open={open} onClose={onClose} className="w-[480px] max-h-[90vh] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] shadow-xl">
@@ -305,10 +295,7 @@ export function SettingsModal({
             </div>
           </div>
 
-          <ChromeProfileSection
-            selectedProfileId={selectedChromeProfileId}
-            onProfileChange={onSelectedChromeProfileIdChange}
-          />
+          <ChromeProfileSection />
 
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">

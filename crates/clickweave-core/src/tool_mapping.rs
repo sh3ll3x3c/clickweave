@@ -330,6 +330,7 @@ pub fn tool_invocation_to_node_type(
                 value,
                 bring_to_front: true,
                 app_kind,
+                chrome_profile_id: None,
             }))
         }
         _ if known_tools
@@ -524,6 +525,7 @@ mod tests {
             value: Some("Safari".into()),
             bring_to_front: true,
             app_kind: AppKind::Native,
+            chrome_profile_id: None,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "focus_window");
@@ -540,6 +542,7 @@ mod tests {
             value: Some("42".into()),
             bring_to_front: true,
             app_kind: AppKind::Native,
+            chrome_profile_id: None,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
@@ -555,6 +558,7 @@ mod tests {
             value: Some("1234".into()),
             bring_to_front: true,
             app_kind: AppKind::Native,
+            chrome_profile_id: None,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
@@ -647,6 +651,7 @@ mod tests {
             value: Some("Chrome".into()),
             bring_to_front: true,
             app_kind: AppKind::ChromeBrowser,
+            chrome_profile_id: None,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.arguments["app_kind"], "ChromeBrowser");
@@ -664,6 +669,7 @@ mod tests {
             value: Some("Calculator".into()),
             bring_to_front: true,
             app_kind: AppKind::Native,
+            chrome_profile_id: None,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert!(inv.arguments.get("app_kind").is_none());
