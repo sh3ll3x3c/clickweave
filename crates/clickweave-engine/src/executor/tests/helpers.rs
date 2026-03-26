@@ -232,7 +232,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             last_click_was_cdp: false,
             last_url_navigation_was_cdp: false,
             last_typed_url: None,
-            chrome_profile_path: None,
+            chrome_profile_store: clickweave_core::chrome_profiles::ChromeProfileStore::new(
+                std::env::temp_dir().join("clickweave_test_profiles"),
+            ),
+            chrome_profiles: Vec::new(),
         }
     }
 }

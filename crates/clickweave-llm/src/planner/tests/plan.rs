@@ -18,6 +18,7 @@ async fn test_plan_focus_screenshot_click() {
         false,
         false,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -52,10 +53,17 @@ async fn test_plan_with_code_fence_wrapping() {
 ]}
 ```"#;
     let mock = MockBackend::single(response);
-    let result =
-        plan_workflow_with_backend(&mock, "Type hello", &sample_tools(), false, false, None)
-            .await
-            .unwrap();
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Type hello",
+        &sample_tools(),
+        false,
+        false,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.workflow.nodes.len(), 1);
     assert!(matches!(
@@ -78,6 +86,7 @@ async fn test_plan_agent_steps_filtered_when_disabled() {
         false,
         false,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -99,6 +108,7 @@ async fn test_plan_agent_steps_kept_when_enabled() {
         &sample_tools(),
         false,
         true,
+        None,
         None,
     )
     .await
@@ -124,6 +134,7 @@ async fn test_repair_pass_fixes_invalid_json() {
         false,
         false,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -145,6 +156,7 @@ async fn test_repair_pass_fails_after_max_attempts() {
         false,
         false,
         None,
+        None,
     )
     .await;
 
@@ -156,8 +168,16 @@ async fn test_repair_pass_fails_after_max_attempts() {
 async fn test_plan_empty_steps_returns_error() {
     let response = r#"{"steps": []}"#;
     let mock = MockBackend::single(response);
-    let result =
-        plan_workflow_with_backend(&mock, "Do nothing", &sample_tools(), false, false, None).await;
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Do nothing",
+        &sample_tools(),
+        false,
+        false,
+        None,
+        None,
+    )
+    .await;
 
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no steps"));
@@ -200,6 +220,7 @@ async fn test_plan_calculator_loop_scenario() {
         &sample_tools(),
         false,
         false,
+        None,
         None,
     )
     .await

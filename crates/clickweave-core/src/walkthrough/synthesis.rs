@@ -413,6 +413,7 @@ pub fn synthesize_draft(
                     value: Some(app_name.clone()),
                     bring_to_front: true,
                     app_kind: *app_kind,
+                    chrome_profile_id: None,
                 }),
                 format!("Launch {app_name}"),
             ),
@@ -427,6 +428,7 @@ pub fn synthesize_draft(
                     value: Some(app_name.clone()),
                     bring_to_front: true,
                     app_kind: *app_kind,
+                    chrome_profile_id: None,
                 }),
                 match window_title {
                     Some(t) => format!("Focus '{t}'"),

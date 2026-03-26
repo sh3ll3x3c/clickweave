@@ -94,6 +94,7 @@ async fn test_assistant_chat_plans_empty_workflow() {
         false,
         0,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -130,6 +131,7 @@ async fn test_assistant_chat_patches_existing_workflow() {
         false,
         0,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -164,6 +166,7 @@ async fn test_assistant_chat_conversational_response() {
         false,
         0,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -177,7 +180,7 @@ async fn test_assistant_chat_conversational_response() {
 #[test]
 fn test_assistant_prompt_empty_workflow_includes_control_flow() {
     let wf = Workflow::new("Test");
-    let prompt = assistant_system_prompt(&wf, &[], false, false, None);
+    let prompt = assistant_system_prompt(&wf, &[], false, false, None, None);
     assert!(
         prompt.contains("Loop"),
         "Assistant prompt should mention Loop"
@@ -191,7 +194,7 @@ fn test_assistant_prompt_empty_workflow_includes_control_flow() {
 #[test]
 fn test_assistant_prompt_existing_workflow_includes_control_flow() {
     let (_, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
-    let prompt = assistant_system_prompt(&workflow, &[], false, false, None);
+    let prompt = assistant_system_prompt(&workflow, &[], false, false, None, None);
     assert!(
         prompt.contains("add_nodes"),
         "Patcher assistant prompt should mention add_nodes for control flow"
@@ -208,6 +211,7 @@ async fn test_assistant_patches_with_add_nodes_and_add_edges() {
             value: Some("Calculator".to_string()),
             bring_to_front: true,
             app_kind: clickweave_core::AppKind::Native,
+            chrome_profile_id: None,
         }),
         "Focus Calculator",
     );
@@ -240,6 +244,7 @@ async fn test_assistant_patches_with_add_nodes_and_add_edges() {
         false,
         false,
         0,
+        None,
         None,
     )
     .await
@@ -293,6 +298,7 @@ async fn test_assistant_plans_graph_format_for_empty_workflow() {
         false,
         false,
         0,
+        None,
         None,
     )
     .await
@@ -349,6 +355,7 @@ async fn test_assistant_retry_succeeds_on_second_attempt() {
         false,
         3,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -400,6 +407,7 @@ async fn test_assistant_repair_callback_is_invoked() {
         false,
         3,
         Some(&on_repair),
+        None,
     )
     .await
     .unwrap();
@@ -439,6 +447,7 @@ async fn test_assistant_retry_exhausted_returns_last_patch() {
         false,
         false,
         3, // value 3 → validate + 2 retries = 3 LLM calls max
+        None,
         None,
     )
     .await
@@ -480,6 +489,7 @@ async fn test_assistant_no_validation_when_max_is_zero() {
         false,
         0, // 0 = skip validation entirely
         None,
+        None,
     )
     .await
     .unwrap();
@@ -519,6 +529,7 @@ async fn test_assistant_validate_only_no_retry_when_max_is_one() {
         false,
         1, // 1 = validate only, no retry
         None,
+        None,
     )
     .await
     .unwrap();
@@ -548,6 +559,7 @@ async fn test_assistant_valid_patch_no_retry_needed() {
         false,
         false,
         3, // retries enabled, but not needed
+        None,
         None,
     )
     .await

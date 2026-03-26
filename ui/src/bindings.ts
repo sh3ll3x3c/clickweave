@@ -372,7 +372,7 @@ export type ExecutionMode = "Test" | "Run"
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
 export type FocusMethod = "WindowId" | "AppName" | "Pid"
-export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind }
+export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null }
 export type HoverParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; dwell_ms: number }
 export type IfParams = { condition: Condition }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
@@ -426,11 +426,7 @@ export type RunRequest = { workflow: Workflow; project_path: string | null; agen
 /**
  * Planner LLM used for supervision in Test mode.
  */
-planner: EndpointConfig | null; execution_mode: ExecutionMode; 
-/**
- * Chrome profile ID for persistent browser sessions.
- */
-chrome_profile_id: string | null }
+planner: EndpointConfig | null; execution_mode: ExecutionMode }
 export type RunStatus = "Ok" | "Failed" | "Stopped"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 /**

@@ -6,7 +6,7 @@ use super::summarize::summarize_overflow;
 use super::{PatchResult, PatcherOutput, PlannerGraphOutput, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::Result;
-use clickweave_core::{Edge, Node, Workflow, validate_workflow};
+use clickweave_core::{Edge, Node, Workflow, chrome_profiles::ChromeProfile, validate_workflow};
 use serde_json::Value;
 use std::collections::HashSet;
 use tracing::{info, warn};
@@ -36,6 +36,7 @@ pub async fn assistant_chat(
     allow_agent_steps: bool,
     max_repair_attempts: usize,
     on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
+    chrome_profiles: Option<&[ChromeProfile]>,
 ) -> Result<AssistantResult> {
     let client = LlmClient::new(config);
     assistant_chat_with_backend(
@@ -49,6 +50,7 @@ pub async fn assistant_chat(
         allow_agent_steps,
         max_repair_attempts,
         on_repair_attempt,
+        chrome_profiles,
     )
     .await
 }
@@ -66,6 +68,7 @@ pub async fn assistant_chat_with_backend(
     allow_agent_steps: bool,
     max_repair_attempts: usize,
     on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
+    chrome_profiles: Option<&[ChromeProfile]>,
 ) -> Result<AssistantResult> {
     // 1. Optionally summarize overflow (non-fatal on error)
     let new_summary = if session.needs_summarization(None) {
@@ -91,6 +94,7 @@ pub async fn assistant_chat_with_backend(
         allow_ai_transforms,
         allow_agent_steps,
         run_context_text,
+        chrome_profiles,
     );
 
     // 3. Assemble messages: system + optional summary context + recent window + new user message

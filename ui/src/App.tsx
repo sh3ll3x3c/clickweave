@@ -73,7 +73,7 @@ function App() {
     })),
   );
 
-  const { plannerConfig, agentConfig, vlmConfig, vlmEnabled, maxRepairAttempts, hoverDwellThreshold, selectedChromeProfileId, chromeProfileConfigured } = useStore(
+  const { plannerConfig, agentConfig, vlmConfig, vlmEnabled, maxRepairAttempts, hoverDwellThreshold } = useStore(
     useShallow((s) => ({
       plannerConfig: s.plannerConfig,
       agentConfig: s.agentConfig,
@@ -81,8 +81,6 @@ function App() {
       vlmEnabled: s.vlmEnabled,
       maxRepairAttempts: s.maxRepairAttempts,
       hoverDwellThreshold: s.hoverDwellThreshold,
-      selectedChromeProfileId: s.selectedChromeProfileId,
-      chromeProfileConfigured: s.chromeProfileConfigured,
     })),
   );
 
@@ -114,7 +112,6 @@ function App() {
   const setVlmEnabled = useStore((s) => s.setVlmEnabled);
   const setMaxRepairAttempts = useStore((s) => s.setMaxRepairAttempts);
   const setHoverDwellThreshold = useStore((s) => s.setHoverDwellThreshold);
-  const setSelectedChromeProfileId = useStore((s) => s.setSelectedChromeProfileId);
   const setExecutionMode = useStore((s) => s.setExecutionMode);
   const supervisionRespond = useStore((s) => s.supervisionRespond);
   const runWorkflow = useStore((s) => s.runWorkflow);
@@ -182,15 +179,6 @@ function App() {
       />
 
       <div className="flex flex-1 flex-col overflow-hidden">
-        {!chromeProfileConfigured && (
-          <div className="border-b border-amber-700 bg-amber-900/50 px-4 py-2 text-sm text-amber-200">
-            Chrome profile not configured.{" "}
-            <button onClick={() => setShowSettings(true)} className="underline">
-              Go to Settings
-            </button>{" "}
-            and click Configure to set up your browser sessions.
-          </div>
-        )}
         <VerdictBar />
 
         <div className="relative flex flex-1 overflow-hidden">
@@ -318,7 +306,6 @@ function App() {
         vlmEnabled={vlmEnabled}
         maxRepairAttempts={maxRepairAttempts}
         hoverDwellThreshold={hoverDwellThreshold}
-        selectedChromeProfileId={selectedChromeProfileId}
         onClose={() => setShowSettings(false)}
         onPlannerConfigChange={setPlannerConfig}
         onAgentConfigChange={setAgentConfig}
@@ -326,7 +313,6 @@ function App() {
         onVlmEnabledChange={setVlmEnabled}
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
         onHoverDwellThresholdChange={setHoverDwellThreshold}
-        onSelectedChromeProfileIdChange={setSelectedChromeProfileId}
       />
 
       <VerdictModal />

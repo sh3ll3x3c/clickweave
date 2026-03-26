@@ -15,6 +15,7 @@ fn test_patcher_prompt_includes_node_arguments() {
             value: Some("Signal".into()),
             bring_to_front: true,
             app_kind: clickweave_core::AppKind::Native,
+            chrome_profile_id: None,
         }),
         Position { x: 0.0, y: 0.0 },
     );
@@ -283,6 +284,7 @@ async fn test_patch_adds_loop() {
             value: Some("Calculator".into()),
             bring_to_front: true,
             app_kind: clickweave_core::AppKind::Native,
+            chrome_profile_id: None,
         }),
         "Focus Calculator",
     );
@@ -338,6 +340,7 @@ fn test_mixed_add_and_add_nodes_warns_and_skips_flat() {
             value: Some("Calculator".to_string()),
             bring_to_front: true,
             app_kind: clickweave_core::AppKind::Native,
+            chrome_profile_id: None,
         }),
         "Focus Calculator",
     );

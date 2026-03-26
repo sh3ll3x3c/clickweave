@@ -35,6 +35,8 @@ pub async fn assistant_chat(
         handle.lock().unwrap().abort = None;
     }
 
+    let chrome_profiles = super::chrome_profiles::get_store(&app).load_profiles();
+
     let emit_handle = app.clone();
     let join_handle = tokio::task::spawn(async move {
         let tools = fetch_mcp_tool_schemas().await?;
@@ -50,6 +52,12 @@ pub async fn assistant_chat(
             let _ = emit_handle.emit("assistant://repairing", (attempt, max));
         };
 
+        let profiles_ref = if chrome_profiles.len() > 1 {
+            Some(chrome_profiles.as_slice())
+        } else {
+            None
+        };
+
         let result = clickweave_llm::planner::assistant_chat(
             &request.workflow,
             &request.user_message,
@@ -61,6 +69,7 @@ pub async fn assistant_chat(
             request.allow_agent_steps,
             (request.max_repair_attempts as usize).min(10),
             Some(&on_repair),
+            profiles_ref,
         )
         .await
         .map_err(|e| CommandError::llm(format!("Assistant chat failed: {}", e)))?;

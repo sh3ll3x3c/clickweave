@@ -17,6 +17,7 @@ pub use error::*;
 mod tests;
 
 use clickweave_core::AppKind;
+use clickweave_core::chrome_profiles::{ChromeProfile, ChromeProfileStore};
 use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
@@ -146,9 +147,10 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     /// `cdp_list_pages` until the URL moves away from NTP/blank so that
     /// supervision fires when Chrome is already loading the destination page.
     last_typed_url: Option<String>,
-    /// Persistent Chrome user-data-dir path for `--remote-debugging-port` sessions.
-    /// When set, used as `--user-data-dir` instead of a hardcoded path.
-    chrome_profile_path: Option<PathBuf>,
+    /// Store for Chrome user-data-dir profiles (resolves profile names to paths).
+    chrome_profile_store: ChromeProfileStore,
+    /// Cached profile list, loaded once at construction.
+    chrome_profiles: Vec<ChromeProfile>,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -186,8 +188,13 @@ impl WorkflowExecutor {
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
         cancel_token: CancellationToken,
-        chrome_profile_path: Option<PathBuf>,
+        chrome_profiles_dir: PathBuf,
     ) -> Self {
+        let chrome_profile_store = ChromeProfileStore::new(chrome_profiles_dir);
+        let chrome_profiles = chrome_profile_store.ensure_profiles().unwrap_or_else(|e| {
+            tracing::warn!("Chrome profile setup failed (non-fatal): {e}");
+            chrome_profile_store.load_profiles()
+        });
         let decision_cache = DecisionCache::load(&storage.cache_path())
             .unwrap_or_else(|| DecisionCache::new(workflow.id));
         let verdict_vlm = vlm_config
@@ -221,7 +228,8 @@ impl WorkflowExecutor {
             last_click_was_cdp: false,
             last_url_navigation_was_cdp: false,
             last_typed_url: None,
-            chrome_profile_path,
+            chrome_profile_store,
+            chrome_profiles,
         }
     }
 }
@@ -318,6 +326,42 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         self.tried_cdp_uids
             .write()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    // ── Chrome profile resolution ────────────────────────────────────────
+
+    /// Resolve a chrome_profile name from launch_app arguments to a filesystem path.
+    /// Falls back to the first available profile if no name is provided.
+    /// Returns an error if a name is provided but doesn't match any profile.
+    pub(crate) fn resolve_chrome_profile_path(
+        &self,
+        chrome_profile_name: Option<&str>,
+    ) -> ExecutorResult<Option<PathBuf>> {
+        match chrome_profile_name {
+            Some(name) => self
+                .chrome_profile_store
+                .resolve_profile_path_by_name(name)
+                .map(Some)
+                .ok_or_else(|| {
+                    let available: Vec<&str> = self
+                        .chrome_profiles
+                        .iter()
+                        .map(|p| p.name.as_str())
+                        .collect();
+                    ExecutorError::ToolCall {
+                        tool: "launch_app".to_string(),
+                        message: format!(
+                            "Unknown Chrome profile '{}'. Available profiles: {}",
+                            name,
+                            available.join(", ")
+                        ),
+                    }
+                }),
+            None => Ok(self
+                .chrome_profiles
+                .first()
+                .map(|p| self.chrome_profile_store.profile_path(&p.id))),
+        }
     }
 
     // ── Convenience accessors ────────────────────────────────────────────

@@ -89,6 +89,7 @@ fn evict_app_cache_for_focus_window_node() {
         value: Some("chrome".to_string()),
         bring_to_front: true,
         app_kind: clickweave_core::AppKind::Native,
+        chrome_profile_id: None,
     });
     exec.evict_caches_for_node(&node);
     assert!(!exec.app_cache.read().unwrap().contains_key("chrome"));

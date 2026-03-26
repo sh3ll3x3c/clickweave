@@ -108,6 +108,18 @@ impl ChromeProfileStore {
             .map(String::from)
     }
 
+    /// Resolve a profile display name to its filesystem path (case-insensitive).
+    /// Strips trailing " (email)" suffixes so the LLM can include the email without breaking resolution.
+    /// Returns `None` if no profile matches.
+    pub fn resolve_profile_path_by_name(&self, name: &str) -> Option<PathBuf> {
+        let stripped = name.find(" (").map(|i| &name[..i]).unwrap_or(name);
+        let lower = stripped.to_lowercase();
+        self.load_profiles()
+            .into_iter()
+            .find(|p| p.name.to_lowercase() == lower)
+            .map(|p| self.profile_path(&p.id))
+    }
+
     /// Ensure at least one profile exists. Returns all profiles.
     pub fn ensure_profiles(&self) -> std::io::Result<Vec<ChromeProfile>> {
         if self.load_entries().is_empty() {
@@ -214,6 +226,38 @@ mod tests {
         let base = TempDir::new().unwrap();
         let store = ChromeProfileStore::new(base.path().to_path_buf());
         assert_eq!(store.read_google_email("nonexistent"), None);
+    }
+
+    #[test]
+    fn resolve_profile_path_by_name_case_insensitive() {
+        let base = TempDir::new().unwrap();
+        let store = ChromeProfileStore::new(base.path().to_path_buf());
+        store.create_profile("Work Account").unwrap();
+
+        // Exact match
+        let result = store.resolve_profile_path_by_name("Work Account");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), store.profile_path("work-account"));
+
+        // Case-insensitive
+        let result = store.resolve_profile_path_by_name("work account");
+        assert!(result.is_some());
+
+        // No match
+        let result = store.resolve_profile_path_by_name("Personal");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_profile_path_by_name_strips_email_suffix() {
+        let base = TempDir::new().unwrap();
+        let store = ChromeProfileStore::new(base.path().to_path_buf());
+        store.create_profile("Your Chrome").unwrap();
+
+        // LLM may include email suffix copied from the prompt display
+        let result = store.resolve_profile_path_by_name("Your Chrome (ves.lisica@gmail.com)");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), store.profile_path("your-chrome"));
     }
 
     #[test]
