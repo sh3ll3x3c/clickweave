@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::ClickTarget;
 use clickweave_core::NodeRun;
@@ -270,6 +272,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         app_name: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
+        chrome_profile_path: Option<&Path>,
     ) -> ExecutorResult<()> {
         use clickweave_core::ExecutionMode;
         use clickweave_core::decision_cache::CdpPort;
@@ -287,24 +290,31 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let port = if self.execution_mode == ExecutionMode::Test {
             // Try reusing an existing debug port before doing a full relaunch.
-            let reused = if let Some(existing_port) = existing_debug_port(app_name).await {
-                self.log(format!(
-                    "'{}' already running with --remote-debugging-port={}, reusing",
-                    app_name, existing_port
-                ));
-                if self.try_cdp_connect(app_name, existing_port, mcp).await {
-                    self.write_decision_cache().cdp_port.insert(
-                        app_name.to_string(),
-                        CdpPort {
-                            port: existing_port,
-                        },
-                    );
-                    Some(existing_port)
-                } else {
+            // Skip reuse when an explicit Chrome profile is provided — we need
+            // a fresh instance with that profile's --user-data-dir, not whatever
+            // Chrome is currently running.
+            let reused = if chrome_profile_path.is_none() {
+                if let Some(existing_port) = existing_debug_port(app_name).await {
                     self.log(format!(
-                        "Existing debug port {} for '{}' was unreachable, relaunching",
-                        existing_port, app_name
+                        "'{}' already running with --remote-debugging-port={}, reusing",
+                        app_name, existing_port
                     ));
+                    if self.try_cdp_connect(app_name, existing_port, mcp).await {
+                        self.write_decision_cache().cdp_port.insert(
+                            app_name.to_string(),
+                            CdpPort {
+                                port: existing_port,
+                            },
+                        );
+                        Some(existing_port)
+                    } else {
+                        self.log(format!(
+                            "Existing debug port {} for '{}' was unreachable, relaunching",
+                            existing_port, app_name
+                        ));
+                        None
+                    }
+                } else {
                     None
                 }
             } else {
@@ -319,7 +329,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "Restarting '{}' with DevTools enabled (port {})...",
                     app_name, port
                 ));
-                self.relaunch_with_debug_port(app_name, port, mcp).await?;
+                self.relaunch_with_debug_port(app_name, port, mcp, chrome_profile_path)
+                    .await?;
                 self.evict_app_cache(app_name);
                 self.write_decision_cache()
                     .cdp_port
@@ -346,7 +357,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "CDP connection failed for '{}', relaunching with port {}...",
                     app_name, port
                 ));
-                self.relaunch_with_debug_port(app_name, port, mcp).await?;
+                self.relaunch_with_debug_port(app_name, port, mcp, chrome_profile_path)
+                    .await?;
                 self.evict_app_cache(app_name);
                 self.cdp_connect_and_poll(app_name, port, mcp).await?;
             }
@@ -445,13 +457,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         app_name: &str,
         port: u16,
         mcp: &(impl Mcp + ?Sized),
+        chrome_profile_path: Option<&Path>,
     ) -> ExecutorResult<()> {
         let is_chrome = {
             let lower = app_name.to_lowercase();
             lower.contains("chrome") || lower.contains("chromium")
         };
 
-        if let (true, Some(profile_path)) = (is_chrome, self.chrome_profile_path.as_ref()) {
+        if let (true, Some(profile_path)) = (is_chrome, chrome_profile_path) {
             // Chrome with a configured profile: kill only the profile-specific
             // instance, then launch directly (bypasses MCP launch_app which
             // refuses when any Chrome is already running).
