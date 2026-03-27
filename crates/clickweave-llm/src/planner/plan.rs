@@ -2,6 +2,7 @@ use super::mapping::step_to_node_type;
 use super::parse::{extract_json, layout_nodes, step_rejected_reason, truncate_intent};
 use super::prompt::planner_system_prompt;
 use super::repair::chat_with_repair;
+use super::tool_use::{PlannerToolExecutor, plan_with_tool_use};
 use super::{PlanResult, PlanStep, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::{Context, Result, anyhow};
@@ -77,6 +78,53 @@ pub async fn plan_workflow_with_backend(
     let messages = vec![Message::system(&system), Message::user(&user_msg)];
 
     chat_with_repair(backend, "Planner", messages, |content| {
+        parse_and_build_workflow(
+            content,
+            intent,
+            mcp_tools_openai,
+            allow_ai_transforms,
+            allow_agent_steps,
+        )
+    })
+    .await
+}
+
+/// Plan a workflow with planning-time tool support.
+///
+/// Like `plan_workflow_with_backend`, but uses the tool-use conversation loop
+/// instead of `chat_with_repair`. The executor provides MCP tool access and
+/// user confirmation handling.
+pub async fn plan_workflow_with_tools<E: PlannerToolExecutor>(
+    backend: &impl ChatBackend,
+    intent: &str,
+    mcp_tools_openai: &[Value],
+    allow_ai_transforms: bool,
+    allow_agent_steps: bool,
+    chrome_profiles: Option<&[ChromeProfile]>,
+    executor: &E,
+) -> Result<PlanResult> {
+    let has_planning_tools = !executor.available_planning_tools().is_empty();
+
+    let system = planner_system_prompt(
+        mcp_tools_openai,
+        allow_ai_transforms,
+        allow_agent_steps,
+        None,
+        chrome_profiles,
+        has_planning_tools,
+    );
+    let user_msg = format!("Plan a workflow for: {}", intent);
+
+    info!("Planning workflow with tool support for intent: {}", intent);
+    debug!(
+        "Planner system prompt length: {} chars, planning tools: {}",
+        system.len(),
+        has_planning_tools
+    );
+
+    let messages = vec![Message::system(&system), Message::user(&user_msg)];
+
+    plan_with_tool_use(backend, messages, executor, |content| {
         parse_and_build_workflow(
             content,
             intent,
