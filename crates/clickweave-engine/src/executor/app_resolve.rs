@@ -198,7 +198,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Look up a PID for an app by its exact name via `list_apps`.
-    async fn lookup_app_pid(
+    pub(super) async fn lookup_app_pid(
         &self,
         app_name: &str,
         mcp: &(impl Mcp + ?Sized),

@@ -850,19 +850,39 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         Self::check_tool_error(&result, tool_name)?;
 
-        // launch_app implies the app is now focused
+        // launch_app implies the app is now focused.
+        // Auto-detect app kind from the running process, since the planner
+        // may not include app_kind in the launch_app arguments.
         if let Some(name) = &launch_app_name {
-            *self.write_focused_app() = Some((name.clone(), launch_app_kind));
+            let detected_kind = if launch_app_kind == AppKind::Native {
+                // Try to detect actual app kind from the running process
+                match self.lookup_app_pid(name, mcp).await {
+                    Ok(pid) => {
+                        let detected = clickweave_core::app_detection::classify_app_by_pid(pid);
+                        if detected != AppKind::Native {
+                            self.log(format!(
+                                "Detected app_kind for '{}': {:?} (pid {})",
+                                name, detected, pid
+                            ));
+                        }
+                        detected
+                    }
+                    Err(_) => AppKind::Native,
+                }
+            } else {
+                if launch_app_kind != AppKind::Native {
+                    self.log(format!(
+                        "App '{}' has app_kind: {:?}",
+                        name, launch_app_kind
+                    ));
+                }
+                launch_app_kind
+            };
 
-            if launch_app_kind != AppKind::Native {
-                self.log(format!(
-                    "App '{}' has app_kind: {:?}",
-                    name, launch_app_kind
-                ));
-            }
+            *self.write_focused_app() = Some((name.clone(), detected_kind));
 
             // Lazy CDP connection for Electron/Chrome apps (same as FocusWindow path).
-            if launch_app_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
+            if detected_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
                 let profile_path = self.resolve_chrome_profile_path(None)?;
                 self.ensure_cdp_connected(
                     node_id,
