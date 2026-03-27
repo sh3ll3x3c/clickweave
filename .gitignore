@@ -12,6 +12,7 @@ src-tauri/logs/
 .worktrees
 crates/clickweave-llm/eval/eval.toml
 crates/clickweave-llm/eval/results/
+internal_docs/
 .superpowers/
 .cargo/config.toml
 

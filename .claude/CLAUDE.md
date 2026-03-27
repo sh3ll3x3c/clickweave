@@ -48,7 +48,7 @@
 - **Results:** JSON files in `eval/results/` with full generated workflows for manual analysis
 
 ## Design & Implementation Plans
-- Location: `.claude/plans/` (gitignored, local-only)
+- Location: `internal_docs/plans/` (gitignored, local-only)
 - Naming: `YYYY-MM-DD_HH-MM-SS-<topic>.md` (e.g., `2026-02-12_10-07-02-app-name-resolution.md`)
 
 ## Rust Development
