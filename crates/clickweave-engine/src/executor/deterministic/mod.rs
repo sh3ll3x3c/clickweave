@@ -173,16 +173,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         match node_type {
             NodeType::Click(p) if p.target_ref.is_some() => {
-                let coords_val = resolve_ref(ctx, p.target_ref.as_ref().unwrap())?;
-                let (x, y) = extract_coordinates(&coords_val)?;
+                let r = p.target_ref.as_ref().expect("guarded by is_some");
+                let (x, y) = extract_coordinates(&resolve_ref(ctx, r)?)?;
                 Ok(Cow::Owned(NodeType::Click(ClickParams {
                     target: Some(ClickTarget::Coordinates { x, y }),
                     ..p.clone()
                 })))
             }
             NodeType::Hover(p) if p.target_ref.is_some() => {
-                let coords_val = resolve_ref(ctx, p.target_ref.as_ref().unwrap())?;
-                let (x, y) = extract_coordinates(&coords_val)?;
+                let r = p.target_ref.as_ref().expect("guarded by is_some");
+                let (x, y) = extract_coordinates(&resolve_ref(ctx, r)?)?;
                 Ok(Cow::Owned(NodeType::Hover(HoverParams {
                     target: Some(ClickTarget::Coordinates { x, y }),
                     ..p.clone()
@@ -190,59 +190,57 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
             NodeType::Drag(p) if p.from_ref.is_some() || p.to_ref.is_some() => {
                 let mut resolved = p.clone();
-                if let Some(ref from_ref) = p.from_ref {
-                    let val = resolve_ref(ctx, from_ref)?;
-                    let (x, y) = extract_coordinates(&val)?;
+                if let Some(from_ref) = &p.from_ref {
+                    let (x, y) = extract_coordinates(&resolve_ref(ctx, from_ref)?)?;
                     resolved.from_x = Some(x);
                     resolved.from_y = Some(y);
                 }
-                if let Some(ref to_ref) = p.to_ref {
-                    let val = resolve_ref(ctx, to_ref)?;
-                    let (x, y) = extract_coordinates(&val)?;
+                if let Some(to_ref) = &p.to_ref {
+                    let (x, y) = extract_coordinates(&resolve_ref(ctx, to_ref)?)?;
                     resolved.to_x = Some(x);
                     resolved.to_y = Some(y);
                 }
                 Ok(Cow::Owned(NodeType::Drag(resolved)))
             }
             NodeType::TypeText(p) if p.text_ref.is_some() => {
-                let val = resolve_ref(ctx, p.text_ref.as_ref().unwrap())?;
+                let r = p.text_ref.as_ref().expect("guarded by is_some");
                 Ok(Cow::Owned(NodeType::TypeText(TypeTextParams {
-                    text: coerce_to_string(&val),
+                    text: coerce_to_string(&resolve_ref(ctx, r)?),
                     ..p.clone()
                 })))
             }
             NodeType::FocusWindow(p) if p.value_ref.is_some() => {
-                let val = resolve_ref(ctx, p.value_ref.as_ref().unwrap())?;
+                let r = p.value_ref.as_ref().expect("guarded by is_some");
                 Ok(Cow::Owned(NodeType::FocusWindow(FocusWindowParams {
-                    value: Some(coerce_to_string(&val)),
+                    value: Some(coerce_to_string(&resolve_ref(ctx, r)?)),
                     ..p.clone()
                 })))
             }
             NodeType::CdpFill(p) if p.value_ref.is_some() => {
-                let val = resolve_ref(ctx, p.value_ref.as_ref().unwrap())?;
+                let r = p.value_ref.as_ref().expect("guarded by is_some");
                 Ok(Cow::Owned(NodeType::CdpFill(CdpFillParams {
-                    value: coerce_to_string(&val),
+                    value: coerce_to_string(&resolve_ref(ctx, r)?),
                     ..p.clone()
                 })))
             }
             NodeType::CdpType(p) if p.text_ref.is_some() => {
-                let val = resolve_ref(ctx, p.text_ref.as_ref().unwrap())?;
+                let r = p.text_ref.as_ref().expect("guarded by is_some");
                 Ok(Cow::Owned(NodeType::CdpType(CdpTypeParams {
-                    text: coerce_to_string(&val),
+                    text: coerce_to_string(&resolve_ref(ctx, r)?),
                     ..p.clone()
                 })))
             }
             NodeType::CdpNavigate(p) if p.url_ref.is_some() => {
-                let val = resolve_ref(ctx, p.url_ref.as_ref().unwrap())?;
+                let r = p.url_ref.as_ref().expect("guarded by is_some");
                 Ok(Cow::Owned(NodeType::CdpNavigate(CdpNavigateParams {
-                    url: coerce_to_string(&val),
+                    url: coerce_to_string(&resolve_ref(ctx, r)?),
                     ..p.clone()
                 })))
             }
             NodeType::CdpNewPage(p) if p.url_ref.is_some() => {
-                let val = resolve_ref(ctx, p.url_ref.as_ref().unwrap())?;
+                let r = p.url_ref.as_ref().expect("guarded by is_some");
                 Ok(Cow::Owned(NodeType::CdpNewPage(CdpNewPageParams {
-                    url: coerce_to_string(&val),
+                    url: coerce_to_string(&resolve_ref(ctx, r)?),
                     ..p.clone()
                 })))
             }

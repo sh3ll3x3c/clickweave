@@ -86,7 +86,7 @@ Literal types: `{"type": "String", "value": "text"}`, `{"type": "Number", "value
 
 Any read-only Tool step (find_text, find_image, list_apps, take_screenshot) can be marked as a **verification** by adding `"role": "Verification"` to the node. This makes the node's result count as a test assertion:
 
-- **find_text / find_image / list_windows**: Pass if matches are found, fail otherwise. No LLM call needed.
+- **find_text / find_image / find_app**: Pass if matches are found, fail otherwise. No LLM call needed.
 - **take_screenshot**: Requires `"expected_outcome": "<description>"`. A VLM evaluates whether the screenshot shows the expected result.
 
 Verification failures stop the workflow immediately (fail-fast).

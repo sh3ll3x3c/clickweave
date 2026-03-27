@@ -1,25 +1,30 @@
 import { useMemo, useState } from "react";
-import type { Condition, LiteralValue, Operator, ValueRef } from "../../../../bindings";
+import type { Condition, LiteralValue, Operator } from "../../../../bindings";
 import { useStore } from "../../../../store/useAppStore";
 import { getOutputSchema, nodeTypeName } from "../../../../utils/outputSchema";
 
-/** Parse a dotted "node.field" variable name into its parts. */
-function parseVariableRef(ref: ValueRef): { node: string; field: string } | null {
-  if (ref.type !== "Variable" || !ref.name) return null;
-  const dotIdx = ref.name.indexOf(".");
-  if (dotIdx === -1) return { node: ref.name, field: "" };
-  return { node: ref.name.slice(0, dotIdx), field: ref.name.slice(dotIdx + 1) };
+// The Rust Condition type uses:
+//   left: OutputRef { node: string, field: string }
+//   right: ConditionValue = { type: "Literal", value: LiteralValue } | { type: "Ref", node: string, field: string }
+// bindings.ts may not have these yet (regenerated on debug build), so we use
+// inline types that match the Rust serde shapes.
+
+type OutputRef = { node: string; field: string };
+type ConditionValue =
+  | { type: "Literal"; value: LiteralValue }
+  | { type: "Ref"; node: string; field: string };
+
+// The Condition type from bindings may still reference old ValueRef types.
+// Cast to the real shape at the boundary.
+interface RealCondition {
+  left: OutputRef;
+  operator: Operator;
+  right: ConditionValue;
 }
 
-/** Build a Variable ValueRef from node auto_id and field name. */
-function buildVariableRef(node: string, field: string): ValueRef {
-  const name = field ? `${node}.${field}` : node;
-  return { type: "Variable", name };
-}
-
-function literalDisplayValue(ref: ValueRef): string {
-  if (ref.type !== "Literal") return "";
-  return String(ref.value.value);
+function literalDisplayValue(cv: ConditionValue): string {
+  if (cv.type !== "Literal") return "";
+  return String((cv.value as { value: unknown }).value);
 }
 
 interface OutputRefPickerProps {
@@ -27,7 +32,6 @@ interface OutputRefPickerProps {
   fieldName: string;
   onChangeNode: (autoId: string) => void;
   onChangeField: (field: string) => void;
-  /** Available upstream nodes with auto_ids and their type names. */
   nodeOptions: Array<{ autoId: string; typeName: string }>;
 }
 
@@ -47,14 +51,9 @@ function OutputRefPicker({
         value={nodeAutoId}
         onChange={(e) => {
           onChangeNode(e.target.value);
-          // Reset field when node changes
           const newTypeName = nodeOptions.find((n) => n.autoId === e.target.value)?.typeName ?? "";
           const newFields = getOutputSchema(newTypeName);
-          if (newFields.length > 0) {
-            onChangeField(newFields[0].name);
-          } else {
-            onChangeField("");
-          }
+          onChangeField(newFields.length > 0 ? newFields[0].name : "");
         }}
         className="flex-1 rounded bg-[var(--bg-input)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none"
       >
@@ -92,9 +91,12 @@ export function ConditionEditor({
   condition: Condition;
   onChange: (c: Condition) => void;
 }) {
+  // Cast to the real shape (bindings may be stale until debug rebuild)
+  const cond = condition as unknown as RealCondition;
+  const emit = (c: RealCondition) => onChange(c as unknown as Condition);
+
   const workflowNodes = useStore((s) => s.workflow.nodes);
 
-  // Build list of available nodes with output schemas
   const nodeOptions = useMemo(() => {
     const options: Array<{ autoId: string; typeName: string }> = [];
     for (const node of workflowNodes) {
@@ -108,20 +110,16 @@ export function ConditionEditor({
     return options;
   }, [workflowNodes]);
 
-  // Parse left side
-  const leftParsed = parseVariableRef(condition.left);
-  const leftNode = leftParsed?.node ?? "";
-  const leftField = leftParsed?.field ?? "";
+  const leftNode = cond.left.node ?? "";
+  const leftField = cond.left.field ?? "";
 
-  // Right side mode: "Literal" or "Variable"
-  const isRightVariable = condition.right.type === "Variable";
+  const isRightRef = cond.right.type === "Ref";
   const [rightMode, setRightMode] = useState<"literal" | "variable">(
-    isRightVariable ? "variable" : "literal",
+    isRightRef ? "variable" : "literal",
   );
 
-  const rightParsed = parseVariableRef(condition.right);
-  const rightNode = rightParsed?.node ?? "";
-  const rightField = rightParsed?.field ?? "";
+  const rightNode = isRightRef ? (cond.right as { node: string }).node : "";
+  const rightField = isRightRef ? (cond.right as { field: string }).field : "";
 
   return (
     <div className="space-y-2">
@@ -135,10 +133,10 @@ export function ConditionEditor({
             const typeName = nodeOptions.find((n) => n.autoId === autoId)?.typeName ?? "";
             const fields = getOutputSchema(typeName);
             const field = fields.length > 0 ? fields[0].name : "";
-            onChange({ ...condition, left: buildVariableRef(autoId, field) });
+            emit({ ...cond, left: { node: autoId, field } });
           }}
           onChangeField={(field) => {
-            onChange({ ...condition, left: buildVariableRef(leftNode, field) });
+            emit({ ...cond, left: { node: leftNode, field } });
           }}
           nodeOptions={nodeOptions}
         />
@@ -149,9 +147,9 @@ export function ConditionEditor({
         <div className="flex-1">
           <label className="text-[10px] text-[var(--text-muted)]">Operator</label>
           <select
-            value={condition.operator}
+            value={cond.operator}
             onChange={(e) =>
-              onChange({ ...condition, operator: e.target.value as Operator })
+              emit({ ...cond, operator: e.target.value as Operator })
             }
             className="w-full rounded bg-[var(--bg-input)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none"
           >
@@ -178,9 +176,9 @@ export function ConditionEditor({
               type="button"
               onClick={() => {
                 setRightMode("literal");
-                if (condition.right.type !== "Literal") {
-                  onChange({
-                    ...condition,
+                if (cond.right.type !== "Literal") {
+                  emit({
+                    ...cond,
                     right: { type: "Literal", value: { type: "String", value: "" } },
                   });
                 }
@@ -197,10 +195,10 @@ export function ConditionEditor({
               type="button"
               onClick={() => {
                 setRightMode("variable");
-                if (condition.right.type !== "Variable") {
-                  onChange({
-                    ...condition,
-                    right: { type: "Variable", name: "" },
+                if (cond.right.type !== "Ref") {
+                  emit({
+                    ...cond,
+                    right: { type: "Ref", node: "", field: "" },
                   });
                 }
               }}
@@ -217,7 +215,7 @@ export function ConditionEditor({
         {rightMode === "literal" ? (
           <input
             type="text"
-            value={literalDisplayValue(condition.right)}
+            value={literalDisplayValue(cond.right)}
             onChange={(e) => {
               const raw = e.target.value;
               let value: LiteralValue;
@@ -228,10 +226,7 @@ export function ConditionEditor({
               } else {
                 value = { type: "String", value: raw };
               }
-              onChange({
-                ...condition,
-                right: { type: "Literal", value },
-              });
+              emit({ ...cond, right: { type: "Literal", value } });
             }}
             placeholder="value"
             className="w-full rounded bg-[var(--bg-input)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none"
@@ -244,10 +239,10 @@ export function ConditionEditor({
               const typeName = nodeOptions.find((n) => n.autoId === autoId)?.typeName ?? "";
               const fields = getOutputSchema(typeName);
               const field = fields.length > 0 ? fields[0].name : "";
-              onChange({ ...condition, right: buildVariableRef(autoId, field) });
+              emit({ ...cond, right: { type: "Ref", node: autoId, field } });
             }}
             onChangeField={(field) => {
-              onChange({ ...condition, right: buildVariableRef(rightNode, field) });
+              emit({ ...cond, right: { type: "Ref", node: rightNode, field } });
             }}
             nodeOptions={nodeOptions}
           />

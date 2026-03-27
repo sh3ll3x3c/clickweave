@@ -1,4 +1,4 @@
-/// Shared string sanitization utilities for path and identifier generation.
+//! Shared string sanitization utilities for path and identifier generation.
 
 /// Sanitize a string for use as a filesystem path component.
 ///
