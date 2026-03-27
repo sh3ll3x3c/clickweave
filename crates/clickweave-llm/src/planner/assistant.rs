@@ -352,6 +352,7 @@ fn merge_patch_into_workflow(workflow: &Workflow, patch: &PatchResult) -> Workfl
         nodes,
         edges,
         groups: workflow.groups.clone(),
+        next_id_counters: workflow.next_id_counters.clone(),
     }
 }
 

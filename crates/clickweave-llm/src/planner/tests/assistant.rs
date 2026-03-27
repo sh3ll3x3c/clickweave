@@ -212,6 +212,7 @@ async fn test_assistant_patches_with_add_nodes_and_add_edges() {
             bring_to_front: true,
             app_kind: clickweave_core::AppKind::Native,
             chrome_profile_id: None,
+            ..Default::default()
         }),
         "Focus Calculator",
     );
@@ -219,7 +220,7 @@ async fn test_assistant_patches_with_add_nodes_and_add_edges() {
     // Patcher output using add_nodes + add_edges (control-flow patch)
     let response = r#"{"add_nodes": [
         {"id": "n1", "step_type": "Loop", "name": "My Loop", "exit_condition": {
-            "left": {"type": "Variable", "name": "done"},
+            "left": {"node": "done", "field": "result"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }},
@@ -271,7 +272,7 @@ async fn test_assistant_plans_graph_format_for_empty_workflow() {
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"id": "n2", "step_type": "Loop", "name": "Loop", "exit_condition": {
-            "left": {"type": "Variable", "name": "done"},
+            "left": {"node": "done", "field": "result"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }},
@@ -328,7 +329,7 @@ async fn test_assistant_retry_succeeds_on_second_attempt() {
     // First response: If node with only IfTrue edge (missing IfFalse → validation fails)
     let invalid_response = r#"{"add_nodes": [
         {"id": "n1", "step_type": "If", "name": "Check", "condition": {
-            "left": {"type": "Variable", "name": "x"},
+            "left": {"node": "x", "field": "result"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }},
@@ -374,7 +375,7 @@ async fn test_assistant_repair_callback_is_invoked() {
 
     let invalid_response = r#"{"add_nodes": [
         {"id": "n1", "step_type": "If", "name": "Check", "condition": {
-            "left": {"type": "Variable", "name": "x"},
+            "left": {"node": "x", "field": "result"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }},
@@ -424,7 +425,7 @@ async fn test_assistant_retry_exhausted_returns_last_patch() {
     // Always returns invalid patch (If with missing IfFalse)
     let invalid_response = r#"{"add_nodes": [
         {"id": "n1", "step_type": "If", "name": "Check", "condition": {
-            "left": {"type": "Variable", "name": "x"},
+            "left": {"node": "x", "field": "result"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }},
@@ -466,7 +467,7 @@ async fn test_assistant_no_validation_when_max_is_zero() {
     // Invalid patch, but max_repair_attempts = 0 skips validation entirely
     let invalid_response = r#"{"add_nodes": [
         {"id": "n1", "step_type": "If", "name": "Check", "condition": {
-            "left": {"type": "Variable", "name": "x"},
+            "left": {"node": "x", "field": "result"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }},
@@ -506,7 +507,7 @@ async fn test_assistant_validate_only_no_retry_when_max_is_one() {
     // Invalid patch — max_repair_attempts = 1 means validate but no retry
     let invalid_response = r#"{"add_nodes": [
         {"id": "n1", "step_type": "If", "name": "Check", "condition": {
-            "left": {"type": "Variable", "name": "x"},
+            "left": {"node": "x", "field": "result"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }},

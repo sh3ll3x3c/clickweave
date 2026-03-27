@@ -16,6 +16,7 @@ fn test_patcher_prompt_includes_node_arguments() {
             bring_to_front: true,
             app_kind: clickweave_core::AppKind::Native,
             chrome_profile_id: None,
+            ..Default::default()
         }),
         Position { x: 0.0, y: 0.0 },
     );
@@ -89,9 +90,7 @@ async fn test_patch_adds_node() {
 async fn test_patch_removes_node() {
     let (node_id, workflow) = single_node_workflow(
         NodeType::Click(ClickParams {
-            target: None,
-            x: Some(100.0),
-            y: Some(200.0),
+            target: Some(ClickTarget::Coordinates { x: 100.0, y: 200.0 }),
             button: MouseButton::Left,
             click_count: 1,
             ..Default::default()
@@ -203,9 +202,7 @@ async fn test_patch_update_with_flat_tool_name_and_arguments() {
 async fn test_patch_update_rejects_disallowed_node_type_change() {
     let (node_id, workflow) = single_node_workflow(
         NodeType::Click(ClickParams {
-            target: None,
-            x: Some(100.0),
-            y: Some(200.0),
+            target: Some(ClickTarget::Coordinates { x: 100.0, y: 200.0 }),
             button: MouseButton::Left,
             click_count: 1,
             ..Default::default()
@@ -285,6 +282,7 @@ async fn test_patch_adds_loop() {
             bring_to_front: true,
             app_kind: clickweave_core::AppKind::Native,
             chrome_profile_id: None,
+            ..Default::default()
         }),
         "Focus Calculator",
     );
@@ -293,7 +291,7 @@ async fn test_patch_adds_loop() {
         r#"{{
         "add_nodes": [
             {{"id": "n1", "step_type": "Loop", "name": "Repeat", "exit_condition": {{
-                "left": {{"type": "Variable", "name": "check.found"}},
+                "left": {{"node": "check", "field": "found"}},
                 "operator": "Equals",
                 "right": {{"type": "Literal", "value": {{"type": "Bool", "value": true}}}}
             }}, "max_iterations": 10}},
@@ -341,6 +339,7 @@ fn test_mixed_add_and_add_nodes_warns_and_skips_flat() {
             bring_to_front: true,
             app_kind: clickweave_core::AppKind::Native,
             chrome_profile_id: None,
+            ..Default::default()
         }),
         "Focus Calculator",
     );

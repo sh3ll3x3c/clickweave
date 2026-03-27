@@ -190,7 +190,7 @@ async fn test_plan_calculator_loop_scenario() {
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus Calculator"},
         {"id": "n2", "step_type": "Loop", "name": "Multiply Loop", "exit_condition": {
-            "left": {"type": "Variable", "name": "check_for_1024.found"},
+            "left": {"node": "find_text_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 20},

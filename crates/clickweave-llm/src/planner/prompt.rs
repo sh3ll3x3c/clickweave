@@ -65,7 +65,7 @@ pub(crate) fn planner_system_prompt(
 **Condition** objects compare a runtime variable to a value:
 ```json
 {
-  "left": {"type": "Variable", "name": "<sanitized_node_name>.<field>"},
+  "left": {"node": "<auto_id>", "field": "<field>"},
   "operator": "<op>",
   "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
 }
@@ -74,17 +74,17 @@ Operators: Equals, NotEquals, GreaterThan, LessThan, GreaterThanOrEqual, LessTha
 
 Literal types: `{"type": "String", "value": "text"}`, `{"type": "Number", "value": 42}`, `{"type": "Bool", "value": true}`.
 
-**Variable names** follow `<sanitized_node_name>.<field>`. The sanitized name is derived from the node's `"name"` field: lowercase the entire name, then replace every non-alphanumeric character (spaces, punctuation, symbols) with `_`. Examples: `"Check result"` → `check_result`, `"Check if result is 128"` → `check_if_result_is_128`, `"Click +"` → `click___`. The variable name in conditions MUST match the exact sanitized form of the referenced node's name. Fields per tool:
+**Variable names** follow `<auto_id>.<field>`. The auto_id is assigned automatically from the node type (e.g. `find_text_1`, `click_1`, `find_image_2`). The variable name in conditions MUST use the node's `auto_id`. Fields per tool:
 - find_text: `.found` (bool), `.text`, `.x`, `.y`, `.count`, `.matches`
 - find_image: `.found` (bool), `.x`, `.y`, `.score`, `.count`, `.matches`
-- list_windows: `.found` (bool), `.count`, `.windows`
+- list_apps: `.found` (bool), `.count`, `.apps`
 - click, type_text, press_key, scroll, focus_window: `.success` (bool)
 - take_screenshot: `.result`
 - Any tool: `.result` (raw JSON response)
 
 ## Verification role
 
-Any read-only Tool step (find_text, find_image, list_windows, take_screenshot) can be marked as a **verification** by adding `"role": "Verification"` to the node. This makes the node's result count as a test assertion:
+Any read-only Tool step (find_text, find_image, list_apps, take_screenshot) can be marked as a **verification** by adding `"role": "Verification"` to the node. This makes the node's result count as a test assertion:
 
 - **find_text / find_image / list_windows**: Pass if matches are found, fail otherwise. No LLM call needed.
 - **take_screenshot**: Requires `"expected_outcome": "<description>"`. A VLM evaluates whether the screenshot shows the expected result.
@@ -148,8 +148,6 @@ pub(crate) fn patcher_system_prompt(
                     if let NodeType::Click(p) = &n.node_type {
                         if let Some(target) = &p.target {
                             args["target"] = Value::String(target.text().to_string());
-                        } else if p.template_image.is_some() {
-                            args["has_template_image"] = Value::Bool(true);
                         }
                     }
                     summary["arguments"] = args;

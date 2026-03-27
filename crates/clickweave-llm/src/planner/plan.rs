@@ -153,7 +153,7 @@ fn parse_and_build_workflow(
     for (i, flat) in steps.iter().enumerate() {
         match step_to_node_type(&flat.step, mcp_tools_openai) {
             Ok((node_type, display_name)) => {
-                let mut node = Node::new(node_type, positions[i], display_name);
+                let mut node = Node::new(node_type, positions[i], display_name, "");
                 if flat.role.as_deref() == Some("Verification") {
                     node.role = NodeRole::Verification;
                 }
@@ -191,6 +191,7 @@ fn parse_and_build_workflow(
         nodes,
         edges,
         groups: vec![],
+        next_id_counters: std::collections::HashMap::new(),
     };
 
     // Validate

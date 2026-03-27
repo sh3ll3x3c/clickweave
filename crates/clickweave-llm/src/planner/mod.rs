@@ -242,6 +242,7 @@ pub(crate) fn build_patch_from_output(
     // Added nodes
     let mut added_nodes = Vec::new();
     let mut added_edges = Vec::new();
+    let mut next_id_counters = workflow.next_id_counters.clone();
     let last_y = workflow
         .nodes
         .iter()
@@ -266,6 +267,8 @@ pub(crate) fn build_patch_from_output(
             }
             match step_to_node_type(&flat.step, mcp_tools) {
                 Ok((node_type, display_name)) => {
+                    let auto_id =
+                        clickweave_core::auto_id::assign_auto_id(&node_type, &mut next_id_counters);
                     let mut node = Node::new(
                         node_type,
                         Position {
@@ -273,6 +276,7 @@ pub(crate) fn build_patch_from_output(
                             y: last_y + 120.0 + (i as f32) * 120.0,
                         },
                         display_name,
+                        auto_id,
                     );
                     if flat.role.as_deref() == Some("Verification") {
                         node.role = NodeRole::Verification;
@@ -305,6 +309,7 @@ pub(crate) fn build_patch_from_output(
             &output.add_edges,
             &positions,
             &mut id_map,
+            &mut next_id_counters,
             mcp_tools,
             allow_ai_transforms,
             allow_agent_steps,
@@ -439,11 +444,14 @@ pub(crate) fn build_plan_as_patch(
 
     let positions = layout_nodes(valid_steps.len());
     let mut added_nodes = Vec::new();
+    let mut next_id_counters = HashMap::new();
 
     for (i, flat) in valid_steps.iter().enumerate() {
         match step_to_node_type(&flat.step, mcp_tools) {
             Ok((node_type, display_name)) => {
-                let mut node = Node::new(node_type, positions[i], display_name);
+                let auto_id =
+                    clickweave_core::auto_id::assign_auto_id(&node_type, &mut next_id_counters);
+                let mut node = Node::new(node_type, positions[i], display_name, auto_id);
                 if flat.role.as_deref() == Some("Verification") {
                     node.role = NodeRole::Verification;
                 }
@@ -486,6 +494,7 @@ pub(crate) fn build_graph_plan_as_patch(
     allow_agent_steps: bool,
 ) -> PatchResult {
     let mut id_map = HashMap::new();
+    let mut next_id_counters = HashMap::new();
     let positions = parse::layout_nodes(graph.nodes.len());
 
     let (added_nodes, added_edges, warnings) = build_nodes_and_edges_from_graph(
@@ -493,6 +502,7 @@ pub(crate) fn build_graph_plan_as_patch(
         &graph.edges,
         &positions,
         &mut id_map,
+        &mut next_id_counters,
         mcp_tools,
         allow_ai_transforms,
         allow_agent_steps,
@@ -519,6 +529,7 @@ fn build_nodes_and_edges_from_graph(
     raw_edges: &[Value],
     positions: &[Position],
     id_map: &mut HashMap<String, Uuid>,
+    next_id_counters: &mut HashMap<String, u32>,
     mcp_tools: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
@@ -544,7 +555,9 @@ fn build_nodes_and_edges_from_graph(
         }
         match step_to_node_type(&plan_node.step, mcp_tools) {
             Ok((node_type, display_name)) => {
-                let mut node = Node::new(node_type, pos, display_name);
+                let auto_id =
+                    clickweave_core::auto_id::assign_auto_id(&node_type, next_id_counters);
+                let mut node = Node::new(node_type, pos, display_name, auto_id);
                 if plan_node.role.as_deref() == Some("Verification") {
                     node.role = NodeRole::Verification;
                 }
@@ -852,6 +865,7 @@ pub(crate) fn build_workflow_from_graph(
     allow_agent_steps: bool,
 ) -> anyhow::Result<PlanResult> {
     let mut id_map = HashMap::new();
+    let mut next_id_counters = HashMap::new();
     let positions = layout_nodes(output.nodes.len());
 
     let (nodes, edges, warnings) = build_nodes_and_edges_from_graph(
@@ -859,6 +873,7 @@ pub(crate) fn build_workflow_from_graph(
         &output.edges,
         &positions,
         &mut id_map,
+        &mut next_id_counters,
         mcp_tools,
         allow_ai_transforms,
         allow_agent_steps,
@@ -874,6 +889,7 @@ pub(crate) fn build_workflow_from_graph(
         nodes,
         edges,
         groups: vec![],
+        next_id_counters: std::collections::HashMap::new(),
     };
 
     clickweave_core::validate_workflow(&workflow)

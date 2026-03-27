@@ -57,7 +57,8 @@ pub struct ValidationResult {
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct NodeTypeInfo {
     pub name: &'static str,
-    pub category: String,
+    pub output_role: String,
+    pub node_context: String,
     pub icon: &'static str,
     pub node_type: NodeType,
 }

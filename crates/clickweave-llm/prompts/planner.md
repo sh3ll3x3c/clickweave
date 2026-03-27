@@ -64,7 +64,7 @@ User: "Open Calculator, calculate 5+3. If the result shows 8, take a screenshot.
     {"id": "n4", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "3"}, "name": "Click 3"},
     {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click ="},
     {"id": "n6", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "8"}, "name": "Check result"},
-    {"id": "n7", "step_type": "If", "condition": {"left": {"type": "Variable", "name": "check_result.found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "name": "Result is 8?"},
+    {"id": "n7", "step_type": "If", "condition": {"left": {"node": "check_result", "field": "found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "name": "Result is 8?"},
     {"id": "n8", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Take screenshot"},
     {"id": "n9", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "Clear"}, "name": "Click Clear"}
   ],
@@ -118,7 +118,7 @@ User: "Open Calculator, keep multiplying by 2 until the result exceeds 100."
   "nodes": [
     {"id": "n1", "step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Launch Calculator"},
     {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
-    {"id": "n3", "step_type": "Loop", "exit_condition": {"left": {"type": "Variable", "name": "check_if_over_100.found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "max_iterations": 20, "name": "Multiply until > 100"},
+    {"id": "n3", "step_type": "Loop", "exit_condition": {"left": {"node": "check_if_over_100", "field": "found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "max_iterations": 20, "name": "Multiply until > 100"},
     {"id": "n4", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "×"}, "name": "Click ×"},
     {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
     {"id": "n6", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click ="},

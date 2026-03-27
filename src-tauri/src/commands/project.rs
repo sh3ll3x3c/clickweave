@@ -103,7 +103,8 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
         .into_iter()
         .map(|nt| NodeTypeInfo {
             name: nt.display_name(),
-            category: nt.category().display_name().to_string(),
+            output_role: format!("{:?}", nt.output_role()),
+            node_context: format!("{:?}", nt.node_context()),
             icon: nt.icon(),
             node_type: nt,
         })
