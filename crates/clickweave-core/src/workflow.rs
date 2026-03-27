@@ -603,6 +603,13 @@ impl NodeType {
             NodeType::AppDebugKitOp(AppDebugKitParams::default()),
         ]
     }
+
+    /// Look up a default NodeType by its display name.
+    pub fn default_for_name(name: &str) -> Option<NodeType> {
+        Self::all_defaults()
+            .into_iter()
+            .find(|nt| nt.display_name() == name)
+    }
 }
 
 #[cfg(test)]

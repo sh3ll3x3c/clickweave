@@ -185,7 +185,7 @@ fn parse_and_build_workflow(
     super::pair_endloop_with_loop(&mut nodes, &mut warnings);
     super::infer_control_flow_edges(&nodes, &mut edges, &mut warnings);
 
-    let workflow = Workflow {
+    let mut workflow = Workflow {
         id: Uuid::new_v4(),
         name: truncate_intent(intent),
         nodes,
@@ -193,6 +193,9 @@ fn parse_and_build_workflow(
         groups: vec![],
         next_id_counters: std::collections::HashMap::new(),
     };
+
+    // Assign auto-IDs and translate LLM temp IDs in OutputRefs
+    super::normalize_auto_ids(&mut workflow);
 
     // Validate
     validate_workflow(&workflow).context("Generated workflow failed validation")?;

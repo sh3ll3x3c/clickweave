@@ -15,7 +15,8 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 
 use clickweave_core::{
-    Edge, EdgeOutput, Node, NodeRole, NodeType, Position, Workflow, tool_mapping,
+    ConditionValue, Edge, EdgeOutput, Node, NodeRole, NodeType, OutputRef, Position, Workflow,
+    tool_mapping,
 };
 use mapping::step_to_node_type;
 use parse::{id_str_short, layout_nodes, step_rejected_reason};
@@ -406,6 +407,18 @@ pub(crate) fn build_patch_from_output(
         if removed_node_ids.contains(&edge.from) || removed_node_ids.contains(&edge.to) {
             removed_edges.push(edge.clone());
         }
+    }
+
+    // Translate OutputRefs in added/updated nodes from LLM temp IDs to auto-IDs
+    let name_to_auto_id: HashMap<String, String> = workflow
+        .nodes
+        .iter()
+        .chain(added_nodes.iter())
+        .filter(|n| !n.auto_id.is_empty())
+        .map(|n| (n.name.clone(), n.auto_id.clone()))
+        .collect();
+    for node in added_nodes.iter_mut().chain(updated_nodes.iter_mut()) {
+        translate_node_refs(&name_to_auto_id, node);
     }
 
     PatchResult {
@@ -896,6 +909,82 @@ pub(crate) fn build_workflow_from_graph(
         .map_err(|e| anyhow::anyhow!("Generated workflow failed validation: {}", e))?;
 
     Ok(PlanResult { workflow, warnings })
+}
+
+// ── Auto-ID normalization ────────────────────────────────────────
+
+/// Post-LLM normalization pass: assigns auto-IDs to nodes and translates
+/// LLM temporary IDs to auto-IDs in all OutputRefs and conditions.
+pub(crate) fn normalize_auto_ids(workflow: &mut Workflow) {
+    // Pass 1: Assign auto-IDs, build LLM-temp-ID -> auto-ID mapping
+    let mut counters = workflow.next_id_counters.clone();
+    let mut id_map: HashMap<String, String> = HashMap::new();
+
+    for node in &mut workflow.nodes {
+        if node.auto_id.is_empty() {
+            let auto_id = clickweave_core::auto_id::assign_auto_id(&node.node_type, &mut counters);
+            id_map.insert(node.name.clone(), auto_id.clone());
+            node.auto_id = auto_id;
+        }
+    }
+    workflow.next_id_counters = counters;
+
+    // Pass 2: Translate OutputRefs in conditions and _ref params
+    for node in &mut workflow.nodes {
+        translate_node_refs(&id_map, node);
+    }
+}
+
+fn translate_output_ref(id_map: &HashMap<String, String>, output_ref: &mut OutputRef) {
+    if let Some(auto_id) = id_map.get(&output_ref.node) {
+        output_ref.node = auto_id.clone();
+    }
+}
+
+fn translate_optional_ref(id_map: &HashMap<String, String>, opt_ref: &mut Option<OutputRef>) {
+    if let Some(r) = opt_ref {
+        translate_output_ref(id_map, r);
+    }
+}
+
+fn translate_condition_value(id_map: &HashMap<String, String>, cv: &mut ConditionValue) {
+    if let ConditionValue::Ref(r) = cv {
+        translate_output_ref(id_map, r);
+    }
+}
+
+/// Translate OutputRefs in a single node's parameters from temp IDs to auto-IDs.
+fn translate_node_refs(id_map: &HashMap<String, String>, node: &mut Node) {
+    match &mut node.node_type {
+        NodeType::If(p) => {
+            translate_output_ref(id_map, &mut p.condition.left);
+            translate_condition_value(id_map, &mut p.condition.right);
+        }
+        NodeType::Loop(p) => {
+            translate_output_ref(id_map, &mut p.exit_condition.left);
+            translate_condition_value(id_map, &mut p.exit_condition.right);
+        }
+        NodeType::Switch(p) => {
+            for case in &mut p.cases {
+                translate_output_ref(id_map, &mut case.condition.left);
+                translate_condition_value(id_map, &mut case.condition.right);
+            }
+        }
+        NodeType::Click(p) => translate_optional_ref(id_map, &mut p.target_ref),
+        NodeType::Hover(p) => translate_optional_ref(id_map, &mut p.target_ref),
+        NodeType::Drag(p) => {
+            translate_optional_ref(id_map, &mut p.from_ref);
+            translate_optional_ref(id_map, &mut p.to_ref);
+        }
+        NodeType::TypeText(p) => translate_optional_ref(id_map, &mut p.text_ref),
+        NodeType::FocusWindow(p) => translate_optional_ref(id_map, &mut p.value_ref),
+        NodeType::AiStep(p) => translate_optional_ref(id_map, &mut p.prompt_ref),
+        NodeType::CdpFill(p) => translate_optional_ref(id_map, &mut p.value_ref),
+        NodeType::CdpType(p) => translate_optional_ref(id_map, &mut p.text_ref),
+        NodeType::CdpNavigate(p) => translate_optional_ref(id_map, &mut p.url_ref),
+        NodeType::CdpNewPage(p) => translate_optional_ref(id_map, &mut p.url_ref),
+        _ => {}
+    }
 }
 
 // ── Re-exports ──────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+pub(crate) mod cdp_scope;
 mod cycles;
 mod edges;
 mod loops;
@@ -12,10 +13,13 @@ use uuid::Uuid;
 
 use crate::{NodeType, Workflow};
 
+use cdp_scope::validate_cdp_scope;
 use cycles::validate_no_illegal_cycles;
 use edges::validate_outgoing_edges;
 use loops::validate_loop_pairing;
 use variables::validate_condition_variables;
+
+pub use cdp_scope::CdpScopeWarning;
 
 #[derive(Debug, Error)]
 pub enum ValidationError {
@@ -85,7 +89,13 @@ pub enum ValidationError {
     EmptyVariableReference(String),
 }
 
-pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
+/// Successful validation result containing non-fatal warnings.
+#[derive(Debug, Clone, Default)]
+pub struct ValidationResult {
+    pub warnings: Vec<CdpScopeWarning>,
+}
+
+pub fn validate_workflow(workflow: &Workflow) -> Result<ValidationResult, ValidationError> {
     if workflow.nodes.is_empty() {
         return Err(ValidationError::NoNodes);
     }
@@ -132,7 +142,8 @@ pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
 
     validate_condition_variables(workflow)?;
 
-    Ok(())
+    let warnings = validate_cdp_scope(workflow);
+    Ok(ValidationResult { warnings })
 }
 
 #[cfg(test)]
