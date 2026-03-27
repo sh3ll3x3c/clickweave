@@ -67,6 +67,7 @@ pub async fn plan_workflow_with_backend(
         allow_agent_steps,
         prompt_template,
         chrome_profiles,
+        false, // has_planning_tools
     );
     let user_msg = format!("Plan a workflow for: {}", intent);
 

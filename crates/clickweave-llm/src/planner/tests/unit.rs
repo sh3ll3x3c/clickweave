@@ -69,7 +69,7 @@ fn test_planner_prompt_includes_tools() {
             "parameters": {}
         }
     })];
-    let prompt = planner_system_prompt(&tools, false, false, None, None);
+    let prompt = planner_system_prompt(&tools, false, false, None, None, false);
     assert!(prompt.contains("click"));
     assert!(prompt.contains("Tool"));
     assert!(!prompt.contains("step_type\": \"AiTransform\""));
@@ -78,14 +78,14 @@ fn test_planner_prompt_includes_tools() {
 
 #[test]
 fn test_planner_system_prompt_with_all_features() {
-    let prompt = planner_system_prompt(&[], true, true, None, None);
+    let prompt = planner_system_prompt(&[], true, true, None, None, false);
     assert!(prompt.contains("AiTransform"));
     assert!(prompt.contains("AiStep"));
 }
 
 #[test]
 fn test_planner_prompt_includes_control_flow() {
-    let prompt = planner_system_prompt(&[], false, false, None, None);
+    let prompt = planner_system_prompt(&[], false, false, None, None, false);
     assert!(
         prompt.contains("Loop"),
         "Prompt should mention Loop step type"

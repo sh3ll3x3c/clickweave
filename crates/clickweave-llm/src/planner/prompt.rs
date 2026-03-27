@@ -1,6 +1,35 @@
 use clickweave_core::{NodeType, Workflow, chrome_profiles::ChromeProfile, tool_mapping};
 use serde_json::Value;
 
+/// Build the "Context Gathering" section for the planner prompt.
+///
+/// When `has_planning_tools` is true, includes instructions about using
+/// planning tools. When false, the section is empty (no context gathering).
+pub(crate) fn context_gathering_section(has_planning_tools: bool) -> String {
+    if !has_planning_tools {
+        return String::new();
+    }
+
+    r#"## Context Gathering
+
+Before generating the workflow, you may call planning tools to understand the target apps.
+These tools are for gathering context only — do NOT include them in the workflow JSON.
+
+Available planning tools:
+- **probe_app(app_name)** — classify an app as Native, ElectronApp, or ChromeBrowser. Check if it's running. Always call this for apps you're not sure about.
+- **take_ax_snapshot(app_name)** — see visible UI elements (names, roles) for a running app. Use when you need precise element names for click targets. Returns interactive elements only, capped at 150 items.
+
+If an app is Electron or Chrome, you may request to restart it with a debug port for CDP access:
+- This requires user confirmation (the app will be restarted).
+- After CDP connection, you can use list_pages, select_page, and take_snapshot to inspect DOM elements.
+- If you restarted an app during planning, use focus_window (not launch_app) in the workflow — the app is already running.
+
+Call as many tools as you need, then output the workflow JSON.
+For simple tasks (e.g., Calculator), you may skip probing entirely.
+
+"#.to_string()
+}
+
 /// Build the planner system prompt.
 ///
 /// When `template_override` is `Some`, uses that string as the template
@@ -11,6 +40,7 @@ pub(crate) fn planner_system_prompt(
     allow_agent_steps: bool,
     template_override: Option<&str>,
     chrome_profiles: Option<&[ChromeProfile]>,
+    has_planning_tools: bool,
 ) -> String {
     let tool_list = serde_json::to_string_pretty(tools_json).unwrap_or_default();
 
@@ -116,7 +146,10 @@ Use `"role": "Verification"` when the user asks to **verify**, **check**, **conf
 
     let template = template_override.unwrap_or(include_str!("../../prompts/planner.md"));
 
+    let context_gathering = context_gathering_section(has_planning_tools);
+
     template
+        .replace("{{context_gathering}}", &context_gathering)
         .replace("{{tool_list}}", &tool_list)
         .replace("{{step_types}}", &step_types)
         .replace("{{chrome_profiles}}", &chrome_profiles_section)
@@ -257,6 +290,7 @@ pub(crate) fn assistant_system_prompt(
             allow_agent_steps,
             None,
             chrome_profiles,
+            false, // has_planning_tools
         );
         let mut prompt = format!(
             "You are a conversational workflow assistant for UI automation. \
