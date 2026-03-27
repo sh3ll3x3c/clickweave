@@ -35,9 +35,10 @@ impl PlannerSession {
         mcp: McpClient,
         app: AppHandle,
         planner_handle: Arc<std::sync::Mutex<PlannerHandle>>,
+        mcp_tools_openai: &[Value],
     ) -> Self {
         let session_id = Uuid::new_v4().to_string();
-        let planning_tools_openai = Self::build_planning_tools(&mcp.tools_as_openai());
+        let planning_tools_openai = Self::build_planning_tools(mcp_tools_openai);
         {
             let mut handle = planner_handle.lock().unwrap();
             handle.session_id = Some(session_id.clone());
@@ -90,10 +91,7 @@ impl PlannerToolExecutor for PlannerSession {
         let text = result
             .content
             .first()
-            .and_then(|c| match c {
-                clickweave_mcp::ToolContent::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
+            .and_then(|c| c.as_text())
             .unwrap_or("")
             .to_string();
 
@@ -143,6 +141,10 @@ impl PlannerToolExecutor for PlannerSession {
             .map_err(|_| anyhow::anyhow!("Confirmation channel closed"))?;
 
         Ok(approved)
+    }
+
+    fn has_planning_tools(&self) -> bool {
+        !self.planning_tools_openai.is_empty()
     }
 
     fn available_planning_tools(&self) -> Vec<Value> {

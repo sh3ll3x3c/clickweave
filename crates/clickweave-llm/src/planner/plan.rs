@@ -103,7 +103,7 @@ pub async fn plan_workflow_with_tools<E: PlannerToolExecutor>(
     chrome_profiles: Option<&[ChromeProfile]>,
     executor: &E,
 ) -> Result<PlanResult> {
-    let has_planning_tools = !executor.available_planning_tools().is_empty();
+    let has_planning_tools = executor.has_planning_tools();
 
     let system = planner_system_prompt(
         mcp_tools_openai,

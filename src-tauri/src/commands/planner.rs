@@ -36,7 +36,13 @@ pub async fn plan_workflow(
     let workflow_tools = mcp.tools_as_openai();
 
     let planner_handle = app.state::<Arc<std::sync::Mutex<PlannerHandle>>>();
-    let session = PlannerSession::new(mcp, app.clone(), Arc::clone(&planner_handle)).await;
+    let session = PlannerSession::new(
+        mcp,
+        app.clone(),
+        Arc::clone(&planner_handle),
+        &workflow_tools,
+    )
+    .await;
 
     let planner_config = request.planner.into_llm_config(None);
     let planner = clickweave_llm::LlmClient::new(planner_config);
@@ -49,7 +55,7 @@ pub async fn plan_workflow(
     };
 
     let result = tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_secs(120),
         clickweave_llm::planner::plan_workflow_with_tools(
             &planner,
             &request.intent,
@@ -68,7 +74,7 @@ pub async fn plan_workflow(
     let result = match result {
         Ok(inner) => inner.map_err(|e| CommandError::llm(format!("Planning failed: {}", e))),
         Err(_) => Err(CommandError::llm(
-            "Planning timed out after 60 seconds".to_string(),
+            "Planning timed out after 120 seconds".to_string(),
         )),
     }?;
 

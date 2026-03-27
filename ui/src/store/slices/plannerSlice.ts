@@ -15,14 +15,14 @@ export interface PlannerConfirmation {
   toolName: string;
 }
 
+const MAX_TOOL_CALL_LOG = 50;
+
 export interface PlannerSlice {
   plannerToolCalls: PlannerToolCall[];
   plannerConfirmation: PlannerConfirmation | null;
-  plannerSessionActive: boolean;
 
   pushPlannerToolCall: (call: PlannerToolCall) => void;
   setPlannerConfirmation: (confirmation: PlannerConfirmation | null) => void;
-  setPlannerSessionActive: (active: boolean) => void;
   respondToPlannerConfirmation: (approved: boolean) => Promise<void>;
   clearPlannerState: () => void;
 }
@@ -30,16 +30,14 @@ export interface PlannerSlice {
 export const createPlannerSlice: StateCreator<StoreState, [], [], PlannerSlice> = (set, get) => ({
   plannerToolCalls: [],
   plannerConfirmation: null,
-  plannerSessionActive: false,
 
   pushPlannerToolCall: (call) =>
-    set((s) => ({ plannerToolCalls: [...s.plannerToolCalls, call] })),
+    set((s) => ({
+      plannerToolCalls: [...s.plannerToolCalls, call].slice(-MAX_TOOL_CALL_LOG),
+    })),
 
   setPlannerConfirmation: (confirmation) =>
     set({ plannerConfirmation: confirmation }),
-
-  setPlannerSessionActive: (active) =>
-    set({ plannerSessionActive: active }),
 
   respondToPlannerConfirmation: async (approved) => {
     set({ plannerConfirmation: null });
@@ -53,6 +51,5 @@ export const createPlannerSlice: StateCreator<StoreState, [], [], PlannerSlice> 
     set({
       plannerToolCalls: [],
       plannerConfirmation: null,
-      plannerSessionActive: false,
     }),
 });

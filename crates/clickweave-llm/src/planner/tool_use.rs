@@ -33,6 +33,11 @@ pub trait PlannerToolExecutor: Send + Sync {
         tool_name: &str,
     ) -> impl Future<Output = Result<bool>> + Send;
 
+    /// Whether any planning tools are available.
+    fn has_planning_tools(&self) -> bool {
+        !self.available_planning_tools().is_empty()
+    }
+
     /// List the planning tools available (those present on the MCP server).
     /// Returns OpenAI-compatible tool definitions for the `tools` parameter.
     fn available_planning_tools(&self) -> Vec<Value>;
@@ -96,6 +101,19 @@ pub const MAX_PLANNING_TOOL_CALLS: usize = 15;
 pub const MAX_REPAIR_ATTEMPTS: usize = 3;
 pub const MAX_BLOCKED_REJECTIONS: usize = 3;
 
+/// Execute a planning tool and return a tool_result message.
+async fn execute_tool<E: PlannerToolExecutor>(
+    executor: &E,
+    name: &str,
+    args: Value,
+    tc_id: &str,
+) -> Message {
+    match executor.call_tool(name, args).await {
+        Ok(result) => Message::tool_result(tc_id, &result),
+        Err(e) => Message::tool_result(tc_id, format!("Tool call failed: {}", e)),
+    }
+}
+
 /// Run the planner conversation loop with tool-call support.
 ///
 /// The loop alternates between tool-call rounds (context gathering) and
@@ -128,7 +146,6 @@ pub async fn plan_with_tool_use<E: PlannerToolExecutor>(
             .first()
             .ok_or_else(|| anyhow!("No response from planner"))?;
 
-        // Handle tool calls
         if let Some(tool_calls) = &choice.message.tool_calls
             && !tool_calls.is_empty()
         {
@@ -182,17 +199,8 @@ pub async fn plan_with_tool_use<E: PlannerToolExecutor>(
                         match executor.request_confirmation(&confirm_msg, tool_name).await {
                             Ok(true) => {
                                 info!("User approved planning tool: {}", tool_name);
-                                match executor.call_tool(tool_name, args).await {
-                                    Ok(result) => {
-                                        messages.push(Message::tool_result(&tc.id, &result));
-                                    }
-                                    Err(e) => {
-                                        messages.push(Message::tool_result(
-                                            &tc.id,
-                                            format!("Tool call failed: {}", e),
-                                        ));
-                                    }
-                                }
+                                messages
+                                    .push(execute_tool(executor, tool_name, args, &tc.id).await);
                             }
                             Ok(false) => {
                                 info!("User declined planning tool: {}", tool_name);
@@ -212,24 +220,13 @@ pub async fn plan_with_tool_use<E: PlannerToolExecutor>(
                     }
                     ToolPermission::Allowed => {
                         debug!("Executing planning tool: {}", tool_name);
-                        match executor.call_tool(tool_name, args).await {
-                            Ok(result) => {
-                                messages.push(Message::tool_result(&tc.id, &result));
-                            }
-                            Err(e) => {
-                                messages.push(Message::tool_result(
-                                    &tc.id,
-                                    format!("Tool call failed: {}", e),
-                                ));
-                            }
-                        }
+                        messages.push(execute_tool(executor, tool_name, args, &tc.id).await);
                     }
                 }
             }
             continue; // Next LLM turn
         }
 
-        // No tool calls — try to parse as workflow JSON
         let content = choice
             .message
             .text_content()
