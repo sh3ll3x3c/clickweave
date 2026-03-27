@@ -137,6 +137,7 @@ function toRFNode(
         ? (node.node_type as { type: "Switch"; cases: { name: string }[] }).cases.map((c) => c.name)
         : [],
       role: node.role,
+      autoId: node.auto_id,
       subtitle: nodeSubtitle(node.node_type, appKind),
     },
   };

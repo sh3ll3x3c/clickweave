@@ -8,7 +8,7 @@ import {
 } from "../fields";
 import { editorRegistry } from "./editors";
 
-const READ_ONLY_TYPES = ["FindText", "FindImage", "TakeScreenshot", "ListWindows"];
+const READ_ONLY_TYPES = ["FindText", "FindImage", "TakeScreenshot", "FindApp", "CdpWait"];
 
 export function SetupTab({
   node,

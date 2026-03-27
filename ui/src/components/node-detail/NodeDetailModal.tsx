@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { AppKind, Node } from "../../bindings";
 import type { DetailTab } from "../../store/useAppStore";
 import { RunsTab, SetupTab, TraceTab } from "./tabs";
+import { OutputsSection } from "./OutputsSection";
+import { InputsSection } from "./InputsSection";
 
 interface NodeDetailModalProps {
   node: Node | null;
@@ -73,7 +75,11 @@ export function NodeDetailModal({
 
         <div className="flex-1 overflow-y-auto p-4">
           {tab === "setup" && (
-            <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} projectPath={projectPath} appKind={appKind} />
+            <>
+              <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} projectPath={projectPath} appKind={appKind} />
+              <OutputsSection nodeTypeName={node.node_type.type} autoId={node.auto_id} />
+              <InputsSection nodeType={node.node_type as unknown as Record<string, unknown>} />
+            </>
           )}
           {tab === "trace" && (
             <TraceTab

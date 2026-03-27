@@ -13,6 +13,7 @@ interface WorkflowNodeData {
   onDelete: () => void;
   switchCases: string[];
   role: NodeRole;
+  autoId?: string;
   bodyCount?: number;
   onToggleCollapse?: () => void;
   subtitle?: string;
@@ -102,6 +103,7 @@ export const WorkflowNode = memo(function WorkflowNode({
     onDelete,
     nodeType,
     role,
+    autoId,
     bodyCount,
     onToggleCollapse,
     subtitle,
@@ -170,6 +172,11 @@ export const WorkflowNode = memo(function WorkflowNode({
           {subtitle && (
             <span className="text-[10px] text-[var(--text-muted)] truncate max-w-full">
               {subtitle}
+            </span>
+          )}
+          {autoId && (
+            <span className="text-[9px] font-mono text-[var(--text-muted)] opacity-60">
+              {autoId}
             </span>
           )}
         </div>
