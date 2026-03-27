@@ -16,17 +16,26 @@ pub(crate) fn extract_json(text: &str) -> &str {
     trimmed
 }
 
-/// Check if a step is rejected by feature flags. Returns Some(reason) if rejected.
+/// Check if a step is rejected by feature flags or tool restrictions.
+/// Returns Some(reason) if rejected.
 pub(crate) fn step_rejected_reason(
     step: &PlanStep,
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
-) -> Option<&'static str> {
+) -> Option<String> {
+    if let PlanStep::Tool { tool_name, .. } = step {
+        if super::tool_use::is_planning_only_tool(tool_name) {
+            return Some(format!(
+                "'{}' is a planning-only tool and cannot appear in the workflow",
+                tool_name
+            ));
+        }
+    }
     if !allow_agent_steps && matches!(step, PlanStep::AiStep { .. }) {
-        return Some("AiStep rejected (agent steps disabled)");
+        return Some("AiStep rejected (agent steps disabled)".to_string());
     }
     if !allow_ai_transforms && matches!(step, PlanStep::AiTransform { .. }) {
-        return Some("AiTransform rejected (AI transforms disabled)");
+        return Some("AiTransform rejected (AI transforms disabled)".to_string());
     }
     None
 }

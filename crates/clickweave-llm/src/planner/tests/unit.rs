@@ -371,3 +371,30 @@ fn test_step_rejected_reason_endloop_always_allowed() {
     };
     assert!(step_rejected_reason(&step, false, false).is_none());
 }
+
+#[test]
+fn planning_only_tools_rejected_from_workflow() {
+    for tool_name in &["probe_app", "take_ax_snapshot", "cdp_connect"] {
+        let step = PlanStep::Tool {
+            tool_name: tool_name.to_string(),
+            arguments: serde_json::json!({"app_name": "Signal"}),
+            name: Some(format!("Planning {}", tool_name)),
+        };
+        let reason = step_rejected_reason(&step, true, true);
+        assert!(reason.is_some(), "{} should be rejected", tool_name);
+        assert!(reason.unwrap().contains("planning-only"));
+    }
+}
+
+#[test]
+fn dual_use_tools_not_rejected() {
+    for tool_name in &["launch_app", "quit_app", "select_page", "click"] {
+        let step = PlanStep::Tool {
+            tool_name: tool_name.to_string(),
+            arguments: serde_json::json!({}),
+            name: None,
+        };
+        let reason = step_rejected_reason(&step, true, true);
+        assert!(reason.is_none(), "{} should NOT be rejected", tool_name);
+    }
+}
