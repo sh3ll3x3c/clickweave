@@ -54,9 +54,10 @@ pub const PLANNING_TOOL_NAMES: &[&str] = &[
     // Dual-use (also valid as workflow nodes)
     "quit_app",
     "launch_app",
-    "take_snapshot",
-    "list_pages",
-    "select_page",
+    // CDP inspection tools (available after cdp_connect)
+    "cdp_take_snapshot",
+    "cdp_list_pages",
+    "cdp_select_page",
 ];
 
 /// Planning-only tools that must NEVER appear as workflow node types.
@@ -71,7 +72,7 @@ const ALWAYS_ALLOWED: &[&str] = &["probe_app", "take_ax_snapshot"];
 const REQUIRES_CONFIRMATION: &[&str] = &["quit_app", "launch_app", "cdp_connect"];
 
 /// Tools allowed only after CDP is connected (read-only).
-const CDP_READ_ONLY: &[&str] = &["take_snapshot", "list_pages", "select_page"];
+const CDP_READ_ONLY: &[&str] = &["cdp_take_snapshot", "cdp_list_pages", "cdp_select_page"];
 
 /// Classify a planning tool by permission level.
 pub fn planning_tool_permission(name: &str) -> ToolPermission {

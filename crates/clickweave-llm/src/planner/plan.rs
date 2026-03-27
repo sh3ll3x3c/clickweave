@@ -2,7 +2,7 @@ use super::mapping::step_to_node_type;
 use super::parse::{extract_json, layout_nodes, step_rejected_reason, truncate_intent};
 use super::prompt::planner_system_prompt;
 use super::repair::chat_with_repair;
-use super::tool_use::{PlannerToolExecutor, plan_with_tool_use};
+use super::tool_use::{PlannerToolExecutor, is_planning_only_tool, plan_with_tool_use};
 use super::{PlanResult, PlanStep, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::{Context, Result, anyhow};
@@ -105,8 +105,23 @@ pub async fn plan_workflow_with_tools<E: PlannerToolExecutor>(
 ) -> Result<PlanResult> {
     let has_planning_tools = executor.has_planning_tools();
 
+    // Filter planning-only tools from the workflow tool catalog so the LLM
+    // prompt only shows tools valid for workflow nodes.
+    let workflow_tools: Vec<Value> = mcp_tools_openai
+        .iter()
+        .filter(|tool| {
+            let name = tool
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            !is_planning_only_tool(name)
+        })
+        .cloned()
+        .collect();
+
     let system = planner_system_prompt(
-        mcp_tools_openai,
+        &workflow_tools,
         allow_ai_transforms,
         allow_agent_steps,
         None,

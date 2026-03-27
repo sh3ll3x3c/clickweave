@@ -21,8 +21,7 @@ Available planning tools:
 
 If an app is Electron or Chrome, you may request to restart it with a debug port for CDP access:
 - This requires user confirmation (the app will be restarted).
-- After CDP connection, you can use list_pages, select_page, and take_snapshot to inspect DOM elements.
-- If you restarted an app during planning, use focus_window (not launch_app) in the workflow — the app is already running.
+- After CDP connection, you can use cdp_list_pages, cdp_select_page, and cdp_take_snapshot to inspect DOM elements.
 
 Call as many tools as you need, then output the workflow JSON.
 For simple tasks (e.g., Calculator), you may skip probing entirely.
