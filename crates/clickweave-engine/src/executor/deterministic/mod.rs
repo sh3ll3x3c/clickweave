@@ -5,9 +5,11 @@ mod window;
 
 use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::AppKind;
+use clickweave_core::output_schema::NodeContext;
 use clickweave_core::{
-    FocusMethod, FocusWindowParams, NodeRun, NodeType, ScreenshotMode, TakeScreenshotParams,
-    tool_mapping,
+    CdpFillParams, CdpNavigateParams, CdpNewPageParams, CdpTypeParams, ClickParams, ClickTarget,
+    FocusMethod, FocusWindowParams, HoverParams, NodeRun, NodeType, ScreenshotMode,
+    TakeScreenshotParams, TypeTextParams, tool_mapping,
 };
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::{McpClient, ToolCallResult};
@@ -158,6 +160,95 @@ fn cdp_pages_show_navigation_progress(before_pages_text: &str, after_pages_text:
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
+    /// Resolve `_ref` params before execution by producing a new NodeType with
+    /// resolved literal values (coordinates, text, URLs).
+    fn resolve_output_refs(&self, node_type: &NodeType) -> ExecutorResult<NodeType> {
+        use super::output_ref::*;
+        let ctx = &self.context;
+
+        match node_type {
+            NodeType::Click(p) if p.target_ref.is_some() => {
+                let coords_val = resolve_ref(ctx, p.target_ref.as_ref().unwrap())?;
+                let (x, y) = extract_coordinates(&coords_val)?;
+                Ok(NodeType::Click(ClickParams {
+                    target: Some(ClickTarget::Coordinates { x, y }),
+                    ..p.clone()
+                }))
+            }
+            NodeType::Hover(p) if p.target_ref.is_some() => {
+                let coords_val = resolve_ref(ctx, p.target_ref.as_ref().unwrap())?;
+                let (x, y) = extract_coordinates(&coords_val)?;
+                Ok(NodeType::Hover(HoverParams {
+                    target: Some(ClickTarget::Coordinates { x, y }),
+                    ..p.clone()
+                }))
+            }
+            NodeType::Drag(p) => {
+                let mut resolved = p.clone();
+                if let Some(ref from_ref) = p.from_ref {
+                    let val = resolve_ref(ctx, from_ref)?;
+                    let (x, y) = extract_coordinates(&val)?;
+                    resolved.from_x = Some(x);
+                    resolved.from_y = Some(y);
+                }
+                if let Some(ref to_ref) = p.to_ref {
+                    let val = resolve_ref(ctx, to_ref)?;
+                    let (x, y) = extract_coordinates(&val)?;
+                    resolved.to_x = Some(x);
+                    resolved.to_y = Some(y);
+                }
+                if p.from_ref.is_some() || p.to_ref.is_some() {
+                    Ok(NodeType::Drag(resolved))
+                } else {
+                    Ok(node_type.clone())
+                }
+            }
+            NodeType::TypeText(p) if p.text_ref.is_some() => {
+                let val = resolve_ref(ctx, p.text_ref.as_ref().unwrap())?;
+                Ok(NodeType::TypeText(TypeTextParams {
+                    text: coerce_to_string(&val),
+                    ..p.clone()
+                }))
+            }
+            NodeType::FocusWindow(p) if p.value_ref.is_some() => {
+                let val = resolve_ref(ctx, p.value_ref.as_ref().unwrap())?;
+                Ok(NodeType::FocusWindow(FocusWindowParams {
+                    value: Some(coerce_to_string(&val)),
+                    ..p.clone()
+                }))
+            }
+            NodeType::CdpFill(p) if p.value_ref.is_some() => {
+                let val = resolve_ref(ctx, p.value_ref.as_ref().unwrap())?;
+                Ok(NodeType::CdpFill(CdpFillParams {
+                    value: coerce_to_string(&val),
+                    ..p.clone()
+                }))
+            }
+            NodeType::CdpType(p) if p.text_ref.is_some() => {
+                let val = resolve_ref(ctx, p.text_ref.as_ref().unwrap())?;
+                Ok(NodeType::CdpType(CdpTypeParams {
+                    text: coerce_to_string(&val),
+                    ..p.clone()
+                }))
+            }
+            NodeType::CdpNavigate(p) if p.url_ref.is_some() => {
+                let val = resolve_ref(ctx, p.url_ref.as_ref().unwrap())?;
+                Ok(NodeType::CdpNavigate(CdpNavigateParams {
+                    url: coerce_to_string(&val),
+                    ..p.clone()
+                }))
+            }
+            NodeType::CdpNewPage(p) if p.url_ref.is_some() => {
+                let val = resolve_ref(ctx, p.url_ref.as_ref().unwrap())?;
+                Ok(NodeType::CdpNewPage(CdpNewPageParams {
+                    url: coerce_to_string(&val),
+                    ..p.clone()
+                }))
+            }
+            _ => Ok(node_type.clone()),
+        }
+    }
+
     pub(crate) async fn execute_deterministic(
         &mut self,
         node_id: Uuid,
@@ -165,6 +256,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &McpClient,
         mut node_run: Option<&mut NodeRun>,
     ) -> ExecutorResult<Value> {
+        // Resolve OutputRef parameters before execution.
+        let resolved = self.resolve_output_refs(node_type)?;
+        let node_type = &resolved;
+
+        // Check CDP scope — nodes that require a CDP connection fail early
+        // if no CDP-capable app has been focused.
+        if node_type.node_context() == NodeContext::Cdp && !self.cdp_connected_to_focused_app() {
+            return Err(ExecutorError::NoCdpConnection {
+                node_type: node_type.display_name().to_string(),
+            });
+        }
+
         // Reset per-execution; set to true only on CDP click success.
         self.last_click_was_cdp = false;
         // Reset per-execution; set to true only when URL navigation is
@@ -355,7 +458,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 && self.cdp_connected_to_focused_app()
                 && let Some(target) = &p.target
             {
-                let expected = cdp::CdpExpected::from_click_target(target);
+                let expected = cdp::CdpExpected::default();
                 match self
                     .resolve_and_hover_cdp(target.text(), &expected, mcp, node_run.as_deref())
                     .await
@@ -379,14 +482,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }
             }
 
-            // Native path: resolve coordinates, then move_mouse + dwell
+            // Native path: resolve text target to coordinates, then move_mouse + dwell
             let resolved_hover;
-            let effective = if p.template_image.is_some() && p.x.is_none() {
-                resolved_hover = self
-                    .resolve_hover_target_by_image(node_id, mcp, p, &mut node_run)
-                    .await?;
-                &resolved_hover
-            } else if p.target.is_some() && p.x.is_none() {
+            let effective = if matches!(&p.target, Some(clickweave_core::ClickTarget::Text { .. }))
+            {
                 resolved_hover = self
                     .resolve_hover_target(node_id, mcp, p, &mut node_run)
                     .await?;
@@ -429,6 +528,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             tokio::time::sleep(tokio::time::Duration::from_millis(p.dwell_ms)).await;
 
             return Ok(Self::parse_result_text(&result_text));
+        }
+
+        if let NodeType::FindApp(p) = node_type {
+            return self.execute_find_app(&p.search, mcp).await;
+        }
+
+        if let NodeType::CdpWait(p) = node_type {
+            return self.execute_cdp_wait(&p.text, p.timeout_ms, mcp).await;
         }
 
         if let NodeType::AppDebugKitOp(p) = node_type {
@@ -481,16 +588,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .await?;
             &resolved_click
         } else if let NodeType::Click(p) = node_type
-            && p.template_image.is_some()
-            && p.x.is_none()
-        {
-            resolved_click = self
-                .resolve_click_target_by_image(node_id, mcp, p, &mut node_run)
-                .await?;
-            &resolved_click
-        } else if let NodeType::Click(p) = node_type
-            && p.target.is_some()
-            && p.x.is_none()
+            && matches!(&p.target, Some(clickweave_core::ClickTarget::Text { .. }))
         {
             // For Electron/Chrome apps, try CDP click first (snapshot + uid click).
             let click_target = p.target.as_ref().unwrap();
@@ -498,7 +596,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let app_kind = self.focused_app_kind();
 
             if app_kind.uses_cdp() && self.cdp_connected_to_focused_app() {
-                let expected = cdp::CdpExpected::from_click_target(click_target);
+                let expected = cdp::CdpExpected::default();
                 match self
                     .resolve_and_click_cdp(target, &expected, mcp, node_run.as_deref())
                     .await
@@ -579,6 +677,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 bring_to_front: p.bring_to_front,
                 app_kind,
                 chrome_profile_id: p.chrome_profile_id.clone(),
+                ..Default::default()
             });
             &resolved_fw
         } else {
@@ -818,7 +917,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok(Self::parse_result_text(&result_text))
     }
 
-    fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> ExecutorResult<()> {
+    pub(crate) fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> ExecutorResult<()> {
         if result.is_error == Some(true) {
             let error_text = Self::extract_result_text(result);
             return Err(ExecutorError::ToolCall {

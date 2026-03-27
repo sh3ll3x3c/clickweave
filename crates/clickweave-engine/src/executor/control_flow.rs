@@ -15,8 +15,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             NodeType::If(params) => {
                 self.log(format!("Evaluating If: {}", node_name));
                 let result = self.context.evaluate_condition(&params.condition);
-                let resolved_left = self.context.resolve_value_ref(&params.condition.left);
-                let resolved_right = self.context.resolve_value_ref(&params.condition.right);
+                let resolved_left = self.context.resolve_output_ref(&params.condition.left);
+                let resolved_right = self
+                    .context
+                    .resolve_condition_value(&params.condition.right);
                 let output_taken = if result { "IfTrue" } else { "IfFalse" };
 
                 self.record_event(

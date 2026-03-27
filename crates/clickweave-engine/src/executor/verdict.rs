@@ -51,7 +51,7 @@ pub(crate) fn deterministic_verdict(
     let check_type = match node_type {
         NodeType::FindText(_) => CheckType::TextPresent,
         NodeType::FindImage(_) => CheckType::TemplateFound,
-        NodeType::ListWindows(_) => CheckType::WindowTitleMatches,
+        NodeType::FindApp(_) => CheckType::WindowTitleMatches,
         _ => {
             tracing::warn!(
                 "deterministic_verdict called for unexpected node type: {}",
@@ -193,7 +193,7 @@ pub(crate) async fn screenshot_verdict<C: ChatBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clickweave_core::{FindImageParams, FindTextParams, ListWindowsParams};
+    use clickweave_core::{FindAppParams, FindImageParams, FindTextParams};
 
     #[test]
     fn find_text_found_produces_pass() {
@@ -246,12 +246,12 @@ mod tests {
     }
 
     #[test]
-    fn list_windows_empty_produces_fail() {
+    fn find_app_empty_produces_fail() {
         let result = serde_json::json!([]);
         let verdict = deterministic_verdict(
             Uuid::nil(),
-            "Check window exists",
-            &NodeType::ListWindows(ListWindowsParams::default()),
+            "Check app exists",
+            &NodeType::FindApp(FindAppParams::default()),
             &result,
         );
         assert_eq!(verdict.check_results[0].verdict, CheckVerdict::Fail);

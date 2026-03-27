@@ -1,7 +1,8 @@
 use super::helpers::*;
+use clickweave_core::output_schema::{ConditionValue, OutputRef};
 use clickweave_core::{
     ClickParams, Condition, EdgeOutput, EndLoopParams, IfParams, LiteralValue, LoopParams,
-    NodeType, Operator, Position, TypeTextParams, ValueRef, Workflow,
+    NodeType, Operator, Position, TypeTextParams, Workflow,
 };
 use serde_json::Value;
 
@@ -186,11 +187,12 @@ fn test_runtime_context_variables_through_executor() {
 
     // Verify condition evaluation through the context
     let cond = Condition {
-        left: ValueRef::Variable {
-            name: "find_text.success".to_string(),
+        left: OutputRef {
+            node: "find_text".to_string(),
+            field: "success".to_string(),
         },
         operator: Operator::Equals,
-        right: ValueRef::Literal {
+        right: ConditionValue::Literal {
             value: LiteralValue::Bool { value: true },
         },
     };
@@ -198,11 +200,12 @@ fn test_runtime_context_variables_through_executor() {
 
     // Test with a Contains condition
     let contains_cond = Condition {
-        left: ValueRef::Variable {
-            name: "find_text.text".to_string(),
+        left: OutputRef {
+            node: "find_text".to_string(),
+            field: "text".to_string(),
         },
         operator: Operator::Contains,
-        right: ValueRef::Literal {
+        right: ConditionValue::Literal {
             value: LiteralValue::String {
                 value: "hello".to_string(),
             },

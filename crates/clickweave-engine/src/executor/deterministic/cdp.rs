@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use super::super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
-use clickweave_core::ClickTarget;
 use clickweave_core::NodeRun;
 use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
 use clickweave_llm::ChatBackend;
@@ -14,26 +13,6 @@ pub(crate) struct CdpExpected<'a> {
     pub href: Option<&'a str>,
     pub parent_role: Option<&'a str>,
     pub parent_name: Option<&'a str>,
-}
-
-impl<'a> CdpExpected<'a> {
-    pub fn from_click_target(target: &'a ClickTarget) -> Self {
-        match target {
-            ClickTarget::CdpElement {
-                role,
-                href,
-                parent_role,
-                parent_name,
-                ..
-            } => Self {
-                role: role.as_deref(),
-                href: href.as_deref(),
-                parent_role: parent_role.as_deref(),
-                parent_name: parent_name.as_deref(),
-            },
-            _ => Self::default(),
-        }
-    }
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {

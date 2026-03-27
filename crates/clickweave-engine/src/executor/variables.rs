@@ -1,6 +1,6 @@
 use super::WorkflowExecutor;
 use clickweave_core::runtime::RuntimeContext;
-use clickweave_core::{NodeRun, NodeType, sanitize_node_name};
+use clickweave_core::{NodeRun, NodeType};
 use clickweave_llm::ChatBackend;
 use serde_json::Value;
 
@@ -8,26 +8,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Store node outputs in RuntimeContext for condition evaluation.
     pub(crate) fn extract_and_store_variables(
         &mut self,
-        node_name: &str,
+        auto_id: &str,
         node_result: &Value,
         node_type: &NodeType,
         node_run: Option<&NodeRun>,
     ) {
-        let sanitized = sanitize_node_name(node_name);
         self.context.set_variable(
-            format!("{}.success", sanitized),
+            format!("{}.success", auto_id),
             serde_json::Value::Bool(true),
         );
         self.record_event(
             node_run,
             "variable_set",
             serde_json::json!({
-                "variable": format!("{}.success", sanitized),
+                "variable": format!("{}.success", auto_id),
                 "value": true,
             }),
         );
         let extracted =
-            extract_result_variables(&mut self.context, &sanitized, node_result, node_type);
+            extract_result_variables(&mut self.context, auto_id, node_result, node_type);
         for (var_name, var_value) in &extracted {
             self.record_event(
                 node_run,
@@ -110,7 +109,7 @@ pub(crate) fn extract_result_variables(
 /// For example, `ListWindows` results get stored as `<prefix>.windows`.
 fn array_alias_for_node_type(node_type: &NodeType) -> Option<&'static str> {
     match node_type {
-        NodeType::ListWindows(_) => Some("windows"),
+        NodeType::FindApp(_) => Some("apps"),
         NodeType::FindText(_) | NodeType::FindImage(_) => Some("matches"),
         _ => None,
     }
@@ -168,18 +167,15 @@ mod tests {
     }
 
     #[test]
-    fn extract_variables_from_array_list_windows() {
+    fn extract_variables_from_array_find_app() {
         let mut ctx = RuntimeContext::new();
         let result = serde_json::json!([{"name": "Safari", "id": 1}]);
-        let node_type = NodeType::ListWindows(clickweave_core::ListWindowsParams::default());
-        extract_result_variables(&mut ctx, "list_windows", &result, &node_type);
+        let node_type = NodeType::FindApp(clickweave_core::FindAppParams::default());
+        extract_result_variables(&mut ctx, "find_app", &result, &node_type);
 
-        assert_eq!(
-            ctx.get_variable("list_windows.found"),
-            Some(&Value::Bool(true))
-        );
-        // .windows typed alias
-        assert_eq!(ctx.get_variable("list_windows.windows"), Some(&result));
+        assert_eq!(ctx.get_variable("find_app.found"), Some(&Value::Bool(true)));
+        // .apps typed alias
+        assert_eq!(ctx.get_variable("find_app.apps"), Some(&result));
     }
 
     #[test]
