@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { Edge } from "@xyflow/react";
 import type { Node as WfNode } from "../bindings";
-import { extractOutputRefs } from "../utils/outputSchema";
+import { extractOutputRefs, fieldTypeFromAutoId } from "../utils/outputSchema";
 
 /** Derive data-carrying edges from OutputRef params in the workflow. */
 export function useDataEdges(nodes: WfNode[]): Edge[] {
@@ -26,7 +26,7 @@ export function useDataEdges(nodes: WfNode[]): Edge[] {
           sourceHandle: `data-${ref.field}`,
           targetHandle: `data-input-${key}`,
           type: "dataEdge",
-          data: { fieldType: "Object", fieldName: ref.field },
+          data: { fieldType: fieldTypeFromAutoId(ref.node, ref.field), fieldName: ref.field },
           animated: false,
           deletable: false,
           focusable: false,

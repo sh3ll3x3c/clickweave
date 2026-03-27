@@ -30,6 +30,7 @@ interface UseEdgeSyncParams {
   onEdgesChange: (edges: Edge[]) => void;
   onRemoveExtraEdges: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
+  onDataConnect?: (sourceNodeId: string, targetNodeId: string, sourceField: string, targetInputKey: string) => void;
 }
 
 export function useEdgeSync({
@@ -41,6 +42,7 @@ export function useEdgeSync({
   onEdgesChange,
   onRemoveExtraEdges,
   onConnect,
+  onDataConnect,
 }: UseEdgeSyncParams) {
   // Stable combined rewrite map: app group rewrites first, then user group rewrites
   // (user group takes visual precedence as outermost container).
@@ -214,11 +216,22 @@ export function useEdgeSync({
 
   const handleConnect: OnConnect = useCallback(
     (connection: Connection) => {
-      if (connection.source && connection.target) {
-        onConnect(connection.source, connection.target, connection.sourceHandle ?? undefined);
+      if (!connection.source || !connection.target) return;
+      const sh = connection.sourceHandle ?? "";
+      const th = connection.targetHandle ?? "";
+      // Data port connections: sourceHandle starts with "data-", targetHandle with "data-input-"
+      if (sh.startsWith("data-") && th.startsWith("data-input-") && onDataConnect) {
+        const sourceField = sh.slice("data-".length);
+        const targetInputKey = th.slice("data-input-".length);
+        onDataConnect(connection.source, connection.target, sourceField, targetInputKey);
+      } else if (sh.startsWith("data-")) {
+        // Data-port source dragged to a non-data-input target — reject silently
+        return;
+      } else {
+        onConnect(connection.source, connection.target, sh || undefined);
       }
     },
-    [onConnect],
+    [onConnect, onDataConnect],
   );
 
   return {

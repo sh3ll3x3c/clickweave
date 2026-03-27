@@ -22,6 +22,7 @@ import { LoopGroupNode } from "./LoopGroupNode";
 import { UserGroupNode } from "./UserGroupNode";
 import { DataEdge } from "./DataEdge";
 import { WorkflowNode } from "./WorkflowNode";
+import { getOutputSchema, isTypeCompatible } from "../utils/outputSchema";
 import { GroupContextMenu, type GroupContextMenuItem } from "./GroupContextMenu";
 import { CreateGroupPopover } from "./CreateGroupPopover";
 import { validateGroupCreation, topologicalSortMembers, expandCollapsedSelection } from "../utils/groupValidation";
@@ -35,6 +36,7 @@ interface GraphCanvasProps {
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onEdgesChange: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
+  onDataConnect?: (sourceNodeId: string, targetNodeId: string, sourceField: string, targetInputKey: string) => void;
   onDeleteNodes: (ids: string[]) => void;
   onRemoveExtraEdges: (edges: Edge[]) => void;
   onBeforeNodeDrag?: () => void;
@@ -55,6 +57,7 @@ export function GraphCanvas({
   onNodePositionsChange,
   onEdgesChange,
   onConnect,
+  onDataConnect,
   onDeleteNodes,
   onRemoveExtraEdges,
   onBeforeNodeDrag,
@@ -152,6 +155,7 @@ export function GraphCanvas({
     onEdgesChange,
     onRemoveExtraEdges,
     onConnect,
+    onDataConnect,
   });
 
   const dataEdges = useDataEdges(workflow.nodes);
@@ -421,6 +425,31 @@ export function GraphCanvas({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [workflow, loopState, appState]);
 
+  // Memoized node lookup for O(1) access during drag validation
+  const nodeById = useMemo(() => {
+    const map = new Map<string, (typeof workflow.nodes)[number]>();
+    for (const n of workflow.nodes) map.set(n.id, n);
+    return map;
+  }, [workflow.nodes]);
+
+  // Type-safe connection validation for data port drag (called on every mousemove)
+  const isValidConnection = useCallback(
+    (connection: { source?: string | null; target?: string | null; sourceHandle?: string | null; targetHandle?: string | null }) => {
+      const sh = connection.sourceHandle ?? "";
+      const th = connection.targetHandle ?? "";
+      if (!sh.startsWith("data-") || !th.startsWith("data-input-")) return true;
+      const sourceNode = connection.source ? nodeById.get(connection.source) : undefined;
+      const targetNode = connection.target ? nodeById.get(connection.target) : undefined;
+      if (!sourceNode || !targetNode) return false;
+      const sourceField = sh.slice("data-".length);
+      const schema = getOutputSchema(sourceNode.node_type.type);
+      const fieldDef = schema.find((f) => f.name === sourceField);
+      if (!fieldDef) return false;
+      return isTypeCompatible(fieldDef.type, targetNode.node_type.type, th.slice("data-input-".length));
+    },
+    [nodeById],
+  );
+
   return (
     <div ref={wrapperRef} className="relative h-full w-full" data-graph-canvas-wrapper>
       <ReactFlow
@@ -431,6 +460,7 @@ export function GraphCanvas({
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
+        isValidConnection={isValidConnection}
         onNodeDragStart={handleNodeDragStart}
         onPaneClick={handlePaneClick}
         onPaneContextMenu={(e) => handleContextMenu(e)}

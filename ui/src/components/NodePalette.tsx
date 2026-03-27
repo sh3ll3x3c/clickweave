@@ -46,9 +46,11 @@ const PALETTE_GROUPS: PaletteGroup[] = [
 
 function NodeItem({
   info,
+  role,
   onAdd,
 }: {
   info: NodeTypeInfo;
+  role?: "Query" | "Action";
   onAdd: (nodeType: NodeType) => void;
 }) {
   const meta = nodeMetadata[info.node_type.type] ?? defaultNodeMetadata;
@@ -65,6 +67,11 @@ function NodeItem({
         {meta.icon}
       </span>
       <span>{info.name}</span>
+      {role && (
+        <span className="ml-auto text-[9px] text-[var(--text-muted)] opacity-60 flex-shrink-0">
+          {role}
+        </span>
+      )}
     </button>
   );
 }
@@ -187,14 +194,22 @@ export function NodePalette({
                       {group.subgroups?.map((sg) => {
                         const items = resolveTypes(sg.types);
                         if (items.length === 0) return null;
+                        const subgroupTooltip: Record<string, string> = {
+                          Query: "Query nodes return data you can use in conditions and variable wiring",
+                          Action: "Action nodes perform effects like clicking, typing, or navigating",
+                        };
+                        const role = sg.label === "Query" || sg.label === "Action" ? sg.label : undefined;
                         return (
                           <div key={sg.label} className="mb-1.5">
-                            <h5 className="text-[9px] font-medium text-[var(--text-muted)] opacity-70 uppercase tracking-wider px-2 mb-0.5">
+                            <h5
+                              className="text-[9px] font-medium text-[var(--text-muted)] opacity-70 uppercase tracking-wider px-2 mb-0.5"
+                              title={subgroupTooltip[sg.label]}
+                            >
                               {sg.label}
                             </h5>
                             <div className="flex flex-col gap-0.5">
                               {items.map((info) => (
-                                <NodeItem key={info.name} info={info} onAdd={onAdd} />
+                                <NodeItem key={info.name} info={info} role={role} onAdd={onAdd} />
                               ))}
                             </div>
                           </div>

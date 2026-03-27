@@ -1,4 +1,4 @@
-import type { ClickTarget, Edge, Node, NodeType, Position, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../bindings";
+import type { ClickTarget, Edge, Node, Position, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../bindings";
 import type { ActionNodeEntry } from "../store/slices/walkthroughSlice";
 import { buildActionByNodeId } from "../store/slices/walkthroughSlice";
 import { ACTIONABLE_AX_ROLES } from "./walkthroughFormatting";
@@ -65,21 +65,23 @@ export function applyAnnotationsToDraft(
         const action = actionByNodeId.get(n.id);
         const candidate = action?.target_candidates[targetOvr.chosen_candidate_index];
         if (candidate) {
-          let nodeType: NodeType;
           if (candidate.type === "CdpElement") {
-            nodeType = { ...updated.node_type, target: { type: "CdpElement", name: candidate.name, role: candidate.role, href: candidate.href, parent_role: candidate.parent_role, parent_name: candidate.parent_name }, template_image: null, x: null, y: null };
-          } else if (candidate.type === "AccessibilityLabel" || candidate.type === "VlmLabel") {
-            nodeType = { ...updated.node_type, target: { type: "Text", text: candidate.label }, template_image: null, x: null, y: null };
-          } else if (candidate.type === "OcrText") {
-            nodeType = { ...updated.node_type, target: { type: "Text", text: candidate.text }, template_image: null, x: null, y: null };
-          } else if (candidate.type === "ImageCrop") {
-            nodeType = { ...updated.node_type, target: null, template_image: candidate.image_b64, x: null, y: null };
-          } else if (candidate.type === "Coordinates") {
-            nodeType = { ...updated.node_type, target: null, template_image: null, x: candidate.x, y: candidate.y };
+            // CDP candidates become CdpClick/CdpHover nodes rather than native Click/Hover with text targets.
+            const cdpType = updated.node_type.type === "Click" ? "CdpClick" : "CdpHover";
+            updated = { ...updated, node_type: { type: cdpType, uid: candidate.name } as unknown as typeof updated.node_type };
           } else {
-            nodeType = updated.node_type;
+            let target: ClickTarget | null;
+            if (candidate.type === "AccessibilityLabel" || candidate.type === "VlmLabel") {
+              target = { type: "Text", text: candidate.label };
+            } else if (candidate.type === "OcrText") {
+              target = { type: "Text", text: candidate.text };
+            } else if (candidate.type === "Coordinates") {
+              target = { type: "Coordinates", x: candidate.x, y: candidate.y };
+            } else {
+              target = updated.node_type.target;
+            }
+            updated = { ...updated, node_type: { ...updated.node_type, target } };
           }
-          updated = { ...updated, node_type: nodeType };
         }
       }
 
@@ -118,46 +120,54 @@ export function synthesizeNodeForKeptCandidate(
 
   const { x: hx, y: hy, dwell_ms } = action.kind;
 
-  // Target resolution priority: CDP > actionable text label > image crop > coordinates
+  // Target resolution priority: CDP name as text > actionable text label > coordinates
   // Mirrors backend preferred_label(): only actionable AX roles qualify.
   const cdp = action.target_candidates.find((c) => c.type === "CdpElement");
   const textLabel = action.target_candidates.find((c) => {
     if (c.type === "AccessibilityLabel") return ACTIONABLE_AX_ROLES.has(c.role ?? "");
     return c.type === "VlmLabel" || c.type === "OcrText";
   });
-  const imageCrop = action.target_candidates.find((c) => c.type === "ImageCrop");
+
+  // CDP candidates become CdpHover nodes rather than native Hover with text targets.
+  if (cdp && cdp.type === "CdpElement") {
+    const name = `Hover '${cdp.name}'`;
+    return {
+      id: nodeId,
+      name,
+      node_type: { type: "CdpHover", uid: cdp.name } as unknown as Node["node_type"],
+      position,
+      enabled: true,
+      timeout_ms: null,
+      settle_ms: null,
+      retries: 0,
+      supervision_retries: 2,
+      trace_level: "Minimal",
+      role: "Default",
+      expected_outcome: null,
+    };
+  }
 
   let target: ClickTarget | null = null;
-  let template_image: string | null = null;
-  let x: number | null = null;
-  let y: number | null = null;
 
-  if (cdp && cdp.type === "CdpElement") {
-    target = { type: "CdpElement", name: cdp.name, role: cdp.role, href: cdp.href, parent_role: cdp.parent_role, parent_name: cdp.parent_name };
-  } else if (textLabel) {
+  if (textLabel) {
     const label = textLabel.type === "OcrText"
       ? textLabel.text
       : textLabel.type === "AccessibilityLabel" || textLabel.type === "VlmLabel"
         ? textLabel.label
         : "";
     target = { type: "Text", text: label };
-  } else if (imageCrop && imageCrop.type === "ImageCrop") {
-    template_image = imageCrop.image_b64;
   } else {
-    x = hx;
-    y = hy;
+    target = { type: "Coordinates", x: hx, y: hy };
   }
 
-  const name = target?.type === "Text"
+  const name = target.type === "Text"
     ? `Hover '${target.text}'`
-    : target?.type === "CdpElement"
-      ? `Hover ${target.name || "element"}`
-      : `Hover (${Math.round(hx)}, ${Math.round(hy)})`;
+    : `Hover (${Math.round(hx)}, ${Math.round(hy)})`;
 
   return {
     id: nodeId,
     name,
-    node_type: { type: "Hover", target, template_image, x, y, dwell_ms },
+    node_type: { type: "Hover", target, dwell_ms },
     position,
     enabled: true,
     timeout_ms: null,

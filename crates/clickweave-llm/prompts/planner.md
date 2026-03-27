@@ -47,9 +47,108 @@ Before outputting, verify: count nodes with zero incoming edges. If more than 1,
 - Prefer deterministic Tool steps over AiStep.
 - Do not add "End" or "Start" nodes. The workflow ends after the last node.
 - Output ONLY valid JSON. No explanation, no markdown fences.
-- For Chrome-family browsers (Chrome, Brave, Edge, Arc, Chromium), add `"app_kind": "ChromeBrowser"` to launch_app/focus_window arguments. For all other apps, omit app_kind (defaults to Native). Do NOT guess Electron apps — the executor detects those automatically.
+- **Context selection — Native vs CDP:**
+  - For **Chrome-family browsers** (Chrome, Brave, Edge, Arc, Chromium): add `"app_kind": "ChromeBrowser"` to focus_window arguments. Use **CDP tools** (fill, navigate_page, wait_for, etc.) for browser interactions — they use element UIDs for precise targeting. The executor detects app kind automatically for launch_app, so do NOT add `app_kind` to launch_app.
+  - For **Electron apps** (VS Code, Slack, Discord, Signal, Notion, etc.): add `"app_kind": "ElectronApp"` to focus_window. Use **CDP tools** for in-app interactions. The executor detects app kind automatically for launch_app.
+  - For **all other desktop apps**: omit app_kind (defaults to Native). Use **native tools** (click, type_text, find_text, etc.) which use OCR and screen coordinates.
+  - **Mixed workflows are fine** — native tools (find_text, take_screenshot) work anywhere for screen-level verification, even between CDP tools.
+  - When unsure whether an app supports CDP, use native tools — they always work.
+  - Note: some tool names are shared between native and CDP contexts (click, type_text, press_key). The executor routes them to the correct MCP server based on the active CDP scope.
 - For Chrome navigation: after launch_app, type the URL directly with type_text, then press return. Do NOT use press_key shortcuts (e.g. Cmd+N, Cmd+T) to open new windows or tabs — the launch_app node already provides a usable window.
 {{chrome_profiles}}
+
+## Node catalog
+
+### Native — Query
+| Node | Tool | Output fields |
+|------|------|--------------|
+| FindText | find_text | found: Bool, count: Number, text: String, coordinates: Object |
+| FindImage | find_image | found: Bool, count: Number, coordinates: Object, confidence: Number |
+| FindApp | list_apps | found: Bool, name: String, pid: Number |
+| TakeScreenshot | take_screenshot | result: String |
+
+### Native — Action
+| Node | Tool | Variable-capable params |
+|------|------|------------------------|
+| Click | click | target_ref: Object (coordinates from FindText/FindImage) |
+| Hover | move_mouse | target_ref: Object |
+| Drag | drag | from_ref: Object, to_ref: Object |
+| TypeText | type_text | text_ref: String, Number, Bool |
+| PressKey | press_key | (none) |
+| Scroll | scroll | (none) |
+| FocusWindow | focus_window | value_ref: String, Number |
+| LaunchApp | launch_app | (none) |
+| QuitApp | quit_app | (none) |
+
+### CDP — Query
+| Node | Tool | Output fields |
+|------|------|--------------|
+| CdpWait | wait_for | found: Bool |
+
+### CDP — Action
+| Node | Tool | Variable-capable params |
+|------|------|------------------------|
+| CdpClick | click | (none — uses UID from recording) |
+| CdpHover | hover | (none) |
+| CdpFill | fill | value_ref: String, Number, Bool |
+| CdpType | type_text | text_ref: String, Number, Bool |
+| CdpPressKey | press_key | (none) |
+| CdpNavigate | navigate_page | url_ref: String |
+| CdpNewPage | new_page | url_ref: String |
+| CdpClosePage | close_page | (none) |
+| CdpSelectPage | select_page | (none) |
+| CdpHandleDialog | handle_dialog | (none) |
+
+### AI
+| Node | Tool | Output fields |
+|------|------|--------------|
+| AiStep | ai_step | result: String |
+
+Input: prompt_ref: String, Number, Bool
+
+### Control Flow
+If, Switch, Loop, EndLoop — no tools, no output fields.
+
+### Generic
+| Node | Tool | Output fields |
+|------|------|--------------|
+| McpToolCall | (varies) | result: Any |
+| AppDebugKitOp | (varies) | result: Any |
+
+## Variable wiring example
+
+User: "Find the Submit button and click on it"
+
+```json
+{
+  "nodes": [
+    {"id": "n1", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "Submit"}, "name": "Find Submit"},
+    {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target_ref": {"node": "n1", "field": "coordinates"}}, "name": "Click Submit"}
+  ],
+  "edges": [
+    {"from": "n1", "to": "n2"}
+  ]
+}
+```
+
+Note: The click node uses `target_ref` instead of `target` — this wires the coordinates from FindText directly to Click, so the click goes exactly where the text was found. The `node` field in `target_ref` references the source node's `id`.
+
+## CDP workflow example
+
+User: "Open Signal and send 'hello' to Note to Self"
+
+```json
+{
+  "steps": [
+    {"step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Signal"}, "name": "Launch Signal"},
+    {"step_type": "Tool", "tool_name": "click", "arguments": {"target": "Note to Self"}, "name": "Click Note to Self"},
+    {"step_type": "Tool", "tool_name": "type_text", "arguments": {"text": "hello"}, "name": "Type hello"},
+    {"step_type": "Tool", "tool_name": "press_key", "arguments": {"key": "Return"}, "name": "Press Enter"}
+  ]
+}
+```
+
+Note: Signal is an Electron app — the executor detects this automatically from launch_app and connects CDP. The shared tool names (click, type_text, press_key) are routed to the correct MCP server based on the active CDP scope.
 
 ## Conditional example
 
@@ -64,7 +163,7 @@ User: "Open Calculator, calculate 5+3. If the result shows 8, take a screenshot.
     {"id": "n4", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "3"}, "name": "Click 3"},
     {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click ="},
     {"id": "n6", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "8"}, "name": "Check result"},
-    {"id": "n7", "step_type": "If", "condition": {"left": {"node": "check_result", "field": "found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "name": "Result is 8?"},
+    {"id": "n7", "step_type": "If", "condition": {"left": {"node": "n6", "field": "found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "name": "Result is 8?"},
     {"id": "n8", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Take screenshot"},
     {"id": "n9", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "Clear"}, "name": "Click Clear"}
   ],
@@ -118,7 +217,7 @@ User: "Open Calculator, keep multiplying by 2 until the result exceeds 100."
   "nodes": [
     {"id": "n1", "step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Launch Calculator"},
     {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
-    {"id": "n3", "step_type": "Loop", "exit_condition": {"left": {"node": "check_if_over_100", "field": "found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "max_iterations": 20, "name": "Multiply until > 100"},
+    {"id": "n3", "step_type": "Loop", "exit_condition": {"left": {"node": "n7", "field": "found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "max_iterations": 20, "name": "Multiply until > 100"},
     {"id": "n4", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "×"}, "name": "Click ×"},
     {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
     {"id": "n6", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click ="},
@@ -141,5 +240,3 @@ User: "Open Calculator, keep multiplying by 2 until the result exceeds 100."
 ```
 
 Note the edge pattern: n2→n3 (enter loop), n3→n4 (LoopBody), body chain n4→n5→n6→n7→n8, n8→n3 (EndLoop back to Loop), n3→n9 (LoopDone exit). The EndLoop ALWAYS points back to the Loop node.
-
-Note the variable name: the find_text node is named "Check if over 100", so the sanitized variable prefix is `check_if_over_100` (lowercase, non-alphanumeric → underscore). The exit condition therefore uses `check_if_over_100.found`.

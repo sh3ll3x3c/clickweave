@@ -29,9 +29,25 @@ export const OUTPUT_SCHEMAS: Record<string, OutputFieldInfo[]> = {
   AppDebugKitOp: [{ name: "result", type: "Any", description: "Raw tool result" }],
 };
 
-/** Get output schema fields for a node type name. */
+/** Get output schema fields for a node type name (static, without verification). */
 export function getOutputSchema(nodeTypeName: string): OutputFieldInfo[] {
   return OUTPUT_SCHEMAS[nodeTypeName] ?? [];
+}
+
+const VERIFICATION_FIELDS: OutputFieldInfo[] = [
+  { name: "verified", type: "Bool", description: "Whether the action had the intended effect" },
+  { name: "verification_reasoning", type: "String", description: "Explanation of the verification result" },
+];
+
+/** Get full output schema for a node type, including verification fields when
+ *  both verification_method and verification_assertion are set. */
+export function getFullOutputSchema(nodeType: Record<string, unknown>): OutputFieldInfo[] {
+  const typeName = (nodeType as { type?: string }).type ?? "";
+  const base = OUTPUT_SCHEMAS[typeName] ?? [];
+  if (nodeType.verification_method && nodeType.verification_assertion) {
+    return [...base, ...VERIFICATION_FIELDS];
+  }
+  return base;
 }
 
 /** Get the node type name from a NodeType tagged union object. */
@@ -51,6 +67,32 @@ export function extractOutputRefs(nodeType: Record<string, unknown>): ExtractedR
   return Object.entries(nodeType)
     .filter(([key, val]) => key.endsWith("_ref") && val != null)
     .map(([key, val]) => ({ key, ref: val as { node: string; field: string } }));
+}
+
+/** Input schemas: which params accept variable refs and what types they accept. */
+export const INPUT_SCHEMAS: Record<string, { param: string; acceptedTypes: string[] }[]> = {
+  Click: [{ param: "target_ref", acceptedTypes: ["Object"] }],
+  Hover: [{ param: "target_ref", acceptedTypes: ["Object"] }],
+  Drag: [
+    { param: "from_ref", acceptedTypes: ["Object"] },
+    { param: "to_ref", acceptedTypes: ["Object"] },
+  ],
+  TypeText: [{ param: "text_ref", acceptedTypes: ["String", "Number", "Bool"] }],
+  FocusWindow: [{ param: "value_ref", acceptedTypes: ["String", "Number"] }],
+  CdpFill: [{ param: "value_ref", acceptedTypes: ["String", "Number", "Bool"] }],
+  CdpType: [{ param: "text_ref", acceptedTypes: ["String", "Number", "Bool"] }],
+  CdpNavigate: [{ param: "url_ref", acceptedTypes: ["String"] }],
+  CdpNewPage: [{ param: "url_ref", acceptedTypes: ["String"] }],
+  AiStep: [{ param: "prompt_ref", acceptedTypes: ["String", "Number", "Bool"] }],
+};
+
+/** Check if a source field type is compatible with a target input param. */
+export function isTypeCompatible(sourceFieldType: string, targetNodeType: string, targetInputKey: string): boolean {
+  const inputs = INPUT_SCHEMAS[targetNodeType];
+  if (!inputs) return false;
+  const input = inputs.find((i) => i.param === targetInputKey);
+  if (!input) return false;
+  return input.acceptedTypes.includes(sourceFieldType);
 }
 
 /** Map NodeType variant name to auto_id base string (mirrors Rust auto_id_base). */
@@ -87,6 +129,21 @@ const AUTO_ID_BASE: Record<string, string> = {
   McpToolCall: "mcp_tool_call",
   AppDebugKitOp: "app_debug_kit_op",
 };
+
+/** Reverse map: auto_id base -> NodeType variant name. */
+const BASE_TO_NODE_TYPE: Record<string, string> = Object.fromEntries(
+  Object.entries(AUTO_ID_BASE).map(([k, v]) => [v, k]),
+);
+
+/** Look up the output field type for a given auto_id and field name.
+ *  e.g. fieldTypeFromAutoId("find_text_1", "coordinates") -> "Object" */
+export function fieldTypeFromAutoId(autoId: string, field: string): string {
+  const base = autoId.replace(/_\d+$/, "");
+  const nodeType = BASE_TO_NODE_TYPE[base];
+  if (!nodeType) return "Any";
+  const schema = OUTPUT_SCHEMAS[nodeType];
+  return schema?.find((f) => f.name === field)?.type ?? "Any";
+}
 
 /** Generate an auto_id for a new node using the workflow's counter map.
  *  Returns [auto_id, updated_counter_value]. The counter map is monotonic —

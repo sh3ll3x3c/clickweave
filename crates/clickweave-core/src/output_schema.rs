@@ -30,6 +30,44 @@ pub struct InputField {
     pub description: &'static str,
 }
 
+/// Owned version of OutputField for TypeScript bindings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct OutputFieldInfo {
+    pub name: String,
+    pub field_type: OutputFieldType,
+    pub description: String,
+}
+
+impl From<&OutputField> for OutputFieldInfo {
+    fn from(f: &OutputField) -> Self {
+        Self {
+            name: f.name.to_string(),
+            field_type: f.field_type,
+            description: f.description.to_string(),
+        }
+    }
+}
+
+/// Owned version of InputField for TypeScript bindings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct InputFieldInfo {
+    pub name: String,
+    pub accepted_types: Vec<OutputFieldType>,
+    pub description: String,
+}
+
+impl From<&InputField> for InputFieldInfo {
+    fn from(f: &InputField) -> Self {
+        Self {
+            name: f.name.to_string(),
+            accepted_types: f.accepted_types.to_vec(),
+            description: f.description.to_string(),
+        }
+    }
+}
+
 /// A reference to a specific output field of an upstream node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -45,6 +83,8 @@ pub struct OutputRef {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum VerificationMethod {
     Vlm,
+    Dom,
+    AccessibilityTree,
 }
 
 /// What kind of data a node produces.

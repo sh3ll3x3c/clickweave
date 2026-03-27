@@ -49,7 +49,7 @@ export function useWorkflowMutations(
       const offsetY = Math.floor(nodesLength / 4) * 150;
       setWorkflow((prev) => {
         const typeName = nodeTypeName(nodeType as unknown as Record<string, unknown>);
-        const counters: Record<string, number> = { ...(prev.next_id_counters ?? {}) };
+        const counters: Record<string, number> = Object.fromEntries(Object.entries(prev.next_id_counters ?? {}).filter((e): e is [string, number] => e[1] != null));
         const { autoId, base, counter } = generateAutoId(typeName, counters);
         counters[base] = counter;
         const node: Node = {
@@ -147,6 +147,30 @@ export function useWorkflowMutations(
           : prev.edges.filter((e) => e.from !== from || e.output !== null);
         const edge: Edge = { from, to, output };
         return { ...prev, edges: [...filtered, edge] };
+      });
+    },
+    [setWorkflow, pushHistory],
+  );
+
+  const dataConnect = useCallback(
+    (sourceNodeId: string, targetNodeId: string, sourceField: string, targetInputKey: string) => {
+      pushHistory("Wire Variable");
+      setWorkflow((prev) => {
+        // Find source node auto_id
+        const sourceNode = prev.nodes.find((n) => n.id === sourceNodeId);
+        if (!sourceNode?.auto_id) return prev;
+        const outputRef = { node: sourceNode.auto_id, field: sourceField };
+        // Set the _ref param on the target node
+        return {
+          ...prev,
+          nodes: prev.nodes.map((n) => {
+            if (n.id !== targetNodeId) return n;
+            return {
+              ...n,
+              node_type: { ...n.node_type, [targetInputKey]: outputRef },
+            };
+          }),
+        };
       });
     },
     [setWorkflow, pushHistory],
@@ -284,7 +308,7 @@ export function useWorkflowMutations(
 
   return {
     addNode, removeNode, removeNodes, removeEdgesOnly,
-    updateNodePositions, updateNode, addEdge, removeEdge,
+    updateNodePositions, updateNode, addEdge, dataConnect, removeEdge,
     createGroup, removeGroup, deleteGroupWithContents,
     renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
   };

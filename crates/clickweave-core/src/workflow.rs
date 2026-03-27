@@ -539,6 +539,131 @@ impl NodeType {
         !matches!(self, NodeType::AiStep(_))
     }
 
+    /// Returns the verification method configured on this node, if any.
+    pub fn verification_method(&self) -> Option<crate::output_schema::VerificationMethod> {
+        match self {
+            Self::Click(p) => p.verification_method,
+            Self::Hover(p) => p.verification_method,
+            Self::Drag(p) => p.verification_method,
+            Self::TypeText(p) => p.verification_method,
+            Self::PressKey(p) => p.verification_method,
+            Self::Scroll(p) => p.verification_method,
+            Self::FocusWindow(p) => p.verification_method,
+            Self::LaunchApp(p) => p.verification_method,
+            Self::QuitApp(p) => p.verification_method,
+            Self::CdpClick(p) => p.verification_method,
+            Self::CdpHover(p) => p.verification_method,
+            Self::CdpFill(p) => p.verification_method,
+            Self::CdpType(p) => p.verification_method,
+            Self::CdpPressKey(p) => p.verification_method,
+            Self::CdpNavigate(p) => p.verification_method,
+            Self::CdpNewPage(p) => p.verification_method,
+            Self::CdpClosePage(p) => p.verification_method,
+            Self::CdpSelectPage(p) => p.verification_method,
+            Self::CdpHandleDialog(p) => p.verification_method,
+            _ => None,
+        }
+    }
+
+    /// Returns the verification assertion configured on this node, if any.
+    pub fn verification_assertion(&self) -> Option<&str> {
+        match self {
+            Self::Click(p) => p.verification_assertion.as_deref(),
+            Self::Hover(p) => p.verification_assertion.as_deref(),
+            Self::Drag(p) => p.verification_assertion.as_deref(),
+            Self::TypeText(p) => p.verification_assertion.as_deref(),
+            Self::PressKey(p) => p.verification_assertion.as_deref(),
+            Self::Scroll(p) => p.verification_assertion.as_deref(),
+            Self::FocusWindow(p) => p.verification_assertion.as_deref(),
+            Self::LaunchApp(p) => p.verification_assertion.as_deref(),
+            Self::QuitApp(p) => p.verification_assertion.as_deref(),
+            Self::CdpClick(p) => p.verification_assertion.as_deref(),
+            Self::CdpHover(p) => p.verification_assertion.as_deref(),
+            Self::CdpFill(p) => p.verification_assertion.as_deref(),
+            Self::CdpType(p) => p.verification_assertion.as_deref(),
+            Self::CdpPressKey(p) => p.verification_assertion.as_deref(),
+            Self::CdpNavigate(p) => p.verification_assertion.as_deref(),
+            Self::CdpNewPage(p) => p.verification_assertion.as_deref(),
+            Self::CdpClosePage(p) => p.verification_assertion.as_deref(),
+            Self::CdpSelectPage(p) => p.verification_assertion.as_deref(),
+            Self::CdpHandleDialog(p) => p.verification_assertion.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Returns true when both `verification_method` and `verification_assertion`
+    /// are set, matching the executor's requirement for producing verification
+    /// output variables.
+    pub fn has_verification(&self) -> bool {
+        self.verification_method().is_some()
+            && self.verification_assertion().is_some_and(|a| !a.is_empty())
+    }
+
+    /// Returns all `(input_field_name, OutputRef)` pairs set on this node.
+    ///
+    /// The input field name corresponds to the `InputField::name` from
+    /// `input_schema()`, allowing callers to look up `accepted_types`.
+    pub fn ref_params(&self) -> Vec<(&'static str, &crate::output_schema::OutputRef)> {
+        let mut refs = Vec::new();
+        match self {
+            Self::Click(p) => {
+                if let Some(ref r) = p.target_ref {
+                    refs.push(("target_ref", r));
+                }
+            }
+            Self::Hover(p) => {
+                if let Some(ref r) = p.target_ref {
+                    refs.push(("target_ref", r));
+                }
+            }
+            Self::Drag(p) => {
+                if let Some(ref r) = p.from_ref {
+                    refs.push(("from_ref", r));
+                }
+                if let Some(ref r) = p.to_ref {
+                    refs.push(("to_ref", r));
+                }
+            }
+            Self::TypeText(p) => {
+                if let Some(ref r) = p.text_ref {
+                    refs.push(("text_ref", r));
+                }
+            }
+            Self::FocusWindow(p) => {
+                if let Some(ref r) = p.value_ref {
+                    refs.push(("value_ref", r));
+                }
+            }
+            Self::AiStep(p) => {
+                if let Some(ref r) = p.prompt_ref {
+                    refs.push(("prompt_ref", r));
+                }
+            }
+            Self::CdpFill(p) => {
+                if let Some(ref r) = p.value_ref {
+                    refs.push(("value_ref", r));
+                }
+            }
+            Self::CdpType(p) => {
+                if let Some(ref r) = p.text_ref {
+                    refs.push(("text_ref", r));
+                }
+            }
+            Self::CdpNavigate(p) => {
+                if let Some(ref r) = p.url_ref {
+                    refs.push(("url_ref", r));
+                }
+            }
+            Self::CdpNewPage(p) => {
+                if let Some(ref r) = p.url_ref {
+                    refs.push(("url_ref", r));
+                }
+            }
+            _ => {}
+        }
+        refs
+    }
+
     /// All available node types with default parameters.
     pub fn all_defaults() -> Vec<NodeType> {
         vec![

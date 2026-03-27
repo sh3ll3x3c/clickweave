@@ -3,6 +3,8 @@ import { extractOutputRefs } from "../../utils/outputSchema";
 
 interface InputsSectionProps {
   nodeType: Record<string, unknown>;
+  /** Map of auto_id -> display name for source nodes. */
+  nodeNames?: Record<string, string>;
 }
 
 const REF_FIELD_LABELS: Record<string, string> = {
@@ -25,31 +27,46 @@ const REF_TYPE_HINTS: Record<string, string> = {
   prompt_ref: "String",
 };
 
-export function InputsSection({ nodeType }: InputsSectionProps) {
+export function InputsSection({ nodeType, nodeNames }: InputsSectionProps) {
   const refs = extractOutputRefs(nodeType).map(({ key, ref }) => ({
     key,
     label: REF_FIELD_LABELS[key] || key,
     ref,
   }));
 
-  if (refs.length === 0) return null;
+  if (refs.length === 0) {
+    return (
+      <div className="mt-3">
+        <h4 className="text-xs font-medium text-[var(--text-muted)] mb-1.5">Inputs</h4>
+        <p className="text-xs text-[var(--text-muted)] italic">
+          none — all parameters are literals
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-3">
       <h4 className="text-xs font-medium text-[var(--text-muted)] mb-1.5">Inputs</h4>
       <div className="space-y-1">
-        {refs.map(({ key, label, ref }) => (
-          <div key={key} className="flex items-center gap-2 text-xs">
-            <span
-              className="w-2 h-2 rounded-full flex-shrink-0"
-              style={{ backgroundColor: typeColor(REF_TYPE_HINTS[key] || "Any") }}
-            />
-            <span className="text-[var(--text-muted)]">{label}:</span>
-            <span className="font-mono text-[var(--text-primary)]">
-              {ref.node}.{ref.field}
-            </span>
-          </div>
-        ))}
+        {refs.map(({ key, label, ref }) => {
+          const sourceName = nodeNames?.[ref.node];
+          return (
+            <div key={key} className="flex items-center gap-2 text-xs">
+              <span
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ backgroundColor: typeColor(REF_TYPE_HINTS[key] || "Any") }}
+              />
+              <span className="text-[var(--text-muted)]">{label}:</span>
+              <span className="font-mono text-[var(--text-primary)]">
+                ← {ref.node}.{ref.field}
+                {sourceName && (
+                  <span className="text-[var(--text-muted)] font-sans"> ({sourceName})</span>
+                )}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

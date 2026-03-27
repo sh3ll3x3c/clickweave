@@ -8,6 +8,7 @@ import type { AppKind, Workflow } from "../bindings";
 import { usesCdp } from "../utils/appKind";
 import { nodeMetadata, defaultNodeMetadata } from "../constants/nodeMetadata";
 import { buildDag, type DagGraph, isAppAnchorNode } from "../utils/appGroupComputation";
+import { getFullOutputSchema, extractOutputRefs, fieldTypeFromAutoId, INPUT_SCHEMAS } from "../utils/outputSchema";
 import type { AppGroupMeta } from "./useAppGrouping";
 import type { UserGroupMeta } from "./useUserGrouping";
 
@@ -38,14 +39,12 @@ function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | und
   if (nt.type !== "Click") return undefined;
   if (nt.target) {
     if (nt.target.type === "Text") return nt.target.text;
-    if (nt.target.type === "CdpElement") return nt.target.name;
+    if (nt.target.type === "Coordinates") return `at (${Math.round(nt.target.x)}, ${Math.round(nt.target.y)})`;
     if (nt.target.type === "WindowControl") {
       const names: Record<string, string> = { Close: "Close window", Minimize: "Minimize window", Maximize: "Maximize window", Zoom: "Zoom window" };
       return names[nt.target.action] ?? nt.target.action;
     }
   }
-  if (nt.template_image) return "image match";
-  if (nt.x != null && nt.y != null) return `at (${Math.round(nt.x)}, ${Math.round(nt.y)})`;
   return undefined;
 }
 
@@ -139,6 +138,16 @@ function toRFNode(
       role: node.role,
       autoId: node.auto_id,
       subtitle: nodeSubtitle(node.node_type, appKind),
+      outputFields: getFullOutputSchema(node.node_type as unknown as Record<string, unknown>),
+      wiredInputs: extractOutputRefs(node.node_type as Record<string, unknown>).map(({ key, ref }) => ({
+        key,
+        fieldType: fieldTypeFromAutoId(ref.node, ref.field),
+      })),
+      // All ref-capable input params (for drag-to-wire drop targets)
+      availableInputs: (INPUT_SCHEMAS[node.node_type.type] ?? []).map((i) => ({
+        key: i.param,
+        fieldType: i.acceptedTypes[0] ?? "Any",
+      })),
     },
   };
 }

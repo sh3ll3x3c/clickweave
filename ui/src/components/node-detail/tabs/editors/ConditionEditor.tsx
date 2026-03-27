@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Condition, LiteralValue, Operator } from "../../../../bindings";
 import { useStore } from "../../../../store/useAppStore";
-import { getOutputSchema, nodeTypeName } from "../../../../utils/outputSchema";
+import { getFullOutputSchema, nodeTypeName } from "../../../../utils/outputSchema";
 
 // The Rust Condition type uses:
 //   left: OutputRef { node: string, field: string }
@@ -32,7 +32,7 @@ interface OutputRefPickerProps {
   fieldName: string;
   onChangeNode: (autoId: string) => void;
   onChangeField: (field: string) => void;
-  nodeOptions: Array<{ autoId: string; typeName: string }>;
+  nodeOptions: Array<{ autoId: string; typeName: string; nodeType: Record<string, unknown> }>;
 }
 
 function OutputRefPicker({
@@ -42,8 +42,8 @@ function OutputRefPicker({
   onChangeField,
   nodeOptions,
 }: OutputRefPickerProps) {
-  const selectedTypeName = nodeOptions.find((n) => n.autoId === nodeAutoId)?.typeName ?? "";
-  const fields = getOutputSchema(selectedTypeName);
+  const selected = nodeOptions.find((n) => n.autoId === nodeAutoId);
+  const fields = selected ? getFullOutputSchema(selected.nodeType) : [];
 
   return (
     <div className="flex gap-1.5">
@@ -51,8 +51,8 @@ function OutputRefPicker({
         value={nodeAutoId}
         onChange={(e) => {
           onChangeNode(e.target.value);
-          const newTypeName = nodeOptions.find((n) => n.autoId === e.target.value)?.typeName ?? "";
-          const newFields = getOutputSchema(newTypeName);
+          const newOpt = nodeOptions.find((n) => n.autoId === e.target.value);
+          const newFields = newOpt ? getFullOutputSchema(newOpt.nodeType) : [];
           onChangeField(newFields.length > 0 ? newFields[0].name : "");
         }}
         className="flex-1 rounded bg-[var(--bg-input)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none"
@@ -98,13 +98,14 @@ export function ConditionEditor({
   const workflowNodes = useStore((s) => s.workflow.nodes);
 
   const nodeOptions = useMemo(() => {
-    const options: Array<{ autoId: string; typeName: string }> = [];
+    const options: Array<{ autoId: string; typeName: string; nodeType: Record<string, unknown> }> = [];
     for (const node of workflowNodes) {
       if (!node.auto_id) continue;
-      const typeName = nodeTypeName(node.node_type as unknown as Record<string, unknown>);
-      const schema = getOutputSchema(typeName);
+      const nt = node.node_type as unknown as Record<string, unknown>;
+      const typeName = nodeTypeName(nt);
+      const schema = getFullOutputSchema(nt);
       if (schema.length > 0) {
-        options.push({ autoId: node.auto_id, typeName });
+        options.push({ autoId: node.auto_id, typeName, nodeType: nt });
       }
     }
     return options;
@@ -130,8 +131,8 @@ export function ConditionEditor({
           nodeAutoId={leftNode}
           fieldName={leftField}
           onChangeNode={(autoId) => {
-            const typeName = nodeOptions.find((n) => n.autoId === autoId)?.typeName ?? "";
-            const fields = getOutputSchema(typeName);
+            const opt = nodeOptions.find((n) => n.autoId === autoId);
+            const fields = opt ? getFullOutputSchema(opt.nodeType) : [];
             const field = fields.length > 0 ? fields[0].name : "";
             emit({ ...cond, left: { node: autoId, field } });
           }}
@@ -236,8 +237,8 @@ export function ConditionEditor({
             nodeAutoId={rightNode}
             fieldName={rightField}
             onChangeNode={(autoId) => {
-              const typeName = nodeOptions.find((n) => n.autoId === autoId)?.typeName ?? "";
-              const fields = getOutputSchema(typeName);
+              const opt = nodeOptions.find((n) => n.autoId === autoId);
+              const fields = opt ? getFullOutputSchema(opt.nodeType) : [];
               const field = fields.length > 0 ? fields[0].name : "";
               emit({ ...cond, right: { type: "Ref", node: autoId, field } });
             }}

@@ -200,7 +200,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       })),
     );
     // Rebuild counters from merged nodes to include patch-added auto_ids
-    const patchedCounters: Record<string, number> = { ...(workflow.next_id_counters ?? {}) };
+    const patchedCounters = { ...(workflow.next_id_counters ?? {}) } as Record<string, number>;
     for (const node of nodes) {
       if (!node.auto_id) continue;
       const idx = node.auto_id.lastIndexOf("_");

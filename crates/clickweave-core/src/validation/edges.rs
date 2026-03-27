@@ -122,8 +122,8 @@ pub(crate) fn validate_outgoing_edges(workflow: &Workflow) -> Result<(), Validat
 mod tests {
     use super::super::test_helpers::{dummy_condition, pos};
     use crate::{
-        ClickParams, EdgeOutput, EndLoopParams, IfParams, LoopParams, NodeType, SwitchCase,
-        SwitchParams, TypeTextParams, Workflow,
+        ClickParams, EdgeOutput, EndLoopParams, FindTextParams, IfParams, LoopParams, NodeType,
+        SwitchCase, SwitchParams, TypeTextParams, Workflow,
     };
 
     use super::super::ValidationError;
@@ -152,8 +152,12 @@ mod tests {
 
     #[test]
     fn test_validate_valid_if_workflow() {
-        // If -> (IfTrue) -> A, If -> (IfFalse) -> B, both A and B -> C (converge)
+        // FindText -> If -> (IfTrue) -> A, If -> (IfFalse) -> B, both A and B -> C (converge)
         let mut wf = Workflow::default();
+        let ft = wf.add_node(
+            NodeType::FindText(crate::FindTextParams::default()),
+            pos(-100.0, 0.0),
+        );
         let if_node = wf.add_node(
             NodeType::If(IfParams {
                 condition: dummy_condition(),
@@ -164,6 +168,7 @@ mod tests {
         let b = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 100.0));
         let c = wf.add_node(NodeType::Click(ClickParams::default()), pos(200.0, 50.0));
 
+        wf.add_edge(ft, if_node);
         wf.add_edge_with_output(if_node, a, EdgeOutput::IfTrue);
         wf.add_edge_with_output(if_node, b, EdgeOutput::IfFalse);
         wf.add_edge(a, c);
@@ -245,6 +250,10 @@ mod tests {
     #[test]
     fn test_validate_valid_switch_workflow() {
         let mut wf = Workflow::default();
+        let find_text = wf.add_node(
+            NodeType::FindText(FindTextParams::default()),
+            pos(-100.0, 0.0),
+        );
         let switch_node = wf.add_node(
             NodeType::Switch(SwitchParams {
                 cases: vec![
@@ -263,6 +272,7 @@ mod tests {
         let a = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 0.0));
         let b = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 100.0));
 
+        wf.add_edge(find_text, switch_node);
         wf.add_edge_with_output(
             switch_node,
             a,

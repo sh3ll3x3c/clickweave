@@ -1,62 +1,68 @@
-import { useMemo } from "react";
 import { FieldGroup, NumberField, SelectField, TextField } from "../../fields";
-import { APP_KIND_LABELS, type NodeEditorProps, optionalString, usesCdp } from "./types";
+import { APP_KIND_LABELS, type NodeEditorProps, usesCdp } from "./types";
 import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
-export function ClickEditor({ nodeType, onUpdate, projectPath, appKind }: NodeEditorProps) {
+const TARGET_TYPES = ["Text", "Coordinates", "WindowControl"] as const;
+const TARGET_LABELS: Record<string, string> = {
+  Text: "Text",
+  Coordinates: "Coordinates",
+  WindowControl: "Window Control",
+};
+
+const WINDOW_CONTROL_ACTIONS = ["Close", "Minimize", "Maximize", "Zoom"] as const;
+
+export function ClickEditor({ nodeType, onUpdate, appKind }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "Click") return null;
 
   const updateType = useNodeTypeUpdater(nt, onUpdate);
 
-  const hasImage = !!nt.template_image;
   const isCdp = appKind && usesCdp(appKind);
+  const targetType = nt.target?.type ?? "Text";
 
   return (
     <FieldGroup title="Click">
-      {nt.target?.type === "CdpElement" ? (
-        <div>
-          <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-            Target (CDP)
-          </label>
-          <span className="block px-2.5 py-1.5 text-sm">
-            &quot;{nt.target.name}&quot;
-            {nt.target.role && <span className="ml-1 text-xs text-[var(--text-muted)]">({nt.target.role})</span>}
-          </span>
-          {nt.target.parent_role && (
-            <span className="block px-2.5 text-[10px] text-[var(--text-muted)]">
-              in {nt.target.parent_role}
-              {nt.target.parent_name && <> &quot;{nt.target.parent_name}&quot;</>}
-            </span>
-          )}
-        </div>
-      ) : (
+      <SelectField
+        label="Target Type"
+        value={targetType}
+        options={[...TARGET_TYPES]}
+        labels={TARGET_LABELS}
+        onChange={(v) => {
+          if (v === "Text") updateType({ target: { type: "Text" as const, text: "" } });
+          else if (v === "Coordinates") updateType({ target: { type: "Coordinates" as const, x: 0, y: 0 } });
+          else if (v === "WindowControl") updateType({ target: { type: "WindowControl" as const, action: "Close" } });
+        }}
+      />
+      {targetType === "Text" && (
         <TextField
-          label="Target"
+          label="Target Text"
           value={nt.target?.type === "Text" ? nt.target.text : ""}
           onChange={(v) => updateType({ target: v ? { type: "Text" as const, text: v } : null })}
-          placeholder="Text to find and click (auto-resolves coordinates)"
+          placeholder="Text to find and click"
         />
       )}
-      <TemplateImageField
-        value={nt.template_image ?? null}
-        onClear={() => updateType({ template_image: null })}
-      />
-      {hasImage && (
-        <p className="text-[10px] text-[var(--text-muted)]">
-          At runtime this node uses <strong>find_image</strong> to locate the template and click at the matched coordinates.
-        </p>
+      {targetType === "Coordinates" && (
+        <>
+          <NumberField
+            label="X"
+            value={nt.target?.type === "Coordinates" ? nt.target.x : 0}
+            onChange={(v) => updateType({ target: { type: "Coordinates" as const, x: v ?? 0, y: nt.target?.type === "Coordinates" ? nt.target.y : 0 } })}
+          />
+          <NumberField
+            label="Y"
+            value={nt.target?.type === "Coordinates" ? nt.target.y : 0}
+            onChange={(v) => updateType({ target: { type: "Coordinates" as const, x: nt.target?.type === "Coordinates" ? nt.target.x : 0, y: v ?? 0 } })}
+          />
+        </>
       )}
-      <NumberField
-        label="X"
-        value={nt.x ?? 0}
-        onChange={(v) => updateType({ x: v ?? null })}
-      />
-      <NumberField
-        label="Y"
-        value={nt.y ?? 0}
-        onChange={(v) => updateType({ y: v ?? null })}
-      />
+      {targetType === "WindowControl" && (
+        <SelectField
+          label="Action"
+          value={nt.target?.type === "WindowControl" ? nt.target.action : "Close"}
+          options={[...WINDOW_CONTROL_ACTIONS]}
+          onChange={(v) => updateType({ target: { type: "WindowControl" as const, action: v as typeof WINDOW_CONTROL_ACTIONS[number] } })}
+        />
+      )}
       <SelectField
         label="Button"
         value={nt.button}
@@ -81,51 +87,5 @@ export function ClickEditor({ nodeType, onUpdate, projectPath, appKind }: NodeEd
         </div>
       )}
     </FieldGroup>
-  );
-}
-
-function TemplateImageField({
-  value,
-  onClear,
-}: {
-  value: string | null;
-  onClear: () => void;
-}) {
-  const src = useMemo(() => {
-    if (!value || value.length < 64) return null;
-    const mime = value.startsWith("/9j/")
-      ? "image/jpeg"
-      : value.startsWith("iVBOR")
-        ? "image/png"
-        : null;
-    if (!mime) return null;
-    return `data:${mime};base64,${value}`;
-  }, [value]);
-
-  return (
-    <div>
-      <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-        Template Image
-      </label>
-      {src ? (
-        <div className="flex items-start gap-2">
-          <img
-            src={src}
-            alt="Template preview"
-            className="max-h-32 rounded border border-[var(--border)] object-contain"
-          />
-          <button
-            onClick={onClear}
-            className="rounded bg-[var(--bg-input)] px-2 py-1.5 text-xs text-red-400 hover:bg-red-500/20"
-          >
-            Clear
-          </button>
-        </div>
-      ) : (
-        <p className="text-[10px] text-[var(--text-muted)]">
-          No template image. Record a walkthrough to generate one.
-        </p>
-      )}
-    </div>
   );
 }
