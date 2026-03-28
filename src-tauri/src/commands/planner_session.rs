@@ -193,6 +193,8 @@ impl PlannerSession {
 
     /// Handle the virtual `cdp_find_elements` tool.
     async fn handle_cdp_find_elements(&self, args: &Value) -> anyhow::Result<String> {
+        use std::fmt::Write as _;
+
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
@@ -204,10 +206,12 @@ impl PlannerSession {
             .and_then(|v| v.as_u64())
             .unwrap_or(10) as usize;
 
-        // Get current page URL from cdp_list_pages.
-        let page_url = {
+        // Single lock scope for both MCP calls to avoid TOCTOU between
+        // page URL retrieval and snapshot capture.
+        let (page_url, snapshot_text) = {
             let mcp = self.mcp.lock().await;
-            match mcp
+
+            let page_url = match mcp
                 .call_tool("cdp_list_pages", Some(serde_json::json!({})))
                 .await
             {
@@ -218,33 +222,30 @@ impl PlannerSession {
                     .and_then(extract_selected_page_url)
                     .unwrap_or_else(|| "(unknown page)".to_string()),
                 Err(_) => "(unknown page)".to_string(),
-            }
-        };
+            };
 
-        // Take CDP snapshot.
-        let snapshot_text = {
-            let mcp = self.mcp.lock().await;
-            let result = mcp
+            let snapshot_result = mcp
                 .call_tool("cdp_take_snapshot", Some(serde_json::json!({})))
                 .await
                 .map_err(|e| anyhow::anyhow!("cdp_take_snapshot failed: {e}"))?;
-            if result.is_error == Some(true) {
-                let err = result
+            if snapshot_result.is_error == Some(true) {
+                let err = snapshot_result
                     .content
                     .first()
                     .and_then(|c| c.as_text())
                     .unwrap_or("unknown error");
                 return Err(anyhow::anyhow!("cdp_take_snapshot error: {err}"));
             }
-            result
+            let snapshot_text = snapshot_result
                 .content
                 .first()
                 .and_then(|c| c.as_text())
                 .unwrap_or("")
-                .to_string()
+                .to_string();
+
+            (page_url, snapshot_text)
         };
 
-        // Search for interactive elements.
         let result = clickweave_core::cdp::search_interactive_elements(
             &snapshot_text,
             &query,
@@ -252,31 +253,31 @@ impl PlannerSession {
             max_results,
         );
 
-        // Format compact hit list.
-        let mut output = format!("Searching on page: {}\n\n", page_url);
+        let mut output = format!("Searching on page: {page_url}\n\n");
         if result.matches.is_empty() {
-            output.push_str(&format!("No interactive matches for \"{query}\"."));
+            write!(output, "No interactive matches for \"{query}\".").unwrap();
         } else {
-            output.push_str(&format!("Matches for \"{query}\":\n"));
+            writeln!(output, "Matches for \"{query}\":").unwrap();
             for m in &result.matches {
-                output.push_str(&format!("  uid={} {} \"{}\"", m.uid, m.role, m.label));
+                write!(output, "  uid={} {} \"{}\"", m.uid, m.role, m.label).unwrap();
                 if let Some(parent_role) = &m.parent_role {
                     match &m.parent_name {
-                        Some(name) => {
-                            output.push_str(&format!(" (parent: {parent_role} \"{name}\")"))
-                        }
-                        None => output.push_str(&format!(" (parent: {parent_role})")),
+                        Some(name) => write!(output, " (parent: {parent_role} \"{name}\")"),
+                        None => write!(output, " (parent: {parent_role})"),
                     }
+                    .unwrap();
                 }
                 output.push('\n');
             }
         }
         if result.omitted_count > 0 {
-            output.push_str(&format!(
+            write!(
+                output,
                 "\n~{} additional non-interactive match{} omitted.",
                 result.omitted_count,
                 if result.omitted_count == 1 { "" } else { "es" }
-            ));
+            )
+            .unwrap();
         }
 
         Ok(output)

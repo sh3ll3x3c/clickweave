@@ -263,24 +263,27 @@ pub fn search_interactive_elements(
     role_filter: Option<&str>,
     max_results: usize,
 ) -> InteractiveSearchResult {
-    let all_matches = find_elements_in_snapshot(snapshot_text, query);
+    let mut matches = find_elements_in_snapshot(snapshot_text, query);
 
-    let (mut interactive, non_interactive): (Vec<_>, Vec<_>) =
-        all_matches.into_iter().partition(|m| {
-            INTERACTIVE_ROLES
-                .iter()
-                .any(|r| r.eq_ignore_ascii_case(&m.role))
-        });
+    let mut omitted_count = 0;
+    matches.retain(|m| {
+        let dominated_interactive = INTERACTIVE_ROLES
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(&m.role));
+        if !dominated_interactive {
+            omitted_count += 1;
+        }
+        dominated_interactive
+    });
 
     if let Some(role) = role_filter {
-        interactive.retain(|m| m.role.eq_ignore_ascii_case(role));
+        matches.retain(|m| m.role.eq_ignore_ascii_case(role));
     }
 
-    let omitted_count = non_interactive.len();
-    interactive.truncate(max_results);
+    matches.truncate(max_results);
 
     InteractiveSearchResult {
-        matches: interactive,
+        matches,
         omitted_count,
     }
 }
