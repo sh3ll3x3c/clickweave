@@ -266,7 +266,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   },
 
   clearConversation: () => {
-    commands.clearAssistantSession();
+    commands.clearAssistantSession().catch(() => {});
     set({
       conversation: makeEmptyConversation(),
       pendingPatch: null,

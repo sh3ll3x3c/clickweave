@@ -40,8 +40,6 @@ pub struct ToolCallRecord {
 pub struct ConversationOutput<T> {
     /// The parsed result from the LLM's text response.
     pub result: T,
-    /// Full updated message history (including tool calls and results).
-    pub messages: Vec<Message>,
     /// Structured log of tool calls made during this turn.
     pub tool_calls: Vec<ToolCallRecord>,
     /// Token usage from the last LLM response.
@@ -148,16 +146,6 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
                         match executor.request_confirmation(&confirm_msg, tool_name).await {
                             Ok(true) => {
                                 info!("User approved planning tool: {}", tool_name);
-                                let msg =
-                                    execute_tool(executor, tool_name, args.clone(), &tc.id).await;
-                                let result_text = msg.text_content().map(|s| s.to_string());
-                                messages.push(msg);
-                                tool_call_log.push(ToolCallRecord {
-                                    tool_name: tool_name.to_string(),
-                                    args,
-                                    result: result_text,
-                                    tool_call_id: tc.id.clone(),
-                                });
                             }
                             Ok(false) => {
                                 info!("User declined planning tool: {}", tool_name);
@@ -165,6 +153,7 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
                                     &tc.id,
                                     "User declined. Proceed without this tool.",
                                 ));
+                                continue;
                             }
                             Err(e) => {
                                 warn!("Confirmation request failed: {}", e);
@@ -172,22 +161,25 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
                                     &tc.id,
                                     "Confirmation unavailable. Proceed without this tool.",
                                 ));
+                                continue;
                             }
                         }
                     }
                     ToolPermission::Allowed => {
                         debug!("Executing planning tool: {}", tool_name);
-                        let msg = execute_tool(executor, tool_name, args.clone(), &tc.id).await;
-                        let result_text = msg.text_content().map(|s| s.to_string());
-                        messages.push(msg);
-                        tool_call_log.push(ToolCallRecord {
-                            tool_name: tool_name.to_string(),
-                            args,
-                            result: result_text,
-                            tool_call_id: tc.id.clone(),
-                        });
                     }
                 }
+
+                // Execute tool and record result (shared by Allowed and approved Confirmation)
+                let msg = execute_tool(executor, tool_name, args.clone(), &tc.id).await;
+                let result_text = msg.text_content().map(|s| s.to_string());
+                messages.push(msg);
+                tool_call_log.push(ToolCallRecord {
+                    tool_name: tool_name.to_string(),
+                    args,
+                    result: result_text,
+                    tool_call_id: tc.id.clone(),
+                });
             }
             // Refresh tool list after tool-call round (tools may have changed after cdp_connect)
             if tools_param.is_some() {
@@ -222,7 +214,6 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
                         Ok(()) => {
                             return Ok(ConversationOutput {
                                 result,
-                                messages,
                                 tool_calls: tool_call_log,
                                 usage: last_usage,
                             });
@@ -252,7 +243,6 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
                             );
                             return Ok(ConversationOutput {
                                 result,
-                                messages,
                                 tool_calls: tool_call_log,
                                 usage: last_usage,
                             });
@@ -262,7 +252,6 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
                     // No validation — return immediately
                     return Ok(ConversationOutput {
                         result,
-                        messages,
                         tool_calls: tool_call_log,
                         usage: last_usage,
                     });
@@ -290,7 +279,6 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
                     warn!("Parse failed on final attempt but have earlier result, returning it");
                     return Ok(ConversationOutput {
                         result,
-                        messages,
                         tool_calls: tool_call_log,
                         usage: last_usage,
                     });

@@ -18,4 +18,4 @@ internal_docs/
 
 # Sidecar binaries (downloaded by CI or symlinked for dev)
 src-tauri/binaries/native-devtools-mcp*
-!src-tauri/binaries/.gitkeep
+!src-tauri/binaries/.gitkeep*.out

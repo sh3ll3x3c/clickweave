@@ -139,7 +139,7 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
     //
     // When max_repair_attempts == 0 we skip validation entirely (1 LLM call, no-op validate).
     // Otherwise max_repair_attempts is the total number of LLM calls allowed.
-    let wf = workflow.clone();
+    let wf = std::sync::Arc::new(workflow.clone());
 
     let effective_max = if max_repair_attempts == 0 {
         1

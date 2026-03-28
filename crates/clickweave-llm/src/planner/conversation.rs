@@ -105,26 +105,28 @@ impl ConversationSession {
         });
     }
 
-    /// Push a tool call entry.
-    pub fn push_tool_call(&mut self, tool_name: &str, tool_call_id: &str, content: &str) {
-        self.messages
-            .push(ChatEntry::tool_call(tool_name, tool_call_id, content));
-    }
-
-    /// Push a tool result entry.
-    pub fn push_tool_result(&mut self, tool_call_id: &str, tool_name: &str, content: &str) {
-        self.messages
-            .push(ChatEntry::tool_result(tool_call_id, tool_name, content));
-    }
-
-    /// Messages in the recent window (last N exchanges).
+    /// Messages in the recent window (last N user+assistant exchanges).
+    ///
+    /// Counts only User and Assistant entries when determining the window
+    /// boundary, so interleaved ToolCall/ToolResult entries don't shrink
+    /// the effective window.
     pub fn recent_window(&self, window_size: Option<usize>) -> &[ChatEntry] {
-        let n = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
-        let len = self.messages.len();
-        if len <= n {
+        let target = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
+        let mut count = 0;
+        let mut start = self.messages.len();
+        for (i, entry) in self.messages.iter().enumerate().rev() {
+            if matches!(entry.role, ChatRole::User | ChatRole::Assistant) {
+                count += 1;
+                if count >= target {
+                    start = i;
+                    break;
+                }
+            }
+        }
+        if count < target {
             &self.messages[..]
         } else {
-            &self.messages[len - n..]
+            &self.messages[start..]
         }
     }
 
