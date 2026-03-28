@@ -344,6 +344,73 @@ fn extract_prose(content: &str) -> Option<String> {
     None
 }
 
+/// Chat for resolution queries — accepts a pre-built Message (can include images).
+/// Uses the resolution system prompt instead of the assistant system prompt.
+/// No planning tools, include_tool_results is always true.
+pub async fn resolution_chat_with_backend(
+    backend: &impl ChatBackend,
+    workflow: &Workflow,
+    query_message: Message,
+    session: &ConversationSession,
+    _max_repair_attempts: usize,
+    _on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
+) -> Result<AssistantResult> {
+    let system = super::resolution::resolution_system_prompt(workflow);
+
+    let mut messages = vec![Message::system(&system)];
+
+    // Summary context
+    if let Some(summary) = &session.summary {
+        messages.push(Message::user(format!("Conversation context: {}", summary)));
+        messages.push(Message::assistant(
+            "Understood, I have the context.".to_string(),
+        ));
+    }
+
+    // Recent window WITH tool results (planning exploration context)
+    for entry in session.recent_window(None) {
+        let msg = match entry.role {
+            ChatRole::User => Message::user(&entry.content),
+            ChatRole::Assistant => Message::assistant(&entry.content),
+            ChatRole::ToolCall => Message::user(format!(
+                "[Tool Call: {}] {}",
+                entry.tool_name.as_deref().unwrap_or("?"),
+                &entry.content
+            )),
+            ChatRole::ToolResult => Message::user(format!(
+                "[Tool Result: {}] {}",
+                entry.tool_name.as_deref().unwrap_or("?"),
+                &entry.content
+            )),
+        };
+        messages.push(msg);
+    }
+
+    // The resolution query message (may include screenshot image part)
+    messages.push(query_message);
+
+    // Single LLM call — no planning tools, no conversation loop
+    let response = backend.chat(messages, None).await?;
+    let choice = response
+        .choices
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("No response from LLM"))?;
+    let content = choice.message.content_text().unwrap_or_default();
+
+    let (message, patch, warnings) = parse_assistant_response(content, workflow, &[], false, false);
+
+    let prompt_tokens = response.usage.as_ref().map(|u| u.prompt_tokens);
+
+    Ok(AssistantResult {
+        message: message.to_string(),
+        patch,
+        new_summary: None,
+        warnings,
+        tool_entries: Vec::new(),
+        prompt_tokens,
+    })
+}
+
 /// Generate a default description of what a patch does.
 fn describe_patch(patch: &PatchResult) -> String {
     let mut parts = Vec::new();

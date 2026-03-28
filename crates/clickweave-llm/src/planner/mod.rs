@@ -8,6 +8,7 @@ pub mod tool_use;
 pub mod assistant;
 pub mod conversation;
 pub mod conversation_loop;
+pub mod resolution;
 pub mod summarize;
 
 #[cfg(test)]
