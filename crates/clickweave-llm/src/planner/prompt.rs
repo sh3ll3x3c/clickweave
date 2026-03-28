@@ -1,6 +1,63 @@
 use clickweave_core::{NodeType, Workflow, chrome_profiles::ChromeProfile, tool_mapping};
 use serde_json::Value;
 
+/// Build the "Context Gathering" section for the planner prompt.
+///
+/// When `has_planning_tools` is true, includes instructions about using
+/// planning tools. When false, the section is empty (no context gathering).
+pub(crate) fn context_gathering_section(has_planning_tools: bool) -> String {
+    if !has_planning_tools {
+        return String::new();
+    }
+
+    r#"## Context Gathering
+
+Before generating the workflow, call planning tools to understand the target apps.
+These tools are for gathering context only — do NOT include them in the workflow JSON.
+
+Available planning tools:
+- **probe_app(app_name)** — classify an app as Native, ElectronApp, or ChromeBrowser. **Always call this first** for any app in the user's request.
+- **take_ax_snapshot(app_name)** — see visible UI elements (names, roles) for a running native app. Returns interactive elements only, capped at 150 items.
+- **cdp_connect(app_name)** — restart an Electron/Chrome app with a debug port and connect CDP. Requires user confirmation (the app will be restarted). After connecting, CDP inspection tools become available.
+- **cdp_find_elements(query, role?, max_results?)** — search the CDP-connected page for interactive elements matching a text query. Returns a page element overview (all interactive elements grouped by role) plus a compact hit list (uid, role, label, parent context) for up to 10 matches by default. Only interactive elements (buttons, links, inputs, etc.) are returned. **Available after `cdp_connect`.** Use this instead of `cdp_take_snapshot` — it gives you focused results without flooding context. If your search returns no matches, use the element overview to pick a better query.
+- **cdp_take_snapshot** — take a full DOM snapshot of the CDP-connected page. Prefer `cdp_find_elements` for targeted lookups; only use this if you need the full DOM structure.
+- **cdp_list_pages** / **cdp_select_page** — list and switch between pages (tabs) in a CDP-connected app.
+
+**CRITICAL — after probe_app returns:**
+- If `kind` is **ElectronApp** or **ChromeBrowser**: call `cdp_connect(app_name)` to restart with debug port, then use `cdp_find_elements` to discover UI elements. Use the element names as text targets for `cdp_click` (the executor resolves them at runtime). Generate CDP tool names: `cdp_click`, `cdp_type_text`, `cdp_press_key`, `fill`, `wait_for`, `navigate_page`.
+- If `kind` is **Native**: use `take_ax_snapshot` to see UI elements, then generate native tools (`find_text`, `click`, `type_text`, etc.).
+- Do NOT use native `click`/`type_text`/`press_key` for Electron/Chrome apps — use `cdp_click`/`cdp_type_text`/`cdp_press_key` instead.
+- Do NOT call `take_ax_snapshot` for Electron/Chrome apps — it returns accessibility data, not DOM. Use `cdp_find_elements` after `cdp_connect` instead.
+
+**Recommended sequences:**
+- **Native apps:** `probe_app` → `take_ax_snapshot` → generate workflow with native tools
+- **Electron/Chrome apps:** `probe_app` → `cdp_connect` (user confirms restart) → `cdp_list_pages` → find the main UI page (skip `background.html`, service workers, devtools pages) → `cdp_select_page` if needed → `cdp_find_elements` to discover elements → generate workflow with CDP tools using text targets from the search results
+
+**Element targeting in workflows:**
+- For `cdp_click`: use **text targets** (the element's label text). The executor resolves these to UIDs at runtime from fresh snapshots. Example: `{"target": "Note to Self"}`.
+- For `cdp_type_text`: pass **the text to type** — it types into the currently focused element. No target resolution. Example: `{"text": "hello"}`. Click the target input first with `cdp_click`.
+- For `cdp_press_key`: pass **the key name** — it sends the keypress to the currently focused element. Example: `{"key": "Enter"}`. Use DOM key names: `Enter` (not `Return`), `Tab`, `Escape`, `ArrowUp`, `ArrowDown`, `Backspace`, `Delete`, or single characters.
+- For `fill`: use **UIDs from `cdp_find_elements`**. The `fill` tool requires a literal UID because it targets a specific input field by DOM identity. Example: search with `cdp_find_elements(query: "search", role: "textbox")`, then use `{"uid": "<uid>", "value": "search term"}` in the workflow.
+- For `wait_for`: waits for **specific literal text** to appear on the CDP page. The tool name is `wait_for` (NOT `cdp_wait`). Example: `{"text": "Message sent", "timeout": 10000}`. ONLY use this when you know the exact text string that will appear (e.g. "Payment confirmed", "Upload complete"). Do NOT use it for unpredictable events like "wait for a new message" — you don't know what text the message will contain.
+- Do NOT bake UIDs into `cdp_click` arguments — UIDs change between sessions. Always use text targets for click.
+
+**Waiting for unpredictable events:** When the user wants to wait for something whose content is unknown (a new message, a notification, any change), use a **Loop** with a check step instead of `wait_for`:
+- If you know a concrete indicator to search for (e.g. a sender name, an unread badge): use `find_text` inside the loop to poll for it.
+- If the change is completely unpredictable: take a **baseline screenshot** before the loop, then inside the loop take another screenshot with `"role": "Verification"` and `"expected_outcome"` describing the change to detect (e.g. "a new chat message appeared that was not in the baseline"). The VLM compares screenshots to detect visual changes.
+- Exit the loop when the check passes (change detected), then continue with the response actions.
+
+**Page selection:** If you called `cdp_select_page` during planning to reach the right page, include the same `cdp_select_page` step in the workflow after `launch_app` so the runtime reaches the same page.
+
+**Important:**
+- Electron apps often have a `background.html` page (main process) that contains no UI. Always call `cdp_list_pages` after `cdp_connect` and select the page with the actual application UI before searching.
+- The generated workflow must always start with `launch_app` for the target app, even if the app was already started during context gathering. The executor needs `launch_app` to set up the CDP connection at runtime.
+
+Call as many tools as you need, then output the workflow JSON.
+For simple tasks on well-known native apps (e.g., Calculator), you may skip probing.
+
+"#.to_string()
+}
+
 /// Build the planner system prompt.
 ///
 /// When `template_override` is `Some`, uses that string as the template
@@ -11,6 +68,7 @@ pub(crate) fn planner_system_prompt(
     allow_agent_steps: bool,
     template_override: Option<&str>,
     chrome_profiles: Option<&[ChromeProfile]>,
+    has_planning_tools: bool,
 ) -> String {
     let tool_list = serde_json::to_string_pretty(tools_json).unwrap_or_default();
 
@@ -65,7 +123,7 @@ pub(crate) fn planner_system_prompt(
 **Condition** objects compare a runtime variable to a value:
 ```json
 {
-  "left": {"type": "Variable", "name": "<sanitized_node_name>.<field>"},
+  "left": {"node": "<auto_id>", "field": "<field>"},
   "operator": "<op>",
   "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
 }
@@ -74,19 +132,19 @@ Operators: Equals, NotEquals, GreaterThan, LessThan, GreaterThanOrEqual, LessTha
 
 Literal types: `{"type": "String", "value": "text"}`, `{"type": "Number", "value": 42}`, `{"type": "Bool", "value": true}`.
 
-**Variable names** follow `<sanitized_node_name>.<field>`. The sanitized name is derived from the node's `"name"` field: lowercase the entire name, then replace every non-alphanumeric character (spaces, punctuation, symbols) with `_`. Examples: `"Check result"` → `check_result`, `"Check if result is 128"` → `check_if_result_is_128`, `"Click +"` → `click___`. The variable name in conditions MUST match the exact sanitized form of the referenced node's name. Fields per tool:
-- find_text: `.found` (bool), `.text`, `.x`, `.y`, `.count`, `.matches`
-- find_image: `.found` (bool), `.x`, `.y`, `.score`, `.count`, `.matches`
-- list_windows: `.found` (bool), `.count`, `.windows`
+**Variable names** follow `<auto_id>.<field>`. The auto_id is assigned automatically from the node type (e.g. `find_text_1`, `click_1`, `find_image_2`). The variable name in conditions MUST use the node's `auto_id`. Fields per tool:
+- find_text: `.found` (bool), `.count`, `.text`, `.coordinates` (object with x/y)
+- find_image: `.found` (bool), `.count`, `.coordinates` (object with x/y), `.confidence`
+- find_app / list_apps: `.found` (bool), `.name`, `.pid`
 - click, type_text, press_key, scroll, focus_window: `.success` (bool)
 - take_screenshot: `.result`
 - Any tool: `.result` (raw JSON response)
 
 ## Verification role
 
-Any read-only Tool step (find_text, find_image, list_windows, take_screenshot) can be marked as a **verification** by adding `"role": "Verification"` to the node. This makes the node's result count as a test assertion:
+Any read-only Tool step (find_text, find_image, list_apps, take_screenshot) can be marked as a **verification** by adding `"role": "Verification"` to the node. This makes the node's result count as a test assertion:
 
-- **find_text / find_image / list_windows**: Pass if matches are found, fail otherwise. No LLM call needed.
+- **find_text / find_image / find_app**: Pass if matches are found, fail otherwise. No LLM call needed.
 - **take_screenshot**: Requires `"expected_outcome": "<description>"`. A VLM evaluates whether the screenshot shows the expected result.
 
 Verification failures stop the workflow immediately (fail-fast).
@@ -116,7 +174,10 @@ Use `"role": "Verification"` when the user asks to **verify**, **check**, **conf
 
     let template = template_override.unwrap_or(include_str!("../../prompts/planner.md"));
 
+    let context_gathering = context_gathering_section(has_planning_tools);
+
     template
+        .replace("{{context_gathering}}", &context_gathering)
         .replace("{{tool_list}}", &tool_list)
         .replace("{{step_types}}", &step_types)
         .replace("{{chrome_profiles}}", &chrome_profiles_section)
@@ -128,6 +189,7 @@ pub(crate) fn patcher_system_prompt(
     tools_json: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
+    has_planning_tools: bool,
 ) -> String {
     let tool_list = serde_json::to_string_pretty(tools_json).unwrap_or_default();
 
@@ -148,8 +210,6 @@ pub(crate) fn patcher_system_prompt(
                     if let NodeType::Click(p) = &n.node_type {
                         if let Some(target) = &p.target {
                             args["target"] = Value::String(target.text().to_string());
-                        } else if p.template_image.is_some() {
-                            args["has_template_image"] = Value::Bool(true);
                         }
                     }
                     summary["arguments"] = args;
@@ -183,10 +243,12 @@ pub(crate) fn patcher_system_prompt(
     step_types.push_str("see the tool schemas below).");
     step_types.push_str(" For control flow nodes (Loop, EndLoop, If), use \"add_nodes\" + \"add_edges\" instead of \"add\".");
 
+    let context_gathering = context_gathering_section(has_planning_tools);
+
     format!(
         r#"You are a workflow editor for UI automation. Given an existing workflow and a user's modification request, produce a JSON patch.
 
-Current workflow nodes:
+{context_gathering}Current workflow nodes:
 {nodes_json}
 
 Current edges:
@@ -251,14 +313,37 @@ pub(crate) fn assistant_system_prompt(
     allow_agent_steps: bool,
     run_context: Option<&str>,
     chrome_profiles: Option<&[ChromeProfile]>,
+    has_planning_tools: bool,
 ) -> String {
+    use super::tool_use::is_planning_only_tool;
+
+    // When planning tools are available, filter them out of the workflow catalog
+    // so the LLM prompt only shows tools valid as workflow nodes.
+    let workflow_tools: Vec<Value> = if has_planning_tools {
+        tools_json
+            .iter()
+            .filter(|tool| {
+                let name = tool
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("");
+                !is_planning_only_tool(name)
+            })
+            .cloned()
+            .collect()
+    } else {
+        tools_json.to_vec()
+    };
+
     if workflow.nodes.is_empty() {
         let base = planner_system_prompt(
-            tools_json,
+            &workflow_tools,
             allow_ai_transforms,
             allow_agent_steps,
             None,
             chrome_profiles,
+            has_planning_tools,
         );
         let mut prompt = format!(
             "You are a conversational workflow assistant for UI automation. \
@@ -271,8 +356,13 @@ pub(crate) fn assistant_system_prompt(
         }
         prompt
     } else {
-        let base =
-            patcher_system_prompt(workflow, tools_json, allow_ai_transforms, allow_agent_steps);
+        let base = patcher_system_prompt(
+            workflow,
+            &workflow_tools,
+            allow_ai_transforms,
+            allow_agent_steps,
+            has_planning_tools,
+        );
         let mut prompt = format!(
             "You are a conversational workflow assistant for UI automation. \
              You help users modify their existing workflow through natural dialogue.\n\n\

@@ -1,10 +1,14 @@
+mod action_verification;
 mod ai_step;
 mod app_resolve;
+mod cdp_wait;
 mod control_flow;
 mod deterministic;
 mod element_resolve;
 pub mod error;
+mod find_app;
 mod graph_nav;
+mod output_ref;
 mod run_loop;
 mod supervision;
 mod trace;

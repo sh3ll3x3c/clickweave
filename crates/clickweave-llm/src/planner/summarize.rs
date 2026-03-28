@@ -11,6 +11,8 @@ fn entries_to_text(entries: &[ChatEntry]) -> String {
             let role = match e.role {
                 ChatRole::User => "User",
                 ChatRole::Assistant => "Assistant",
+                ChatRole::ToolCall => "ToolCall",
+                ChatRole::ToolResult => "ToolResult",
             };
             let mut line = format!("{}: {}", role, e.content);
             if let Some(ps) = &e.patch_summary {

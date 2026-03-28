@@ -57,9 +57,9 @@ async validate(workflow: Workflow) : Promise<ValidationResult> {
 async nodeTypeDefaults() : Promise<NodeTypeInfo[]> {
     return await TAURI_INVOKE("node_type_defaults");
 },
-async planWorkflow(request: PlanRequest) : Promise<Result<PlanResponse, CommandError>> {
+async generateAutoId(nodeTypeName: string, countersJson: string) : Promise<Result<[string, string], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("plan_workflow", { request }) };
+    return { status: "ok", data: await TAURI_INVOKE("generate_auto_id", { nodeTypeName, countersJson }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -84,6 +84,14 @@ async assistantChat(request: AssistantChatRequest) : Promise<Result<AssistantCha
 async cancelAssistantChat() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cancel_assistant_chat") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async clearAssistantSession() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_assistant_session") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -280,6 +288,14 @@ async launchChromeForSetup(profileId: string) : Promise<Result<null, CommandErro
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async plannerConfirmationRespond(approved: boolean) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("planner_confirmation_respond", { approved }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -294,7 +310,7 @@ async launchChromeForSetup(profileId: string) : Promise<Result<null, CommandErro
 /** user-defined types **/
 
 export type ActionConfidence = "High" | "Medium" | "Low"
-export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
+export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null; prompt_ref?: OutputRef | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**
  * Classification of an app's UI framework, used to decide whether
@@ -308,8 +324,8 @@ export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
-export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; max_repair_attempts: number }
-export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[] }
+export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; max_repair_attempts: number; project_path?: string | null }
+export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[]; tool_entries: ChatEntry[]; context_usage: number | null }
 /**
  * User-selected app for CDP during walkthrough.
  */
@@ -318,24 +334,34 @@ export type CdpAppConfig = { name: string;
  * Path to the app binary (from file picker). None for already-running apps.
  */
 binary_path: string | null; app_kind: AppKind }
+export type CdpClickParams = { uid: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpClosePageParams = { page_index?: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpFillParams = { uid: string; value: string; value_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpHandleDialogParams = { accept: boolean; prompt_text?: string | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpHoverParams = { uid: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpNavigateParams = { url: string; url_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpNewPageParams = { url?: string; url_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpPressKeyParams = { key: string; modifiers?: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpSelectPageParams = { page_index: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpTypeParams = { text: string; text_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpWaitParams = { text: string; timeout_ms?: number }
 /**
  * A single entry in the assistant conversation.
  */
-export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
-export type ChatRole = "user" | "assistant"
+export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null; tool_call_id?: string | null; tool_name?: string | null }
+export type ChatRole = "user" | "assistant" | "tool_call" | "tool_result"
 export type ChromeProfile = { id: string; name: string; google_email: string | null }
-export type ClickParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
-export type ClickTarget = { type: "Text"; text: string } | { type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null } | 
-/**
- * macOS window control button — resolved at execution time to
- * window-relative coordinates via `list_windows`.
- */
-{ type: "WindowControl"; action: WindowControlAction }
+export type ClickParams = { target: ClickTarget | null; target_ref?: OutputRef | null; button: MouseButton; click_count: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type ClickTarget = { type: "Text"; text: string } | { type: "Coordinates"; x: number; y: number } | { type: "WindowControl"; action: WindowControlAction }
 /**
  * Structured error type for Tauri IPC commands.
  */
 export type CommandError = { kind: ErrorKind; message: string }
-export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
+export type Condition = { left: OutputRef; operator: Operator; right: ConditionValue }
+/**
+ * Right-hand side of a condition: either a literal or a reference to an upstream output.
+ */
+export type ConditionValue = { type: "Literal"; value: LiteralValue } | ({ type: "Ref" } & OutputRef)
 /**
  * Persistent conversation session for a workflow.
  */
@@ -344,6 +370,7 @@ export type ConversationSession = { messages: ChatEntry[]; summary?: string | nu
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
  */
 export type DetectedCdpApp = { name: string; pid: number; app_kind: AppKind }
+export type DragParams = { from_x: number | null; from_y: number | null; to_x: number | null; to_y: number | null; from_ref?: OutputRef | null; to_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type Edge = { from: string; to: string; 
 /**
  * Which output port this edge connects from. None for regular single-output edges.
@@ -369,15 +396,16 @@ loop_id: string }
 export type EndpointConfig = { base_url: string; model: string; api_key: string | null }
 export type ErrorKind = "Validation" | "Io" | "Llm" | "Mcp" | "AlreadyRunning" | "Cancelled" | "Internal"
 export type ExecutionMode = "Test" | "Run"
+export type FindAppParams = { search: string }
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
 export type FocusMethod = "WindowId" | "AppName" | "Pid"
-export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null }
-export type HoverParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; dwell_ms: number }
+export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null; value_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type HoverParams = { target: ClickTarget | null; target_ref?: OutputRef | null; dwell_ms: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type IfParams = { condition: Condition }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
-export type ListWindowsParams = { app_name: string | null }
+export type LaunchAppParams = { app_name: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type LiteralValue = { type: "String"; value: string } | { type: "Number"; value: number } | { type: "Bool"; value: boolean }
 export type LoopParams = { 
 /**
@@ -398,25 +426,36 @@ max_iterations: number }
 export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
-export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null }
+export type Node = { id: string; node_type: NodeType; position: Position; name: string; auto_id?: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null }
 export type NodeGroup = { id: string; name: string; color: string; node_ids: string[]; parent_group_id: string | null }
 export type NodeRename = { node_id: string; new_name: string }
 export type NodeResult = { node_name: string; status: string; error?: string | null }
 export type NodeRole = "Default" | "Verification"
 export type NodeRun = { run_id: string; node_id: string; node_name?: string; execution_dir?: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
-export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | ({ type: "If" } & IfParams) | ({ type: "Switch" } & SwitchParams) | ({ type: "Loop" } & LoopParams) | ({ type: "EndLoop" } & EndLoopParams)
-export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
+export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "FindApp" } & FindAppParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "Drag" } & DragParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "LaunchApp" } & LaunchAppParams) | ({ type: "QuitApp" } & QuitAppParams) | ({ type: "CdpWait" } & CdpWaitParams) | ({ type: "CdpClick" } & CdpClickParams) | ({ type: "CdpHover" } & CdpHoverParams) | ({ type: "CdpFill" } & CdpFillParams) | ({ type: "CdpType" } & CdpTypeParams) | ({ type: "CdpPressKey" } & CdpPressKeyParams) | ({ type: "CdpNavigate" } & CdpNavigateParams) | ({ type: "CdpNewPage" } & CdpNewPageParams) | ({ type: "CdpClosePage" } & CdpClosePageParams) | ({ type: "CdpSelectPage" } & CdpSelectPageParams) | ({ type: "CdpHandleDialog" } & CdpHandleDialogParams) | ({ type: "AiStep" } & AiStepParams) | ({ type: "If" } & IfParams) | ({ type: "Switch" } & SwitchParams) | ({ type: "Loop" } & LoopParams) | ({ type: "EndLoop" } & EndLoopParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams)
+export type NodeTypeInfo = { name: string; output_role: string; node_context: string; icon: string; node_type: NodeType }
 export type Operator = "Equals" | "NotEquals" | "GreaterThan" | "LessThan" | "GreaterThanOrEqual" | "LessThanOrEqual" | "Contains" | "NotContains" | "IsEmpty" | "IsNotEmpty"
+/**
+ * A reference to a specific output field of an upstream node.
+ */
+export type OutputRef = { 
+/**
+ * auto_id of the source node (e.g. "find_text_1")
+ */
+node: string; 
+/**
+ * Output field name (e.g. "coordinates")
+ */
+field: string }
 export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean }
 /**
  * Compact summary of what a patch did (for conversation context, not the full patch).
  */
 export type PatchSummary = { added: number; removed: number; updated: number; added_names?: string[]; removed_names?: string[]; updated_names?: string[]; description?: string | null }
-export type PlanRequest = { intent: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean }
-export type PlanResponse = { workflow: Workflow; warnings: string[] }
 export type Position = { x: number; y: number }
-export type PressKeyParams = { key: string; modifiers: string[] }
+export type PressKeyParams = { key: string; modifiers: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ProjectData = { path: string; workflow: Workflow }
+export type QuitAppParams = { app_name: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 /**
  * Execution results available at the time of a message.
  */
@@ -437,7 +476,7 @@ export type RunsQuery = { project_path: string | null; workflow_id: string; work
  */
 export type ScreenshotMeta = { origin_x: number; origin_y: number; scale: number }
 export type ScreenshotMode = "Screen" | "Window" | "Region"
-export type ScrollParams = { delta_y: number; x: number | null; y: number | null }
+export type ScrollParams = { delta_y: number; x: number | null; y: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type SwitchCase = { 
 /**
  * Label shown on the edge, e.g. "Has error".
@@ -466,10 +505,13 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
-export type TypeTextParams = { text: string }
+export type TypeTextParams = { text: string; text_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ValidationResult = { valid: boolean; errors: string[] }
-export type ValueRef = { type: "Variable"; name: string } | { type: "Literal"; value: LiteralValue }
 export type VariablePromotion = { node_id: string; variable_name: string }
+/**
+ * Method used to verify an action node's effect.
+ */
+export type VerificationMethod = "Vlm" | "Dom" | "AccessibilityTree"
 export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_name: string | null; window_title: string | null; target_candidates: TargetCandidate[]; artifact_paths: string[]; source_event_ids: string[]; confidence: ActionConfidence; warnings: string[]; 
 /**
  * Screenshot coordinate metadata for VLM click target resolution.
@@ -498,7 +540,7 @@ export type WindowControlAction = "Close" | "Minimize" | "Maximize" |
  * macOS subrole (`AXZoomButton` vs `AXFullScreenButton`).
  */
 "Zoom"
-export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[]; groups?: NodeGroup[] }
+export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[]; groups?: NodeGroup[]; next_id_counters?: Partial<{ [key in string]: number }> }
 export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 
 /** tauri-specta globals **/

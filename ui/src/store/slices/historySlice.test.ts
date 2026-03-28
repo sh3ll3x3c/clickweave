@@ -61,7 +61,7 @@ describe("pushToStack", () => {
 
 const makeNode = (id: string): Node => ({
   id,
-  node_type: { type: "ListWindows", app_name: null },
+  node_type: { type: "FindApp", search: "" },
   position: { x: 0, y: 0 },
   name: id,
   enabled: true,

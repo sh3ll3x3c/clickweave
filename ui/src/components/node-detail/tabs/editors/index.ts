@@ -8,7 +8,7 @@ import { HoverEditor } from "./HoverEditor";
 import { FindTextEditor } from "./FindTextEditor";
 import { FocusWindowEditor } from "./FocusWindowEditor";
 import { IfEditor } from "./IfEditor";
-import { ListWindowsEditor } from "./ListWindowsEditor";
+import { FindAppEditor } from "./FindAppEditor";
 import { LoopEditor } from "./LoopEditor";
 import { McpToolCallEditor } from "./McpToolCallEditor";
 import { PressKeyEditor } from "./PressKeyEditor";
@@ -31,7 +31,7 @@ export const editorRegistry: Record<string, React.FC<NodeEditorProps>> = {
   FocusWindow: FocusWindowEditor,
   Hover: HoverEditor,
   If: IfEditor,
-  ListWindows: ListWindowsEditor,
+  FindApp: FindAppEditor,
   Loop: LoopEditor,
   McpToolCall: McpToolCallEditor,
   PressKey: PressKeyEditor,

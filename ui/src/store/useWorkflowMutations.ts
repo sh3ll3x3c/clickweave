@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { Edge, EdgeOutput, Node, NodeGroup, NodeType, Workflow } from "../bindings";
 import { edgeOutputsEqual, handleToEdgeOutput } from "../utils/edgeHandles";
 import { topologicalSortMembers } from "../utils/groupValidation";
+import { generateAutoId, nodeTypeName } from "../utils/outputSchema";
 
 /** Count effective members: direct nodes (not in any child subgroup) + child subgroups.
  *  A parent with only subgroup members but ≥2 subgroups stays alive. */
@@ -46,20 +47,27 @@ export function useWorkflowMutations(
       const id = crypto.randomUUID();
       const offsetX = (nodesLength % 4) * 250;
       const offsetY = Math.floor(nodesLength / 4) * 150;
-      const node: Node = {
-        id,
-        node_type: nodeType,
-        position: { x: 200 + offsetX, y: 150 + offsetY },
-        name: nodeType.type === "AiStep" ? "AI Step" : nodeType.type.replace(/([A-Z])/g, " $1").trim(),
-        enabled: true,
-        timeout_ms: null,
-        settle_ms: null,
-        retries: 0,
-        trace_level: "Minimal",
-        role: "Default" as const,
-        expected_outcome: null,
-      };
-      setWorkflow((prev) => ({ ...prev, nodes: [...prev.nodes, node] }));
+      setWorkflow((prev) => {
+        const typeName = nodeTypeName(nodeType as unknown as Record<string, unknown>);
+        const counters: Record<string, number> = Object.fromEntries(Object.entries(prev.next_id_counters ?? {}).filter((e): e is [string, number] => e[1] != null));
+        const { autoId, base, counter } = generateAutoId(typeName, counters);
+        counters[base] = counter;
+        const node: Node = {
+          id,
+          node_type: nodeType,
+          position: { x: 200 + offsetX, y: 150 + offsetY },
+          name: nodeType.type === "AiStep" ? "AI Step" : nodeType.type.replace(/([A-Z])/g, " $1").trim(),
+          enabled: true,
+          timeout_ms: null,
+          settle_ms: null,
+          retries: 0,
+          trace_level: "Minimal",
+          role: "Default" as const,
+          expected_outcome: null,
+          auto_id: autoId,
+        };
+        return { ...prev, nodes: [...prev.nodes, node], next_id_counters: counters };
+      });
       setSelectedNode(id);
     },
     [nodesLength, setWorkflow, setSelectedNode, pushHistory],
@@ -139,6 +147,30 @@ export function useWorkflowMutations(
           : prev.edges.filter((e) => e.from !== from || e.output !== null);
         const edge: Edge = { from, to, output };
         return { ...prev, edges: [...filtered, edge] };
+      });
+    },
+    [setWorkflow, pushHistory],
+  );
+
+  const dataConnect = useCallback(
+    (sourceNodeId: string, targetNodeId: string, sourceField: string, targetInputKey: string) => {
+      pushHistory("Wire Variable");
+      setWorkflow((prev) => {
+        // Find source node auto_id
+        const sourceNode = prev.nodes.find((n) => n.id === sourceNodeId);
+        if (!sourceNode?.auto_id) return prev;
+        const outputRef = { node: sourceNode.auto_id, field: sourceField };
+        // Set the _ref param on the target node
+        return {
+          ...prev,
+          nodes: prev.nodes.map((n) => {
+            if (n.id !== targetNodeId) return n;
+            return {
+              ...n,
+              node_type: { ...n.node_type, [targetInputKey]: outputRef },
+            };
+          }),
+        };
       });
     },
     [setWorkflow, pushHistory],
@@ -276,7 +308,7 @@ export function useWorkflowMutations(
 
   return {
     addNode, removeNode, removeNodes, removeEdgesOnly,
-    updateNodePositions, updateNode, addEdge, removeEdge,
+    updateNodePositions, updateNode, addEdge, dataConnect, removeEdge,
     createGroup, removeGroup, deleteGroupWithContents,
     renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
   };

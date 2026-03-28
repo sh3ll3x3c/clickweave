@@ -10,7 +10,7 @@ fn test_parse_loop_plan_step() {
         "step_type": "Loop",
         "name": "Multiply Loop",
         "exit_condition": {
-            "left": {"type": "Variable", "name": "check_result.found"},
+            "left": {"node": "find_text_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         },
@@ -33,7 +33,7 @@ fn test_parse_if_plan_step() {
         "step_type": "If",
         "name": "Check Found",
         "condition": {
-            "left": {"type": "Variable", "name": "find_text.found"},
+            "left": {"node": "find_text", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }
@@ -48,7 +48,7 @@ fn test_parse_planner_graph_output() {
         "nodes": [
             {"id": "n1", "step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Launch Calculator"},
             {"id": "n2", "step_type": "Loop", "name": "Multiply", "exit_condition": {
-                "left": {"type": "Variable", "name": "check.found"},
+                "left": {"node": "check", "field": "found"},
                 "operator": "Equals",
                 "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
             }, "max_iterations": 20},
@@ -110,7 +110,7 @@ fn test_flat_plan_with_loop_gets_control_flow_edges() {
     let raw_steps: Vec<serde_json::Value> = serde_json::from_str(r#"[
         {"step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"step_type": "Loop", "name": "Repeat", "exit_condition": {
-            "left": {"type": "Variable", "name": "click_2.found"},
+            "left": {"node": "click_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 10},
@@ -170,7 +170,7 @@ fn test_flat_plan_with_post_loop_node_gets_loop_done() {
     let raw_steps: Vec<serde_json::Value> = serde_json::from_str(r#"[
         {"step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"step_type": "Loop", "name": "Repeat", "exit_condition": {
-            "left": {"type": "Variable", "name": "click_2.found"},
+            "left": {"node": "click_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 10},
@@ -227,7 +227,7 @@ async fn test_infer_loop_edges_from_unlabeled() {
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"id": "n2", "step_type": "Loop", "name": "My Loop", "exit_condition": {
-            "left": {"type": "Variable", "name": "click_equals.found"},
+            "left": {"node": "click_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 10},
@@ -286,7 +286,7 @@ async fn test_infer_loop_reroutes_back_edge_through_endloop() {
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"id": "n2", "step_type": "Loop", "name": "Multiply", "exit_condition": {
-            "left": {"type": "Variable", "name": "check_result.found"},
+            "left": {"node": "find_text_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 20},
@@ -382,7 +382,7 @@ async fn test_infer_loop_clears_stale_output_on_rerouted_back_edge() {
         {"id": "n2", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2 Setup"},
         {"id": "n4", "step_type": "Loop", "name": "Multiply Loop", "exit_condition": {
-            "left": {"type": "Variable", "name": "click_equals.result"},
+            "left": {"node": "click_4", "field": "result"},
             "operator": "GreaterThan",
             "right": {"type": "Literal", "value": {"type": "Number", "value": 128}}
         }, "max_iterations": 10},
@@ -445,7 +445,7 @@ async fn test_infer_if_edges_from_unlabeled() {
     // LLM produces If node with two unlabeled edges — first should be IfTrue, second IfFalse.
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "If", "name": "Check Found", "condition": {
-            "left": {"type": "Variable", "name": "click_ok.found"},
+            "left": {"node": "click_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }},
@@ -499,16 +499,28 @@ fn test_infer_noop_for_already_labeled_edges() {
         }),
         pos(0.0),
         "Loop",
+        "",
     );
-    let body_node = Node::new(NodeType::Click(ClickParams::default()), pos(100.0), "Body");
+    let body_node = Node::new(
+        NodeType::Click(ClickParams::default()),
+        pos(100.0),
+        "Body",
+        "",
+    );
     let endloop_node = Node::new(
         NodeType::EndLoop(EndLoopParams {
             loop_id: loop_node.id,
         }),
         pos(200.0),
         "EndLoop",
+        "",
     );
-    let done_node = Node::new(NodeType::Click(ClickParams::default()), pos(300.0), "Done");
+    let done_node = Node::new(
+        NodeType::Click(ClickParams::default()),
+        pos(300.0),
+        "Done",
+        "",
+    );
 
     let mut edges = vec![
         Edge {
@@ -551,7 +563,7 @@ async fn test_infer_loop_reroutes_body_back_edge_when_endloop_edge_already_exist
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"id": "n2", "step_type": "Loop", "name": "Multiply", "exit_condition": {
-            "left": {"type": "Variable", "name": "check_result.found"},
+            "left": {"node": "find_text_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 20},
@@ -629,13 +641,13 @@ async fn test_infer_loop_reroutes_if_false_back_edge_to_loop() {
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus Calculator"},
         {"id": "n2", "step_type": "Loop", "name": "Repeat Multiply", "exit_condition": {
-            "left": {"type": "Variable", "name": "check_result.found"},
+            "left": {"node": "find_text_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 10},
         {"id": "n3", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "1024"}, "name": "Check Result"},
         {"id": "n4", "step_type": "If", "condition": {
-            "left": {"type": "Variable", "name": "check_result.found"},
+            "left": {"node": "find_text_1", "field": "found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "name": "Is 1024?"},
@@ -704,7 +716,7 @@ async fn test_infer_loop_removes_stray_endloop_forward_edge_when_loop_done_exist
         {"id": "n2", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus Calculator"},
         {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2 Start"},
         {"id": "n4", "step_type": "Loop", "name": "Loop Until > 128", "exit_condition": {
-            "left": {"type": "Variable", "name": "click_equals.result"},
+            "left": {"node": "click_4", "field": "result"},
             "operator": "GreaterThan",
             "right": {"type": "Literal", "value": {"type": "Number", "value": 128}}
         }, "max_iterations": 10},

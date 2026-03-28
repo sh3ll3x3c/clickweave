@@ -3,10 +3,11 @@ mod parse;
 mod patch;
 mod plan;
 mod prompt;
-mod repair;
+pub mod tool_use;
 
 pub mod assistant;
 pub mod conversation;
+pub mod conversation_loop;
 pub mod summarize;
 
 #[cfg(test)]
@@ -15,7 +16,8 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 
 use clickweave_core::{
-    Edge, EdgeOutput, Node, NodeRole, NodeType, Position, Workflow, tool_mapping,
+    ConditionValue, Edge, EdgeOutput, Node, NodeRole, NodeType, OutputRef, Position, Workflow,
+    tool_mapping,
 };
 use mapping::step_to_node_type;
 use parse::{id_str_short, layout_nodes, step_rejected_reason};
@@ -242,6 +244,7 @@ pub(crate) fn build_patch_from_output(
     // Added nodes
     let mut added_nodes = Vec::new();
     let mut added_edges = Vec::new();
+    let mut next_id_counters = workflow.next_id_counters.clone();
     let last_y = workflow
         .nodes
         .iter()
@@ -266,6 +269,8 @@ pub(crate) fn build_patch_from_output(
             }
             match step_to_node_type(&flat.step, mcp_tools) {
                 Ok((node_type, display_name)) => {
+                    let auto_id =
+                        clickweave_core::auto_id::assign_auto_id(&node_type, &mut next_id_counters);
                     let mut node = Node::new(
                         node_type,
                         Position {
@@ -273,6 +278,7 @@ pub(crate) fn build_patch_from_output(
                             y: last_y + 120.0 + (i as f32) * 120.0,
                         },
                         display_name,
+                        auto_id,
                     );
                     if flat.role.as_deref() == Some("Verification") {
                         node.role = NodeRole::Verification;
@@ -305,6 +311,7 @@ pub(crate) fn build_patch_from_output(
             &output.add_edges,
             &positions,
             &mut id_map,
+            &mut next_id_counters,
             mcp_tools,
             allow_ai_transforms,
             allow_agent_steps,
@@ -403,6 +410,18 @@ pub(crate) fn build_patch_from_output(
         }
     }
 
+    // Translate OutputRefs in added/updated nodes from LLM temp IDs to auto-IDs
+    let name_to_auto_id: HashMap<String, String> = workflow
+        .nodes
+        .iter()
+        .chain(added_nodes.iter())
+        .filter(|n| !n.auto_id.is_empty())
+        .map(|n| (n.name.clone(), n.auto_id.clone()))
+        .collect();
+    for node in added_nodes.iter_mut().chain(updated_nodes.iter_mut()) {
+        translate_node_refs(&name_to_auto_id, node);
+    }
+
     PatchResult {
         added_nodes,
         removed_node_ids,
@@ -439,11 +458,14 @@ pub(crate) fn build_plan_as_patch(
 
     let positions = layout_nodes(valid_steps.len());
     let mut added_nodes = Vec::new();
+    let mut next_id_counters = HashMap::new();
 
     for (i, flat) in valid_steps.iter().enumerate() {
         match step_to_node_type(&flat.step, mcp_tools) {
             Ok((node_type, display_name)) => {
-                let mut node = Node::new(node_type, positions[i], display_name);
+                let auto_id =
+                    clickweave_core::auto_id::assign_auto_id(&node_type, &mut next_id_counters);
+                let mut node = Node::new(node_type, positions[i], display_name, auto_id);
                 if flat.role.as_deref() == Some("Verification") {
                     node.role = NodeRole::Verification;
                 }
@@ -486,6 +508,7 @@ pub(crate) fn build_graph_plan_as_patch(
     allow_agent_steps: bool,
 ) -> PatchResult {
     let mut id_map = HashMap::new();
+    let mut next_id_counters = HashMap::new();
     let positions = parse::layout_nodes(graph.nodes.len());
 
     let (added_nodes, added_edges, warnings) = build_nodes_and_edges_from_graph(
@@ -493,6 +516,7 @@ pub(crate) fn build_graph_plan_as_patch(
         &graph.edges,
         &positions,
         &mut id_map,
+        &mut next_id_counters,
         mcp_tools,
         allow_ai_transforms,
         allow_agent_steps,
@@ -519,6 +543,7 @@ fn build_nodes_and_edges_from_graph(
     raw_edges: &[Value],
     positions: &[Position],
     id_map: &mut HashMap<String, Uuid>,
+    next_id_counters: &mut HashMap<String, u32>,
     mcp_tools: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
@@ -544,7 +569,9 @@ fn build_nodes_and_edges_from_graph(
         }
         match step_to_node_type(&plan_node.step, mcp_tools) {
             Ok((node_type, display_name)) => {
-                let mut node = Node::new(node_type, pos, display_name);
+                let auto_id =
+                    clickweave_core::auto_id::assign_auto_id(&node_type, next_id_counters);
+                let mut node = Node::new(node_type, pos, display_name, auto_id);
                 if plan_node.role.as_deref() == Some("Verification") {
                     node.role = NodeRole::Verification;
                 }
@@ -574,6 +601,19 @@ fn build_nodes_and_edges_from_graph(
                 }
             }
         }
+    }
+
+    // Translate OutputRefs from graph IDs (n1, n2, …) to assigned auto-IDs
+    let graph_id_to_auto_id: HashMap<String, String> = plan_nodes
+        .iter()
+        .filter_map(|pn| {
+            let &uuid = id_map.get(&pn.id)?;
+            let node = nodes.iter().find(|n| n.id == uuid)?;
+            Some((pn.id.clone(), node.auto_id.clone()))
+        })
+        .collect();
+    for node in &mut nodes {
+        translate_node_refs(&graph_id_to_auto_id, node);
     }
 
     // Parse edges leniently — skip malformed ones with a warning.
@@ -852,6 +892,7 @@ pub(crate) fn build_workflow_from_graph(
     allow_agent_steps: bool,
 ) -> anyhow::Result<PlanResult> {
     let mut id_map = HashMap::new();
+    let mut next_id_counters = HashMap::new();
     let positions = layout_nodes(output.nodes.len());
 
     let (nodes, edges, warnings) = build_nodes_and_edges_from_graph(
@@ -859,6 +900,7 @@ pub(crate) fn build_workflow_from_graph(
         &output.edges,
         &positions,
         &mut id_map,
+        &mut next_id_counters,
         mcp_tools,
         allow_ai_transforms,
         allow_agent_steps,
@@ -874,6 +916,7 @@ pub(crate) fn build_workflow_from_graph(
         nodes,
         edges,
         groups: vec![],
+        next_id_counters,
     };
 
     clickweave_core::validate_workflow(&workflow)
@@ -882,8 +925,86 @@ pub(crate) fn build_workflow_from_graph(
     Ok(PlanResult { workflow, warnings })
 }
 
+// ── Auto-ID normalization ────────────────────────────────────────
+
+/// Post-LLM normalization pass: assigns auto-IDs to nodes and translates
+/// LLM temporary IDs to auto-IDs in all OutputRefs and conditions.
+pub(crate) fn normalize_auto_ids(workflow: &mut Workflow) {
+    // Pass 1: Assign auto-IDs, build LLM-temp-ID -> auto-ID mapping
+    let mut counters = std::mem::take(&mut workflow.next_id_counters);
+    let mut id_map: HashMap<String, String> = HashMap::new();
+
+    for node in &mut workflow.nodes {
+        if node.auto_id.is_empty() {
+            let auto_id = clickweave_core::auto_id::assign_auto_id(&node.node_type, &mut counters);
+            id_map.insert(node.name.clone(), auto_id.clone());
+            node.auto_id = auto_id;
+        }
+    }
+    workflow.next_id_counters = counters;
+
+    // Pass 2: Translate OutputRefs in conditions and _ref params
+    for node in &mut workflow.nodes {
+        translate_node_refs(&id_map, node);
+    }
+}
+
+fn translate_output_ref(id_map: &HashMap<String, String>, output_ref: &mut OutputRef) {
+    if let Some(auto_id) = id_map.get(&output_ref.node) {
+        output_ref.node = auto_id.clone();
+    }
+}
+
+fn translate_optional_ref(id_map: &HashMap<String, String>, opt_ref: &mut Option<OutputRef>) {
+    if let Some(r) = opt_ref {
+        translate_output_ref(id_map, r);
+    }
+}
+
+fn translate_condition_value(id_map: &HashMap<String, String>, cv: &mut ConditionValue) {
+    if let ConditionValue::Ref(r) = cv {
+        translate_output_ref(id_map, r);
+    }
+}
+
+/// Translate OutputRefs in a single node's parameters from temp IDs to auto-IDs.
+fn translate_node_refs(id_map: &HashMap<String, String>, node: &mut Node) {
+    match &mut node.node_type {
+        NodeType::If(p) => {
+            translate_output_ref(id_map, &mut p.condition.left);
+            translate_condition_value(id_map, &mut p.condition.right);
+        }
+        NodeType::Loop(p) => {
+            translate_output_ref(id_map, &mut p.exit_condition.left);
+            translate_condition_value(id_map, &mut p.exit_condition.right);
+        }
+        NodeType::Switch(p) => {
+            for case in &mut p.cases {
+                translate_output_ref(id_map, &mut case.condition.left);
+                translate_condition_value(id_map, &mut case.condition.right);
+            }
+        }
+        NodeType::Click(p) => translate_optional_ref(id_map, &mut p.target_ref),
+        NodeType::Hover(p) => translate_optional_ref(id_map, &mut p.target_ref),
+        NodeType::Drag(p) => {
+            translate_optional_ref(id_map, &mut p.from_ref);
+            translate_optional_ref(id_map, &mut p.to_ref);
+        }
+        NodeType::TypeText(p) => translate_optional_ref(id_map, &mut p.text_ref),
+        NodeType::FocusWindow(p) => translate_optional_ref(id_map, &mut p.value_ref),
+        NodeType::AiStep(p) => translate_optional_ref(id_map, &mut p.prompt_ref),
+        NodeType::CdpFill(p) => translate_optional_ref(id_map, &mut p.value_ref),
+        NodeType::CdpType(p) => translate_optional_ref(id_map, &mut p.text_ref),
+        NodeType::CdpNavigate(p) => translate_optional_ref(id_map, &mut p.url_ref),
+        NodeType::CdpNewPage(p) => translate_optional_ref(id_map, &mut p.url_ref),
+        _ => {}
+    }
+}
+
 // ── Re-exports ──────────────────────────────────────────────────
 
 pub use assistant::{AssistantResult, assistant_chat, assistant_chat_with_backend};
+pub use conversation_loop::{ConversationOutput, ToolCallRecord, conversation_loop};
 pub use patch::{patch_workflow, patch_workflow_with_backend};
 pub use plan::{plan_workflow, plan_workflow_with_backend};
+pub use tool_use::{PlannerToolExecutor, ToolPermission};

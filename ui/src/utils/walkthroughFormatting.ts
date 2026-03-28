@@ -109,7 +109,7 @@ export function targetCandidateIcon(candidate: TargetCandidate): string {
 export function nodeTypeIcon(nodeType: Node["node_type"]): { icon: string; color: string } {
   switch (nodeType.type) {
     case "FocusWindow":
-    case "ListWindows": return { icon: "\u25CE", color: "text-green-400" };
+    case "FindApp": return { icon: "\u25CE", color: "text-green-400" };
     case "Click": return { icon: "\u25C9", color: "text-[var(--accent-coral)]" };
     case "Hover": return { icon: "\u{1F446}", color: "text-[var(--accent-coral)]" };
     case "TypeText": return { icon: "\u2328", color: "text-blue-400" };
@@ -125,6 +125,7 @@ export function nodeTypeIcon(nodeType: Node["node_type"]): { icon: string; color
     case "Switch":
     case "Loop":
     case "EndLoop": return { icon: "\u25C6", color: "text-yellow-400" };
+    default: return { icon: "\u25CB", color: "text-[var(--text-muted)]" };
   }
 }
 

@@ -62,16 +62,22 @@ pub(crate) fn validate_loop_pairing(workflow: &Workflow) -> Result<(), Validatio
 #[cfg(test)]
 mod tests {
     use super::super::test_helpers::{dummy_condition, pos};
-    use crate::{ClickParams, EdgeOutput, EndLoopParams, LoopParams, NodeType, Workflow};
+    use crate::{
+        ClickParams, EdgeOutput, EndLoopParams, FindTextParams, LoopParams, NodeType, Workflow,
+    };
 
     use super::super::ValidationError;
     use super::super::validate_workflow;
 
     #[test]
     fn test_validate_valid_loop() {
-        // Loop -> (LoopBody) -> BodyNode -> EndLoop -> (back to Loop)
-        // Loop -> (LoopDone) -> DoneNode
+        // FindText -> Loop -> (LoopBody) -> BodyNode -> EndLoop -> (back to Loop)
+        //                  -> (LoopDone) -> DoneNode
         let mut wf = Workflow::default();
+        let find_text = wf.add_node(
+            NodeType::FindText(FindTextParams::default()),
+            pos(-100.0, 0.0),
+        );
         let loop_node = wf.add_node(
             NodeType::Loop(LoopParams {
                 exit_condition: dummy_condition(),
@@ -86,6 +92,7 @@ mod tests {
         );
         let done = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 100.0));
 
+        wf.add_edge(find_text, loop_node);
         wf.add_edge_with_output(loop_node, body, EdgeOutput::LoopBody);
         wf.add_edge_with_output(loop_node, done, EdgeOutput::LoopDone);
         wf.add_edge(body, end_loop);
@@ -96,8 +103,12 @@ mod tests {
 
     #[test]
     fn test_validate_terminal_loop() {
-        // Loop with LoopBody only (no LoopDone) -- workflow ends after loop
+        // FindText -> Loop with LoopBody only (no LoopDone) -- workflow ends after loop
         let mut wf = Workflow::default();
+        let find_text = wf.add_node(
+            NodeType::FindText(FindTextParams::default()),
+            pos(-100.0, 0.0),
+        );
         let loop_node = wf.add_node(
             NodeType::Loop(LoopParams {
                 exit_condition: dummy_condition(),
@@ -111,6 +122,7 @@ mod tests {
             pos(200.0, 0.0),
         );
 
+        wf.add_edge(find_text, loop_node);
         wf.add_edge_with_output(loop_node, body, EdgeOutput::LoopBody);
         wf.add_edge(body, end_loop);
         wf.add_edge(end_loop, loop_node); // back-edge
@@ -220,11 +232,14 @@ mod tests {
 
     #[test]
     fn test_validate_valid_nested_loops() {
-        // Outer Loop -> (LoopBody) -> Inner Loop -> (LoopBody) -> Node -> Inner EndLoop -> Inner Loop
-        //                                        Inner Loop -> (LoopDone) -> Outer EndLoop -> Outer Loop
-        // Outer Loop -> (LoopDone) -> FinalNode
+        // FindText -> Outer Loop -> (LoopBody) -> Inner Loop -> ...
+        //         -> Outer Loop -> (LoopDone) -> FinalNode
         let mut wf = Workflow::default();
 
+        let find_text = wf.add_node(
+            NodeType::FindText(FindTextParams::default()),
+            pos(-100.0, 0.0),
+        );
         let outer_loop = wf.add_node(
             NodeType::Loop(LoopParams {
                 exit_condition: dummy_condition(),
@@ -253,6 +268,9 @@ mod tests {
             pos(200.0, 100.0),
         );
         let final_node = wf.add_node(NodeType::Click(ClickParams::default()), pos(100.0, 200.0));
+
+        // FindText -> outer loop
+        wf.add_edge(find_text, outer_loop);
 
         // Outer loop edges
         wf.add_edge_with_output(outer_loop, inner_loop, EdgeOutput::LoopBody);

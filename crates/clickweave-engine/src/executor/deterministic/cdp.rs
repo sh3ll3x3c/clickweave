@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use super::super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
-use clickweave_core::ClickTarget;
 use clickweave_core::NodeRun;
 use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
 use clickweave_llm::ChatBackend;
@@ -14,26 +13,6 @@ pub(crate) struct CdpExpected<'a> {
     pub href: Option<&'a str>,
     pub parent_role: Option<&'a str>,
     pub parent_name: Option<&'a str>,
-}
-
-impl<'a> CdpExpected<'a> {
-    pub fn from_click_target(target: &'a ClickTarget) -> Self {
-        match target {
-            ClickTarget::CdpElement {
-                role,
-                href,
-                parent_role,
-                parent_name,
-                ..
-            } => Self {
-                role: role.as_deref(),
-                href: href.as_deref(),
-                parent_role: parent_role.as_deref(),
-                parent_name: parent_name.as_deref(),
-            },
-            _ => Self::default(),
-        }
-    }
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -164,12 +143,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         snapshot_text: &str,
     ) -> ExecutorResult<String> {
-        let truncated = &snapshot_text[..snapshot_text.floor_char_boundary(4000)];
+        // Extract a focused window around matching lines instead of blindly
+        // truncating. This ensures the target element (which may be deep in a
+        // large DOM) is visible to the LLM.
+        let context = extract_snapshot_context(target, snapshot_text, 4000);
 
         let prompt = format!(
             "Find the element in this page snapshot that best matches the target '{target}'.\n\
              Return ONLY the uid value, nothing else.\n\n\
-             Page snapshot:\n{truncated}"
+             Page snapshot:\n{context}"
         );
 
         let response = self
@@ -637,6 +619,34 @@ async fn existing_debug_port(app_name: &str) -> Option<u16> {
             }
         }
         None
+    }
+}
+
+/// Extract a focused context window from a CDP snapshot around lines matching
+/// the target text. If matches are found, returns lines around the first match.
+/// If no matches, falls back to the first `max_chars` of the snapshot.
+fn extract_snapshot_context(target: &str, snapshot: &str, max_chars: usize) -> String {
+    let target_lower = target.to_lowercase();
+    let lines: Vec<&str> = snapshot.lines().collect();
+
+    // Find the first line containing the target text (case-insensitive)
+    let match_idx = lines
+        .iter()
+        .position(|l| l.to_lowercase().contains(&target_lower));
+
+    if let Some(idx) = match_idx {
+        // Include surrounding context: 20 lines before, 20 lines after
+        let start = idx.saturating_sub(20);
+        let end = (idx + 20).min(lines.len());
+        let context: String = lines[start..end].join("\n");
+        if context.len() <= max_chars {
+            return context;
+        }
+        // If still too large, truncate from the context window
+        context[..context.floor_char_boundary(max_chars)].to_string()
+    } else {
+        // No match — fall back to truncated start of snapshot
+        snapshot[..snapshot.floor_char_boundary(max_chars)].to_string()
     }
 }
 

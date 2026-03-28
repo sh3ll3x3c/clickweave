@@ -1,7 +1,7 @@
+use super::conversation_loop::{NoExecutor, conversation_loop};
 use super::mapping::step_to_node_type;
 use super::parse::{extract_json, layout_nodes, step_rejected_reason, truncate_intent};
 use super::prompt::planner_system_prompt;
-use super::repair::chat_with_repair;
 use super::{PlanResult, PlanStep, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::{Context, Result, anyhow};
@@ -67,6 +67,7 @@ pub async fn plan_workflow_with_backend(
         allow_agent_steps,
         prompt_template,
         chrome_profiles,
+        false, // has_planning_tools
     );
     let user_msg = format!("Plan a workflow for: {}", intent);
 
@@ -75,16 +76,27 @@ pub async fn plan_workflow_with_backend(
 
     let messages = vec![Message::system(&system), Message::user(&user_msg)];
 
-    chat_with_repair(backend, "Planner", messages, |content| {
-        parse_and_build_workflow(
-            content,
-            intent,
-            mcp_tools_openai,
-            allow_ai_transforms,
-            allow_agent_steps,
-        )
-    })
-    .await
+    let output = conversation_loop(
+        backend,
+        messages,
+        None::<&NoExecutor>,
+        |content| {
+            parse_and_build_workflow(
+                content,
+                intent,
+                mcp_tools_openai,
+                allow_ai_transforms,
+                allow_agent_steps,
+            )
+        },
+        None::<fn(&PlanResult) -> Result<()>>,
+        1, // 1 repair attempt (matches old MAX_REPAIR_ATTEMPTS = 1)
+        None,
+        None,
+    )
+    .await?;
+
+    Ok(output.result)
 }
 
 /// Parse planner output JSON and build a workflow.
@@ -153,7 +165,7 @@ fn parse_and_build_workflow(
     for (i, flat) in steps.iter().enumerate() {
         match step_to_node_type(&flat.step, mcp_tools_openai) {
             Ok((node_type, display_name)) => {
-                let mut node = Node::new(node_type, positions[i], display_name);
+                let mut node = Node::new(node_type, positions[i], display_name, "");
                 if flat.role.as_deref() == Some("Verification") {
                     node.role = NodeRole::Verification;
                 }
@@ -185,13 +197,17 @@ fn parse_and_build_workflow(
     super::pair_endloop_with_loop(&mut nodes, &mut warnings);
     super::infer_control_flow_edges(&nodes, &mut edges, &mut warnings);
 
-    let workflow = Workflow {
+    let mut workflow = Workflow {
         id: Uuid::new_v4(),
         name: truncate_intent(intent),
         nodes,
         edges,
         groups: vec![],
+        next_id_counters: std::collections::HashMap::new(),
     };
+
+    // Assign auto-IDs and translate LLM temp IDs in OutputRefs
+    super::normalize_auto_ids(&mut workflow);
 
     // Validate
     validate_workflow(&workflow).context("Generated workflow failed validation")?;

@@ -1,3 +1,4 @@
+pub(crate) mod cdp_scope;
 mod cycles;
 mod edges;
 mod loops;
@@ -12,10 +13,39 @@ use uuid::Uuid;
 
 use crate::{NodeType, Workflow};
 
+use cdp_scope::validate_cdp_scope;
 use cycles::validate_no_illegal_cycles;
 use edges::validate_outgoing_edges;
 use loops::validate_loop_pairing;
 use variables::validate_condition_variables;
+
+pub use cdp_scope::CdpScopeWarning;
+pub use variables::VariableWarning;
+
+/// A non-fatal validation warning.
+#[derive(Debug, Clone)]
+pub enum ValidationWarning {
+    Cdp(CdpScopeWarning),
+    Variable(VariableWarning),
+}
+
+impl ValidationWarning {
+    /// Human-readable warning message.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Cdp(w) => &w.message,
+            Self::Variable(w) => &w.message,
+        }
+    }
+
+    /// Name of the node this warning applies to.
+    pub fn node_name(&self) -> &str {
+        match self {
+            Self::Cdp(w) => &w.node_name,
+            Self::Variable(w) => &w.node_name,
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ValidationError {
@@ -85,7 +115,13 @@ pub enum ValidationError {
     EmptyVariableReference(String),
 }
 
-pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
+/// Successful validation result containing non-fatal warnings.
+#[derive(Debug, Clone, Default)]
+pub struct ValidationResult {
+    pub warnings: Vec<ValidationWarning>,
+}
+
+pub fn validate_workflow(workflow: &Workflow) -> Result<ValidationResult, ValidationError> {
     if workflow.nodes.is_empty() {
         return Err(ValidationError::NoNodes);
     }
@@ -130,9 +166,17 @@ pub fn validate_workflow(workflow: &Workflow) -> Result<(), ValidationError> {
     // do a standard DFS-based cycle check on the remaining graph.
     validate_no_illegal_cycles(workflow)?;
 
-    validate_condition_variables(workflow)?;
+    let variable_warnings = validate_condition_variables(workflow)?;
 
-    Ok(())
+    let mut warnings: Vec<ValidationWarning> = variable_warnings
+        .into_iter()
+        .map(ValidationWarning::Variable)
+        .collect();
+
+    let cdp_warnings = validate_cdp_scope(workflow);
+    warnings.extend(cdp_warnings.into_iter().map(ValidationWarning::Cdp));
+
+    Ok(ValidationResult { warnings })
 }
 
 #[cfg(test)]

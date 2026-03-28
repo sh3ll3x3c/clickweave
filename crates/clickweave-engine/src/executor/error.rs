@@ -31,6 +31,17 @@ pub enum ExecutorError {
 
     #[error("MCP spawn failed: {0}")]
     McpSpawn(String),
+
+    #[error("Variable not found: {reference}")]
+    VariableNotFound { reference: String },
+
+    #[error("Invalid coordinates: {0}")]
+    InvalidCoordinates(String),
+
+    #[error(
+        "No CDP connection — ensure a FocusWindow or LaunchApp targeting a CDP-capable app runs before {node_type}"
+    )]
+    NoCdpConnection { node_type: String },
 }
 
 /// Alias used throughout the executor.

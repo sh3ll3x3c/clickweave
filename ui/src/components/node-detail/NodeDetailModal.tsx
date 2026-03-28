@@ -1,10 +1,15 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { AppKind, Node } from "../../bindings";
 import type { DetailTab } from "../../store/useAppStore";
 import { RunsTab, SetupTab, TraceTab } from "./tabs";
+import { OutputsSection } from "./OutputsSection";
+import { InputsSection } from "./InputsSection";
+import { extractOutputRefs, OUTPUT_SCHEMAS } from "../../utils/outputSchema";
 
 interface NodeDetailModalProps {
   node: Node | null;
+  /** All nodes in the workflow, used to compute consumers and nodeNames. */
+  nodes: Node[];
   projectPath: string | null;
   workflowId: string;
   workflowName: string;
@@ -23,6 +28,7 @@ const tabs: { key: DetailTab; label: string }[] = [
 
 export function NodeDetailModal({
   node,
+  nodes,
   projectPath,
   workflowId,
   workflowName,
@@ -33,6 +39,56 @@ export function NodeDetailModal({
   appKind,
 }: NodeDetailModalProps) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
+  // Build auto_id -> display name map for all workflow nodes.
+  const nodeNames = useMemo<Record<string, string>>(() => {
+    const map: Record<string, string> = {};
+    for (const n of nodes) {
+      if (n.auto_id) {
+        map[n.auto_id] = n.name;
+      }
+    }
+    return map;
+  }, [nodes]);
+
+  // Build consumers map: for the selected node, which of its output fields
+  // are consumed by which downstream nodes (by auto_id).
+  const consumers = useMemo<Record<string, string[]>>(() => {
+    if (!node?.auto_id) return {};
+    const map: Record<string, string[]> = {};
+    for (const n of nodes) {
+      if (n.id === node.id) continue;
+      const refs = extractOutputRefs(n.node_type as unknown as Record<string, unknown>);
+      for (const { ref } of refs) {
+        if (ref.node === node.auto_id) {
+          if (!map[ref.field]) map[ref.field] = [];
+          if (n.auto_id && !map[ref.field].includes(n.auto_id)) {
+            map[ref.field].push(n.auto_id);
+          }
+        }
+      }
+    }
+    return map;
+  }, [node?.auto_id, nodes]);
+
+  const nodeTypeName = node?.node_type.type;
+  const isActionNode = useMemo(() => {
+    if (!nodeTypeName) return false;
+    const fields = OUTPUT_SCHEMAS[nodeTypeName];
+    return !fields || fields.length === 0;
+  }, [nodeTypeName]);
+
+  const handleEnableVerification = useCallback(() => {
+    if (!node) return;
+    // Action nodes all have optional verification_method/verification_assertion
+    // fields, but the NodeType union doesn't expose them on every variant.
+    const updated = {
+      ...node.node_type,
+      verification_method: "Vlm" as const,
+      verification_assertion: "",
+    } as typeof node.node_type;
+    onUpdate(node.id, { node_type: updated });
+  }, [node, onUpdate]);
 
   if (!node) return null;
 
@@ -46,6 +102,11 @@ export function NodeDetailModal({
             <span className="text-xs text-[var(--text-muted)]">
               {node.node_type.type}
             </span>
+            {node.auto_id && (
+              <span className="text-xs font-mono text-[var(--text-muted)]">
+                {node.auto_id}
+              </span>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -73,7 +134,21 @@ export function NodeDetailModal({
 
         <div className="flex-1 overflow-y-auto p-4">
           {tab === "setup" && (
-            <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} projectPath={projectPath} appKind={appKind} />
+            <>
+              <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} projectPath={projectPath} appKind={appKind} />
+              <OutputsSection
+                nodeTypeName={node.node_type.type}
+                nodeType={node.node_type as unknown as Record<string, unknown>}
+                autoId={node.auto_id}
+                consumers={consumers}
+                isActionNode={isActionNode}
+                onEnableVerification={isActionNode ? handleEnableVerification : undefined}
+              />
+              <InputsSection
+                nodeType={node.node_type as unknown as Record<string, unknown>}
+                nodeNames={nodeNames}
+              />
+            </>
           )}
           {tab === "trace" && (
             <TraceTab

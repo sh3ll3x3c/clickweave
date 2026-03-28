@@ -54,14 +54,18 @@ impl ChatBackend for MockBackend {
     }
 }
 
-/// Build a simple `Variable == Bool(true)` condition for tests.
+/// Build a simple `OutputRef == Bool(true)` condition for tests.
+/// Splits `var_name` on `.` to produce node/field; if no dot, uses the
+/// whole name as node and `"result"` as field.
 pub(super) fn bool_condition(var_name: &str) -> clickweave_core::Condition {
+    let (node, field) = match var_name.split_once('.') {
+        Some((n, f)) => (n.to_string(), f.to_string()),
+        None => (var_name.to_string(), "result".to_string()),
+    };
     clickweave_core::Condition {
-        left: clickweave_core::ValueRef::Variable {
-            name: var_name.to_string(),
-        },
+        left: clickweave_core::output_schema::OutputRef { node, field },
         operator: clickweave_core::Operator::Equals,
-        right: clickweave_core::ValueRef::Literal {
+        right: clickweave_core::output_schema::ConditionValue::Literal {
             value: clickweave_core::LiteralValue::Bool { value: true },
         },
     }
@@ -114,7 +118,7 @@ pub(super) fn sample_tools() -> Vec<serde_json::Value> {
 
 /// Create a single-node workflow for patch tests. Returns the node ID and workflow.
 pub(super) fn single_node_workflow(node_type: NodeType, name: &str) -> (uuid::Uuid, Workflow) {
-    let node = Node::new(node_type, Position { x: 300.0, y: 100.0 }, name);
+    let node = Node::new(node_type, Position { x: 300.0, y: 100.0 }, name, "");
     let id = node.id;
     let workflow = Workflow {
         id: uuid::Uuid::new_v4(),
@@ -122,6 +126,7 @@ pub(super) fn single_node_workflow(node_type: NodeType, name: &str) -> (uuid::Uu
         nodes: vec![node],
         edges: vec![],
         groups: vec![],
+        next_id_counters: std::collections::HashMap::new(),
     };
     (id, workflow)
 }

@@ -157,6 +157,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
 
             let node_name = node.name.clone();
+            let node_auto_id = node.auto_id.clone();
             let node_type = node.node_type.clone();
             let node_role = node.role;
             let expected_outcome = node.expected_outcome.clone();
@@ -268,11 +269,32 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 {
                     Ok(node_result) => {
                         self.extract_and_store_variables(
-                            &node_name,
+                            &node_auto_id,
                             &node_result,
                             &node_type,
                             node_run.as_ref(),
                         );
+
+                        // Run action verification if configured
+                        if let Some((method, assertion)) =
+                            super::action_verification::extract_verification_config(&node_type)
+                        {
+                            if let Err(e) = self
+                                .run_action_verification(
+                                    &node_auto_id,
+                                    &method,
+                                    &assertion,
+                                    &mcp,
+                                    node_run.as_ref(),
+                                )
+                                .await
+                            {
+                                self.log(format!(
+                                    "Action verification failed for {}: {}",
+                                    node_auto_id, e
+                                ));
+                            }
+                        }
 
                         // Inline verdict for Verification-role nodes
                         if node_role == NodeRole::Verification

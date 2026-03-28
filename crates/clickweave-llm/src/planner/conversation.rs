@@ -11,14 +11,20 @@ pub struct ChatEntry {
     pub patch_summary: Option<PatchSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_context: Option<RunContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum ChatRole {
     User,
     Assistant,
+    ToolCall,
+    ToolResult,
 }
 
 /// Compact summary of what a patch did (for conversation context, not the full patch).
@@ -81,6 +87,8 @@ impl ConversationSession {
             timestamp: now_epoch_ms(),
             patch_summary: None,
             run_context,
+            tool_call_id: None,
+            tool_name: None,
         });
     }
 
@@ -92,33 +100,43 @@ impl ConversationSession {
             timestamp: now_epoch_ms(),
             patch_summary,
             run_context: None,
+            tool_call_id: None,
+            tool_name: None,
         });
     }
 
-    /// Messages in the recent window (last N exchanges).
-    pub fn recent_window(&self, window_size: Option<usize>) -> &[ChatEntry] {
-        let n = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
-        let len = self.messages.len();
-        if len <= n {
-            &self.messages[..]
-        } else {
-            &self.messages[len - n..]
+    /// Index where the recent window starts, counting only User/Assistant entries.
+    fn window_start_index(&self, window_size: Option<usize>) -> usize {
+        let target = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
+        let mut count = 0;
+        for (i, entry) in self.messages.iter().enumerate().rev() {
+            if matches!(entry.role, ChatRole::User | ChatRole::Assistant) {
+                count += 1;
+                if count >= target {
+                    return i;
+                }
+            }
         }
+        0 // fewer entries than the window — start from the beginning
+    }
+
+    /// Messages in the recent window (last N user+assistant exchanges).
+    ///
+    /// Counts only User and Assistant entries when determining the window
+    /// boundary, so interleaved ToolCall/ToolResult entries don't shrink
+    /// the effective window.
+    pub fn recent_window(&self, window_size: Option<usize>) -> &[ChatEntry] {
+        let start = self.window_start_index(window_size);
+        &self.messages[start..]
     }
 
     /// Messages that have aged out of the window but haven't been summarized yet.
     pub fn unsummarized_overflow(&self, window_size: Option<usize>) -> &[ChatEntry] {
-        let n = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
-        let len = self.messages.len();
-        if len <= n {
-            &[]
+        let window_start = self.window_start_index(window_size);
+        if window_start > self.summary_cutoff {
+            &self.messages[self.summary_cutoff..window_start]
         } else {
-            let window_start = len - n;
-            if window_start > self.summary_cutoff {
-                &self.messages[self.summary_cutoff..window_start]
-            } else {
-                &[]
-            }
+            &[]
         }
     }
 
@@ -129,15 +147,39 @@ impl ConversationSession {
 
     /// Compute the summary_cutoff value for the current message count.
     pub fn current_cutoff(&self, window_size: Option<usize>) -> usize {
-        let n = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
-        let len = self.messages.len();
-        if len > n { len - n } else { len }
+        self.window_start_index(window_size)
     }
 
     /// Update the summary after summarization.
     pub fn set_summary(&mut self, summary: String, window_size: Option<usize>) {
         self.summary = Some(summary);
         self.summary_cutoff = self.current_cutoff(window_size);
+    }
+}
+
+impl ChatEntry {
+    pub fn tool_call(tool_name: &str, tool_call_id: &str, content: &str) -> Self {
+        Self {
+            role: ChatRole::ToolCall,
+            content: content.to_string(),
+            timestamp: now_epoch_ms(),
+            patch_summary: None,
+            run_context: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+        }
+    }
+
+    pub fn tool_result(tool_call_id: &str, tool_name: &str, content: &str) -> Self {
+        Self {
+            role: ChatRole::ToolResult,
+            content: content.to_string(),
+            timestamp: now_epoch_ms(),
+            patch_summary: None,
+            run_context: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+        }
     }
 }
 

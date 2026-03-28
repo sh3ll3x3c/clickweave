@@ -13,12 +13,14 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
+import { PlannerConfirmation } from "./components/PlannerConfirmation";
 import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
 import { useEffect, useMemo } from "react";
 import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 import { useWorkflowActions } from "./hooks/useWorkflowActions";
 import { useExecutorEvents } from "./hooks/useExecutorEvents";
+import { usePlannerEvents } from "./hooks/usePlannerEvents";
 import { buildAppKindMap } from "./hooks/useNodeSync";
 import { isWalkthroughBusy } from "./store/slices/walkthroughSlice";
 
@@ -61,7 +63,7 @@ function App() {
     })),
   );
 
-  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, conversation, pendingPatch, pendingPatchWarnings } = useStore(
+  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, conversation, pendingPatch, pendingPatchWarnings, contextUsage } = useStore(
     useShallow((s) => ({
       assistantOpen: s.assistantOpen,
       assistantLoading: s.assistantLoading,
@@ -70,6 +72,7 @@ function App() {
       conversation: s.conversation,
       pendingPatch: s.pendingPatch,
       pendingPatchWarnings: s.pendingPatchWarnings,
+      contextUsage: s.contextUsage,
     })),
   );
 
@@ -131,7 +134,7 @@ function App() {
 
   // ── Workflow mutations ───────────────────────────────────────────
   const {
-    addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge,
+    addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge, dataConnect,
     createGroup, removeGroup, deleteGroupWithContents,
     renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
   } = useWorkflowActions();
@@ -163,6 +166,7 @@ function App() {
 
   // ── Tauri event listeners (use getState() to avoid stale closures) ──
   useExecutorEvents();
+  usePlannerEvents();
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-dark)]">
@@ -222,6 +226,7 @@ function App() {
                     setWorkflow({ ...workflow, edges });
                   }}
                   onConnect={addEdge}
+                  onDataConnect={dataConnect}
                   onDeleteNodes={removeNodes}
                   onRemoveExtraEdges={removeEdgesOnly}
                   onBeforeNodeDrag={() => pushHistory("Move Nodes")}
@@ -264,6 +269,7 @@ function App() {
                 conversation={conversation}
                 pendingPatch={pendingPatch}
                 pendingPatchWarnings={pendingPatchWarnings}
+                contextUsage={contextUsage}
                 onSendMessage={sendAssistantMessage}
                 onResendMessage={resendMessage}
                 onCancel={cancelAssistantChat}
@@ -277,6 +283,7 @@ function App() {
 
               <NodeDetailModal
                 node={selectedNodeData}
+                nodes={workflow.nodes}
                 projectPath={projectPath}
                 workflowId={workflow.id}
                 workflowName={workflow.name}
@@ -323,6 +330,8 @@ function App() {
           onRespond={supervisionRespond}
         />
       )}
+
+      <PlannerConfirmation />
 
       <CdpAppSelectModal
         open={cdpModalOpen}

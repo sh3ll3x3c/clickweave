@@ -13,38 +13,13 @@ pub(crate) async fn fetch_mcp_tool_schemas() -> Result<Vec<serde_json::Value>, C
     Ok(tools)
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn plan_workflow(
-    app: tauri::AppHandle,
-    request: PlanRequest,
-) -> Result<PlanResponse, CommandError> {
-    let tools = fetch_mcp_tool_schemas().await?;
-    let planner_config = request.planner.into_llm_config(None);
-
-    let chrome_profiles = super::chrome_profiles::get_store(&app).load_profiles();
-
-    let profiles_ref = if chrome_profiles.len() > 1 {
-        Some(chrome_profiles.as_slice())
-    } else {
-        None
-    };
-
-    let result = clickweave_llm::planner::plan_workflow(
-        &request.intent,
-        planner_config,
-        &tools,
-        request.allow_ai_transforms,
-        request.allow_agent_steps,
-        profiles_ref,
-    )
-    .await
-    .map_err(|e| CommandError::llm(format!("Planning failed: {}", e)))?;
-
-    Ok(PlanResponse {
-        workflow: result.workflow,
-        warnings: result.warnings,
-    })
+/// Spawn a long-lived MCP client for the planning session.
+pub(crate) async fn spawn_planning_mcp() -> Result<McpClient, CommandError> {
+    let mcp_binary =
+        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
+    McpClient::spawn(&mcp_binary, &[])
+        .await
+        .map_err(|e| CommandError::mcp(format!("Failed to spawn MCP server: {e}")))
 }
 
 #[tauri::command]
@@ -62,7 +37,7 @@ pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, Comm
         request.allow_agent_steps,
     )
     .await
-    .map_err(|e| CommandError::llm(format!("Patching failed: {}", e)))?;
+    .map_err(|e| CommandError::llm(e.root_cause().to_string()))?;
 
     Ok(WorkflowPatch {
         added_nodes: result.added_nodes,

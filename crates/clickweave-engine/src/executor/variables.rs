@@ -1,6 +1,6 @@
 use super::WorkflowExecutor;
 use clickweave_core::runtime::RuntimeContext;
-use clickweave_core::{NodeRun, NodeType, sanitize_node_name};
+use clickweave_core::{NodeRun, NodeType};
 use clickweave_llm::ChatBackend;
 use serde_json::Value;
 
@@ -8,26 +8,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Store node outputs in RuntimeContext for condition evaluation.
     pub(crate) fn extract_and_store_variables(
         &mut self,
-        node_name: &str,
+        auto_id: &str,
         node_result: &Value,
         node_type: &NodeType,
         node_run: Option<&NodeRun>,
     ) {
-        let sanitized = sanitize_node_name(node_name);
         self.context.set_variable(
-            format!("{}.success", sanitized),
+            format!("{}.success", auto_id),
             serde_json::Value::Bool(true),
         );
         self.record_event(
             node_run,
             "variable_set",
             serde_json::json!({
-                "variable": format!("{}.success", sanitized),
+                "variable": format!("{}.success", auto_id),
                 "value": true,
             }),
         );
         let extracted =
-            extract_result_variables(&mut self.context, &sanitized, node_result, node_type);
+            extract_result_variables(&mut self.context, auto_id, node_result, node_type);
         for (var_name, var_value) in &extracted {
             self.record_event(
                 node_run,
@@ -50,7 +49,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 ///   string for text, empty string for null/AiStep).
 /// - Objects: each top-level field -> `<prefix>.<key>`, plus `.result` = raw Value.
 /// - Arrays: `.found` (bool), `.count`, first-element fields, plus typed alias
-///   (e.g. `.windows` for `ListWindows`), plus `.result` = raw Value.
+///   (e.g. `.apps` for `FindApp`), plus `.result` = raw Value.
 /// - Strings: `.result` only.
 /// - Null: `.result = ""`.
 pub(crate) fn extract_result_variables(
@@ -72,6 +71,48 @@ pub(crate) fn extract_result_variables(
                 set(format!("{}.{}", prefix, key), value.clone());
             }
             set(format!("{}.result", prefix), result.clone());
+
+            // Synthesize .found/.count/.coordinates from a `matches` array
+            // for FindText/FindImage whose MCP response is object-shaped.
+            if matches!(node_type, NodeType::FindText(_) | NodeType::FindImage(_)) {
+                if let Some(Value::Array(matches)) = map.get("matches") {
+                    set(
+                        format!("{}.found", prefix),
+                        Value::Bool(!matches.is_empty()),
+                    );
+                    set(
+                        format!("{}.count", prefix),
+                        Value::Number(serde_json::Number::from(matches.len())),
+                    );
+                    if let Some(Value::Object(first)) = matches.first() {
+                        let coords = if let (Some(x), Some(y)) =
+                            (first.get("screen_x"), first.get("screen_y"))
+                        {
+                            Some(serde_json::json!({"x": x, "y": y}))
+                        } else if let Some(Value::Object(center)) = first.get("center") {
+                            match (center.get("x"), center.get("y")) {
+                                (Some(x), Some(y)) => Some(serde_json::json!({"x": x, "y": y})),
+                                _ => None,
+                            }
+                        } else if let (Some(x), Some(y)) = (first.get("x"), first.get("y")) {
+                            Some(serde_json::json!({"x": x, "y": y}))
+                        } else {
+                            None
+                        };
+                        if let Some(coords) = coords {
+                            set(format!("{}.coordinates", prefix), coords);
+                        }
+                        // Synthesize .confidence from score or confidence
+                        let confidence = first
+                            .get("score")
+                            .or_else(|| first.get("confidence"))
+                            .cloned();
+                        if let Some(c) = confidence {
+                            set(format!("{}.confidence", prefix), c);
+                        }
+                    }
+                }
+            }
         }
         Value::Array(arr) => {
             let found = !arr.is_empty();
@@ -83,6 +124,15 @@ pub(crate) fn extract_result_variables(
             if let Some(Value::Object(first)) = arr.first() {
                 for (key, value) in first {
                     set(format!("{}.{}", prefix, key), value.clone());
+                }
+                // Store a coordinates object for FindText/FindImage results
+                if let (Some(x), Some(y)) = (first.get("x"), first.get("y")) {
+                    if matches!(node_type, NodeType::FindText(_) | NodeType::FindImage(_)) {
+                        set(
+                            format!("{}.coordinates", prefix),
+                            serde_json::json!({"x": x, "y": y}),
+                        );
+                    }
                 }
             }
             // Typed alias for the full array based on node type
@@ -107,10 +157,10 @@ pub(crate) fn extract_result_variables(
 
 /// Returns a typed alias name for array results based on node type.
 ///
-/// For example, `ListWindows` results get stored as `<prefix>.windows`.
+/// For example, `FindApp` results get stored as `<prefix>.apps`.
 fn array_alias_for_node_type(node_type: &NodeType) -> Option<&'static str> {
     match node_type {
-        NodeType::ListWindows(_) => Some("windows"),
+        NodeType::FindApp(_) => Some("apps"),
         NodeType::FindText(_) | NodeType::FindImage(_) => Some("matches"),
         _ => None,
     }
@@ -164,22 +214,81 @@ mod tests {
         assert_eq!(ctx.get_variable("find_text.result"), Some(&result));
         // .matches typed alias for the full array
         assert_eq!(ctx.get_variable("find_text.matches"), Some(&result));
+        // .coordinates object from first match
+        assert_eq!(
+            ctx.get_variable("find_text.coordinates"),
+            Some(&serde_json::json!({"x": 100, "y": 200}))
+        );
         assert!(!vars.is_empty());
     }
 
     #[test]
-    fn extract_variables_from_array_list_windows() {
+    fn extract_variables_from_array_find_app() {
         let mut ctx = RuntimeContext::new();
         let result = serde_json::json!([{"name": "Safari", "id": 1}]);
-        let node_type = NodeType::ListWindows(clickweave_core::ListWindowsParams::default());
-        extract_result_variables(&mut ctx, "list_windows", &result, &node_type);
+        let node_type = NodeType::FindApp(clickweave_core::FindAppParams::default());
+        extract_result_variables(&mut ctx, "find_app", &result, &node_type);
+
+        assert_eq!(ctx.get_variable("find_app.found"), Some(&Value::Bool(true)));
+        // .apps typed alias
+        assert_eq!(ctx.get_variable("find_app.apps"), Some(&result));
+    }
+
+    #[test]
+    fn extract_coordinates_for_find_image() {
+        let mut ctx = RuntimeContext::new();
+        let result = serde_json::json!([{"x": 50.5, "y": 75.0, "confidence": 0.95}]);
+        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
+        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
 
         assert_eq!(
-            ctx.get_variable("list_windows.found"),
+            ctx.get_variable("find_image.coordinates"),
+            Some(&serde_json::json!({"x": 50.5, "y": 75.0}))
+        );
+    }
+
+    #[test]
+    fn extract_find_image_from_object_shaped_matches() {
+        let mut ctx = RuntimeContext::new();
+        // Real MCP find_image response: object with matches array
+        let result = serde_json::json!({
+            "matches": [
+                {"screen_x": 120.0, "screen_y": 340.0, "score": 0.92},
+                {"screen_x": 500.0, "screen_y": 600.0, "score": 0.71}
+            ]
+        });
+        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
+        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
+
+        assert_eq!(
+            ctx.get_variable("find_image.found"),
             Some(&Value::Bool(true))
         );
-        // .windows typed alias
-        assert_eq!(ctx.get_variable("list_windows.windows"), Some(&result));
+        assert_eq!(
+            ctx.get_variable("find_image.count"),
+            Some(&Value::Number(serde_json::Number::from(2)))
+        );
+        assert_eq!(
+            ctx.get_variable("find_image.coordinates"),
+            Some(&serde_json::json!({"x": 120.0, "y": 340.0}))
+        );
+        assert_eq!(
+            ctx.get_variable("find_image.confidence"),
+            Some(&serde_json::json!(0.92))
+        );
+        // Top-level keys still extracted
+        assert!(ctx.get_variable("find_image.matches").is_some());
+        assert_eq!(ctx.get_variable("find_image.result"), Some(&result));
+    }
+
+    #[test]
+    fn no_coordinates_for_find_app() {
+        let mut ctx = RuntimeContext::new();
+        let result = serde_json::json!([{"name": "Safari", "id": 1}]);
+        let node_type = NodeType::FindApp(clickweave_core::FindAppParams::default());
+        extract_result_variables(&mut ctx, "find_app", &result, &node_type);
+
+        assert!(ctx.get_variable("find_app.coordinates").is_none());
     }
 
     #[test]

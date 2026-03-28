@@ -57,7 +57,8 @@ pub struct ValidationResult {
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct NodeTypeInfo {
     pub name: &'static str,
-    pub category: String,
+    pub output_role: String,
+    pub node_context: String,
     pub icon: &'static str,
     pub node_type: NodeType,
 }
@@ -95,20 +96,6 @@ pub struct RunRequest {
     /// Planner LLM used for supervision in Test mode.
     pub planner: Option<EndpointConfig>,
     pub execution_mode: ExecutionMode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct PlanRequest {
-    pub intent: String,
-    pub planner: EndpointConfig,
-    pub allow_ai_transforms: bool,
-    pub allow_agent_steps: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct PlanResponse {
-    pub workflow: Workflow,
-    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -203,6 +190,8 @@ pub struct AssistantChatRequest {
     pub allow_ai_transforms: bool,
     pub allow_agent_steps: bool,
     pub max_repair_attempts: u32,
+    #[serde(default)]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -212,6 +201,8 @@ pub struct AssistantChatResponse {
     pub new_summary: Option<String>,
     pub summary_cutoff: usize,
     pub warnings: Vec<String>,
+    pub tool_entries: Vec<clickweave_llm::planner::conversation::ChatEntry>,
+    pub context_usage: Option<f32>,
 }
 
 // --- Walkthrough event payloads ---
@@ -238,4 +229,21 @@ pub struct WalkthroughEventPayload {
 pub struct AppResolutionSeedEntry {
     pub node_id: String,
     pub app_name: String,
+}
+
+// --- Planner session event payloads ---
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlannerToolCallPayload {
+    pub session_id: String,
+    pub tool_name: String,
+    pub args: serde_json::Value,
+    pub result: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlannerConfirmationPayload {
+    pub session_id: String,
+    pub message: String,
+    pub tool_name: String,
 }

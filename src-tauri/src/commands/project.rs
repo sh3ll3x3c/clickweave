@@ -56,8 +56,10 @@ pub fn open_project(path: String) -> Result<ProjectData, CommandError> {
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| CommandError::io(format!("Failed to read file: {}", e)))?;
 
-    let workflow: Workflow = serde_json::from_str(&content)
+    let mut workflow: Workflow = serde_json::from_str(&content)
         .map_err(|e| CommandError::validation(format!("Failed to parse workflow: {}", e)))?;
+
+    workflow.fixup_auto_ids();
 
     Ok(ProjectData { path, workflow })
 }
@@ -85,7 +87,7 @@ pub fn save_project(path: String, workflow: Workflow) -> Result<(), CommandError
 #[specta::specta]
 pub fn validate(workflow: Workflow) -> ValidationResult {
     match validate_workflow(&workflow) {
-        Ok(()) => ValidationResult {
+        Ok(_) => ValidationResult {
             valid: true,
             errors: vec![],
         },
@@ -103,11 +105,31 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
         .into_iter()
         .map(|nt| NodeTypeInfo {
             name: nt.display_name(),
-            category: nt.category().display_name().to_string(),
+            output_role: format!("{:?}", nt.output_role()),
+            node_context: format!("{:?}", nt.node_context()),
             icon: nt.icon(),
             node_type: nt,
         })
         .collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn generate_auto_id(
+    node_type_name: String,
+    counters_json: String,
+) -> Result<(String, String), String> {
+    let mut counters: std::collections::HashMap<String, u32> =
+        serde_json::from_str(&counters_json).map_err(|e| e.to_string())?;
+
+    let node_type = NodeType::default_for_name(&node_type_name)
+        .ok_or_else(|| format!("Unknown node type: {}", node_type_name))?;
+
+    let auto_id = clickweave_core::auto_id::assign_auto_id(&node_type, &mut counters);
+
+    let updated_counters = serde_json::to_string(&counters).map_err(|e| e.to_string())?;
+
+    Ok((auto_id, updated_counters))
 }
 
 #[tauri::command]

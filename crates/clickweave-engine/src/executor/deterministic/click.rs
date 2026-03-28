@@ -2,7 +2,7 @@ use super::super::Mcp;
 use super::super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use super::truncate_for_error;
 use clickweave_core::decision_cache::cache_key;
-use clickweave_core::{ClickParams, NodeRun, NodeType};
+use clickweave_core::{ClickParams, ClickTarget, NodeRun, NodeType};
 use clickweave_llm::ChatBackend;
 use serde_json::Value;
 use uuid::Uuid;
@@ -22,32 +22,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .resolve_target_by_text(node_id, target, mcp, node_run)
             .await?;
         Ok(NodeType::Click(ClickParams {
-            target: params.target.clone(),
-            x: Some(x),
-            y: Some(y),
-            button: params.button,
-            click_count: params.click_count,
-            ..Default::default()
-        }))
-    }
-
-    pub(in crate::executor) async fn resolve_click_target_by_image(
-        &self,
-        _node_id: Uuid,
-        mcp: &(impl Mcp + ?Sized),
-        params: &ClickParams,
-        node_run: &mut Option<&mut NodeRun>,
-    ) -> ExecutorResult<NodeType> {
-        let b64 = params.template_image.as_deref().ok_or_else(|| {
-            ExecutorError::ClickTarget(
-                "resolve_click_target_by_image called without template_image".to_string(),
-            )
-        })?;
-        let (x, y) = self.resolve_target_by_image(b64, mcp, node_run).await?;
-        Ok(NodeType::Click(ClickParams {
-            target: params.target.clone(),
-            x: Some(x),
-            y: Some(y),
+            target: Some(ClickTarget::Coordinates { x, y }),
             button: params.button,
             click_count: params.click_count,
             ..Default::default()

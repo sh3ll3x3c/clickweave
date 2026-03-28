@@ -69,7 +69,7 @@ fn test_planner_prompt_includes_tools() {
             "parameters": {}
         }
     })];
-    let prompt = planner_system_prompt(&tools, false, false, None, None);
+    let prompt = planner_system_prompt(&tools, false, false, None, None, false);
     assert!(prompt.contains("click"));
     assert!(prompt.contains("Tool"));
     assert!(!prompt.contains("step_type\": \"AiTransform\""));
@@ -78,14 +78,14 @@ fn test_planner_prompt_includes_tools() {
 
 #[test]
 fn test_planner_system_prompt_with_all_features() {
-    let prompt = planner_system_prompt(&[], true, true, None, None);
+    let prompt = planner_system_prompt(&[], true, true, None, None, false);
     assert!(prompt.contains("AiTransform"));
     assert!(prompt.contains("AiStep"));
 }
 
 #[test]
 fn test_planner_prompt_includes_control_flow() {
-    let prompt = planner_system_prompt(&[], false, false, None, None);
+    let prompt = planner_system_prompt(&[], false, false, None, None, false);
     assert!(
         prompt.contains("Loop"),
         "Prompt should mention Loop step type"
@@ -370,4 +370,31 @@ fn test_step_rejected_reason_endloop_always_allowed() {
         loop_id: "n1".to_string(),
     };
     assert!(step_rejected_reason(&step, false, false).is_none());
+}
+
+#[test]
+fn planning_only_tools_rejected_from_workflow() {
+    for tool_name in &["probe_app", "take_ax_snapshot", "cdp_connect"] {
+        let step = PlanStep::Tool {
+            tool_name: tool_name.to_string(),
+            arguments: serde_json::json!({"app_name": "Signal"}),
+            name: Some(format!("Planning {}", tool_name)),
+        };
+        let reason = step_rejected_reason(&step, true, true);
+        assert!(reason.is_some(), "{} should be rejected", tool_name);
+        assert!(reason.unwrap().contains("planning-only"));
+    }
+}
+
+#[test]
+fn dual_use_tools_not_rejected() {
+    for tool_name in &["launch_app", "quit_app", "select_page", "click"] {
+        let step = PlanStep::Tool {
+            tool_name: tool_name.to_string(),
+            arguments: serde_json::json!({}),
+            name: None,
+        };
+        let reason = step_rejected_reason(&step, true, true);
+        assert!(reason.is_none(), "{} should NOT be rejected", tool_name);
+    }
 }

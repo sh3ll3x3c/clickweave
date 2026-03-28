@@ -94,10 +94,11 @@ fn main() {
         save_project,
         validate,
         node_type_defaults,
-        plan_workflow,
+        generate_auto_id,
         patch_workflow,
         assistant_chat,
         cancel_assistant_chat,
+        clear_assistant_session,
         save_conversation,
         load_conversation,
         run_workflow,
@@ -122,6 +123,7 @@ fn main() {
         is_chrome_profile_configured,
         get_chrome_profile_path,
         launch_chrome_for_setup,
+        planner_confirmation_respond,
     ]);
 
     #[cfg(debug_assertions)]
@@ -145,8 +147,11 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Mutex::new(ExecutorHandle::default()))
-        .manage(Mutex::new(AssistantHandle::default()))
+        .manage(tokio::sync::Mutex::new(AssistantSessionHandle::default()))
         .manage(Mutex::new(WalkthroughHandle::default()))
+        .manage(std::sync::Arc::new(std::sync::Mutex::new(
+            PlannerHandle::default(),
+        )))
         .invoke_handler(builder.invoke_handler())
         .menu(menu::build_menu)
         .setup(move |app| {

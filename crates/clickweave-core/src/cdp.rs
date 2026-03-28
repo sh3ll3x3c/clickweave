@@ -34,6 +34,21 @@ pub struct SnapshotMatch {
 /// uid=1_1 link "Friends"
 /// ```
 pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<SnapshotMatch> {
+    let (exact, substring) = find_matches_split(snapshot_text, target);
+    // Prefer exact label matches; fall back to substring matches.
+    if exact.is_empty() { substring } else { exact }
+}
+
+/// Core parsing: scan a CDP snapshot for elements matching `target`,
+/// returning exact-label matches and substring matches separately.
+///
+/// Callers that need both sets (e.g. `search_interactive_elements`) use
+/// this directly instead of `find_elements_in_snapshot` which collapses
+/// them with an exact-preference rule.
+fn find_matches_split(
+    snapshot_text: &str,
+    target: &str,
+) -> (Vec<SnapshotMatch>, Vec<SnapshotMatch>) {
     let target_lower = target.to_lowercase();
     let mut exact = Vec::new();
     let mut substring = Vec::new();
@@ -47,10 +62,8 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
             continue;
         };
 
-        // Compute indent level (number of leading spaces).
         let indent = line.len() - line.trim_start().len();
 
-        // Pop stack entries at same or deeper level to find the parent.
         while let Some(top) = parent_stack.last() {
             if top.0 >= indent {
                 parent_stack.pop();
@@ -67,7 +80,6 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
 
         let label = extract_label(line);
 
-        // Push this element onto the stack so deeper children pop correctly.
         let label_for_stack = if label == line.trim() {
             None
         } else {
@@ -85,7 +97,6 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
             None
         };
         if let Some(is_exact) = is_match {
-            // Clone parent context only for actual matches (not every line).
             let (parent_role, parent_name) = parent_stack
                 .iter()
                 .rev()
@@ -108,8 +119,7 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
             }
         }
     }
-    // Prefer exact label matches; fall back to substring matches.
-    if exact.is_empty() { substring } else { exact }
+    (exact, substring)
 }
 
 /// Parse a snapshot line to extract its UID, role, and whether it's a leaf text node.
@@ -216,6 +226,186 @@ pub fn narrow_by_parent(
     }
 }
 
+/// Result of searching interactive elements in a CDP snapshot.
+#[derive(Debug, Clone)]
+pub struct InteractiveSearchResult {
+    /// Interactive element matches.
+    pub matches: Vec<SnapshotMatch>,
+    /// Best-effort count of non-interactive matches omitted from results.
+    /// Note: `find_elements_in_snapshot()` excludes leaf text nodes
+    /// (StaticText, InlineTextBox) before matching, and returns only exact
+    /// matches when they exist, so this count may understate the true total
+    /// of non-interactive elements containing the query text.
+    pub omitted_count: usize,
+}
+
+/// Interactive ARIA roles returned by `search_interactive_elements`.
+/// Non-interactive roles (heading, StaticText, generic, etc.) are counted but omitted.
+const INTERACTIVE_ROLES: &[&str] = &[
+    "button",
+    "checkbox",
+    "combobox",
+    "link",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "radio",
+    "searchbox",
+    "slider",
+    "spinbutton",
+    "switch",
+    "tab",
+    "textbox",
+    "treeitem",
+];
+
+/// Search a CDP snapshot for interactive elements matching a query.
+///
+/// Unlike `find_elements_in_snapshot()`, this function:
+/// - Only returns elements with interactive ARIA roles
+/// - Supports an optional role filter
+/// - Caps results at `max_results`
+/// - Reports how many non-interactive matches were omitted
+///
+/// Uses `find_matches_split` directly so the interactive-role filter
+/// is applied before the exact/substring preference. This avoids a
+/// false-negative when an exact-match non-interactive element (e.g. a
+/// heading "Settings") would shadow a substring-match interactive one
+/// (e.g. a button "Open Settings").
+pub fn search_interactive_elements(
+    snapshot_text: &str,
+    query: &str,
+    role_filter: Option<&str>,
+    max_results: usize,
+) -> InteractiveSearchResult {
+    let (exact, substring) = find_matches_split(snapshot_text, query);
+
+    let is_interactive = |m: &SnapshotMatch| {
+        INTERACTIVE_ROLES
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(&m.role))
+    };
+
+    // Partition exact matches into interactive and non-interactive.
+    let mut omitted_count = 0;
+    let mut matches: Vec<SnapshotMatch> = Vec::new();
+    for m in exact {
+        if is_interactive(&m) {
+            matches.push(m);
+        } else {
+            omitted_count += 1;
+        }
+    }
+
+    // If exact matches produced no interactive results, try substring matches.
+    if matches.is_empty() {
+        for m in substring {
+            if is_interactive(&m) {
+                matches.push(m);
+            } else {
+                omitted_count += 1;
+            }
+        }
+    }
+
+    if let Some(role) = role_filter {
+        matches.retain(|m| m.role.eq_ignore_ascii_case(role));
+    }
+
+    matches.truncate(max_results);
+
+    InteractiveSearchResult {
+        matches,
+        omitted_count,
+    }
+}
+
+/// A group of interactive elements sharing the same ARIA role.
+#[derive(Debug, Clone)]
+pub struct RoleGroup {
+    /// The ARIA role (e.g. "button", "link", "textbox").
+    pub role: String,
+    /// Total number of elements with this role.
+    pub count: usize,
+    /// First N unique labels (deduplicated, in DOM order).
+    pub sample_labels: Vec<String>,
+}
+
+/// Summary of all interactive elements on a page, grouped by role.
+#[derive(Debug, Clone)]
+pub struct ElementInventory {
+    pub groups: Vec<RoleGroup>,
+}
+
+/// Scan a CDP snapshot and build a role-grouped inventory of interactive elements.
+///
+/// Returns groups sorted by count descending. Labels are deduplicated within
+/// each role (e.g. ten "×" close buttons → one "×" sample). Each group holds
+/// at most `max_samples` unique labels.
+pub fn build_element_inventory(snapshot_text: &str, max_samples: usize) -> ElementInventory {
+    use std::collections::BTreeMap;
+
+    // role → (count, seen_labels, sample_labels)
+    let mut groups: BTreeMap<String, (usize, std::collections::HashSet<String>, Vec<String>)> =
+        BTreeMap::new();
+
+    for line in snapshot_text.lines() {
+        let Some((_, role, is_leaf)) = parse_line_uid(line) else {
+            continue;
+        };
+        if is_leaf {
+            continue;
+        }
+        if !INTERACTIVE_ROLES
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(role))
+        {
+            continue;
+        }
+
+        let label = extract_label(line);
+        let role_lower = role.to_lowercase();
+
+        let entry = groups
+            .entry(role_lower)
+            .or_insert_with(|| (0, std::collections::HashSet::new(), Vec::new()));
+        entry.0 += 1;
+
+        // Truncate long labels for the sample.
+        let display_label = if label.len() > 40 {
+            format!("{}...", &label[..label.floor_char_boundary(37)])
+        } else {
+            label.clone()
+        };
+
+        // Deduplicate: only add if we haven't seen this label and have room.
+        if !display_label.is_empty()
+            && display_label != line.trim()
+            && !entry.1.contains(&display_label)
+        {
+            entry.1.insert(display_label.clone());
+            if entry.2.len() < max_samples {
+                entry.2.push(display_label);
+            }
+        }
+    }
+
+    let mut result: Vec<RoleGroup> = groups
+        .into_iter()
+        .map(|(role, (count, _, sample_labels))| RoleGroup {
+            role,
+            count,
+            sample_labels,
+        })
+        .collect();
+
+    // Sort by count descending so the most prevalent role appears first.
+    result.sort_by(|a, b| b.count.cmp(&a.count));
+
+    ElementInventory { groups: result }
+}
+
 /// Extract `url=` attribute value from a snapshot line.
 ///
 /// For `uid=1_0 link "Home" url="https://example.com"` → `Some("https://example.com")`.
@@ -229,9 +419,110 @@ fn extract_url(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_label, extract_url, find_elements_in_snapshot, narrow_by_parent, narrow_matches,
-        parse_line_uid,
+        build_element_inventory, extract_label, extract_url, find_elements_in_snapshot,
+        narrow_by_parent, narrow_matches, parse_line_uid, search_interactive_elements,
     };
+
+    const SNAPSHOT_MIXED_ROLES: &str = r##"
+uid=1_0 RootWebArea "App" url="https://app.example.com/"
+  uid=1_1 navigation "Sidebar"
+    uid=1_2 button "Settings"
+    uid=1_3 link "Home"
+    uid=1_4 heading "Menu"
+      uid=1_5 StaticText "Menu"
+  uid=1_6 main "Content"
+    uid=1_7 textbox "Search"
+    uid=1_8 button "Submit"
+    uid=1_9 generic "container"
+    uid=1_10 checkbox "Remember me"
+    uid=1_11 heading "Welcome"
+      uid=1_12 StaticText "Welcome"
+"##;
+
+    #[test]
+    fn search_interactive_returns_only_interactive_roles() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Menu", None, 10);
+        // "Menu" matches heading uid=1_4 (non-interactive) — should be omitted.
+        assert!(
+            result.matches.is_empty(),
+            "heading should not be in interactive results"
+        );
+        assert_eq!(result.omitted_count, 1);
+    }
+
+    #[test]
+    fn search_interactive_returns_buttons_and_links() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Settings", None, 10);
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].uid, "1_2");
+        assert_eq!(result.matches[0].role, "button");
+        assert_eq!(result.omitted_count, 0);
+    }
+
+    #[test]
+    fn search_interactive_role_filter() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "button", None, 10);
+        let all_uids: Vec<&str> = result.matches.iter().map(|m| m.uid.as_str()).collect();
+        assert!(all_uids.contains(&"1_2"), "Settings button should match");
+        assert!(all_uids.contains(&"1_8"), "Submit button should match");
+
+        let filtered =
+            search_interactive_elements(SNAPSHOT_MIXED_ROLES, "button", Some("button"), 10);
+        assert!(filtered.matches.iter().all(|m| m.role == "button"));
+    }
+
+    #[test]
+    fn search_interactive_max_results() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "e", None, 2);
+        assert!(result.matches.len() <= 2, "should cap at max_results");
+    }
+
+    #[test]
+    fn search_interactive_empty_snapshot() {
+        let result = search_interactive_elements("", "anything", None, 10);
+        assert!(result.matches.is_empty());
+        assert_eq!(result.omitted_count, 0);
+    }
+
+    #[test]
+    fn search_interactive_no_matches() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Nonexistent", None, 10);
+        assert!(result.matches.is_empty());
+        assert_eq!(result.omitted_count, 0);
+    }
+
+    #[test]
+    fn search_interactive_falls_back_to_substring_when_exact_is_non_interactive() {
+        // "Settings" exactly matches heading uid=1_4 (non-interactive) and
+        // substring-matches button uid=1_2 "Settings" via the line containing
+        // "button" + "Settings". But the button label is also "Settings" (exact),
+        // so both match exactly. Let's use a snapshot where the exact match is
+        // only non-interactive but a substring match is interactive.
+        let snapshot = r##"
+uid=1_0 RootWebArea "App"
+  uid=1_1 heading "Settings"
+  uid=1_2 button "Open Settings"
+"##;
+        let result = search_interactive_elements(snapshot, "Settings", None, 10);
+        // Without the fallback, only heading "Settings" (exact) would be returned
+        // and filtered out, leaving no results. With the fallback, button "Open
+        // Settings" (substring) should be found.
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].uid, "1_2");
+        assert_eq!(result.matches[0].role, "button");
+        assert_eq!(result.omitted_count, 1); // the heading
+    }
+
+    #[test]
+    fn search_interactive_includes_checkbox_and_textbox() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Remember", None, 10);
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].role, "checkbox");
+
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Search", None, 10);
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].role, "textbox");
+    }
 
     // Real chrome-devtools-mcp format (unquoted UIDs).
     const SNAPSHOT: &str = r##"
@@ -540,5 +831,76 @@ uid=1_1 button "Home"
         assert_eq!(matches.len(), 2);
         narrow_by_parent(&mut matches, Some("nonexistent"), None);
         assert_eq!(matches.len(), 2, "should keep all if no candidate matches");
+    }
+
+    // --- build_element_inventory ---
+
+    #[test]
+    fn inventory_groups_by_role() {
+        let inv = build_element_inventory(SNAPSHOT_MIXED_ROLES, 5);
+        let roles: Vec<&str> = inv.groups.iter().map(|g| g.role.as_str()).collect();
+        assert!(roles.contains(&"button"), "should have buttons");
+        assert!(roles.contains(&"link"), "should have links");
+        assert!(roles.contains(&"textbox"), "should have textboxes");
+        assert!(roles.contains(&"checkbox"), "should have checkboxes");
+        assert!(!roles.contains(&"heading"), "should not have headings");
+        assert!(!roles.contains(&"navigation"), "should not have navigation");
+    }
+
+    #[test]
+    fn inventory_counts_correct() {
+        let inv = build_element_inventory(SNAPSHOT_MIXED_ROLES, 5);
+        let buttons = inv.groups.iter().find(|g| g.role == "button").unwrap();
+        assert_eq!(buttons.count, 2); // Settings, Submit
+        let links = inv.groups.iter().find(|g| g.role == "link").unwrap();
+        assert_eq!(links.count, 1); // Home
+    }
+
+    #[test]
+    fn inventory_sorted_by_count_descending() {
+        let inv = build_element_inventory(SNAPSHOT_MIXED_ROLES, 5);
+        let counts: Vec<usize> = inv.groups.iter().map(|g| g.count).collect();
+        for w in counts.windows(2) {
+            assert!(w[0] >= w[1], "groups should be sorted by count desc");
+        }
+    }
+
+    #[test]
+    fn inventory_deduplicates_labels() {
+        let snapshot = r##"
+uid=1_0 RootWebArea "App"
+  uid=1_1 button "Close"
+  uid=1_2 button "Close"
+  uid=1_3 button "Close"
+  uid=1_4 button "Submit"
+"##;
+        let inv = build_element_inventory(snapshot, 5);
+        let buttons = inv.groups.iter().find(|g| g.role == "button").unwrap();
+        assert_eq!(buttons.count, 4);
+        assert_eq!(buttons.sample_labels.len(), 2); // "Close" and "Submit", deduplicated
+    }
+
+    #[test]
+    fn inventory_caps_samples() {
+        let snapshot = r##"
+uid=1_0 RootWebArea "App"
+  uid=1_1 button "A"
+  uid=1_2 button "B"
+  uid=1_3 button "C"
+  uid=1_4 button "D"
+  uid=1_5 button "E"
+  uid=1_6 button "F"
+  uid=1_7 button "G"
+"##;
+        let inv = build_element_inventory(snapshot, 3);
+        let buttons = inv.groups.iter().find(|g| g.role == "button").unwrap();
+        assert_eq!(buttons.count, 7);
+        assert_eq!(buttons.sample_labels.len(), 3); // capped at max_samples
+    }
+
+    #[test]
+    fn inventory_empty_snapshot() {
+        let inv = build_element_inventory("", 5);
+        assert!(inv.groups.is_empty());
     }
 }

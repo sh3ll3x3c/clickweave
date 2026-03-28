@@ -17,6 +17,12 @@
   --node-input: #f59e0b;
   --node-window: #50c878;
   --node-debugkit: #ef4444;
+  --type-bool: #10b981;
+  --type-number: #3b82f6;
+  --type-string: #9ca3af;
+  --type-array: #a855f7;
+  --type-object: #f59e0b;
+  --type-any: #6b7280;
 }
 
 body {

@@ -17,6 +17,7 @@ export interface AssistantSlice {
   assistantError: string | null;
   pendingPatch: WorkflowPatch | null;
   pendingPatchWarnings: string[];
+  contextUsage: number | null;
 
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
@@ -36,6 +37,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   assistantError: null,
   pendingPatch: null,
   pendingPatchWarnings: [],
+  contextUsage: null,
 
   setAssistantOpen: (open) => {
     if (open && isWalkthroughActive(get().walkthroughStatus)) {
@@ -62,7 +64,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   },
 
   sendAssistantMessage: async (message) => {
-    const { plannerConfig, allowAiTransforms, allowAgentSteps, maxRepairAttempts, pushLog } = get();
+    const { plannerConfig, allowAiTransforms, allowAgentSteps, maxRepairAttempts, pushLog, projectPath } = get();
     set({ assistantLoading: true, assistantError: null, assistantRetrying: false });
 
     // Capture conversation state BEFORE adding the user message -- the backend
@@ -95,6 +97,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
         allow_ai_transforms: allowAiTransforms,
         allow_agent_steps: allowAgentSteps,
         max_repair_attempts: maxRepairAttempts,
+        project_path: projectPath ?? null,
       };
 
       const result = await commands.assistantChat(request);
@@ -120,6 +123,8 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
           };
         }
 
+        const toolEntries: ChatEntry[] = data.tool_entries ?? [];
+
         // Add assistant message to conversation
         const assistantEntry: ChatEntry = {
           role: "assistant",
@@ -131,12 +136,13 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
 
         set((s) => ({
           conversation: {
-            messages: [...s.conversation.messages, assistantEntry],
+            messages: [...s.conversation.messages, ...toolEntries, assistantEntry],
             summary: data.new_summary ?? s.conversation.summary,
             summary_cutoff: data.summary_cutoff,
           },
           pendingPatch: data.patch ?? s.pendingPatch,
           pendingPatchWarnings: data.patch ? data.warnings : s.pendingPatchWarnings,
+          contextUsage: data.context_usage ?? s.contextUsage,
         }));
 
         pushLog(`Assistant: ${data.patch ? "generated changes" : "responded"}`);
@@ -199,7 +205,19 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
         node_ids: g.node_ids.filter((id: string) => !removedIdSet.has(id)),
       })),
     );
-    const patched: Workflow = { ...workflow, nodes, edges, groups: cleanedGroups };
+    // Rebuild counters from merged nodes to include patch-added auto_ids
+    const patchedCounters = { ...(workflow.next_id_counters ?? {}) } as Record<string, number>;
+    for (const node of nodes) {
+      if (!node.auto_id) continue;
+      const idx = node.auto_id.lastIndexOf("_");
+      if (idx === -1) continue;
+      const base = node.auto_id.slice(0, idx);
+      const num = parseInt(node.auto_id.slice(idx + 1), 10);
+      if (!isNaN(num) && num > (patchedCounters[base] ?? 0)) {
+        patchedCounters[base] = num;
+      }
+    }
+    const patched: Workflow = { ...workflow, nodes, edges, groups: cleanedGroups, next_id_counters: patchedCounters };
     try {
       const validation = await commands.validate(patched);
       if (!validation.valid) {
@@ -239,11 +257,13 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   },
 
   clearConversation: () => {
+    commands.clearAssistantSession().catch(() => {});
     set({
       conversation: makeEmptyConversation(),
       pendingPatch: null,
       pendingPatchWarnings: [],
       assistantError: null,
+      contextUsage: null,
     });
   },
 });

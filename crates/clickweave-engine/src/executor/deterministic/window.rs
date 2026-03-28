@@ -100,9 +100,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         Ok(NodeType::Click(ClickParams {
-            target: params.target.clone(),
-            x: Some(click_x),
-            y: Some(click_y),
+            target: Some(clickweave_core::ClickTarget::Coordinates {
+                x: click_x,
+                y: click_y,
+            }),
             button: params.button,
             click_count: params.click_count,
             ..Default::default()

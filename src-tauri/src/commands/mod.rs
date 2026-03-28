@@ -3,6 +3,7 @@ mod chrome_profiles;
 pub mod error;
 mod executor;
 mod planner;
+mod planner_session;
 mod project;
 mod runs;
 mod types;
@@ -10,16 +11,20 @@ mod walkthrough;
 mod walkthrough_enrichment;
 mod walkthrough_session;
 
-pub use assistant::{AssistantHandle, assistant_chat, cancel_assistant_chat};
+pub use assistant::{assistant_chat, cancel_assistant_chat};
 pub use chrome_profiles::{
     create_chrome_profile, get_chrome_profile_path, is_chrome_profile_configured,
     launch_chrome_for_setup, list_chrome_profiles,
 };
 pub use executor::{ExecutorHandle, run_workflow, stop_workflow, supervision_respond};
-pub use planner::{patch_workflow, plan_workflow};
+pub use planner::patch_workflow;
+pub use planner_session::{
+    AssistantSessionHandle, PlannerHandle, clear_assistant_session, planner_confirmation_respond,
+};
 pub use project::{
-    get_mcp_status, import_asset, load_conversation, node_type_defaults, open_project,
-    pick_save_file, pick_workflow_file, ping, save_conversation, save_project, validate,
+    generate_auto_id, get_mcp_status, import_asset, load_conversation, node_type_defaults,
+    open_project, pick_save_file, pick_workflow_file, ping, save_conversation, save_project,
+    validate,
 };
 pub use runs::{list_runs, load_run_events, read_artifact_base64};
 pub use types::{AppDataDir, McpStatus};
