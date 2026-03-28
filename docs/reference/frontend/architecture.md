@@ -125,9 +125,9 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **AssistantSlice** (`assistantSlice.ts`)
 
-- `conversation`, `assistantOpen`, `assistantLoading`, `assistantRetrying`, `assistantError`
-- `pendingPatch`, `pendingPatchWarnings`
-- actions: `sendAssistantMessage`, `resendMessage`, `applyPendingPatch`, `discardPendingPatch`, `cancelAssistantChat`, `clearConversation`
+- `messages` (display-only, populated by `assistant://message` events), `expectedSessionId`, `assistantOpen`, `assistantLoading`, `assistantRetrying`, `assistantError`
+- `pendingPatch`, `pendingPatchWarnings`, `contextUsage`
+- actions: `sendAssistantMessage`, `applyApprovedPatch`, `discardPendingPatch`, `cancelAssistantChat`, `clearConversation`, `appendAssistantMessage`, `setExpectedSessionId`, `setMessages`
 
 **SettingsSlice** (`settingsSlice.ts`)
 

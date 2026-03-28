@@ -513,18 +513,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 }
                                 RuntimeResolution::Removed(patch) => {
                                     self.log(
-                                        "Runtime resolution: Removed — applying patch and advancing",
+                                        "Runtime resolution: Removed — removing ahead nodes, retrying current",
                                     );
-                                    // Find the successor BEFORE applying the patch
-                                    // (the removed node's edges are still present).
-                                    let next = self.follow_single_edge(node_id);
                                     self.apply_resolution_patch(&patch);
+                                    self.evict_caches_for_node(&node_type);
+                                    // The removed nodes were ahead of the failing
+                                    // node (per the resolution prompt contract).
+                                    // Retry the same node with the updated graph.
                                     if let Some(ref mut run) = node_run {
                                         self.finalize_run(run, RunStatus::Cancelled);
                                     }
                                     self.emit(ExecutorEvent::NodeCancelled(node_id));
-                                    // Jump to the successor of the removed node.
-                                    break (false, false, next);
+                                    break (false, false, Some(node_id));
                                 }
                                 RuntimeResolution::Rejected => {
                                     self.log(

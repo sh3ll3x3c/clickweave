@@ -207,7 +207,9 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   },
 
   setExpectedSessionId: (sessionId) => {
-    set({ expectedSessionId: sessionId, messages: [] });
+    const current = get().expectedSessionId;
+    if (current === sessionId) return;
+    set({ expectedSessionId: sessionId, messages: current === null ? get().messages : [] });
   },
 
   setMessages: (messages) => {
