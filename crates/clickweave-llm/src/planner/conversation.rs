@@ -11,14 +11,20 @@ pub struct ChatEntry {
     pub patch_summary: Option<PatchSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_context: Option<RunContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum ChatRole {
     User,
     Assistant,
+    ToolCall,
+    ToolResult,
 }
 
 /// Compact summary of what a patch did (for conversation context, not the full patch).
@@ -81,6 +87,8 @@ impl ConversationSession {
             timestamp: now_epoch_ms(),
             patch_summary: None,
             run_context,
+            tool_call_id: None,
+            tool_name: None,
         });
     }
 
@@ -92,7 +100,21 @@ impl ConversationSession {
             timestamp: now_epoch_ms(),
             patch_summary,
             run_context: None,
+            tool_call_id: None,
+            tool_name: None,
         });
+    }
+
+    /// Push a tool call entry.
+    pub fn push_tool_call(&mut self, tool_name: &str, tool_call_id: &str, content: &str) {
+        self.messages
+            .push(ChatEntry::tool_call(tool_name, tool_call_id, content));
+    }
+
+    /// Push a tool result entry.
+    pub fn push_tool_result(&mut self, tool_call_id: &str, tool_name: &str, content: &str) {
+        self.messages
+            .push(ChatEntry::tool_result(tool_call_id, tool_name, content));
     }
 
     /// Messages in the recent window (last N exchanges).
@@ -138,6 +160,32 @@ impl ConversationSession {
     pub fn set_summary(&mut self, summary: String, window_size: Option<usize>) {
         self.summary = Some(summary);
         self.summary_cutoff = self.current_cutoff(window_size);
+    }
+}
+
+impl ChatEntry {
+    pub fn tool_call(tool_name: &str, tool_call_id: &str, content: &str) -> Self {
+        Self {
+            role: ChatRole::ToolCall,
+            content: content.to_string(),
+            timestamp: now_epoch_ms(),
+            patch_summary: None,
+            run_context: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+        }
+    }
+
+    pub fn tool_result(tool_call_id: &str, tool_name: &str, content: &str) -> Self {
+        Self {
+            role: ChatRole::ToolResult,
+            content: content.to_string(),
+            timestamp: now_epoch_ms(),
+            patch_summary: None,
+            run_context: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+        }
     }
 }
 

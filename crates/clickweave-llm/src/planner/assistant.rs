@@ -117,6 +117,7 @@ pub async fn assistant_chat_with_backend(
         let msg = match entry.role {
             ChatRole::User => Message::user(&entry.content),
             ChatRole::Assistant => Message::assistant(&entry.content),
+            ChatRole::ToolCall | ChatRole::ToolResult => continue,
         };
         messages.push(msg);
     }
