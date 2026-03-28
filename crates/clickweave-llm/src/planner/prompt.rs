@@ -12,19 +12,24 @@ pub(crate) fn context_gathering_section(has_planning_tools: bool) -> String {
 
     r#"## Context Gathering
 
-Before generating the workflow, you may call planning tools to understand the target apps.
+Before generating the workflow, call planning tools to understand the target apps.
 These tools are for gathering context only — do NOT include them in the workflow JSON.
 
 Available planning tools:
-- **probe_app(app_name)** — classify an app as Native, ElectronApp, or ChromeBrowser. Check if it's running. Always call this for apps you're not sure about.
+- **probe_app(app_name)** — classify an app as Native, ElectronApp, or ChromeBrowser. **Always call this first** for any app in the user's request.
 - **take_ax_snapshot(app_name)** — see visible UI elements (names, roles) for a running app. Use when you need precise element names for click targets. Returns interactive elements only, capped at 150 items.
 
-If an app is Electron or Chrome, you may request to restart it with a debug port for CDP access:
-- This requires user confirmation (the app will be restarted).
-- After CDP connection, you can use cdp_list_pages, cdp_select_page, and cdp_take_snapshot to inspect DOM elements.
+**CRITICAL — after probe_app returns:**
+- If `kind` is **ElectronApp** or **ChromeBrowser**: you MUST generate a CDP-based workflow. Use `launch_app` to open the app (the executor auto-connects CDP), then use CDP tool names: `cdp_click` for clicking, `cdp_type_text` for typing, `cdp_press_key` for keys, `fill` for filling input fields, `wait_for` to wait for elements, `navigate_page` to navigate.
+- If `kind` is **Native**: use native tools (`find_text`, `click`, `type_text`, etc.).
+- Do NOT use native `click`/`type_text`/`press_key` for Electron/Chrome apps — use `cdp_click`/`cdp_type_text`/`cdp_press_key` instead.
+
+**Recommended probe sequence:**
+- **Native apps:** `probe_app` → `take_ax_snapshot` (to see UI element names) → generate workflow with native tools
+- **Electron/Chrome apps:** `probe_app` → generate workflow with CDP tools directly. Use `launch_app` as the first node — it auto-connects CDP. Do NOT call `take_ax_snapshot` for Electron/Chrome apps (use `cdp_take_snapshot` after CDP connects if you need DOM inspection, but that happens at runtime, not during planning).
 
 Call as many tools as you need, then output the workflow JSON.
-For simple tasks (e.g., Calculator), you may skip probing entirely.
+For simple tasks on well-known native apps (e.g., Calculator), you may skip probing.
 
 "#.to_string()
 }

@@ -52,13 +52,13 @@ Before outputting, verify: count nodes with zero incoming edges. If more than 1,
 - Do not add "End" or "Start" nodes. The workflow ends after the last node.
 - Output ONLY valid JSON. No explanation, no markdown fences.
 - **Context selection — Native vs CDP:**
-  - For **Chrome-family browsers** (Chrome, Brave, Edge, Arc, Chromium): add `"app_kind": "ChromeBrowser"` to focus_window arguments. Use **CDP tools** (fill, navigate_page, wait_for, etc.) for browser interactions — they use element UIDs for precise targeting. The executor detects app kind automatically for launch_app, so do NOT add `app_kind` to launch_app.
+  - For **Chrome-family browsers** (Chrome, Brave, Edge, Arc, Chromium): add `"app_kind": "ChromeBrowser"` to focus_window arguments. Use **CDP tools** (`cdp_click`, `cdp_type_text`, `cdp_press_key`, `fill`, `navigate_page`, `wait_for`) for browser interactions. The executor detects app kind automatically for launch_app, so do NOT add `app_kind` to launch_app.
   - For **Electron apps** (VS Code, Slack, Discord, Signal, Notion, etc.): add `"app_kind": "ElectronApp"` to focus_window. Use **CDP tools** for in-app interactions. The executor detects app kind automatically for launch_app.
-  - For **all other desktop apps**: omit app_kind (defaults to Native). Use **native tools** (click, type_text, find_text, etc.) which use OCR and screen coordinates.
-  - **Mixed workflows are fine** — native tools (find_text, take_screenshot) work anywhere for screen-level verification, even between CDP tools.
-  - When unsure whether an app supports CDP, use native tools — they always work.
-  - Note: some tool names are shared between native and CDP contexts (click, type_text, press_key). The executor routes them to the correct MCP server based on the active CDP scope.
-- For Chrome navigation: after launch_app, type the URL directly with type_text, then press return. Do NOT use press_key shortcuts (e.g. Cmd+N, Cmd+T) to open new windows or tabs — the launch_app node already provides a usable window.
+  - For **all other desktop apps**: omit app_kind (defaults to Native). Use **native tools** (`click`, `type_text`, `find_text`, etc.) which use OCR and screen coordinates.
+  - **Native vs CDP tool names:** `click` and `cdp_click` are different tools. Use `click` for native apps, `cdp_click` for Electron/Chrome. Same for `type_text`/`cdp_type_text` and `press_key`/`cdp_press_key`.
+  - **Mixed workflows are fine** — native query tools (find_text, take_screenshot) work anywhere for screen-level verification, even between CDP tools.
+  - After `probe_app` confirms an app is ElectronApp or ChromeBrowser, always use CDP tools — do not fall back to native.
+- For Chrome navigation: after launch_app, use `cdp_type_text` to type the URL, then `cdp_press_key` to press Return. Do NOT use press_key shortcuts (e.g. Cmd+N, Cmd+T) to open new windows or tabs — the launch_app node already provides a usable window.
 {{chrome_profiles}}
 
 ## Node catalog
@@ -92,11 +92,11 @@ Before outputting, verify: count nodes with zero incoming edges. If more than 1,
 ### CDP — Action
 | Node | Tool | Variable-capable params |
 |------|------|------------------------|
-| CdpClick | click | (none — uses UID from recording) |
-| CdpHover | hover | (none) |
+| CdpClick | cdp_click | (none — uses UID or target name) |
+| CdpHover | cdp_hover | (none) |
 | CdpFill | fill | value_ref: String, Number, Bool |
-| CdpType | type_text | text_ref: String, Number, Bool |
-| CdpPressKey | press_key | (none) |
+| CdpType | cdp_type_text | text_ref: String, Number, Bool |
+| CdpPressKey | cdp_press_key | (none) |
 | CdpNavigate | navigate_page | url_ref: String |
 | CdpNewPage | new_page | url_ref: String |
 | CdpClosePage | close_page | (none) |
@@ -141,18 +141,20 @@ Note: The click node uses `target_ref` instead of `target` — this wires the co
 
 User: "Open Signal and send 'hello' to Note to Self"
 
+Signal is an Electron app (probe_app returns `kind: "ElectronApp"`), so use CDP tools:
+
 ```json
 {
   "steps": [
     {"step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Signal"}, "name": "Launch Signal"},
-    {"step_type": "Tool", "tool_name": "click", "arguments": {"target": "Note to Self"}, "name": "Click Note to Self"},
-    {"step_type": "Tool", "tool_name": "type_text", "arguments": {"text": "hello"}, "name": "Type hello"},
-    {"step_type": "Tool", "tool_name": "press_key", "arguments": {"key": "Return"}, "name": "Press Enter"}
+    {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "Note to Self"}, "name": "Click Note to Self"},
+    {"step_type": "Tool", "tool_name": "fill", "arguments": {"selector": "[data-testid='CompositionInput'] [role='textbox']", "value": "hello"}, "name": "Type hello"},
+    {"step_type": "Tool", "tool_name": "cdp_press_key", "arguments": {"key": "Return"}, "name": "Press Enter"}
   ]
 }
 ```
 
-Note: Signal is an Electron app — the executor detects this automatically from launch_app and connects CDP. The shared tool names (click, type_text, press_key) are routed to the correct MCP server based on the active CDP scope.
+Note: `launch_app` auto-detects Electron and connects CDP. Use `cdp_click` for clicking, `cdp_type_text` for typing, `cdp_press_key` for keys, and `fill` for filling input fields by selector. If you don't know a CSS selector, use the element name as the `target` argument to `cdp_click`.
 
 ## Conditional example
 

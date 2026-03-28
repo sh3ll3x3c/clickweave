@@ -3,11 +3,12 @@
 //! Used by both the planner (tool args → NodeType) and the executor (NodeType → tool args).
 
 use crate::{
-    AppKind, CdpClosePageParams, CdpFillParams, CdpHandleDialogParams, CdpNavigateParams,
-    CdpNewPageParams, CdpSelectPageParams, CdpWaitParams, ClickParams, ClickTarget, DragParams,
-    FindAppParams, FindImageParams, FindTextParams, FocusMethod, FocusWindowParams, HoverParams,
-    LaunchAppParams, McpToolCallParams, MouseButton, NodeType, PressKeyParams, QuitAppParams,
-    ScreenshotMode, ScrollParams, TakeScreenshotParams, TypeTextParams,
+    AppKind, CdpClickParams, CdpClosePageParams, CdpFillParams, CdpHandleDialogParams,
+    CdpHoverParams, CdpNavigateParams, CdpNewPageParams, CdpPressKeyParams, CdpSelectPageParams,
+    CdpTypeParams, CdpWaitParams, ClickParams, ClickTarget, DragParams, FindAppParams,
+    FindImageParams, FindTextParams, FocusMethod, FocusWindowParams, HoverParams, LaunchAppParams,
+    McpToolCallParams, MouseButton, NodeType, PressKeyParams, QuitAppParams, ScreenshotMode,
+    ScrollParams, TakeScreenshotParams, TypeTextParams,
 };
 use serde_json::Value;
 use std::fmt;
@@ -429,7 +430,43 @@ pub fn tool_invocation_to_node_type(
             app_name: optional_str(args, "app_name"),
             ..Default::default()
         })),
-        // CDP tool mappings
+        // CDP tool mappings — prefixed names for planner disambiguation
+        "cdp_click" => {
+            let uid = optional_str(args, "uid");
+            let target = args
+                .get("target")
+                .or_else(|| args.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let effective = if uid.is_empty() { target } else { uid };
+            Ok(NodeType::CdpClick(CdpClickParams {
+                uid: effective,
+                ..Default::default()
+            }))
+        }
+        "cdp_hover" => Ok(NodeType::CdpHover(CdpHoverParams {
+            uid: optional_str(args, "uid"),
+            ..Default::default()
+        })),
+        "cdp_type_text" => Ok(NodeType::CdpType(CdpTypeParams {
+            text: optional_str(args, "text"),
+            ..Default::default()
+        })),
+        "cdp_press_key" => Ok(NodeType::CdpPressKey(CdpPressKeyParams {
+            key: optional_str(args, "key"),
+            modifiers: args
+                .get("modifiers")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        })),
+        // CDP tool mappings — real MCP tool names
         "fill" => Ok(NodeType::CdpFill(CdpFillParams {
             uid: optional_str(args, "uid"),
             value: optional_str(args, "value"),
