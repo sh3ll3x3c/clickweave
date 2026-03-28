@@ -678,6 +678,7 @@ pub enum RunStatus {
     Ok,
     Failed,
     Stopped,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

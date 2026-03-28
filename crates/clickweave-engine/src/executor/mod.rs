@@ -105,6 +105,7 @@ pub enum ExecutorEvent {
         /// Base64-encoded screenshot captured during verification, if available.
         screenshot: Option<String>,
     },
+    NodeCancelled(Uuid),
 }
 
 #[derive(Debug, Clone)]
