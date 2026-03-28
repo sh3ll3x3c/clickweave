@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import type { ChatEntry, WorkflowPatch } from "../bindings";
 import { commands } from "../bindings";
+import type { ResolutionProposal } from "../store/slices/executionSlice";
 import { useStore } from "../store/useAppStore";
 import type { NodeVerdict } from "../store/slices/verdictSlice";
 import type { WalkthroughStatus } from "../store/slices/walkthroughSlice";
@@ -82,6 +84,27 @@ export function useExecutorEvents() {
       listen("menu://toggle-assistant", () => useStore.getState().toggleAssistant()),
       listen("assistant://repairing", () => {
         useStore.setState({ assistantRetrying: true });
+      }),
+      listen<{ session_id: string; entry: ChatEntry }>("assistant://message", (e) => {
+        useStore.getState().appendAssistantMessage(e.payload.session_id, e.payload.entry);
+      }),
+      listen<{ session_id: string }>("assistant://session_started", (e) => {
+        useStore.getState().setExpectedSessionId(e.payload.session_id);
+      }),
+      listen<ResolutionProposal>("executor://resolution_proposed", (e) => {
+        useStore.setState({ resolutionProposal: e.payload });
+      }),
+      listen("executor://resolution_dismissed", () => {
+        useStore.setState({ resolutionProposal: null });
+      }),
+      listen<{ patch: WorkflowPatch }>("executor://patch_applied", () => {
+        // Patch is applied to the backend workflow — the frontend will
+        // get the updated workflow on the next save/load cycle.
+        // For now, just dismiss the resolution proposal.
+        useStore.setState({ resolutionProposal: null });
+      }),
+      listen("executor://node_cancelled", () => {
+        // Clear active node visual (similar to node_completed)
       }),
       listen<{ status: string }>("walkthrough://state", (e) => {
         useStore.getState().setWalkthroughStatus(

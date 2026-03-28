@@ -13,6 +13,7 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
+import { PatchReviewDialog } from "./components/PatchReviewDialog";
 import { PlannerConfirmation } from "./components/PlannerConfirmation";
 import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
 import { useEffect, useMemo } from "react";
@@ -41,12 +42,13 @@ function App() {
     })),
   );
 
-  const { executorState, lastRunStatus, executionMode, supervisionPause, activeNode } = useStore(
+  const { executorState, lastRunStatus, executionMode, supervisionPause, resolutionProposal, activeNode } = useStore(
     useShallow((s) => ({
       executorState: s.executorState,
       lastRunStatus: s.lastRunStatus,
       executionMode: s.executionMode,
       supervisionPause: s.supervisionPause,
+      resolutionProposal: s.resolutionProposal,
       activeNode: s.activeNode,
     })),
   );
@@ -63,13 +65,13 @@ function App() {
     })),
   );
 
-  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, conversation, pendingPatch, pendingPatchWarnings, contextUsage } = useStore(
+  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, messages, pendingPatch, pendingPatchWarnings, contextUsage } = useStore(
     useShallow((s) => ({
       assistantOpen: s.assistantOpen,
       assistantLoading: s.assistantLoading,
       assistantRetrying: s.assistantRetrying,
       assistantError: s.assistantError,
-      conversation: s.conversation,
+      messages: s.messages,
       pendingPatch: s.pendingPatch,
       pendingPatchWarnings: s.pendingPatchWarnings,
       contextUsage: s.contextUsage,
@@ -117,6 +119,7 @@ function App() {
   const setHoverDwellThreshold = useStore((s) => s.setHoverDwellThreshold);
   const setExecutionMode = useStore((s) => s.setExecutionMode);
   const supervisionRespond = useStore((s) => s.supervisionRespond);
+  const resolveResolution = useStore((s) => s.resolveResolution);
   const runWorkflow = useStore((s) => s.runWorkflow);
   const stopWorkflow = useStore((s) => s.stopWorkflow);
   const setAssistantOpen = useStore((s) => s.setAssistantOpen);
@@ -124,9 +127,8 @@ function App() {
   const setWalkthroughPanelOpen = useStore((s) => s.setWalkthroughPanelOpen);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
   const sendAssistantMessage = useStore((s) => s.sendAssistantMessage);
-  const resendMessage = useStore((s) => s.resendMessage);
   const cancelAssistantChat = useStore((s) => s.cancelAssistantChat);
-  const applyPendingPatch = useStore((s) => s.applyPendingPatch);
+  const applyApprovedPatch = useStore((s) => s.applyApprovedPatch);
   const discardPendingPatch = useStore((s) => s.discardPendingPatch);
   const clearConversation = useStore((s) => s.clearConversation);
   const undo = useStore((s) => s.undo);
@@ -266,14 +268,13 @@ function App() {
                 loading={assistantLoading}
                 retrying={assistantRetrying}
                 error={assistantError}
-                conversation={conversation}
+                messages={messages}
                 pendingPatch={pendingPatch}
                 pendingPatchWarnings={pendingPatchWarnings}
                 contextUsage={contextUsage}
                 onSendMessage={sendAssistantMessage}
-                onResendMessage={resendMessage}
                 onCancel={cancelAssistantChat}
-                onApplyPatch={applyPendingPatch}
+                onApplyPatch={applyApprovedPatch}
                 onDiscardPatch={discardPendingPatch}
                 onClearConversation={clearConversation}
                 onClose={() => setAssistantOpen(false)}
@@ -328,6 +329,25 @@ function App() {
         <SupervisionModal
           pause={supervisionPause}
           onRespond={supervisionRespond}
+        />
+      )}
+
+      {resolutionProposal && (
+        <PatchReviewDialog
+          patch={resolutionProposal.patch}
+          reason={resolutionProposal.reason}
+          screenshot={resolutionProposal.screenshot}
+          onApprove={() => resolveResolution(true)}
+          onReject={() => resolveResolution(false)}
+        />
+      )}
+
+      {pendingPatch && !resolutionProposal && (
+        <PatchReviewDialog
+          patch={pendingPatch}
+          reason="Assistant proposed workflow changes"
+          onApprove={() => applyApprovedPatch()}
+          onReject={() => discardPendingPatch()}
         />
       )}
 

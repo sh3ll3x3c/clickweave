@@ -1,4 +1,4 @@
-import type { Workflow, ConversationSession } from "../bindings";
+import type { Workflow } from "../bindings";
 
 export type DetailTab = "setup" | "trace" | "runs";
 
@@ -6,10 +6,6 @@ export interface EndpointConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
-}
-
-export function makeEmptyConversation(): ConversationSession {
-  return { messages: [], summary: null, summary_cutoff: 0 };
 }
 
 export const DEFAULT_ENDPOINT: EndpointConfig = {

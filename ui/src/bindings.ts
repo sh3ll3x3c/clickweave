@@ -97,15 +97,15 @@ async clearAssistantSession() : Promise<Result<null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async saveConversation(path: string, conversation: ConversationSession) : Promise<Result<null, CommandError>> {
+async saveConversation(path: string) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_conversation", { path, conversation }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_conversation", { path }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async loadConversation(path: string) : Promise<Result<ConversationSession | null, CommandError>> {
+async loadConversation(path: string) : Promise<Result<ChatEntry[], CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("load_conversation", { path }) };
 } catch (e) {
@@ -324,8 +324,8 @@ export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
-export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; max_repair_attempts: number; project_path?: string | null }
-export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[]; tool_entries: ChatEntry[]; context_usage: number | null }
+export type AssistantChatRequest = { workflow: Workflow; user_message: string; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; max_repair_attempts: number; project_path?: string | null }
+export type AssistantChatResponse = { patch: WorkflowPatch | null; warnings: string[]; context_usage: number | null }
 /**
  * User-selected app for CDP during walkthrough.
  */

@@ -1,7 +1,7 @@
 import type { StateCreator } from "zustand";
 import type { Workflow } from "../../bindings";
 import { commands } from "../../bindings";
-import { makeDefaultWorkflow, makeEmptyConversation } from "../state";
+import { makeDefaultWorkflow } from "../state";
 import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 
@@ -47,28 +47,27 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       pendingPatchWarnings: [],
       assistantError: null,
       contextUsage: null,
-      conversation: makeEmptyConversation(),
+      messages: [],
+      expectedSessionId: null,
     });
     get().clearHistory();
     await commands.clearAssistantSession().catch(() => {});
 
-    // Load conversation
+    // Load conversation messages from the backend session
     try {
       const convResult = await commands.loadConversation(filePath);
       if (convResult.status === "ok" && convResult.data) {
-        set({ conversation: convResult.data });
-      } else {
-        set({ conversation: makeEmptyConversation() });
+        get().setMessages(convResult.data);
       }
     } catch {
-      set({ conversation: makeEmptyConversation() });
+      // Conversation load failed — messages stay empty
     }
 
     pushLog(`Opened: ${filePath}`);
   },
 
   saveProject: async () => {
-    const { projectPath, workflow, conversation, pushLog } = get();
+    const { projectPath, workflow, pushLog } = get();
     let savePath = projectPath;
     if (!savePath) {
       const result = await commands.pickSaveFile();
@@ -82,10 +81,10 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       return;
     }
 
-    // Save conversation alongside the project
+    // Save conversation from backend session alongside the project
     if (savePath) {
       try {
-        await commands.saveConversation(savePath, conversation);
+        await commands.saveConversation(savePath);
       } catch (e) {
         console.error("Failed to save conversation:", e);
       }
@@ -106,7 +105,8 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       projectPath: null,
       selectedNode: null,
       isNewWorkflow: true,
-      conversation: makeEmptyConversation(),
+      messages: [],
+      expectedSessionId: null,
       pendingPatch: null,
       pendingPatchWarnings: [],
       assistantError: null,

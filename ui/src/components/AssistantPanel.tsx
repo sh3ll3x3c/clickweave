@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import type { ConversationSession, WorkflowPatch } from "../bindings";
+import type { ChatEntry, WorkflowPatch } from "../bindings";
 import { ChatMessage } from "./ChatMessage";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 
@@ -8,12 +8,11 @@ interface AssistantPanelProps {
   loading: boolean;
   retrying: boolean;
   error: string | null;
-  conversation: ConversationSession;
+  messages: ChatEntry[];
   pendingPatch: WorkflowPatch | null;
   pendingPatchWarnings: string[];
   contextUsage: number | null;
   onSendMessage: (message: string) => void;
-  onResendMessage: (index: number) => Promise<void>;
   onCancel: () => void;
   onApplyPatch: () => void;
   onDiscardPatch: () => void;
@@ -26,12 +25,11 @@ export function AssistantPanel({
   loading,
   retrying,
   error,
-  conversation,
+  messages,
   pendingPatch,
   pendingPatchWarnings,
   contextUsage,
   onSendMessage,
-  onResendMessage,
   onCancel,
   onApplyPatch,
   onDiscardPatch,
@@ -46,7 +44,7 @@ export function AssistantPanel({
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [conversation.messages.length, loading]);
+  }, [messages.length, loading]);
 
   // Focus textarea when panel opens
   useEffect(() => {
@@ -74,12 +72,12 @@ export function AssistantPanel({
   };
 
   // Find the index of the last assistant message
-  const lastAssistantIndex = conversation.messages.reduceRight(
+  const lastAssistantIndex = messages.reduceRight(
     (found, msg, idx) => (found === -1 && msg.role === "assistant" ? idx : found),
     -1,
   );
 
-  const hasMessages = conversation.messages.length > 0;
+  const hasMessages = messages.length > 0;
 
   return (
     <div className="relative flex h-full flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]" style={{ width, minWidth: width }}>
@@ -131,7 +129,7 @@ export function AssistantPanel({
         )}
 
         <div className="space-y-3">
-          {conversation.messages.map((entry, idx) => {
+          {messages.map((entry, idx) => {
             if (entry.role === "tool_call") {
               return (
                 <div key={`${entry.timestamp}-${idx}`} className="px-3 py-1 text-[10px] text-[var(--text-muted)] font-mono">
@@ -155,7 +153,6 @@ export function AssistantPanel({
                 pendingPatchWarnings={pendingPatchWarnings}
                 onApplyPatch={onApplyPatch}
                 onDiscardPatch={onDiscardPatch}
-                onResend={entry.role === "user" && !loading ? () => onResendMessage(idx) : undefined}
               />
             );
           })}

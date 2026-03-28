@@ -1,7 +1,6 @@
 import type { StateCreator } from "zustand";
-import type { Workflow, AssistantChatRequest, WorkflowPatch, ConversationSession, ChatEntry, Edge, PatchSummary } from "../../bindings";
+import type { Workflow, AssistantChatRequest, WorkflowPatch, ChatEntry, Edge } from "../../bindings";
 import { commands } from "../../bindings";
-import { makeEmptyConversation } from "../state";
 import { toEndpoint } from "../settings";
 import { edgeOutputToHandle } from "../../utils/edgeHandles";
 import { errorMessage, isCancelledError } from "../../utils/commandError";
@@ -10,7 +9,10 @@ import { autoDissolveGroups } from "../useWorkflowMutations";
 import type { StoreState } from "./types";
 
 export interface AssistantSlice {
-  conversation: ConversationSession;
+  /** Display-only message array, populated by assistant://message events. */
+  messages: ChatEntry[];
+  /** Session ID used to filter incoming assistant events. */
+  expectedSessionId: string | null;
   assistantOpen: boolean;
   assistantLoading: boolean;
   assistantRetrying: boolean;
@@ -22,15 +24,18 @@ export interface AssistantSlice {
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
   sendAssistantMessage: (message: string) => Promise<void>;
-  resendMessage: (index: number) => Promise<void>;
-  applyPendingPatch: () => Promise<void>;
+  applyApprovedPatch: () => Promise<void>;
   discardPendingPatch: () => void;
   cancelAssistantChat: () => Promise<void>;
   clearConversation: () => void;
+  appendAssistantMessage: (sessionId: string, entry: ChatEntry) => void;
+  setExpectedSessionId: (sessionId: string) => void;
+  setMessages: (messages: ChatEntry[]) => void;
 }
 
 export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSlice> = (set, get) => ({
-  conversation: makeEmptyConversation(),
+  messages: [],
+  expectedSessionId: null,
   assistantOpen: false,
   assistantLoading: false,
   assistantRetrying: false,
@@ -67,31 +72,12 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
     const { plannerConfig, allowAiTransforms, allowAgentSteps, maxRepairAttempts, pushLog, projectPath } = get();
     set({ assistantLoading: true, assistantError: null, assistantRetrying: false });
 
-    // Capture conversation state BEFORE adding the user message -- the backend
-    // receives the new message separately as `user_message`.
-    const conv = get().conversation;
-
-    const userEntry: ChatEntry = {
-      role: "user",
-      content: message,
-      timestamp: Date.now(),
-      patch_summary: null,
-      run_context: null,
-    };
-    set((s) => ({
-      conversation: {
-        ...s.conversation,
-        messages: [...s.conversation.messages, userEntry],
-      },
-    }));
-
+    // Messages are now appended by assistant://message events from the backend.
+    // The frontend only sends the request and handles the response for patch/warnings.
     try {
       const request: AssistantChatRequest = {
         workflow: get().workflow,
         user_message: message,
-        history: conv.messages,
-        summary: conv.summary ?? null,
-        summary_cutoff: conv.summary_cutoff ?? 0,
         run_context: null,
         planner: toEndpoint(plannerConfig),
         allow_ai_transforms: allowAiTransforms,
@@ -104,42 +90,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       if (result.status === "ok") {
         const data = result.data;
 
-        // Build patch summary if there's a patch
-        let patchSummary: PatchSummary | null = null;
-        if (data.patch) {
-          const currentNodes = get().workflow.nodes;
-          const removedNames = data.patch.removed_node_ids.map((id) => {
-            const node = currentNodes.find((n) => n.id === id);
-            return node?.name ?? id;
-          });
-          patchSummary = {
-            added: data.patch.added_nodes.length,
-            removed: data.patch.removed_node_ids.length,
-            updated: data.patch.updated_nodes.length,
-            added_names: data.patch.added_nodes.map((n) => n.name),
-            removed_names: removedNames,
-            updated_names: data.patch.updated_nodes.map((n) => n.name),
-            description: null,
-          };
-        }
-
-        const toolEntries: ChatEntry[] = data.tool_entries ?? [];
-
-        // Add assistant message to conversation
-        const assistantEntry: ChatEntry = {
-          role: "assistant",
-          content: data.assistant_message,
-          timestamp: Date.now(),
-          patch_summary: patchSummary,
-          run_context: null,
-        };
-
         set((s) => ({
-          conversation: {
-            messages: [...s.conversation.messages, ...toolEntries, assistantEntry],
-            summary: data.new_summary ?? s.conversation.summary,
-            summary_cutoff: data.summary_cutoff,
-          },
           pendingPatch: data.patch ?? s.pendingPatch,
           pendingPatchWarnings: data.patch ? data.warnings : s.pendingPatchWarnings,
           contextUsage: data.context_usage ?? s.contextUsage,
@@ -162,25 +113,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
     }
   },
 
-  resendMessage: async (index) => {
-    const conv = get().conversation;
-    const entry = conv.messages[index];
-    if (!entry || entry.role !== "user") return;
-    const content = entry.content;
-    // Truncate to just before this user message, discarding it and everything after
-    set((s) => ({
-      conversation: {
-        ...s.conversation,
-        messages: s.conversation.messages.slice(0, index),
-      },
-      pendingPatch: null,
-      pendingPatchWarnings: [],
-      assistantError: null,
-    }));
-    await get().sendAssistantMessage(content);
-  },
-
-  applyPendingPatch: async () => {
+  applyApprovedPatch: async () => {
     const { pendingPatch, workflow, pushLog } = get();
     if (!pendingPatch) return;
     const edgeKey = (e: Edge) =>
@@ -259,11 +192,25 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   clearConversation: () => {
     commands.clearAssistantSession().catch(() => {});
     set({
-      conversation: makeEmptyConversation(),
+      messages: [],
+      expectedSessionId: null,
       pendingPatch: null,
       pendingPatchWarnings: [],
       assistantError: null,
       contextUsage: null,
     });
+  },
+
+  appendAssistantMessage: (sessionId, entry) => {
+    if (get().expectedSessionId !== null && get().expectedSessionId !== sessionId) return;
+    set((s) => ({ messages: [...s.messages, entry] }));
+  },
+
+  setExpectedSessionId: (sessionId) => {
+    set({ expectedSessionId: sessionId, messages: [] });
+  },
+
+  setMessages: (messages) => {
+    set({ messages });
   },
 });

@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
-import type { ExecutionMode, RunRequest } from "../../bindings";
+import type { ExecutionMode, RunRequest, WorkflowPatch } from "../../bindings";
 import { commands } from "../../bindings";
+import { invoke } from "@tauri-apps/api/core";
 import { validateSingleGraph } from "../../utils/graphValidation";
 import { errorMessage } from "../../utils/commandError";
 import { toEndpoint } from "../settings";
@@ -13,10 +14,19 @@ export interface SupervisionPause {
   screenshot: string | null;
 }
 
+export interface ResolutionProposal {
+  nodeId: string;
+  nodeName: string;
+  reason: string;
+  patch: WorkflowPatch;
+  screenshot?: string;
+}
+
 export interface ExecutionSlice {
   executorState: "idle" | "running";
   executionMode: ExecutionMode;
   supervisionPause: SupervisionPause | null;
+  resolutionProposal: ResolutionProposal | null;
   lastRunStatus: "completed" | "failed" | null;
 
   setExecutorState: (state: "idle" | "running") => void;
@@ -24,6 +34,7 @@ export interface ExecutionSlice {
   setSupervisionPause: (pause: SupervisionPause | null) => void;
   clearSupervisionPause: () => void;
   supervisionRespond: (action: "retry" | "skip" | "abort") => Promise<void>;
+  resolveResolution: (approved: boolean) => Promise<void>;
   runWorkflow: () => Promise<void>;
   stopWorkflow: () => Promise<void>;
   setLastRunStatus: (status: "completed" | "failed" | null) => void;
@@ -34,6 +45,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   executorState: "idle",
   executionMode: "Test",
   supervisionPause: null,
+  resolutionProposal: null,
   lastRunStatus: null,
 
   setExecutorState: (state) => set({ executorState: state }),
@@ -49,6 +61,15 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
     const result = await commands.supervisionRespond(action);
     if (result.status === "error") {
       pushLog(`Supervision response failed: ${errorMessage(result.error)}`);
+    }
+  },
+
+  resolveResolution: async (approved) => {
+    set({ resolutionProposal: null });
+    try {
+      await invoke("resolution_respond", { approved });
+    } catch (e) {
+      get().pushLog(`Resolution response failed: ${e}`);
     }
   },
 
