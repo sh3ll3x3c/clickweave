@@ -1,15 +1,9 @@
 use super::error::CommandError;
-use super::planner::fetch_mcp_tool_schemas;
+use super::planner_session::{AssistantSessionHandle, PlannerHandle, PlannerSession};
 use super::types::*;
 use clickweave_llm::planner::conversation::{ConversationSession, RunContext};
-use std::sync::Mutex;
+use std::sync::Arc;
 use tauri::{Emitter, Manager};
-use tokio::task::AbortHandle;
-
-#[derive(Default)]
-pub struct AssistantHandle {
-    abort: Option<AbortHandle>,
-}
 
 fn format_run_context(ctx: &RunContext) -> String {
     let mut lines = vec![format!("Execution: {}", ctx.execution_dir)];
@@ -29,106 +23,127 @@ pub async fn assistant_chat(
     app: tauri::AppHandle,
     request: AssistantChatRequest,
 ) -> Result<AssistantChatResponse, CommandError> {
-    // Clear any stale handle
-    {
-        let handle = app.state::<Mutex<AssistantHandle>>();
-        handle.lock().unwrap().abort = None;
+    let chrome_profiles = super::chrome_profiles::get_store(&app).load_profiles();
+    let profiles_ref = if chrome_profiles.len() > 1 {
+        Some(chrome_profiles.as_slice())
+    } else {
+        None
+    };
+
+    let planner_handle_state = app.state::<Arc<std::sync::Mutex<PlannerHandle>>>();
+    let session_handle_state = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
+
+    // Step 1: Check if we need to create a session (brief lock)
+    let needs_creation = {
+        let guard = session_handle_state.lock().await;
+        !guard.has_session()
+    };
+    // Lock dropped
+
+    // Step 2: Create session outside any lock if needed (async MCP spawn)
+    if needs_creation {
+        let mcp = super::planner::spawn_planning_mcp().await?;
+        let tools = mcp.tools_as_openai();
+        let session =
+            PlannerSession::try_new(mcp, app.clone(), Arc::clone(&planner_handle_state), &tools)
+                .await?;
+        let mut guard = session_handle_state.lock().await;
+        guard.return_session(session);
     }
 
-    let chrome_profiles = super::chrome_profiles::get_store(&app).load_profiles();
+    // Step 3: Take session out (brief lock)
+    let session = {
+        let mut guard = session_handle_state.lock().await;
+        guard
+            .take_session()
+            .ok_or_else(|| CommandError::validation("No planning session available"))?
+    };
+    // Lock dropped — planner_confirmation_respond can access PlannerHandle freely
 
-    let emit_handle = app.clone();
-    let join_handle = tokio::task::spawn(async move {
-        let tools = fetch_mcp_tool_schemas().await?;
+    // Step 4: Run the LLM call. Wrap in an async block so we can guarantee
+    // the session is returned even on error.
+    let run_result = async {
+        let emit_handle = app.clone();
+        let on_repair = move |attempt: usize, max: usize| {
+            let _ = emit_handle.emit("assistant://repairing", (attempt, max));
+        };
+
         let config = request.planner.into_llm_config(None);
-        let session = ConversationSession {
+        let conversation_session = ConversationSession {
             messages: request.history,
             summary: request.summary,
             summary_cutoff: request.summary_cutoff,
         };
         let run_context_text = request.run_context.as_ref().map(format_run_context);
+        let workflow_tools = session.mcp_tools_openai().await;
 
-        let on_repair = move |attempt: usize, max: usize| {
-            let _ = emit_handle.emit("assistant://repairing", (attempt, max));
-        };
-
-        let profiles_ref = if chrome_profiles.len() > 1 {
-            Some(chrome_profiles.as_slice())
-        } else {
-            None
-        };
-
-        let result = clickweave_llm::planner::assistant_chat(
+        clickweave_llm::planner::assistant_chat(
             &request.workflow,
             &request.user_message,
-            &session,
+            &conversation_session,
             run_context_text.as_deref(),
             config,
-            &tools,
+            &workflow_tools,
             request.allow_ai_transforms,
             request.allow_agent_steps,
             (request.max_repair_attempts as usize).min(10),
             Some(&on_repair),
             profiles_ref,
-            None::<&clickweave_llm::planner::conversation_loop::NoExecutor>,
+            Some(&session),
         )
         .await
-        .map_err(|e| CommandError::llm(format!("Assistant chat failed: {}", e)))?;
+        .map(|result| (result, conversation_session))
+        .map_err(|e| CommandError::llm(format!("Assistant chat failed: {}", e)))
+    }
+    .await;
 
-        let patch = result.patch.map(|p| WorkflowPatch {
-            added_nodes: p.added_nodes,
-            removed_node_ids: p.removed_node_ids.iter().map(|id| id.to_string()).collect(),
-            updated_nodes: p.updated_nodes,
-            added_edges: p.added_edges,
-            removed_edges: p.removed_edges,
-            warnings: p.warnings,
-        });
+    // Always return session to handle, even on error
+    {
+        let mut guard = session_handle_state.lock().await;
+        guard.return_session(session);
+    }
 
-        let new_cutoff = if result.new_summary.is_some() {
-            session.current_cutoff(None)
-        } else {
-            request.summary_cutoff
-        };
+    let (result, conversation_session) = run_result?;
 
-        Ok(AssistantChatResponse {
-            assistant_message: result.message,
-            patch,
-            new_summary: result.new_summary,
-            summary_cutoff: new_cutoff,
-            warnings: result.warnings,
-        })
+    // Compute context_usage percentage
+    let context_usage = result.prompt_tokens.map(|tokens| {
+        let context_window = 32000.0_f32; // fallback; ideally query model_info
+        (tokens as f32 / context_window).min(1.0)
     });
 
-    // Store the abort handle
-    {
-        let handle = app.state::<Mutex<AssistantHandle>>();
-        handle.lock().unwrap().abort = Some(join_handle.abort_handle());
-    }
-
-    let result = match join_handle.await {
-        Ok(inner) => inner,
-        Err(e) if e.is_cancelled() => Err(CommandError::cancelled()),
-        Err(e) => Err(CommandError::internal(format!(
-            "Assistant chat panicked: {}",
-            e
-        ))),
+    let new_cutoff = if result.new_summary.is_some() {
+        conversation_session.current_cutoff(None)
+    } else {
+        request.summary_cutoff
     };
 
-    // Clear the handle after completion
-    {
-        let handle = app.state::<Mutex<AssistantHandle>>();
-        handle.lock().unwrap().abort = None;
-    }
+    let patch = result.patch.map(|p| WorkflowPatch {
+        added_nodes: p.added_nodes,
+        removed_node_ids: p.removed_node_ids.iter().map(|id| id.to_string()).collect(),
+        updated_nodes: p.updated_nodes,
+        added_edges: p.added_edges,
+        removed_edges: p.removed_edges,
+        warnings: p.warnings,
+    });
 
-    result
+    Ok(AssistantChatResponse {
+        assistant_message: result.message,
+        patch,
+        new_summary: result.new_summary,
+        summary_cutoff: new_cutoff,
+        warnings: result.warnings,
+        tool_entries: result.tool_entries,
+        context_usage,
+    })
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn cancel_assistant_chat(app: tauri::AppHandle) -> Result<(), CommandError> {
-    let handle = app.state::<Mutex<AssistantHandle>>();
-    if let Some(h) = handle.lock().unwrap().abort.take() {
-        h.abort();
+    let handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
+    let mut guard = handle.lock().await;
+    if let Some(abort) = guard.abort.take() {
+        abort.abort();
     }
     Ok(())
 }

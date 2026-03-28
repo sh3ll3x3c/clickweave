@@ -100,6 +100,12 @@ impl PlannerSession {
         );
     }
 
+    /// Get the full MCP tool list for workflow building (not just planning tools).
+    pub async fn mcp_tools_openai(&self) -> Vec<Value> {
+        let mcp = self.mcp.lock().await;
+        mcp.tools_as_openai()
+    }
+
     /// After cdp_connect succeeds, re-fetch the tool list from the MCP server
     /// so newly available CDP tools appear in subsequent LLM turns.
     async fn refresh_planning_tools(&self) {
@@ -200,6 +206,72 @@ impl PlannerToolExecutor for PlannerSession {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
+}
+
+/// Managed state that owns the PlannerSession for the current assistant conversation.
+/// One session at a time — created on first assistant turn, reused across turns,
+/// cleaned up when conversation is cleared.
+///
+/// The session is taken out via `take_session()` during LLM calls so the lock
+/// isn't held while waiting for tool confirmations. Put it back with `return_session()`.
+pub struct AssistantSessionHandle {
+    session: Option<PlannerSession>,
+    pub(crate) abort: Option<tokio::task::AbortHandle>,
+}
+
+impl Default for AssistantSessionHandle {
+    fn default() -> Self {
+        Self {
+            session: None,
+            abort: None,
+        }
+    }
+}
+
+impl AssistantSessionHandle {
+    /// Take the session out for use during an LLM call.
+    /// Returns None if no session exists yet (caller must create one first).
+    pub fn take_session(&mut self) -> Option<PlannerSession> {
+        self.session.take()
+    }
+
+    /// Return the session after an LLM call completes.
+    pub fn return_session(&mut self, session: PlannerSession) {
+        self.session = Some(session);
+    }
+
+    /// Check if a session already exists.
+    pub fn has_session(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// Store the abort handle for cancellation.
+    pub fn set_abort(&mut self, abort: tokio::task::AbortHandle) {
+        self.abort = Some(abort);
+    }
+
+    /// Clear abort handle after task completes.
+    pub fn clear_abort(&mut self) {
+        self.abort = None;
+    }
+
+    pub async fn clear(&mut self) {
+        if let Some(session) = self.session.take() {
+            session.cleanup().await;
+        }
+        if let Some(abort) = self.abort.take() {
+            abort.abort();
+        }
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn clear_assistant_session(app: tauri::AppHandle) -> Result<(), CommandError> {
+    let handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
+    let mut guard = handle.lock().await;
+    guard.clear().await;
+    Ok(())
 }
 
 #[tauri::command]

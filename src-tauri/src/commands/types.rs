@@ -213,6 +213,8 @@ pub struct AssistantChatResponse {
     pub new_summary: Option<String>,
     pub summary_cutoff: usize,
     pub warnings: Vec<String>,
+    pub tool_entries: Vec<clickweave_llm::planner::conversation::ChatEntry>,
+    pub context_usage: Option<f32>,
 }
 
 // --- Walkthrough event payloads ---
