@@ -43,9 +43,10 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       pendingPatchWarnings: [],
       assistantError: null,
       contextUsage: null,
+      conversation: makeEmptyConversation(),
     });
     get().clearHistory();
-    commands.clearAssistantSession().catch(() => {});
+    await commands.clearAssistantSession().catch(() => {});
 
     // Load conversation
     try {
