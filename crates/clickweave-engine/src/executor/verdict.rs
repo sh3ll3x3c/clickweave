@@ -35,8 +35,8 @@ pub(crate) fn verdict_passed(verdict: &NodeVerdict) -> bool {
 }
 
 /// Create a deterministic NodeVerdict for a Verification-role node based on its
-/// runtime result. Works for FindText, FindImage, and FindApp which produce
-/// array results with a `.found` boolean.
+/// runtime result. Works for FindText/FindImage (array results) and FindApp
+/// (object with a `found` boolean).
 pub(crate) fn deterministic_verdict(
     node_id: Uuid,
     node_name: &str,
@@ -45,6 +45,11 @@ pub(crate) fn deterministic_verdict(
 ) -> NodeVerdict {
     let (found, count) = match result {
         Value::Array(arr) => (!arr.is_empty(), arr.len()),
+        // FindApp returns an object with a `found` key
+        Value::Object(map) => {
+            let f = map.get("found").and_then(|v| v.as_bool()).unwrap_or(false);
+            (f, usize::from(f))
+        }
         _ => (false, 0),
     };
 
