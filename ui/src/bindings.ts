@@ -65,14 +65,6 @@ async generateAutoId(nodeTypeName: string, countersJson: string) : Promise<Resul
     else return { status: "error", error: e  as any };
 }
 },
-async planWorkflow(request: PlanRequest) : Promise<Result<PlanResponse, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("plan_workflow", { request }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async patchWorkflow(request: PatchRequest) : Promise<Result<WorkflowPatch, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("patch_workflow", { request }) };
@@ -92,6 +84,14 @@ async assistantChat(request: AssistantChatRequest) : Promise<Result<AssistantCha
 async cancelAssistantChat() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cancel_assistant_chat") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async clearAssistantSession() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_assistant_session") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -324,8 +324,8 @@ export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
-export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; max_repair_attempts: number }
-export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[] }
+export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; max_repair_attempts: number; project_path?: string | null }
+export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[]; tool_entries: ChatEntry[]; context_usage: number | null }
 /**
  * User-selected app for CDP during walkthrough.
  */
@@ -348,8 +348,8 @@ export type CdpWaitParams = { text: string; timeout_ms?: number }
 /**
  * A single entry in the assistant conversation.
  */
-export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
-export type ChatRole = "user" | "assistant"
+export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null; tool_call_id?: string | null; tool_name?: string | null }
+export type ChatRole = "user" | "assistant" | "tool_call" | "tool_result"
 export type ChromeProfile = { id: string; name: string; google_email: string | null }
 export type ClickParams = { target: ClickTarget | null; target_ref?: OutputRef | null; button: MouseButton; click_count: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ClickTarget = { type: "Text"; text: string } | { type: "Coordinates"; x: number; y: number } | { type: "WindowControl"; action: WindowControlAction }

@@ -11,6 +11,7 @@ interface AssistantPanelProps {
   conversation: ConversationSession;
   pendingPatch: WorkflowPatch | null;
   pendingPatchWarnings: string[];
+  contextUsage: number | null;
   onSendMessage: (message: string) => void;
   onResendMessage: (index: number) => Promise<void>;
   onCancel: () => void;
@@ -28,6 +29,7 @@ export function AssistantPanel({
   conversation,
   pendingPatch,
   pendingPatchWarnings,
+  contextUsage,
   onSendMessage,
   onResendMessage,
   onCancel,
@@ -88,9 +90,16 @@ export function AssistantPanel({
       />
       {/* Header */}
       <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
-        <h2 className="text-sm font-medium text-[var(--text-primary)]">
-          Assistant
-        </h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-medium text-[var(--text-primary)]">
+            Assistant
+          </h2>
+          {contextUsage != null && (
+            <span className={`text-[10px] ${contextUsage > 0.8 ? "text-amber-400" : "text-[var(--text-muted)]"}`}>
+              Context: {Math.round(contextUsage * 100)}%
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-1">
           {hasMessages && (
             <button
@@ -122,18 +131,34 @@ export function AssistantPanel({
         )}
 
         <div className="space-y-3">
-          {conversation.messages.map((entry, idx) => (
-            <ChatMessage
-              key={`${entry.timestamp}-${idx}`}
-              entry={entry}
-              isLastAssistant={idx === lastAssistantIndex}
-              pendingPatch={pendingPatch}
-              pendingPatchWarnings={pendingPatchWarnings}
-              onApplyPatch={onApplyPatch}
-              onDiscardPatch={onDiscardPatch}
-              onResend={entry.role === "user" && !loading ? () => onResendMessage(idx) : undefined}
-            />
-          ))}
+          {conversation.messages.map((entry, idx) => {
+            if (entry.role === "tool_call") {
+              return (
+                <div key={`${entry.timestamp}-${idx}`} className="px-3 py-1 text-[10px] text-[var(--text-muted)] font-mono">
+                  &rarr; {entry.tool_name}
+                </div>
+              );
+            }
+            if (entry.role === "tool_result") {
+              return (
+                <div key={`${entry.timestamp}-${idx}`} className="px-3 py-1 text-[10px] text-[var(--text-muted)]">
+                  &larr; {entry.content.slice(0, 100)}{entry.content.length > 100 ? "..." : ""}
+                </div>
+              );
+            }
+            return (
+              <ChatMessage
+                key={`${entry.timestamp}-${idx}`}
+                entry={entry}
+                isLastAssistant={idx === lastAssistantIndex}
+                pendingPatch={pendingPatch}
+                pendingPatchWarnings={pendingPatchWarnings}
+                onApplyPatch={onApplyPatch}
+                onDiscardPatch={onDiscardPatch}
+                onResend={entry.role === "user" && !loading ? () => onResendMessage(idx) : undefined}
+              />
+            );
+          })}
 
           {/* Loading indicator */}
           {loading && (

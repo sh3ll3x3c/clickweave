@@ -268,6 +268,7 @@ function App() {
                 conversation={conversation}
                 pendingPatch={pendingPatch}
                 pendingPatchWarnings={pendingPatchWarnings}
+                contextUsage={useStore((s) => s.contextUsage)}
                 onSendMessage={sendAssistantMessage}
                 onResendMessage={resendMessage}
                 onCancel={cancelAssistantChat}
