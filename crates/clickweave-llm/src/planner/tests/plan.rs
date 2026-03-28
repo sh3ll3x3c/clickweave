@@ -267,3 +267,66 @@ async fn test_plan_calculator_loop_scenario() {
 
     assert!(result.warnings.is_empty());
 }
+
+#[tokio::test]
+async fn test_graph_plan_remaps_outputref_graph_ids_to_auto_ids() {
+    // OutputRef.node uses graph IDs ("n1") — verify they're remapped to auto_ids.
+    let response = r#"{"nodes": [
+        {"id": "n1", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "Submit", "app_name": "Safari"}, "name": "Find Submit"},
+        {"id": "n2", "step_type": "If", "name": "Check Found", "condition": {
+            "left": {"node": "n1", "field": "found"},
+            "operator": "Equals",
+            "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
+        }},
+        {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "Submit"}, "name": "Click Submit"},
+        {"id": "n4", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {"app_name": "Safari"}, "name": "Screenshot"}
+    ], "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n2", "to": "n3", "output": {"type": "IfTrue"}},
+        {"from": "n2", "to": "n4", "output": {"type": "IfFalse"}},
+        {"from": "n3", "to": "n4"}
+    ]}"#;
+
+    let mock = MockBackend::single(response);
+    let result = plan_workflow_with_backend(
+        &mock,
+        "Find the Submit button and click it",
+        &sample_tools(),
+        false,
+        false,
+        None,
+        None,
+    )
+    .await;
+
+    let result = result.unwrap_or_else(|e| panic!("plan_workflow_with_backend failed: {:#}", e));
+
+    let wf = &result.workflow;
+    assert_eq!(wf.nodes.len(), 4);
+
+    let find_text = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::FindText(_)))
+        .unwrap();
+    let find_text_auto_id = &find_text.auto_id;
+    assert!(
+        !find_text_auto_id.is_empty(),
+        "find_text node should have an auto_id"
+    );
+
+    // Verify If condition.left was remapped from "n1" to the auto_id
+    let if_node = wf
+        .nodes
+        .iter()
+        .find(|n| matches!(n.node_type, NodeType::If(_)))
+        .unwrap();
+    if let NodeType::If(p) = &if_node.node_type {
+        assert_eq!(
+            &p.condition.left.node, find_text_auto_id,
+            "If condition.left.node should be remapped from graph ID 'n1' to auto_id, got '{}'",
+            p.condition.left.node
+        );
+        assert_eq!(p.condition.left.field, "found");
+    }
+}

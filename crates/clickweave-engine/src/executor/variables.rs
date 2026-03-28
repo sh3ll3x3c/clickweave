@@ -102,6 +102,14 @@ pub(crate) fn extract_result_variables(
                         if let Some(coords) = coords {
                             set(format!("{}.coordinates", prefix), coords);
                         }
+                        // Synthesize .confidence from score or confidence
+                        let confidence = first
+                            .get("score")
+                            .or_else(|| first.get("confidence"))
+                            .cloned();
+                        if let Some(c) = confidence {
+                            set(format!("{}.confidence", prefix), c);
+                        }
                     }
                 }
             }
