@@ -25,7 +25,7 @@ use clickweave_core::chrome_profiles::{ChromeProfile, ChromeProfileStore};
 use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, Workflow};
+use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, RuntimeResolution, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -35,6 +35,20 @@ use std::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+/// Query sent from executor to Tauri layer when resolution fails.
+/// Lives in engine crate (not core) because it carries a tokio channel sender.
+pub struct RuntimeQuery {
+    pub node_id: Uuid,
+    pub node_name: String,
+    pub action_description: String,
+    pub target: String,
+    pub screenshot: Option<String>,
+    pub element_inventory: String,
+    pub current_node_id: Uuid,
+    pub completed_node_ids: Vec<Uuid>,
+    pub response_tx: tokio::sync::oneshot::Sender<RuntimeResolution>,
+}
 
 /// Minimal trait for MCP tool invocation, used to enable test stubs.
 pub(crate) trait Mcp: Send + Sync {
