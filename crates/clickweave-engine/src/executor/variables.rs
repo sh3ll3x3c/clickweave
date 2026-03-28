@@ -248,6 +248,40 @@ mod tests {
     }
 
     #[test]
+    fn extract_find_image_from_object_shaped_matches() {
+        let mut ctx = RuntimeContext::new();
+        // Real MCP find_image response: object with matches array
+        let result = serde_json::json!({
+            "matches": [
+                {"screen_x": 120.0, "screen_y": 340.0, "score": 0.92},
+                {"screen_x": 500.0, "screen_y": 600.0, "score": 0.71}
+            ]
+        });
+        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
+        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
+
+        assert_eq!(
+            ctx.get_variable("find_image.found"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            ctx.get_variable("find_image.count"),
+            Some(&Value::Number(serde_json::Number::from(2)))
+        );
+        assert_eq!(
+            ctx.get_variable("find_image.coordinates"),
+            Some(&serde_json::json!({"x": 120.0, "y": 340.0}))
+        );
+        assert_eq!(
+            ctx.get_variable("find_image.confidence"),
+            Some(&serde_json::json!(0.92))
+        );
+        // Top-level keys still extracted
+        assert!(ctx.get_variable("find_image.matches").is_some());
+        assert_eq!(ctx.get_variable("find_image.result"), Some(&result));
+    }
+
+    #[test]
     fn no_coordinates_for_find_app() {
         let mut ctx = RuntimeContext::new();
         let result = serde_json::json!([{"name": "Safari", "id": 1}]);

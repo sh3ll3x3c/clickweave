@@ -104,8 +104,9 @@ Operators: Equals, NotEquals, GreaterThan, LessThan, GreaterThanOrEqual, LessTha
 Literal types: `{"type": "String", "value": "text"}`, `{"type": "Number", "value": 42}`, `{"type": "Bool", "value": true}`.
 
 **Variable names** follow `<auto_id>.<field>`. The auto_id is assigned automatically from the node type (e.g. `find_text_1`, `click_1`, `find_image_2`). The variable name in conditions MUST use the node's `auto_id`. Fields per tool:
-- find_text: `.found` (bool), `.text`, `.x`, `.y`, `.count`, `.matches`
-- find_image: `.found` (bool), `.x`, `.y`, `.score`, `.count`, `.matches`
+- find_text: `.found` (bool), `.count`, `.text`, `.coordinates` (object with x/y)
+- find_image: `.found` (bool), `.count`, `.coordinates` (object with x/y), `.confidence`
+- find_app: `.found` (bool), `.pid`
 - list_apps: `.found` (bool), `.count`, `.apps`
 - click, type_text, press_key, scroll, focus_window: `.success` (bool)
 - take_screenshot: `.result`
