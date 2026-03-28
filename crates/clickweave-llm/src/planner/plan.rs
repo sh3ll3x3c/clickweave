@@ -1,8 +1,7 @@
+use super::conversation_loop::{NoExecutor, conversation_loop};
 use super::mapping::step_to_node_type;
 use super::parse::{extract_json, layout_nodes, step_rejected_reason, truncate_intent};
 use super::prompt::planner_system_prompt;
-use super::repair::chat_with_repair;
-use super::tool_use::{PlannerToolExecutor, is_planning_only_tool, plan_with_tool_use};
 use super::{PlanResult, PlanStep, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::{Context, Result, anyhow};
@@ -77,78 +76,27 @@ pub async fn plan_workflow_with_backend(
 
     let messages = vec![Message::system(&system), Message::user(&user_msg)];
 
-    chat_with_repair(backend, "Planner", messages, |content| {
-        parse_and_build_workflow(
-            content,
-            intent,
-            mcp_tools_openai,
-            allow_ai_transforms,
-            allow_agent_steps,
-        )
-    })
-    .await
-}
-
-/// Plan a workflow with planning-time tool support.
-///
-/// Like `plan_workflow_with_backend`, but uses the tool-use conversation loop
-/// instead of `chat_with_repair`. The executor provides MCP tool access and
-/// user confirmation handling.
-pub async fn plan_workflow_with_tools<E: PlannerToolExecutor>(
-    backend: &impl ChatBackend,
-    intent: &str,
-    mcp_tools_openai: &[Value],
-    allow_ai_transforms: bool,
-    allow_agent_steps: bool,
-    chrome_profiles: Option<&[ChromeProfile]>,
-    executor: &E,
-) -> Result<PlanResult> {
-    let has_planning_tools = executor.has_planning_tools();
-
-    // Filter planning-only tools from the workflow tool catalog so the LLM
-    // prompt only shows tools valid for workflow nodes.
-    let workflow_tools: Vec<Value> = mcp_tools_openai
-        .iter()
-        .filter(|tool| {
-            let name = tool
-                .get("function")
-                .and_then(|f| f.get("name"))
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
-            !is_planning_only_tool(name)
-        })
-        .cloned()
-        .collect();
-
-    let system = planner_system_prompt(
-        &workflow_tools,
-        allow_ai_transforms,
-        allow_agent_steps,
+    let output = conversation_loop(
+        backend,
+        messages,
+        None::<&NoExecutor>,
+        |content| {
+            parse_and_build_workflow(
+                content,
+                intent,
+                mcp_tools_openai,
+                allow_ai_transforms,
+                allow_agent_steps,
+            )
+        },
+        None::<fn(&PlanResult) -> Result<()>>,
+        1, // 1 repair attempt (matches old MAX_REPAIR_ATTEMPTS = 1)
         None,
-        chrome_profiles,
-        has_planning_tools,
-    );
-    let user_msg = format!("Plan a workflow for: {}", intent);
+        None,
+    )
+    .await?;
 
-    info!("Planning workflow with tool support for intent: {}", intent);
-    debug!(
-        "Planner system prompt length: {} chars, planning tools: {}",
-        system.len(),
-        has_planning_tools
-    );
-
-    let messages = vec![Message::system(&system), Message::user(&user_msg)];
-
-    plan_with_tool_use(backend, messages, executor, |content| {
-        parse_and_build_workflow(
-            content,
-            intent,
-            mcp_tools_openai,
-            allow_ai_transforms,
-            allow_agent_steps,
-        )
-    })
-    .await
+    Ok(output.result)
 }
 
 /// Parse planner output JSON and build a workflow.

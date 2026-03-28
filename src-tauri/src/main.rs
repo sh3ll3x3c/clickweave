@@ -95,7 +95,6 @@ fn main() {
         validate,
         node_type_defaults,
         generate_auto_id,
-        plan_workflow,
         patch_workflow,
         assistant_chat,
         cancel_assistant_chat,
