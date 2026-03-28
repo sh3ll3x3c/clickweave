@@ -246,6 +246,8 @@ impl PlannerSession {
             (page_url, snapshot_text)
         };
 
+        // Build element inventory and search results from the same snapshot.
+        let inventory = clickweave_core::cdp::build_element_inventory(&snapshot_text, 5);
         let result = clickweave_core::cdp::search_interactive_elements(
             &snapshot_text,
             &query,
@@ -254,6 +256,37 @@ impl PlannerSession {
         );
 
         let mut output = format!("Searching on page: {page_url}\n\n");
+
+        // Element inventory header.
+        if !inventory.groups.is_empty() {
+            let total: usize = inventory.groups.iter().map(|g| g.count).sum();
+            // Show all labels when page is small, truncate otherwise.
+            let show_all = total <= 20;
+
+            writeln!(output, "Page elements:").unwrap();
+            for g in &inventory.groups {
+                let samples = if show_all {
+                    g.sample_labels.join(", ")
+                } else {
+                    let shown: Vec<&str> =
+                        g.sample_labels.iter().take(5).map(|s| s.as_str()).collect();
+                    let label_text = shown.join(", ");
+                    if g.count > shown.len() {
+                        format!("{label_text}, ...+{} more", g.count - shown.len())
+                    } else {
+                        label_text
+                    }
+                };
+                if samples.is_empty() {
+                    writeln!(output, "  {} ({})", g.role, g.count).unwrap();
+                } else {
+                    writeln!(output, "  {} ({}): {}", g.role, g.count, samples).unwrap();
+                }
+            }
+            output.push('\n');
+        }
+
+        // Search results.
         if result.matches.is_empty() {
             write!(output, "No interactive matches for \"{query}\".").unwrap();
         } else {

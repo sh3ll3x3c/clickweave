@@ -321,6 +321,91 @@ pub fn search_interactive_elements(
     }
 }
 
+/// A group of interactive elements sharing the same ARIA role.
+#[derive(Debug, Clone)]
+pub struct RoleGroup {
+    /// The ARIA role (e.g. "button", "link", "textbox").
+    pub role: String,
+    /// Total number of elements with this role.
+    pub count: usize,
+    /// First N unique labels (deduplicated, in DOM order).
+    pub sample_labels: Vec<String>,
+}
+
+/// Summary of all interactive elements on a page, grouped by role.
+#[derive(Debug, Clone)]
+pub struct ElementInventory {
+    pub groups: Vec<RoleGroup>,
+}
+
+/// Scan a CDP snapshot and build a role-grouped inventory of interactive elements.
+///
+/// Returns groups sorted by count descending. Labels are deduplicated within
+/// each role (e.g. ten "×" close buttons → one "×" sample). Each group holds
+/// at most `max_samples` unique labels.
+pub fn build_element_inventory(snapshot_text: &str, max_samples: usize) -> ElementInventory {
+    use std::collections::BTreeMap;
+
+    // role → (count, seen_labels, sample_labels)
+    let mut groups: BTreeMap<String, (usize, std::collections::HashSet<String>, Vec<String>)> =
+        BTreeMap::new();
+
+    for line in snapshot_text.lines() {
+        let Some((_, role, is_leaf)) = parse_line_uid(line) else {
+            continue;
+        };
+        if is_leaf {
+            continue;
+        }
+        if !INTERACTIVE_ROLES
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(role))
+        {
+            continue;
+        }
+
+        let label = extract_label(line);
+        let role_lower = role.to_lowercase();
+
+        let entry = groups
+            .entry(role_lower)
+            .or_insert_with(|| (0, std::collections::HashSet::new(), Vec::new()));
+        entry.0 += 1;
+
+        // Truncate long labels for the sample.
+        let display_label = if label.len() > 40 {
+            format!("{}...", &label[..label.floor_char_boundary(37)])
+        } else {
+            label.clone()
+        };
+
+        // Deduplicate: only add if we haven't seen this label and have room.
+        if !display_label.is_empty()
+            && display_label != line.trim()
+            && !entry.1.contains(&display_label)
+        {
+            entry.1.insert(display_label.clone());
+            if entry.2.len() < max_samples {
+                entry.2.push(display_label);
+            }
+        }
+    }
+
+    let mut result: Vec<RoleGroup> = groups
+        .into_iter()
+        .map(|(role, (count, _, sample_labels))| RoleGroup {
+            role,
+            count,
+            sample_labels,
+        })
+        .collect();
+
+    // Sort by count descending so the most prevalent role appears first.
+    result.sort_by(|a, b| b.count.cmp(&a.count));
+
+    ElementInventory { groups: result }
+}
+
 /// Extract `url=` attribute value from a snapshot line.
 ///
 /// For `uid=1_0 link "Home" url="https://example.com"` → `Some("https://example.com")`.
@@ -334,8 +419,8 @@ fn extract_url(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_label, extract_url, find_elements_in_snapshot, narrow_by_parent, narrow_matches,
-        parse_line_uid, search_interactive_elements,
+        build_element_inventory, extract_label, extract_url, find_elements_in_snapshot,
+        narrow_by_parent, narrow_matches, parse_line_uid, search_interactive_elements,
     };
 
     const SNAPSHOT_MIXED_ROLES: &str = r##"
@@ -746,5 +831,76 @@ uid=1_1 button "Home"
         assert_eq!(matches.len(), 2);
         narrow_by_parent(&mut matches, Some("nonexistent"), None);
         assert_eq!(matches.len(), 2, "should keep all if no candidate matches");
+    }
+
+    // --- build_element_inventory ---
+
+    #[test]
+    fn inventory_groups_by_role() {
+        let inv = build_element_inventory(SNAPSHOT_MIXED_ROLES, 5);
+        let roles: Vec<&str> = inv.groups.iter().map(|g| g.role.as_str()).collect();
+        assert!(roles.contains(&"button"), "should have buttons");
+        assert!(roles.contains(&"link"), "should have links");
+        assert!(roles.contains(&"textbox"), "should have textboxes");
+        assert!(roles.contains(&"checkbox"), "should have checkboxes");
+        assert!(!roles.contains(&"heading"), "should not have headings");
+        assert!(!roles.contains(&"navigation"), "should not have navigation");
+    }
+
+    #[test]
+    fn inventory_counts_correct() {
+        let inv = build_element_inventory(SNAPSHOT_MIXED_ROLES, 5);
+        let buttons = inv.groups.iter().find(|g| g.role == "button").unwrap();
+        assert_eq!(buttons.count, 2); // Settings, Submit
+        let links = inv.groups.iter().find(|g| g.role == "link").unwrap();
+        assert_eq!(links.count, 1); // Home
+    }
+
+    #[test]
+    fn inventory_sorted_by_count_descending() {
+        let inv = build_element_inventory(SNAPSHOT_MIXED_ROLES, 5);
+        let counts: Vec<usize> = inv.groups.iter().map(|g| g.count).collect();
+        for w in counts.windows(2) {
+            assert!(w[0] >= w[1], "groups should be sorted by count desc");
+        }
+    }
+
+    #[test]
+    fn inventory_deduplicates_labels() {
+        let snapshot = r##"
+uid=1_0 RootWebArea "App"
+  uid=1_1 button "Close"
+  uid=1_2 button "Close"
+  uid=1_3 button "Close"
+  uid=1_4 button "Submit"
+"##;
+        let inv = build_element_inventory(snapshot, 5);
+        let buttons = inv.groups.iter().find(|g| g.role == "button").unwrap();
+        assert_eq!(buttons.count, 4);
+        assert_eq!(buttons.sample_labels.len(), 2); // "Close" and "Submit", deduplicated
+    }
+
+    #[test]
+    fn inventory_caps_samples() {
+        let snapshot = r##"
+uid=1_0 RootWebArea "App"
+  uid=1_1 button "A"
+  uid=1_2 button "B"
+  uid=1_3 button "C"
+  uid=1_4 button "D"
+  uid=1_5 button "E"
+  uid=1_6 button "F"
+  uid=1_7 button "G"
+"##;
+        let inv = build_element_inventory(snapshot, 3);
+        let buttons = inv.groups.iter().find(|g| g.role == "button").unwrap();
+        assert_eq!(buttons.count, 7);
+        assert_eq!(buttons.sample_labels.len(), 3); // capped at max_samples
+    }
+
+    #[test]
+    fn inventory_empty_snapshot() {
+        let inv = build_element_inventory("", 5);
+        assert!(inv.groups.is_empty());
     }
 }
