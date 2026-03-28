@@ -432,6 +432,9 @@ pub struct AssistantSessionHandle {
     pub(crate) session_in_use: bool,
     /// Monotonically increasing counter to detect stale session returns.
     pub(crate) session_generation: u64,
+    /// Snapshot of the workflow at execution start, used by the resolution listener
+    /// to build the resolution system prompt.
+    pub(crate) resolution_workflow: Option<clickweave_core::Workflow>,
 }
 
 impl AssistantSessionHandle {
@@ -472,6 +475,7 @@ impl AssistantSessionHandle {
         self.assistant_config = None;
         self.execution_locked = false;
         self.session_in_use = false;
+        self.resolution_workflow = None;
     }
 }
 

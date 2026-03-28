@@ -126,6 +126,7 @@ fn main() {
         get_chrome_profile_path,
         launch_chrome_for_setup,
         planner_confirmation_respond,
+        resolution_respond,
     ]);
 
     #[cfg(debug_assertions)]
@@ -150,6 +151,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Mutex::new(ExecutorHandle::default()))
         .manage(tokio::sync::Mutex::new(AssistantSessionHandle::default()))
+        .manage(Mutex::new(ResolutionState::default()))
         .manage(Mutex::new(WalkthroughHandle::default()))
         .manage(std::sync::Arc::new(std::sync::Mutex::new(
             PlannerHandle::default(),

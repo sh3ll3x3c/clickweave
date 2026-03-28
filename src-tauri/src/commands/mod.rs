@@ -5,6 +5,7 @@ mod executor;
 mod planner;
 mod planner_session;
 mod project;
+mod resolution_listener;
 mod runs;
 mod types;
 mod walkthrough;
@@ -28,6 +29,7 @@ pub use project::{
     open_project, pick_save_file, pick_workflow_file, ping, save_conversation, save_project,
     validate,
 };
+pub use resolution_listener::{ResolutionState, resolution_respond};
 pub use runs::{list_runs, load_run_events, read_artifact_base64};
 pub use types::{AppDataDir, McpStatus};
 pub use walkthrough::{
