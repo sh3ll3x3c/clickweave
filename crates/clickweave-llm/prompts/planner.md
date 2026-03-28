@@ -155,7 +155,7 @@ Signal is an Electron app (probe_app returns `kind: "ElectronApp"`), so use CDP 
 }
 ```
 
-Note: `launch_app` auto-detects Electron and connects CDP. Use `cdp_click` with a `target` name to click elements (the executor resolves the target to a UID at runtime via DOM snapshot). Use `cdp_type_text` to type into the currently focused element. Use `fill` only when you have a UID from `cdp_take_snapshot` — pass it as `{"uid": "<uid>", "value": "<text>"}`.
+Note: `launch_app` auto-detects Electron and connects CDP. Use `cdp_click` with a `target` name to click elements (the executor resolves the target to a UID at runtime via DOM snapshot). Use `cdp_type_text` to type into the currently focused element. Use `fill` when you need to set an input field's value — it requires a UID from `cdp_find_elements` (e.g. search for the input by name/role during planning, then use `{"uid": "<uid>", "value": "<text>"}` in the workflow). Do NOT bake UIDs into `cdp_click` — always use text targets.
 
 ## Conditional example
 
