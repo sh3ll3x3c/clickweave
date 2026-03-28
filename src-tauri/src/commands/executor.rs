@@ -95,6 +95,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             storage,
             executor_token,
             chrome_profiles_dir,
+            None, // resolution_tx — wired in Task 14
         );
         executor.run(cmd_rx).await;
     });

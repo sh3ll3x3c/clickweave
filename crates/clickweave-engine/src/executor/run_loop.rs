@@ -1,4 +1,5 @@
 use super::Mcp;
+use super::error::ExecutorError;
 use super::{ExecutorCommand, ExecutorEvent, ExecutorResult, ExecutorState, WorkflowExecutor};
 use clickweave_core::{ExecutionMode, NodeRole, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
@@ -253,7 +254,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // aborts from execution errors (which handle their own
             // finalization inside the Err arm).
             let mut supervision_attempts: u32 = 0;
-            let (node_succeeded, was_supervision_abort) = loop {
+            let (node_succeeded, was_supervision_abort, rewind_target) = loop {
                 match self
                     .execute_node_with_retries(
                         node_id,
@@ -322,7 +323,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             if failed {
                                 self.emit_error(format!("Verification failed: '{}'", node_name,));
                                 verification_failed = true;
-                                break (false, false);
+                                break (false, false, None);
                             }
                         }
 
@@ -338,7 +339,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     "Skipping supervision for '{}' (inside loop)",
                                     node_name
                                 ));
-                                break (true, false);
+                                break (true, false, None);
                             }
 
                             if self.last_click_was_cdp {
@@ -348,7 +349,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     "CDP click verified structurally",
                                     "CDP click — element found and clicked in DOM",
                                 );
-                                break (true, false);
+                                break (true, false, None);
                             }
 
                             if self.last_url_navigation_was_cdp {
@@ -358,7 +359,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     "CDP URL navigation verified structurally",
                                     "CDP URL navigation — page list moved away from NTP/blank",
                                 );
-                                break (true, false);
+                                break (true, false, None);
                             }
 
                             let verification = self.verify_step(&node_name, &node_type, &mcp).await;
@@ -369,7 +370,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     node_name: node_name.clone(),
                                     summary: verification.reasoning,
                                 });
-                                break (true, false);
+                                break (true, false, None);
                             } else if supervision_attempts < supervision_retries {
                                 // Auto-retry: evict caches and re-execute with hint
                                 supervision_attempts += 1;
@@ -413,16 +414,142 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     }
                                     SupervisionAction::Skip => {
                                         self.log("Supervision: user chose Skip");
-                                        break (true, false);
+                                        break (true, false, None);
                                     }
                                     SupervisionAction::Abort => {
                                         self.log("Supervision: user chose Abort");
-                                        break (false, true);
+                                        break (false, true, None);
                                     }
                                 }
                             }
                         } else {
-                            break (true, false);
+                            break (true, false, None);
+                        }
+                    }
+                    Err(ExecutorError::Rewind(target)) => {
+                        self.log(format!(
+                            "Resolution rewind: cancelling '{}', rewinding to {}",
+                            node_name, target
+                        ));
+                        if let Some(ref mut run) = node_run {
+                            self.finalize_run(run, RunStatus::Cancelled);
+                        }
+                        self.emit(ExecutorEvent::NodeCancelled(node_id));
+                        break (false, false, Some(target));
+                    }
+                    Err(ref e)
+                        if self.execution_mode == ExecutionMode::Test
+                            && matches!(
+                                e,
+                                ExecutorError::ElementResolution(_)
+                                    | ExecutorError::ClickTarget(_)
+                                    | ExecutorError::Cdp(_)
+                            ) =>
+                    {
+                        // Attempt runtime resolution: ask the Tauri resolution
+                        // listener to fix the workflow (e.g. rename a target,
+                        // rewind to an earlier node, or remove the failing node).
+                        let target_text = node_type.target_text().unwrap_or_default().to_string();
+                        let action_desc = node_type.action_description();
+                        let err_detail = e.to_string();
+
+                        self.log(format!(
+                            "Element/target resolution failed for '{}': {}. Trying runtime resolution...",
+                            node_name, err_detail
+                        ));
+
+                        // Take a screenshot for the resolution dialog
+                        let screenshot = {
+                            let mut args = serde_json::json!({ "format": "png" });
+                            if let Some(ref name) = self.focused_app_name() {
+                                args["app_name"] = serde_json::Value::String(name.clone());
+                            }
+                            self.extract_screenshot_image(&mcp, args).await
+                        };
+
+                        let element_inventory = err_detail.clone();
+
+                        if let Some(resolution) = self
+                            .request_resolution(
+                                node_id,
+                                &node_name,
+                                &action_desc,
+                                &target_text,
+                                &element_inventory,
+                                screenshot,
+                            )
+                            .await
+                        {
+                            use clickweave_core::RuntimeResolution;
+                            match resolution {
+                                RuntimeResolution::Updated(patch) => {
+                                    self.log("Runtime resolution: Updated — applying patch and retrying node");
+                                    self.apply_resolution_patch(&patch);
+                                    self.evict_caches_for_node(&node_type);
+                                    // `node_type` is bound outside the inner loop
+                                    // and still holds the pre-patch value. Break
+                                    // out and re-enter the same node via the outer
+                                    // loop so it re-reads the updated workflow.
+                                    if let Some(ref mut run) = node_run {
+                                        self.finalize_run(run, RunStatus::Cancelled);
+                                    }
+                                    self.emit(ExecutorEvent::NodeCancelled(node_id));
+                                    break (false, false, Some(node_id));
+                                }
+                                RuntimeResolution::Rewind {
+                                    patch,
+                                    first_node_id,
+                                } => {
+                                    self.log(format!(
+                                        "Runtime resolution: Rewind to {} — applying patch",
+                                        first_node_id
+                                    ));
+                                    self.apply_resolution_patch(&patch);
+                                    if let Some(ref mut run) = node_run {
+                                        self.finalize_run(run, RunStatus::Cancelled);
+                                    }
+                                    self.emit(ExecutorEvent::NodeCancelled(node_id));
+                                    break (false, false, Some(first_node_id));
+                                }
+                                RuntimeResolution::Removed(patch) => {
+                                    self.log(
+                                        "Runtime resolution: Removed — applying patch and advancing",
+                                    );
+                                    self.apply_resolution_patch(&patch);
+                                    // The failing node was removed from the graph.
+                                    // Finalize it as cancelled and let the outer
+                                    // loop follow edges from the updated graph.
+                                    if let Some(ref mut run) = node_run {
+                                        self.finalize_run(run, RunStatus::Cancelled);
+                                    }
+                                    self.emit(ExecutorEvent::NodeCancelled(node_id));
+                                    break (false, false, Some(node_id));
+                                }
+                                RuntimeResolution::Rejected => {
+                                    self.log(
+                                        "Runtime resolution: Rejected — falling through to error",
+                                    );
+                                    self.rejected_resolutions.insert((node_id, target_text));
+                                    // Fall through to normal error handling
+                                    let msg = err_detail;
+                                    self.emit_error(format!("Node {} failed: {}", node_name, msg));
+                                    if let Some(ref mut run) = node_run {
+                                        self.finalize_run(run, RunStatus::Failed);
+                                    }
+                                    self.emit(ExecutorEvent::NodeFailed(node_id, msg));
+                                    break (false, false, None);
+                                }
+                            }
+                        } else {
+                            // No resolution channel or previously rejected —
+                            // fall through to normal error handling.
+                            let msg = err_detail;
+                            self.emit_error(format!("Node {} failed: {}", node_name, msg));
+                            if let Some(ref mut run) = node_run {
+                                self.finalize_run(run, RunStatus::Failed);
+                            }
+                            self.emit(ExecutorEvent::NodeFailed(node_id, msg));
+                            break (false, false, None);
                         }
                     }
                     Err(e) => {
@@ -432,7 +559,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             self.finalize_run(run, RunStatus::Failed);
                         }
                         self.emit(ExecutorEvent::NodeFailed(node_id, msg));
-                        break (false, false);
+                        break (false, false, None);
                     }
                 }
             };
@@ -442,6 +569,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // unrelated PressKey step after Skip/Retry paths.
             if matches!(node_type, NodeType::PressKey(_)) {
                 self.last_typed_url = None;
+            }
+
+            // Handle rewind: skip follow_single_edge, jump to target
+            if let Some(target) = rewind_target {
+                current = Some(target);
+                continue;
             }
 
             if !node_succeeded {
@@ -476,6 +609,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 self.finalize_run(run, RunStatus::Ok);
             }
             self.emit(ExecutorEvent::NodeCompleted(node_id));
+            self.completed_node_ids.push(node_id);
 
             current = self.follow_single_edge(node_id);
         }

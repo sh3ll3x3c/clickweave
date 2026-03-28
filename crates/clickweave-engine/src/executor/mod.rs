@@ -170,6 +170,12 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     chrome_profile_store: ChromeProfileStore,
     /// Cached profile list, loaded once at construction.
     chrome_profiles: Vec<ChromeProfile>,
+    /// Channel to send resolution queries to the Tauri listener (Test mode only).
+    resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
+    /// Node IDs the executor has completed in this run (for patch validation).
+    completed_node_ids: Vec<Uuid>,
+    /// Rejected resolutions keyed by (node_id, target) — skip callback on retry.
+    rejected_resolutions: std::collections::HashSet<(Uuid, String)>,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -208,6 +214,7 @@ impl WorkflowExecutor {
         storage: RunStorage,
         cancel_token: CancellationToken,
         chrome_profiles_dir: PathBuf,
+        resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
     ) -> Self {
         let chrome_profile_store = ChromeProfileStore::new(chrome_profiles_dir);
         let chrome_profiles = chrome_profile_store.ensure_profiles().unwrap_or_else(|e| {
@@ -249,6 +256,9 @@ impl WorkflowExecutor {
             last_typed_url: None,
             chrome_profile_store,
             chrome_profiles,
+            resolution_tx,
+            completed_node_ids: Vec::new(),
+            rejected_resolutions: std::collections::HashSet::new(),
         }
     }
 }
@@ -440,6 +450,60 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .as_ref()
             .or(self.vlm.as_ref())
             .unwrap_or(&self.agent)
+    }
+
+    /// Send a runtime resolution query and wait for the response.
+    /// Returns None if no resolution_tx is available (Run mode) or
+    /// if this (node_id, target) was previously rejected.
+    pub(crate) async fn request_resolution(
+        &self,
+        node_id: Uuid,
+        node_name: &str,
+        action_description: &str,
+        target: &str,
+        element_inventory: &str,
+        screenshot: Option<String>,
+    ) -> Option<RuntimeResolution> {
+        let tx = self.resolution_tx.as_ref()?;
+
+        // Skip if previously rejected for this (node, target)
+        if self
+            .rejected_resolutions
+            .contains(&(node_id, target.to_string()))
+        {
+            return None;
+        }
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let query = RuntimeQuery {
+            node_id,
+            node_name: node_name.to_string(),
+            action_description: action_description.to_string(),
+            target: target.to_string(),
+            screenshot,
+            element_inventory: element_inventory.to_string(),
+            current_node_id: node_id,
+            completed_node_ids: self.completed_node_ids.clone(),
+            response_tx,
+        };
+
+        if tx.send(query).await.is_err() {
+            return None; // listener shut down
+        }
+
+        response_rx.await.ok()
+    }
+
+    /// Apply a resolution patch to the in-memory workflow.
+    pub(crate) fn apply_resolution_patch(&mut self, patch: &clickweave_core::WorkflowPatchCompact) {
+        self.workflow = clickweave_core::merge_patch_into_workflow(
+            &self.workflow,
+            &patch.added_nodes,
+            &patch.removed_node_ids,
+            &patch.updated_nodes,
+            &patch.added_edges,
+            &patch.removed_edges,
+        );
     }
 
     /// Return the best available LLM for vision tasks (image analysis,

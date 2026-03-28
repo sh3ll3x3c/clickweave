@@ -356,6 +356,29 @@ impl NodeType {
         )
     }
 
+    /// Extract the primary text target from node types that resolve elements by name.
+    /// Returns `None` for node types that don't have a text-based target (e.g.
+    /// coordinate clicks, key presses, AI steps).
+    pub fn target_text(&self) -> Option<&str> {
+        match self {
+            NodeType::Click(p) => p
+                .target
+                .as_ref()
+                .map(|t| t.text())
+                .filter(|s| !s.is_empty()),
+            NodeType::Hover(p) => p
+                .target
+                .as_ref()
+                .map(|t| t.text())
+                .filter(|s| !s.is_empty()),
+            NodeType::FindText(p) => Some(p.search_text.as_str()).filter(|s| !s.is_empty()),
+            NodeType::CdpClick(p) => Some(p.uid.as_str()).filter(|s| !s.is_empty()),
+            NodeType::CdpHover(p) => Some(p.uid.as_str()).filter(|s| !s.is_empty()),
+            NodeType::CdpWait(p) => Some(p.text.as_str()).filter(|s| !s.is_empty()),
+            _ => None,
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             NodeType::FindText(_) => "Find Text",
