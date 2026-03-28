@@ -39,6 +39,10 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       workflow: projectResult.data.workflow,
       selectedNode: null,
       isNewWorkflow: false,
+      pendingPatch: null,
+      pendingPatchWarnings: [],
+      assistantError: null,
+      contextUsage: null,
     });
     get().clearHistory();
     commands.clearAssistantSession().catch(() => {});
