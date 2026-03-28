@@ -7,9 +7,8 @@ use super::tool_use::PlannerToolExecutor;
 use super::{PatchResult, PatcherOutput, PlannerGraphOutput, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::Result;
-use clickweave_core::{Edge, Node, Workflow, chrome_profiles::ChromeProfile, validate_workflow};
+use clickweave_core::{Workflow, chrome_profiles::ChromeProfile, validate_workflow};
 use serde_json::Value;
-use std::collections::HashSet;
 use tracing::{info, warn};
 
 /// Result of an assistant chat turn.
@@ -175,7 +174,14 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
         Some(Box::new(
             move |result: &(String, Option<PatchResult>, Vec<String>)| -> Result<()> {
                 if let Some(ref p) = result.1 {
-                    let candidate = merge_patch_into_workflow(&wf, p);
+                    let candidate = clickweave_core::merge_patch_into_workflow(
+                        &wf,
+                        &p.added_nodes,
+                        &p.removed_node_ids,
+                        &p.updated_nodes,
+                        &p.added_edges,
+                        &p.removed_edges,
+                    );
                     validate_workflow(&candidate)?;
                 }
                 Ok(())
@@ -336,54 +342,6 @@ fn extract_prose(content: &str) -> Option<String> {
     }
 
     None
-}
-
-/// Simulate merging a patch into a workflow to produce a candidate for validation.
-///
-/// Mirrors the frontend's `applyPendingPatch` logic: remove nodes, apply updates,
-/// add new nodes, remove edges, add new edges.
-fn merge_patch_into_workflow(workflow: &Workflow, patch: &PatchResult) -> Workflow {
-    let removed_ids: HashSet<_> = patch.removed_node_ids.iter().collect();
-
-    let nodes: Vec<Node> = workflow
-        .nodes
-        .iter()
-        .filter(|n| !removed_ids.contains(&n.id))
-        .map(|n| {
-            patch
-                .updated_nodes
-                .iter()
-                .find(|u| u.id == n.id)
-                .cloned()
-                .unwrap_or_else(|| n.clone())
-        })
-        .chain(patch.added_nodes.iter().cloned())
-        .collect();
-
-    let edges: Vec<Edge> = workflow
-        .edges
-        .iter()
-        .filter(|e| {
-            !patch
-                .removed_edges
-                .iter()
-                .any(|r| e.from == r.from && e.to == r.to && e.output == r.output)
-        })
-        .cloned()
-        .chain(patch.added_edges.iter().cloned())
-        .collect();
-
-    let mut merged = Workflow {
-        id: workflow.id,
-        name: workflow.name.clone(),
-        nodes,
-        edges,
-        groups: workflow.groups.clone(),
-        next_id_counters: workflow.next_id_counters.clone(),
-    };
-    // Ensure counters reflect any new nodes added by the patch
-    merged.fixup_auto_ids();
-    merged
 }
 
 /// Generate a default description of what a patch does.
