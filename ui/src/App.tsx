@@ -63,7 +63,7 @@ function App() {
     })),
   );
 
-  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, conversation, pendingPatch, pendingPatchWarnings } = useStore(
+  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, conversation, pendingPatch, pendingPatchWarnings, contextUsage } = useStore(
     useShallow((s) => ({
       assistantOpen: s.assistantOpen,
       assistantLoading: s.assistantLoading,
@@ -72,6 +72,7 @@ function App() {
       conversation: s.conversation,
       pendingPatch: s.pendingPatch,
       pendingPatchWarnings: s.pendingPatchWarnings,
+      contextUsage: s.contextUsage,
     })),
   );
 
@@ -268,7 +269,7 @@ function App() {
                 conversation={conversation}
                 pendingPatch={pendingPatch}
                 pendingPatchWarnings={pendingPatchWarnings}
-                contextUsage={useStore((s) => s.contextUsage)}
+                contextUsage={contextUsage}
                 onSendMessage={sendAssistantMessage}
                 onResendMessage={resendMessage}
                 onCancel={cancelAssistantChat}

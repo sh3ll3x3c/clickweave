@@ -41,6 +41,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       isNewWorkflow: false,
     });
     get().clearHistory();
+    commands.clearAssistantSession().catch(() => {});
 
     // Load conversation
     try {
@@ -86,6 +87,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
 
   newProject: () => {
     const { pushLog } = get();
+    commands.clearAssistantSession().catch(() => {});
     set({
       workflow: makeDefaultWorkflow(),
       projectPath: null,
@@ -95,6 +97,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       pendingPatch: null,
       pendingPatchWarnings: [],
       assistantError: null,
+      contextUsage: null,
     });
     get().clearHistory();
     pushLog("New project created");
