@@ -38,6 +38,7 @@ Available planning tools:
 - For `cdp_type_text`: pass **the text to type** — it types into the currently focused element. No target resolution. Example: `{"text": "hello"}`. Click the target input first with `cdp_click`.
 - For `cdp_press_key`: pass **the key name** — it sends the keypress to the currently focused element. Example: `{"key": "Enter"}`. Use DOM key names: `Enter` (not `Return`), `Tab`, `Escape`, `ArrowUp`, `ArrowDown`, `Backspace`, `Delete`, or single characters.
 - For `fill`: use **UIDs from `cdp_find_elements`**. The `fill` tool requires a literal UID because it targets a specific input field by DOM identity. Example: search with `cdp_find_elements(query: "search", role: "textbox")`, then use `{"uid": "<uid>", "value": "search term"}` in the workflow.
+- For `wait_for`: waits for **specific text** to appear on the CDP page. The tool name is `wait_for` (NOT `cdp_wait`). Example: `{"text": "Message sent", "timeout": 10000}`. Use this when you need to wait for a known text indicator before proceeding (e.g. a success message, a loading indicator disappearing, a specific element appearing). Do NOT use it for "wait for anything to happen" — it requires a concrete text string to watch for.
 - Do NOT bake UIDs into `cdp_click` arguments — UIDs change between sessions. Always use text targets for click.
 
 **Page selection:** If you called `cdp_select_page` during planning to reach the right page, include the same `cdp_select_page` step in the workflow after `launch_app` so the runtime reaches the same page.
