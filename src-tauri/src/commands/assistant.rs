@@ -24,11 +24,6 @@ pub async fn assistant_chat(
     request: AssistantChatRequest,
 ) -> Result<AssistantChatResponse, CommandError> {
     let chrome_profiles = super::chrome_profiles::get_store(&app).load_profiles();
-    let profiles_ref = if chrome_profiles.len() > 1 {
-        Some(chrome_profiles.as_slice())
-    } else {
-        None
-    };
 
     let planner_handle_state = app.state::<Arc<std::sync::Mutex<PlannerHandle>>>();
     let session_handle_state = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
@@ -38,7 +33,6 @@ pub async fn assistant_chat(
         let guard = session_handle_state.lock().await;
         !guard.has_session()
     };
-    // Lock dropped
 
     // Step 2: Create session outside any lock if needed (async MCP spawn)
     if needs_creation {
@@ -51,19 +45,28 @@ pub async fn assistant_chat(
         guard.return_session(session);
     }
 
-    // Step 3: Take session out (brief lock)
+    // Step 3: Take session out and wrap in Arc (brief lock)
     let session = {
         let mut guard = session_handle_state.lock().await;
-        guard
-            .take_session()
-            .ok_or_else(|| CommandError::validation("No planning session available"))?
+        Arc::new(
+            guard
+                .take_session()
+                .ok_or_else(|| CommandError::validation("No planning session available"))?,
+        )
     };
-    // Lock dropped — planner_confirmation_respond can access PlannerHandle freely
 
-    // Step 4: Run the LLM call. Wrap in an async block so we can guarantee
-    // the session is returned even on error.
-    let run_result = async {
-        let emit_handle = app.clone();
+    // Step 4: Spawn the LLM call as a task so it can be cancelled.
+    // The session Arc is shared into the task; we unwrap it back after completion.
+    let session_for_task = Arc::clone(&session);
+    let app_for_task = app.clone();
+    let join_handle = tokio::task::spawn(async move {
+        let profiles_ref = if chrome_profiles.len() > 1 {
+            Some(chrome_profiles.as_slice())
+        } else {
+            None
+        };
+
+        let emit_handle = app_for_task.clone();
         let on_repair = move |attempt: usize, max: usize| {
             let _ = emit_handle.emit("assistant://repairing", (attempt, max));
         };
@@ -75,9 +78,9 @@ pub async fn assistant_chat(
             summary_cutoff: request.summary_cutoff,
         };
         let run_context_text = request.run_context.as_ref().map(format_run_context);
-        let workflow_tools = session.mcp_tools_openai().await;
+        let workflow_tools = session_for_task.mcp_tools_openai().await;
 
-        clickweave_llm::planner::assistant_chat(
+        let result = clickweave_llm::planner::assistant_chat(
             &request.workflow,
             &request.user_message,
             &conversation_session,
@@ -89,68 +92,87 @@ pub async fn assistant_chat(
             (request.max_repair_attempts as usize).min(10),
             Some(&on_repair),
             profiles_ref,
-            Some(&session),
+            Some(&*session_for_task),
         )
         .await
-        .map(|result| (result, conversation_session))
-        .map_err(|e| CommandError::llm(format!("Assistant chat failed: {}", e)))
-    }
-    .await;
+        .map_err(|e| CommandError::llm(format!("Assistant chat failed: {}", e)))?;
 
-    // Always return session to handle, even on error
+        // Write chat trace (non-fatal)
+        let trace_base = match &request.project_path {
+            Some(p) => super::types::project_dir(p).join(".clickweave"),
+            None => {
+                let app_data_dir = app_for_task.state::<AppDataDir>();
+                app_data_dir.0.clone()
+            }
+        };
+        let trace =
+            clickweave_core::chat_trace::ChatTraceWriter::new(&trace_base, &request.workflow.name);
+        trace.append(&serde_json::json!({"role": "user", "content": request.user_message}));
+        for tc in &result.tool_entries {
+            trace.append(&serde_json::to_value(tc).unwrap_or_default());
+        }
+        trace.append(&serde_json::json!({"role": "assistant", "content": result.message}));
+
+        // Compute context_usage percentage
+        let context_usage = result.prompt_tokens.map(|tokens| {
+            let context_window = 32000.0_f32; // fallback; ideally query model_info
+            (tokens as f32 / context_window).min(1.0)
+        });
+
+        let new_cutoff = if result.new_summary.is_some() {
+            conversation_session.current_cutoff(None)
+        } else {
+            request.summary_cutoff
+        };
+
+        let patch = result.patch.map(|p| WorkflowPatch {
+            added_nodes: p.added_nodes,
+            removed_node_ids: p.removed_node_ids.iter().map(|id| id.to_string()).collect(),
+            updated_nodes: p.updated_nodes,
+            added_edges: p.added_edges,
+            removed_edges: p.removed_edges,
+            warnings: p.warnings,
+        });
+
+        Ok(AssistantChatResponse {
+            assistant_message: result.message,
+            patch,
+            new_summary: result.new_summary,
+            summary_cutoff: new_cutoff,
+            warnings: result.warnings,
+            tool_entries: result.tool_entries,
+            context_usage,
+        })
+    });
+
+    // Store the abort handle so cancel_assistant_chat can abort this task
     {
         let mut guard = session_handle_state.lock().await;
-        guard.return_session(session);
+        guard.abort = Some(join_handle.abort_handle());
     }
 
-    let (result, conversation_session) = run_result?;
+    let result = match join_handle.await {
+        Ok(inner) => inner,
+        Err(e) if e.is_cancelled() => Err(CommandError::cancelled()),
+        Err(e) => Err(CommandError::internal(format!(
+            "Assistant chat panicked: {}",
+            e
+        ))),
+    };
 
-    // Write chat trace (non-fatal)
-    let trace_base = match &request.project_path {
-        Some(p) => super::types::project_dir(p).join(".clickweave"),
-        None => {
-            let app_data_dir = app.state::<AppDataDir>();
-            app_data_dir.0.clone()
+    // Return session to handle. Unwrap the Arc — we hold the only strong ref
+    // since the spawned task's clone was dropped when the task completed.
+    {
+        let mut guard = session_handle_state.lock().await;
+        guard.abort = None;
+        if let Ok(session) = Arc::try_unwrap(session) {
+            guard.return_session(session);
         }
-    };
-    let trace =
-        clickweave_core::chat_trace::ChatTraceWriter::new(&trace_base, &request.workflow.name);
-    trace.append(&serde_json::json!({"role": "user", "content": request.user_message}));
-    for tc in &result.tool_entries {
-        trace.append(&serde_json::to_value(tc).unwrap_or_default());
+        // If try_unwrap fails, the task was cancelled and still holds a ref.
+        // The session is lost — next turn will create a new one.
     }
-    trace.append(&serde_json::json!({"role": "assistant", "content": result.message}));
 
-    // Compute context_usage percentage
-    let context_usage = result.prompt_tokens.map(|tokens| {
-        let context_window = 32000.0_f32; // fallback; ideally query model_info
-        (tokens as f32 / context_window).min(1.0)
-    });
-
-    let new_cutoff = if result.new_summary.is_some() {
-        conversation_session.current_cutoff(None)
-    } else {
-        request.summary_cutoff
-    };
-
-    let patch = result.patch.map(|p| WorkflowPatch {
-        added_nodes: p.added_nodes,
-        removed_node_ids: p.removed_node_ids.iter().map(|id| id.to_string()).collect(),
-        updated_nodes: p.updated_nodes,
-        added_edges: p.added_edges,
-        removed_edges: p.removed_edges,
-        warnings: p.warnings,
-    });
-
-    Ok(AssistantChatResponse {
-        assistant_message: result.message,
-        patch,
-        new_summary: result.new_summary,
-        summary_cutoff: new_cutoff,
-        warnings: result.warnings,
-        tool_entries: result.tool_entries,
-        context_usage,
-    })
+    result
 }
 
 #[tauri::command]
