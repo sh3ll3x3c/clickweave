@@ -105,6 +105,27 @@ pub async fn assistant_chat(
 
     let (result, conversation_session) = run_result?;
 
+    // Write chat trace (non-fatal)
+    let trace_base = match &request.project_path {
+        Some(p) => {
+            let project_dir = std::path::Path::new(p)
+                .parent()
+                .unwrap_or(std::path::Path::new(p));
+            project_dir.join(".clickweave")
+        }
+        None => {
+            let app_data_dir = app.state::<AppDataDir>();
+            app_data_dir.0.clone()
+        }
+    };
+    let trace =
+        clickweave_core::chat_trace::ChatTraceWriter::new(&trace_base, &request.workflow.name);
+    trace.append(&serde_json::json!({"role": "user", "content": request.user_message}));
+    for tc in &result.tool_entries {
+        trace.append(&serde_json::to_value(tc).unwrap_or_default());
+    }
+    trace.append(&serde_json::json!({"role": "assistant", "content": result.message}));
+
     // Compute context_usage percentage
     let context_usage = result.prompt_tokens.map(|tokens| {
         let context_window = 32000.0_f32; // fallback; ideally query model_info

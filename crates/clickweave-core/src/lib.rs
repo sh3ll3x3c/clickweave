@@ -2,6 +2,7 @@ pub mod app_detection;
 pub mod app_kind;
 pub mod auto_id;
 pub mod cdp;
+pub mod chat_trace;
 pub mod chrome_profiles;
 pub mod decision_cache;
 mod node_params;

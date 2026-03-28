@@ -204,6 +204,8 @@ pub struct AssistantChatRequest {
     pub allow_ai_transforms: bool,
     pub allow_agent_steps: bool,
     pub max_repair_attempts: u32,
+    #[serde(default)]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
