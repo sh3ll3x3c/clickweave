@@ -123,16 +123,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
           };
         }
 
-        // Build tool call/result entries for conversation display
-        const toolEntries: ChatEntry[] = (data.tool_entries ?? []).map((te) => ({
-          role: te.role,
-          content: te.content,
-          timestamp: te.timestamp,
-          patch_summary: null,
-          run_context: null,
-          tool_name: te.tool_name ?? undefined,
-          tool_call_id: te.tool_call_id ?? undefined,
-        }));
+        const toolEntries: ChatEntry[] = data.tool_entries ?? [];
 
         // Add assistant message to conversation
         const assistantEntry: ChatEntry = {

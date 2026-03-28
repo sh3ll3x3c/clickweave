@@ -1,5 +1,4 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Append-only JSONL writer for chat conversation traces (debugging).
@@ -18,13 +17,6 @@ impl ChatTraceWriter {
     }
 
     pub fn append(&self, entry: &serde_json::Value) {
-        if let Ok(line) = serde_json::to_string(entry)
-            && let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)
-        {
-            let _ = writeln!(file, "{}", line);
-        }
+        let _ = crate::storage::append_jsonl(&self.path, entry);
     }
 }

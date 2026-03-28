@@ -107,12 +107,7 @@ pub async fn assistant_chat(
 
     // Write chat trace (non-fatal)
     let trace_base = match &request.project_path {
-        Some(p) => {
-            let project_dir = std::path::Path::new(p)
-                .parent()
-                .unwrap_or(std::path::Path::new(p));
-            project_dir.join(".clickweave")
-        }
+        Some(p) => super::types::project_dir(p).join(".clickweave"),
         None => {
             let app_data_dir = app.state::<AppDataDir>();
             app_data_dir.0.clone()
