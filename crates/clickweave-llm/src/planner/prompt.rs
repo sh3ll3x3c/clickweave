@@ -38,8 +38,13 @@ Available planning tools:
 - For `cdp_type_text`: pass **the text to type** — it types into the currently focused element. No target resolution. Example: `{"text": "hello"}`. Click the target input first with `cdp_click`.
 - For `cdp_press_key`: pass **the key name** — it sends the keypress to the currently focused element. Example: `{"key": "Enter"}`. Use DOM key names: `Enter` (not `Return`), `Tab`, `Escape`, `ArrowUp`, `ArrowDown`, `Backspace`, `Delete`, or single characters.
 - For `fill`: use **UIDs from `cdp_find_elements`**. The `fill` tool requires a literal UID because it targets a specific input field by DOM identity. Example: search with `cdp_find_elements(query: "search", role: "textbox")`, then use `{"uid": "<uid>", "value": "search term"}` in the workflow.
-- For `wait_for`: waits for **specific text** to appear on the CDP page. The tool name is `wait_for` (NOT `cdp_wait`). Example: `{"text": "Message sent", "timeout": 10000}`. Use this when you need to wait for a known text indicator before proceeding (e.g. a success message, a loading indicator disappearing, a specific element appearing). Do NOT use it for "wait for anything to happen" — it requires a concrete text string to watch for.
+- For `wait_for`: waits for **specific literal text** to appear on the CDP page. The tool name is `wait_for` (NOT `cdp_wait`). Example: `{"text": "Message sent", "timeout": 10000}`. ONLY use this when you know the exact text string that will appear (e.g. "Payment confirmed", "Upload complete"). Do NOT use it for unpredictable events like "wait for a new message" — you don't know what text the message will contain.
 - Do NOT bake UIDs into `cdp_click` arguments — UIDs change between sessions. Always use text targets for click.
+
+**Waiting for unpredictable events:** When the user wants to wait for something whose content is unknown (a new message, a notification, any change), use a **Loop** with a check step instead of `wait_for`:
+- If you know a concrete indicator to search for (e.g. a sender name, an unread badge): use `find_text` inside the loop to poll for it.
+- If the change is completely unpredictable: take a **baseline screenshot** before the loop, then inside the loop take another screenshot with `"role": "Verification"` and `"expected_outcome"` describing the change to detect (e.g. "a new chat message appeared that was not in the baseline"). The VLM compares screenshots to detect visual changes.
+- Exit the loop when the check passes (change detected), then continue with the response actions.
 
 **Page selection:** If you called `cdp_select_page` during planning to reach the right page, include the same `cdp_select_page` step in the workflow after `launch_app` so the runtime reaches the same page.
 
