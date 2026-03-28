@@ -57,12 +57,18 @@ pub const PLANNING_TOOL_NAMES: &[&str] = &[
     "cdp_take_snapshot",
     "cdp_list_pages",
     "cdp_select_page",
+    "cdp_find_elements",
 ];
 
 /// Planning-only tools that must NEVER appear as workflow node types.
 /// Dual-use tools (launch_app, quit_app, select_page, etc.) are valid
 /// in both planning and workflow contexts.
-pub const PLANNING_ONLY_TOOL_NAMES: &[&str] = &["probe_app", "take_ax_snapshot", "cdp_connect"];
+pub const PLANNING_ONLY_TOOL_NAMES: &[&str] = &[
+    "probe_app",
+    "take_ax_snapshot",
+    "cdp_connect",
+    "cdp_find_elements",
+];
 
 /// Tools that are always allowed (read-only observation).
 const ALWAYS_ALLOWED: &[&str] = &["probe_app", "take_ax_snapshot"];
@@ -71,7 +77,12 @@ const ALWAYS_ALLOWED: &[&str] = &["probe_app", "take_ax_snapshot"];
 const REQUIRES_CONFIRMATION: &[&str] = &["quit_app", "launch_app", "cdp_connect"];
 
 /// Tools allowed only after CDP is connected (read-only).
-const CDP_READ_ONLY: &[&str] = &["cdp_take_snapshot", "cdp_list_pages", "cdp_select_page"];
+const CDP_READ_ONLY: &[&str] = &[
+    "cdp_take_snapshot",
+    "cdp_list_pages",
+    "cdp_select_page",
+    "cdp_find_elements",
+];
 
 /// Classify a planning tool by permission level.
 pub fn planning_tool_permission(name: &str) -> ToolPermission {
@@ -103,6 +114,29 @@ pub const MAX_BLOCKED_REJECTIONS: usize = 3;
 /// Maximum characters for a tool result before truncation.
 /// Keeps the result within ~3K tokens to avoid blowing context windows.
 const MAX_TOOL_RESULT_CHARS: usize = 12_000;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cdp_find_elements_is_planning_tool() {
+        assert!(is_planning_tool("cdp_find_elements"));
+    }
+
+    #[test]
+    fn cdp_find_elements_is_planning_only() {
+        assert!(is_planning_only_tool("cdp_find_elements"));
+    }
+
+    #[test]
+    fn cdp_find_elements_permission_is_allowed() {
+        assert_eq!(
+            planning_tool_permission("cdp_find_elements"),
+            ToolPermission::Allowed
+        );
+    }
+}
 
 /// Execute a planning tool and return a tool_result message.
 pub(crate) async fn execute_tool<E: PlannerToolExecutor>(

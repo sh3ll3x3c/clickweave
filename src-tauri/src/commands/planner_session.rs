@@ -11,6 +11,69 @@ use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 use uuid::Uuid;
 
+/// Synthetic OpenAI function definition for `cdp_find_elements`.
+/// This tool is not an MCP tool — it's intercepted by PlannerSession.
+fn cdp_find_elements_tool_def() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "cdp_find_elements",
+            "description": "Search the CDP-connected page for interactive elements matching a query. Returns a compact list of matches with UID, role, label, and parent context. Only interactive elements (buttons, links, inputs, etc.) are returned. Use this to understand what's on screen and pick the right text target for cdp_click. For fill, use the UID from the results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Text to search for in element labels"
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional: filter results to a specific ARIA role (e.g. button, link, textbox)"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return (default: 10)"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    })
+}
+
+/// Extract the URL of the currently selected page from `cdp_list_pages` output.
+///
+/// Native-devtools uses `[N] url` format. A `[selected]` or `(selected)`
+/// marker indicates the active page. Returns `None` if no selected marker
+/// is found — the caller should not fabricate a page URL because
+/// `cdp_select_page` may have changed which page is active.
+fn extract_selected_page_url(list_pages_text: &str) -> Option<String> {
+    for line in list_pages_text.lines() {
+        let t = line.trim_start();
+        if !t.starts_with('[') {
+            continue;
+        }
+        let Some(end) = t.find(']') else {
+            continue;
+        };
+        if !t[1..end].chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let rest = t[end + 1..].trim();
+        if !rest.contains("selected") {
+            continue;
+        }
+        let url = rest
+            .trim_end_matches("[selected]")
+            .trim_end_matches("(selected)")
+            .trim();
+        if !url.is_empty() {
+            return Some(url.to_string());
+        }
+    }
+    None
+}
+
 /// Managed state for the active planner session.
 #[derive(Default)]
 pub struct PlannerHandle {
@@ -108,13 +171,16 @@ impl PlannerSession {
 
     /// After cdp_connect succeeds, re-fetch the tool list from the MCP server
     /// so newly available CDP tools appear in subsequent LLM turns.
+    /// Also injects the synthetic `cdp_find_elements` definition.
     async fn refresh_planning_tools(&self) {
         let mut mcp = self.mcp.lock().await;
         if let Err(e) = mcp.refresh_tools().await {
             tracing::warn!("Failed to refresh MCP tools after cdp_connect: {}", e);
             return;
         }
-        let new_tools = Self::build_planning_tools(&mcp.tools_as_openai());
+        let mut new_tools = Self::build_planning_tools(&mcp.tools_as_openai());
+        // Inject synthetic cdp_find_elements (not an MCP tool).
+        new_tools.push(cdp_find_elements_tool_def());
         info!(
             "Refreshed planning tools after cdp_connect: {} tools available",
             new_tools.len()
@@ -124,10 +190,116 @@ impl PlannerSession {
             .write()
             .unwrap_or_else(|e| e.into_inner()) = new_tools;
     }
+
+    /// Handle the virtual `cdp_find_elements` tool.
+    async fn handle_cdp_find_elements(&self, args: &Value) -> anyhow::Result<String> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("cdp_find_elements requires a 'query' argument"))?
+            .to_string();
+        let role_filter = args.get("role").and_then(|v| v.as_str()).map(String::from);
+        let max_results = args
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
+
+        // Get current page URL from cdp_list_pages.
+        let page_url = {
+            let mcp = self.mcp.lock().await;
+            match mcp
+                .call_tool("cdp_list_pages", Some(serde_json::json!({})))
+                .await
+            {
+                Ok(result) => result
+                    .content
+                    .first()
+                    .and_then(|c| c.as_text())
+                    .and_then(extract_selected_page_url)
+                    .unwrap_or_else(|| "(unknown page)".to_string()),
+                Err(_) => "(unknown page)".to_string(),
+            }
+        };
+
+        // Take CDP snapshot.
+        let snapshot_text = {
+            let mcp = self.mcp.lock().await;
+            let result = mcp
+                .call_tool("cdp_take_snapshot", Some(serde_json::json!({})))
+                .await
+                .map_err(|e| anyhow::anyhow!("cdp_take_snapshot failed: {e}"))?;
+            if result.is_error == Some(true) {
+                let err = result
+                    .content
+                    .first()
+                    .and_then(|c| c.as_text())
+                    .unwrap_or("unknown error");
+                return Err(anyhow::anyhow!("cdp_take_snapshot error: {err}"));
+            }
+            result
+                .content
+                .first()
+                .and_then(|c| c.as_text())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        // Search for interactive elements.
+        let result = clickweave_core::cdp::search_interactive_elements(
+            &snapshot_text,
+            &query,
+            role_filter.as_deref(),
+            max_results,
+        );
+
+        // Format compact hit list.
+        let mut output = format!("Searching on page: {}\n\n", page_url);
+        if result.matches.is_empty() {
+            output.push_str(&format!("No interactive matches for \"{query}\"."));
+        } else {
+            output.push_str(&format!("Matches for \"{query}\":\n"));
+            for m in &result.matches {
+                output.push_str(&format!("  uid={} {} \"{}\"", m.uid, m.role, m.label));
+                if let Some(parent_role) = &m.parent_role {
+                    match &m.parent_name {
+                        Some(name) => {
+                            output.push_str(&format!(" (parent: {parent_role} \"{name}\")"))
+                        }
+                        None => output.push_str(&format!(" (parent: {parent_role})")),
+                    }
+                }
+                output.push('\n');
+            }
+        }
+        if result.omitted_count > 0 {
+            output.push_str(&format!(
+                "\n~{} additional non-interactive match{} omitted.",
+                result.omitted_count,
+                if result.omitted_count == 1 { "" } else { "es" }
+            ));
+        }
+
+        Ok(output)
+    }
 }
 
 impl PlannerToolExecutor for PlannerSession {
     async fn call_tool(&self, name: &str, args: Value) -> anyhow::Result<String> {
+        // Virtual tools: intercepted here, not forwarded to MCP.
+        if name == "cdp_find_elements" {
+            let text = self.handle_cdp_find_elements(&args).await?;
+            let _ = self.app.emit(
+                "planner://tool_call",
+                PlannerToolCallPayload {
+                    session_id: self.session_id.clone(),
+                    tool_name: name.to_string(),
+                    args,
+                    result: Some(text.clone()),
+                },
+            );
+            return Ok(text);
+        }
+
         let result = {
             let mcp = self.mcp.lock().await;
             mcp.call_tool(name, Some(args.clone()))
@@ -152,8 +324,6 @@ impl PlannerToolExecutor for PlannerSession {
             },
         );
 
-        // After cdp_connect, the MCP server exposes new CDP inspection tools.
-        // Re-fetch so subsequent LLM turns can use them.
         if name == "cdp_connect" {
             self.refresh_planning_tools().await;
         }
@@ -275,5 +445,45 @@ pub async fn planner_confirmation_respond(
         Err(CommandError::validation(
             "No pending planner confirmation".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_selected_page_url;
+
+    #[test]
+    fn extract_url_native_devtools_selected() {
+        let text = "[0] https://example.com\n[1] https://other.com [selected]";
+        assert_eq!(
+            extract_selected_page_url(text).as_deref(),
+            Some("https://other.com")
+        );
+    }
+
+    #[test]
+    fn extract_url_native_devtools_no_selected_marker() {
+        let text = "[0] https://first.com\n[1] https://second.com";
+        assert!(extract_selected_page_url(text).is_none());
+    }
+
+    #[test]
+    fn extract_url_empty() {
+        assert!(extract_selected_page_url("").is_none());
+    }
+
+    #[test]
+    fn extract_url_no_pages() {
+        assert!(extract_selected_page_url("No pages found").is_none());
+    }
+
+    #[test]
+    fn extract_url_electron_background_page() {
+        let text =
+            "[0] chrome-extension://abc/background.html\n[1] file:///app/index.html [selected]";
+        assert_eq!(
+            extract_selected_page_url(text).as_deref(),
+            Some("file:///app/index.html")
+        );
     }
 }
