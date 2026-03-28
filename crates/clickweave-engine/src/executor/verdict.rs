@@ -35,8 +35,10 @@ pub(crate) fn verdict_passed(verdict: &NodeVerdict) -> bool {
 }
 
 /// Create a deterministic NodeVerdict for a Verification-role node based on its
-/// runtime result. Works for FindText/FindImage (array results) and FindApp
-/// (object with a `found` boolean).
+/// runtime result. Handles:
+/// - Array results (FindText/FindImage with flat array)
+/// - Object with `found` boolean (FindApp)
+/// - Object with `matches` array (FindImage from real MCP response)
 pub(crate) fn deterministic_verdict(
     node_id: Uuid,
     node_name: &str,
@@ -45,10 +47,15 @@ pub(crate) fn deterministic_verdict(
 ) -> NodeVerdict {
     let (found, count) = match result {
         Value::Array(arr) => (!arr.is_empty(), arr.len()),
-        // FindApp returns an object with a `found` key
         Value::Object(map) => {
-            let f = map.get("found").and_then(|v| v.as_bool()).unwrap_or(false);
-            (f, usize::from(f))
+            // Try `matches` array first (FindImage MCP response shape)
+            if let Some(Value::Array(matches)) = map.get("matches") {
+                (!matches.is_empty(), matches.len())
+            } else {
+                // Fall back to `found` boolean (FindApp)
+                let f = map.get("found").and_then(|v| v.as_bool()).unwrap_or(false);
+                (f, usize::from(f))
+            }
         }
         _ => (false, 0),
     };
@@ -264,6 +271,61 @@ mod tests {
             verdict.check_results[0].check_type,
             CheckType::WindowTitleMatches
         );
+    }
+
+    #[test]
+    fn find_image_object_with_matches_produces_pass() {
+        // Real MCP find_image response: object with matches array
+        let result = serde_json::json!({
+            "matches": [
+                {"screen_x": 120.0, "screen_y": 340.0, "score": 0.92}
+            ]
+        });
+        let verdict = deterministic_verdict(
+            Uuid::nil(),
+            "Check icon present",
+            &NodeType::FindImage(FindImageParams::default()),
+            &result,
+        );
+        assert_eq!(verdict.check_results[0].verdict, CheckVerdict::Pass);
+        assert!(verdict.check_results[0].reasoning.contains("1 match"));
+    }
+
+    #[test]
+    fn find_image_object_with_empty_matches_produces_fail() {
+        let result = serde_json::json!({"matches": []});
+        let verdict = deterministic_verdict(
+            Uuid::nil(),
+            "Check icon present",
+            &NodeType::FindImage(FindImageParams::default()),
+            &result,
+        );
+        assert_eq!(verdict.check_results[0].verdict, CheckVerdict::Fail);
+    }
+
+    #[test]
+    fn find_app_object_found_produces_pass() {
+        // Real FindApp response: object with found boolean
+        let result = serde_json::json!({"found": true, "name": "Safari", "pid": 1234});
+        let verdict = deterministic_verdict(
+            Uuid::nil(),
+            "Check app running",
+            &NodeType::FindApp(FindAppParams::default()),
+            &result,
+        );
+        assert_eq!(verdict.check_results[0].verdict, CheckVerdict::Pass);
+    }
+
+    #[test]
+    fn find_app_object_not_found_produces_fail() {
+        let result = serde_json::json!({"found": false});
+        let verdict = deterministic_verdict(
+            Uuid::nil(),
+            "Check app running",
+            &NodeType::FindApp(FindAppParams::default()),
+            &result,
+        );
+        assert_eq!(verdict.check_results[0].verdict, CheckVerdict::Fail);
     }
 
     #[test]
