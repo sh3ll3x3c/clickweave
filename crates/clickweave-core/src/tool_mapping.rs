@@ -436,39 +436,33 @@ pub fn tool_invocation_to_node_type(
         // CDP tool mappings — prefixed names for planner disambiguation
         "cdp_click" => {
             let uid = optional_str(args, "uid");
-            let intent = args
+            let target_str = args
                 .get("target")
                 .or_else(|| args.get("text"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            // uid from the planner is an exact element label; target/text is a
-            // semantic description that needs runtime resolution.
-            let target = if !uid.is_empty() {
-                CdpTarget::ExactLabel(uid)
-            } else {
-                CdpTarget::Intent(intent)
-            };
+            // Both `uid` and `target`/`text` from the planner are exact element
+            // labels (the prompt instructs "use the exact element name from
+            // cdp_find_elements"). Intent is only constructed programmatically
+            // for runtime-resolution paths, never from planner output.
+            let label = if !uid.is_empty() { uid } else { target_str };
             Ok(NodeType::CdpClick(CdpClickParams {
-                target,
+                target: CdpTarget::ExactLabel(label),
                 ..Default::default()
             }))
         }
         "cdp_hover" => {
             let uid = optional_str(args, "uid");
-            let intent = args
+            let target_str = args
                 .get("target")
                 .or_else(|| args.get("text"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let target = if !uid.is_empty() {
-                CdpTarget::ExactLabel(uid)
-            } else {
-                CdpTarget::Intent(intent)
-            };
+            let label = if !uid.is_empty() { uid } else { target_str };
             Ok(NodeType::CdpHover(CdpHoverParams {
-                target,
+                target: CdpTarget::ExactLabel(label),
                 ..Default::default()
             }))
         }
