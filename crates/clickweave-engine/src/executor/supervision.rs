@@ -315,6 +315,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Take a screenshot and extract both the image base64 and the screenshot_id
     /// (used by find_image for server-side coordinate conversion).
+    #[allow(dead_code)]
     pub(crate) async fn take_screenshot_with_id(
         &self,
         mcp: &(impl Mcp + ?Sized),

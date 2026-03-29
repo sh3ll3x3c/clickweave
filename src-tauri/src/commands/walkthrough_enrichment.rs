@@ -1146,7 +1146,7 @@ mod tests {
         let hover_id = Uuid::new_v4();
         // Hover has app_name=None (can happen for native hovers without focus resolution).
         let events = vec![{
-            let mut e = hover_event(hover_id, 3000);
+            let e = hover_event(hover_id, 3000);
             if let WalkthroughEventKind::HoverDetected { .. } = &e.kind {
                 // hover_event already has app_name: None
             }

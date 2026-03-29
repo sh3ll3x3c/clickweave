@@ -73,7 +73,7 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
     let mut repair_attempts: usize = 0;
     let mut blocked_rejections: usize = 0;
     let mut tool_call_log: Vec<ToolCallRecord> = Vec::new();
-    let mut last_usage: Option<crate::Usage> = None;
+    let mut last_usage: Option<crate::Usage>;
     let mut last_parsed: Option<T> = None;
 
     loop {

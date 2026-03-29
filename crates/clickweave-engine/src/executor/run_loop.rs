@@ -279,8 +279,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         // Run action verification if configured
                         if let Some((method, assertion)) =
                             super::action_verification::extract_verification_config(&node_type)
-                        {
-                            if let Err(e) = self
+                            && let Err(e) = self
                                 .run_action_verification(
                                     &node_auto_id,
                                     &method,
@@ -289,12 +288,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     node_run.as_ref(),
                                 )
                                 .await
-                            {
-                                self.log(format!(
-                                    "Action verification failed for {}: {}",
-                                    node_auto_id, e
-                                ));
-                            }
+                        {
+                            self.log(format!(
+                                "Action verification failed for {}: {}",
+                                node_auto_id, e
+                            ));
                         }
 
                         // Inline verdict for Verification-role nodes

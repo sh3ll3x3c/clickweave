@@ -125,29 +125,6 @@ pub const MAX_BLOCKED_REJECTIONS: usize = 3;
 /// Keeps the result within ~3K tokens to avoid blowing context windows.
 const MAX_TOOL_RESULT_CHARS: usize = 12_000;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cdp_find_elements_is_planning_tool() {
-        assert!(is_planning_tool("cdp_find_elements"));
-    }
-
-    #[test]
-    fn cdp_find_elements_is_planning_only() {
-        assert!(is_planning_only_tool("cdp_find_elements"));
-    }
-
-    #[test]
-    fn cdp_find_elements_permission_is_allowed() {
-        assert_eq!(
-            planning_tool_permission("cdp_find_elements"),
-            ToolPermission::Allowed
-        );
-    }
-}
-
 /// Execute a planning tool and return a tool_result message.
 pub(crate) async fn execute_tool<E: PlannerToolExecutor>(
     executor: &E,
@@ -182,5 +159,28 @@ pub(crate) async fn execute_tool<E: PlannerToolExecutor>(
             }
         }
         Err(e) => Message::tool_result(tc_id, format!("Tool call failed: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cdp_find_elements_is_planning_tool() {
+        assert!(is_planning_tool("cdp_find_elements"));
+    }
+
+    #[test]
+    fn cdp_find_elements_is_planning_only() {
+        assert!(is_planning_only_tool("cdp_find_elements"));
+    }
+
+    #[test]
+    fn cdp_find_elements_permission_is_allowed() {
+        assert_eq!(
+            planning_tool_permission("cdp_find_elements"),
+            ToolPermission::Allowed
+        );
     }
 }

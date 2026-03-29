@@ -433,10 +433,10 @@ pub(crate) fn build_patch_from_output(
         &output.add_nodes
     };
     for (node, raw) in added_nodes.iter().zip(add_values.iter()) {
-        if let Some(anchor_str) = raw.get("insert_before").and_then(|v| v.as_str()) {
-            if let Ok(anchor_id) = anchor_str.parse::<Uuid>() {
-                insert_before_map.insert(node.id, anchor_id);
-            }
+        if let Some(anchor_str) = raw.get("insert_before").and_then(|v| v.as_str())
+            && let Ok(anchor_id) = anchor_str.parse::<Uuid>()
+        {
+            insert_before_map.insert(node.id, anchor_id);
         }
     }
 
@@ -559,6 +559,7 @@ pub(crate) fn build_graph_plan_as_patch(
 /// malformed node (missing fields, unknown shape) doesn't crash the entire parse.
 /// Creates nodes from successfully parsed entries, populates `id_map` (LLM ID →
 /// real UUID), remaps EndLoop.loop_id references, and builds edges from `plan_edges`.
+#[allow(clippy::too_many_arguments)]
 fn build_nodes_and_edges_from_graph(
     raw_nodes: &[Value],
     raw_edges: &[Value],

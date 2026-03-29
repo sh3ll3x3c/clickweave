@@ -1,6 +1,6 @@
 use super::helpers::*;
 use clickweave_core::{
-    CdpClickParams, CdpPressKeyParams, Edge, Node, NodeType, Position, RuntimeResolution, Workflow,
+    CdpClickParams, CdpPressKeyParams, Node, NodeType, Position, RuntimeResolution, Workflow,
     WorkflowPatchCompact,
 };
 use uuid::Uuid;

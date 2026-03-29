@@ -149,6 +149,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Resolve a target by image template matching. Returns `(x, y)` coordinates.
+    #[allow(dead_code)]
     pub(in crate::executor) async fn resolve_target_by_image(
         &self,
         template_b64: &str,

@@ -1,7 +1,7 @@
 use super::error::CommandError;
 use super::planner_session::AssistantSessionHandle;
 use super::types::*;
-use clickweave_core::{RuntimeResolution, Workflow, WorkflowPatchCompact};
+use clickweave_core::{RuntimeResolution, WorkflowPatchCompact};
 use clickweave_engine::RuntimeQuery;
 use clickweave_llm::planner::assistant::resolution_chat_with_backend;
 use clickweave_llm::planner::conversation::{ChatRole, PatchSummary};

@@ -330,7 +330,7 @@ async fn resolve(
 
         println!("  LLM response: \"{}\"", raw.trim());
 
-        let uid = resolve_disambiguation_response(&raw, matches);
+        let uid = resolve_disambiguation_response(raw, matches);
         let chosen = matches.iter().find(|m| m.uid == uid).unwrap_or(&matches[0]);
 
         return Ok(ResolutionResult {
@@ -366,7 +366,7 @@ async fn resolve(
     println!("  LLM response: \"{}\"", resolved_label);
 
     let resolved_matches =
-        resolve_inventory_response(target, &raw, snapshot_text).map_err(|e| anyhow::anyhow!(e))?;
+        resolve_inventory_response(target, raw, snapshot_text).map_err(|e| anyhow::anyhow!(e))?;
 
     println!(
         "  Searching for \"{}\" → {} matches",
@@ -408,7 +408,7 @@ async fn resolve(
 
     println!("  LLM response: \"{}\"", dis_raw.trim());
 
-    let uid = resolve_disambiguation_response(&dis_raw, &resolved_matches);
+    let uid = resolve_disambiguation_response(dis_raw, &resolved_matches);
     let chosen = resolved_matches
         .iter()
         .find(|m| m.uid == uid)

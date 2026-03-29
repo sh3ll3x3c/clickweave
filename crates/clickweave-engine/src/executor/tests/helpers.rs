@@ -193,6 +193,7 @@ pub(super) fn assert_no_images(messages: &[Message]) {
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
+    #[allow(clippy::too_many_arguments)]
     pub fn with_backends(
         workflow: Workflow,
         agent: C,

@@ -1,7 +1,7 @@
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{ExecutionMode, NodeType, Workflow};
 use clickweave_llm::LlmConfig;
-use clickweave_llm::planner::conversation::{ChatEntry, RunContext};
+use clickweave_llm::planner::conversation::RunContext;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;

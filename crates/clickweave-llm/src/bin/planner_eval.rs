@@ -109,10 +109,10 @@ impl LlmSection {
             .iter()
             .map(|e| (e.url().to_string(), e.weight()))
             .collect();
-        if let Some(ep) = &self.endpoint {
-            if !entries.iter().any(|(u, _)| u == ep) {
-                entries.insert(0, (ep.clone(), 1));
-            }
+        if let Some(ep) = &self.endpoint
+            && !entries.iter().any(|(u, _)| u == ep)
+        {
+            entries.insert(0, (ep.clone(), 1));
         }
         if entries.is_empty() {
             anyhow::bail!("No LLM endpoints configured — set 'endpoint' or 'endpoints' in [llm]");

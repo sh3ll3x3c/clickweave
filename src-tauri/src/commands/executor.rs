@@ -109,10 +109,10 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         guard.execution_locked = true;
         guard.resolution_workflow = Some(request.workflow.clone());
         // Store the planner config for resolution LLM calls
-        if guard.assistant_config.is_none() {
-            if let Some(ref planner_cfg) = supervision_config {
-                guard.assistant_config = Some(planner_cfg.clone());
-            }
+        if guard.assistant_config.is_none()
+            && let Some(ref planner_cfg) = supervision_config
+        {
+            guard.assistant_config = Some(planner_cfg.clone());
         }
     }
 

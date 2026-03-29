@@ -426,13 +426,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         if let Ok(r) = mcp
                             .call_tool("cdp_list_pages", Some(serde_json::json!({})))
                             .await
+                            && r.is_error != Some(true)
                         {
-                            if r.is_error != Some(true) {
-                                let text = Self::extract_result_text(&r);
-                                if cdp_pages_show_navigation_progress(baseline, &text) {
-                                    self.log("Chrome URL navigation: page URL changed");
-                                    break;
-                                }
+                            let text = Self::extract_result_text(&r);
+                            if cdp_pages_show_navigation_progress(baseline, &text) {
+                                self.log("Chrome URL navigation: page URL changed");
+                                break;
                             }
                         }
                     }

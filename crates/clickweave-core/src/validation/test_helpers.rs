@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use crate::output_schema::{ConditionValue, OutputRef};
 use crate::{Condition, LiteralValue, Operator, Position};
 

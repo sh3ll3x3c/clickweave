@@ -781,7 +781,7 @@ fn retrieve_hover_candidates(
             .map(|(ps, pe)| {
                 let os = (*ps).max(event.timestamp);
                 let oe = (*pe).min(hover_end);
-                if os < oe { oe - os } else { 0 }
+                oe.saturating_sub(os)
             })
             .sum();
         let effective_dwell = dwell_ms.saturating_sub(paused_overlap);

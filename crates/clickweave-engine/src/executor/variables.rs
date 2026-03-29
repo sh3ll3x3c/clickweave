@@ -74,42 +74,42 @@ pub(crate) fn extract_result_variables(
 
             // Synthesize .found/.count/.coordinates from a `matches` array
             // for FindText/FindImage whose MCP response is object-shaped.
-            if matches!(node_type, NodeType::FindText(_) | NodeType::FindImage(_)) {
-                if let Some(Value::Array(matches)) = map.get("matches") {
-                    set(
-                        format!("{}.found", prefix),
-                        Value::Bool(!matches.is_empty()),
-                    );
-                    set(
-                        format!("{}.count", prefix),
-                        Value::Number(serde_json::Number::from(matches.len())),
-                    );
-                    if let Some(Value::Object(first)) = matches.first() {
-                        let coords = if let (Some(x), Some(y)) =
-                            (first.get("screen_x"), first.get("screen_y"))
-                        {
-                            Some(serde_json::json!({"x": x, "y": y}))
-                        } else if let Some(Value::Object(center)) = first.get("center") {
-                            match (center.get("x"), center.get("y")) {
-                                (Some(x), Some(y)) => Some(serde_json::json!({"x": x, "y": y})),
-                                _ => None,
-                            }
-                        } else if let (Some(x), Some(y)) = (first.get("x"), first.get("y")) {
-                            Some(serde_json::json!({"x": x, "y": y}))
-                        } else {
-                            None
-                        };
-                        if let Some(coords) = coords {
-                            set(format!("{}.coordinates", prefix), coords);
+            if matches!(node_type, NodeType::FindText(_) | NodeType::FindImage(_))
+                && let Some(Value::Array(matches)) = map.get("matches")
+            {
+                set(
+                    format!("{}.found", prefix),
+                    Value::Bool(!matches.is_empty()),
+                );
+                set(
+                    format!("{}.count", prefix),
+                    Value::Number(serde_json::Number::from(matches.len())),
+                );
+                if let Some(Value::Object(first)) = matches.first() {
+                    let coords = if let (Some(x), Some(y)) =
+                        (first.get("screen_x"), first.get("screen_y"))
+                    {
+                        Some(serde_json::json!({"x": x, "y": y}))
+                    } else if let Some(Value::Object(center)) = first.get("center") {
+                        match (center.get("x"), center.get("y")) {
+                            (Some(x), Some(y)) => Some(serde_json::json!({"x": x, "y": y})),
+                            _ => None,
                         }
-                        // Synthesize .confidence from score or confidence
-                        let confidence = first
-                            .get("score")
-                            .or_else(|| first.get("confidence"))
-                            .cloned();
-                        if let Some(c) = confidence {
-                            set(format!("{}.confidence", prefix), c);
-                        }
+                    } else if let (Some(x), Some(y)) = (first.get("x"), first.get("y")) {
+                        Some(serde_json::json!({"x": x, "y": y}))
+                    } else {
+                        None
+                    };
+                    if let Some(coords) = coords {
+                        set(format!("{}.coordinates", prefix), coords);
+                    }
+                    // Synthesize .confidence from score or confidence
+                    let confidence = first
+                        .get("score")
+                        .or_else(|| first.get("confidence"))
+                        .cloned();
+                    if let Some(c) = confidence {
+                        set(format!("{}.confidence", prefix), c);
                     }
                 }
             }
@@ -126,13 +126,13 @@ pub(crate) fn extract_result_variables(
                     set(format!("{}.{}", prefix, key), value.clone());
                 }
                 // Store a coordinates object for FindText/FindImage results
-                if let (Some(x), Some(y)) = (first.get("x"), first.get("y")) {
-                    if matches!(node_type, NodeType::FindText(_) | NodeType::FindImage(_)) {
-                        set(
-                            format!("{}.coordinates", prefix),
-                            serde_json::json!({"x": x, "y": y}),
-                        );
-                    }
+                if let (Some(x), Some(y)) = (first.get("x"), first.get("y"))
+                    && matches!(node_type, NodeType::FindText(_) | NodeType::FindImage(_))
+                {
+                    set(
+                        format!("{}.coordinates", prefix),
+                        serde_json::json!({"x": x, "y": y}),
+                    );
                 }
             }
             // Typed alias for the full array based on node type

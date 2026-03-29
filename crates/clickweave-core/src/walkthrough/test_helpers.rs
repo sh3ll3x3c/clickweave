@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use super::types::{WalkthroughEvent, WalkthroughEventKind};
 use uuid::Uuid;
 

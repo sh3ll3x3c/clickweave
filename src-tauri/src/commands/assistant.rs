@@ -247,7 +247,7 @@ pub async fn assistant_chat(
             guard.conversation.messages.push(tc.clone());
         }
         // Append assistant message
-        let patch_summary = patch.as_ref().map(|p| patch_summary_from_ui(p));
+        let patch_summary = patch.as_ref().map(patch_summary_from_ui);
         guard
             .conversation
             .push_assistant(message.clone(), patch_summary);
@@ -271,7 +271,7 @@ pub async fn assistant_chat(
     }
 
     // Emit assistant response event
-    let patch_summary = patch.as_ref().map(|p| patch_summary_from_ui(p));
+    let patch_summary = patch.as_ref().map(patch_summary_from_ui);
     let _ = app.emit(
         "assistant://message",
         AssistantMessagePayload {
