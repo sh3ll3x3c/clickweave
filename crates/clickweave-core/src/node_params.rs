@@ -399,9 +399,11 @@ macro_rules! impl_cdp_target_deser {
                 }
                 let raw = Raw::deserialize(deserializer)?;
                 Ok(Self {
-                    target: raw.target.unwrap_or_else(|| {
-                        CdpTarget::ExactLabel(raw.uid.unwrap_or_default())
-                    }),
+                    target: match (raw.target, raw.uid) {
+                        (Some(t), _) => t,
+                        (None, Some(uid)) => CdpTarget::ExactLabel(uid),
+                        (None, None) => CdpTarget::default(),
+                    },
                     $( $extra_field: raw.$extra_field, )*
                     verification_method: raw.verification_method,
                     verification_assertion: raw.verification_assertion,
@@ -906,5 +908,13 @@ mod tests {
             params.verification_assertion.as_deref(),
             Some("button visible")
         );
+    }
+
+    #[test]
+    fn cdp_click_params_missing_both_fields_defaults_to_intent() {
+        let json = r#"{}"#;
+        let params: CdpClickParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.target, CdpTarget::default());
+        assert!(matches!(params.target, CdpTarget::Intent(ref s) if s.is_empty()));
     }
 }

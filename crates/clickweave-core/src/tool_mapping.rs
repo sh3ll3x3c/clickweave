@@ -454,10 +454,24 @@ pub fn tool_invocation_to_node_type(
                 ..Default::default()
             }))
         }
-        "cdp_hover" => Ok(NodeType::CdpHover(CdpHoverParams {
-            target: CdpTarget::ExactLabel(optional_str(args, "uid")),
-            ..Default::default()
-        })),
+        "cdp_hover" => {
+            let uid = optional_str(args, "uid");
+            let intent = args
+                .get("target")
+                .or_else(|| args.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let target = if !uid.is_empty() {
+                CdpTarget::ExactLabel(uid)
+            } else {
+                CdpTarget::Intent(intent)
+            };
+            Ok(NodeType::CdpHover(CdpHoverParams {
+                target,
+                ..Default::default()
+            }))
+        }
         "cdp_type_text" => Ok(NodeType::CdpType(CdpTypeParams {
             text: optional_str(args, "text"),
             ..Default::default()
