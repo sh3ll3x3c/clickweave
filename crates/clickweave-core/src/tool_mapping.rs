@@ -5,7 +5,7 @@
 use crate::{
     AppKind, CdpClickParams, CdpClosePageParams, CdpFillParams, CdpHandleDialogParams,
     CdpHoverParams, CdpNavigateParams, CdpNewPageParams, CdpPressKeyParams, CdpSelectPageParams,
-    CdpTypeParams, CdpWaitParams, ClickParams, ClickTarget, DragParams, FindAppParams,
+    CdpTarget, CdpTypeParams, CdpWaitParams, ClickParams, ClickTarget, DragParams, FindAppParams,
     FindImageParams, FindTextParams, FocusMethod, FocusWindowParams, HoverParams, LaunchAppParams,
     McpToolCallParams, MouseButton, NodeType, PressKeyParams, QuitAppParams, ScreenshotMode,
     ScrollParams, TakeScreenshotParams, TypeTextParams,
@@ -193,8 +193,8 @@ pub fn node_type_to_tool_invocation(
         NodeType::LaunchApp(p) => ("launch_app", serde_json::json!({"app_name": p.app_name})),
         NodeType::QuitApp(p) => ("quit_app", serde_json::json!({"app_name": p.app_name})),
         // CDP nodes — use cdp_ prefixed MCP tool names
-        NodeType::CdpClick(p) => ("cdp_click", serde_json::json!({"uid": p.uid})),
-        NodeType::CdpHover(p) => ("cdp_hover", serde_json::json!({"uid": p.uid})),
+        NodeType::CdpClick(p) => ("cdp_click", serde_json::json!({"uid": p.target.as_str()})),
+        NodeType::CdpHover(p) => ("cdp_hover", serde_json::json!({"uid": p.target.as_str()})),
         NodeType::CdpFill(p) => (
             "cdp_fill",
             serde_json::json!({"uid": p.uid, "value": p.value}),
@@ -436,20 +436,26 @@ pub fn tool_invocation_to_node_type(
         // CDP tool mappings — prefixed names for planner disambiguation
         "cdp_click" => {
             let uid = optional_str(args, "uid");
-            let target = args
+            let intent = args
                 .get("target")
                 .or_else(|| args.get("text"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let effective = if uid.is_empty() { target } else { uid };
+            // uid from the planner is an exact element label; target/text is a
+            // semantic description that needs runtime resolution.
+            let target = if !uid.is_empty() {
+                CdpTarget::ExactLabel(uid)
+            } else {
+                CdpTarget::Intent(intent)
+            };
             Ok(NodeType::CdpClick(CdpClickParams {
-                uid: effective,
+                target,
                 ..Default::default()
             }))
         }
         "cdp_hover" => Ok(NodeType::CdpHover(CdpHoverParams {
-            uid: optional_str(args, "uid"),
+            target: CdpTarget::ExactLabel(optional_str(args, "uid")),
             ..Default::default()
         })),
         "cdp_type_text" => Ok(NodeType::CdpType(CdpTypeParams {
