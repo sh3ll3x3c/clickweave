@@ -148,14 +148,14 @@ Signal is an Electron app (probe_app returns `kind: "ElectronApp"`), so use CDP 
   "steps": [
     {"step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Signal"}, "name": "Launch Signal"},
     {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "Note to Self"}, "name": "Click Note to Self"},
-    {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "message input"}, "name": "Focus message input"},
+    {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "Type a message"}, "name": "Focus message input"},
     {"step_type": "Tool", "tool_name": "cdp_type_text", "arguments": {"text": "hello"}, "name": "Type hello"},
     {"step_type": "Tool", "tool_name": "cdp_press_key", "arguments": {"key": "Enter"}, "name": "Press Enter"}
   ]
 }
 ```
 
-Note: `launch_app` auto-detects Electron and connects CDP. Use `cdp_click` with a `target` name to click elements (the executor resolves the target to a UID at runtime via DOM snapshot). Use `cdp_type_text` to type into the currently focused element. Use `fill` when you need to set an input field's value — it requires a UID from `cdp_find_elements` (e.g. search for the input by name/role during planning, then use `{"uid": "<uid>", "value": "<text>"}` in the workflow). Do NOT bake UIDs into `cdp_click` — always use text targets.
+Note: `launch_app` auto-detects Electron and connects CDP. Use `cdp_click` with the **exact element name** from `cdp_find_elements` as the target (the executor matches this text against a fresh DOM snapshot at runtime). Do not paraphrase — use the label exactly as returned. Use `cdp_type_text` to type into the currently focused element. Use `fill` when you need to set an input field's value — it requires a UID from `cdp_find_elements` (e.g. search for the input by name/role during planning, then use `{"uid": "<uid>", "value": "<text>"}` in the workflow). Do NOT bake UIDs into `cdp_click` — always use text targets.
 
 ## Conditional example
 
