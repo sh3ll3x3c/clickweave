@@ -30,7 +30,7 @@ Return a JSON object with optional fields:
 ### Update (field corrections on the failing node)
 - `target` — the element to interact with
 - `name` — node display name
-- `tool_name` + `arguments` — change the tool when the action itself is wrong (e.g., `"tool_name": "cdp_click", "arguments": {{"target": "OK"}}` to change a press_key into a click)
+- `tool_name` + `arguments` — change the tool when the action itself is wrong (e.g., `"tool_name": "cdp_click", "arguments": {{"target": "OK button"}}` where "OK button" is the exact label from the element inventory)
 - `text` — text to type (for type_text / cdp_type_text)
 - `key` — key name (for press_key / cdp_press_key)
 - `expected_outcome` — verification criteria
@@ -52,6 +52,7 @@ Available tool names: click, press_key, type_text, hover, focus_window, scroll, 
 - Do NOT restructure control-flow edges
 - Do NOT modify already-completed nodes
 - Prefer changing the target over changing the tool type
+- For `cdp_click` targets, preserve the exact element label from the error context — do not paraphrase or invent labels
 "#
     )
 }
