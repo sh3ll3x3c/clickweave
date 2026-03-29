@@ -5,4 +5,4 @@ prompt = "Open Signal. Click on the chat with Alice, then click on the chat with
 [turns.expect]
 min_nodes = 6
 max_nodes = 16
-required_tools = ["launch_app", "click", "type_text"]
+required_tools = ["launch_app", "cdp_click", "cdp_type_text"]
