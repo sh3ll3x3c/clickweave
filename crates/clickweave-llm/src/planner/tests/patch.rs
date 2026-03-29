@@ -474,3 +474,14 @@ fn resolution_prompt_allows_tool_changes() {
         "Resolution prompt must NOT forbid node type changes"
     );
 }
+
+#[test]
+fn resolution_prompt_requires_exact_labels() {
+    let wf = Workflow::default();
+    let prompt = crate::planner::resolution::resolution_system_prompt(&wf);
+
+    assert!(
+        prompt.contains("exact element label"),
+        "Resolution prompt must require exact element labels for cdp_click targets"
+    );
+}

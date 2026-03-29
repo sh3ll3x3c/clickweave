@@ -28,17 +28,16 @@ Return a JSON object with optional fields:
 ```
 
 ### Update (field corrections on the failing node)
-- `target` — the element to interact with
 - `name` — node display name
-- `tool_name` + `arguments` — change the tool when the action itself is wrong (e.g., `"tool_name": "cdp_click", "arguments": {{"target": "OK"}}` to change a press_key into a click)
-- `text` — text to type (for type_text / cdp_type_text)
-- `key` — key name (for press_key / cdp_press_key)
-- `expected_outcome` — verification criteria
+- `tool_name` + `arguments` — change the tool or its parameters. Always provide both `tool_name` and `arguments` together, even if only the arguments change. Examples:
+  - Change click target: `"tool_name": "cdp_click", "arguments": {{"target": "OK button"}}` (use the exact label from the element inventory)
+  - Change typed text: `"tool_name": "cdp_type_text", "arguments": {{"text": "new text"}}`
+  - Change key: `"tool_name": "cdp_press_key", "arguments": {{"key": "Tab"}}`
 
-Available tool names: click, press_key, type_text, hover, focus_window, scroll, find_text, launch_app, cdp_click, cdp_type_text, cdp_press_key, cdp_hover, cdp_fill, cdp_select_page
+Available tool names: click, press_key, type_text, move_mouse, focus_window, scroll, find_text, launch_app, cdp_click, cdp_type_text, cdp_press_key, cdp_hover, cdp_fill, cdp_select_page, cdp_navigate, cdp_new_page, cdp_close_page, cdp_wait_for, cdp_handle_dialog
 
 ### Insert (new steps before the failing node)
-- Allowed types: Click, PressKey, TypeText, Hover, FocusWindow, Scroll, FindText
+- Use any tool from the Available tool names list above
 - Use `insert_before` with the failing node's ID — do NOT emit edges
 - NOT allowed: Loop, EndLoop, If, Switch, AiStep
 
@@ -51,7 +50,8 @@ Available tool names: click, press_key, type_text, hover, focus_window, scroll, 
 - Do NOT add/remove loops, conditionals, or switch branches
 - Do NOT restructure control-flow edges
 - Do NOT modify already-completed nodes
-- Prefer changing the target over changing the tool type
+- Prefer changing the arguments (e.g. target) over changing the tool type
+- For `cdp_click` targets, preserve the exact element label from the error context — do not paraphrase or invent labels
 "#
     )
 }

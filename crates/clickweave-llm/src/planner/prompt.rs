@@ -24,7 +24,7 @@ Available planning tools:
 - **cdp_list_pages** / **cdp_select_page** — list and switch between pages (tabs) in a CDP-connected app.
 
 **CRITICAL — after probe_app returns:**
-- If `kind` is **ElectronApp** or **ChromeBrowser**: call `cdp_connect(app_name)` to restart with debug port, then use `cdp_find_elements` to discover UI elements. Use the element names as text targets for `cdp_click` (the executor resolves them at runtime). Generate CDP tool names: `cdp_click`, `cdp_type_text`, `cdp_press_key`, `fill`, `wait_for`, `navigate_page`.
+- If `kind` is **ElectronApp** or **ChromeBrowser**: call `cdp_connect(app_name)` to restart with debug port, then use `cdp_find_elements` to discover UI elements. Use the **exact** element names from `cdp_find_elements` as text targets for `cdp_click` — do not paraphrase or abbreviate. The executor matches these against the live DOM at runtime. Generate CDP tool names: `cdp_click`, `cdp_type_text`, `cdp_press_key`, `fill`, `wait_for`, `navigate_page`.
 - If `kind` is **Native**: use `take_ax_snapshot` to see UI elements, then generate native tools (`find_text`, `click`, `type_text`, etc.).
 - Do NOT use native `click`/`type_text`/`press_key` for Electron/Chrome apps — use `cdp_click`/`cdp_type_text`/`cdp_press_key` instead.
 - Do NOT call `take_ax_snapshot` for Electron/Chrome apps — it returns accessibility data, not DOM. Use `cdp_find_elements` after `cdp_connect` instead.
@@ -34,7 +34,7 @@ Available planning tools:
 - **Electron/Chrome apps:** `probe_app` → `cdp_connect` (user confirms restart) → `cdp_list_pages` → find the main UI page (skip `background.html`, service workers, devtools pages) → `cdp_select_page` if needed → `cdp_find_elements` to discover elements → generate workflow with CDP tools using text targets from the search results
 
 **Element targeting in workflows:**
-- For `cdp_click`: use **text targets** (the element's label text). The executor resolves these to UIDs at runtime from fresh snapshots. Example: `{"target": "Note to Self"}`.
+- For `cdp_click`: use the **exact element name** from `cdp_find_elements` results as the `target` — do not paraphrase, abbreviate, or rephrase. The executor matches this text against the live DOM at runtime, so exact names give reliable matches. Example: if `cdp_find_elements` returned `textbox "Type a message"`, use `{"target": "Type a message"}` (not `"message input"`).
 - For `cdp_type_text`: pass **the text to type** — it types into the currently focused element. No target resolution. Example: `{"text": "hello"}`. Click the target input first with `cdp_click`.
 - For `cdp_press_key`: pass **the key name** — it sends the keypress to the currently focused element. Example: `{"key": "Enter"}`. Use DOM key names: `Enter` (not `Return`), `Tab`, `Escape`, `ArrowUp`, `ArrowDown`, `Backspace`, `Delete`, or single characters.
 - For `fill`: use **UIDs from `cdp_find_elements`**. The `fill` tool requires a literal UID because it targets a specific input field by DOM identity. Example: search with `cdp_find_elements(query: "search", role: "textbox")`, then use `{"uid": "<uid>", "value": "search term"}` in the workflow.

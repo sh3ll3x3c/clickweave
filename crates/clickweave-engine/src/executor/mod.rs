@@ -150,15 +150,6 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     tried_click_indices: RwLock<Vec<usize>>,
     /// CDP element UIDs already tried during supervision retries.
     tried_cdp_uids: RwLock<Vec<String>>,
-    /// Set when the last click was resolved and executed via CDP.
-    /// CDP provides structural verification (element found in DOM by
-    /// text/role/parent and click event dispatched), making VLM-based
-    /// supervision redundant and error-prone for these clicks.
-    last_click_was_cdp: bool,
-    /// Set when the last URL-enter navigation on Chrome/CDP was observed via
-    /// cdp_list_pages moving away from NTP/blank.
-    /// This gives structural verification for the navigation keypress.
-    last_url_navigation_was_cdp: bool,
     /// Text from the most recent TypeText node on a Chrome/CDP app when it
     /// looks like a URL (e.g. `gmail.com`, `https://...`).
     /// Arms the following `press_key return` intercept: fires the native
@@ -251,8 +242,6 @@ impl WorkflowExecutor {
             supervision_hint: None,
             tried_click_indices: RwLock::new(Vec::new()),
             tried_cdp_uids: RwLock::new(Vec::new()),
-            last_click_was_cdp: false,
-            last_url_navigation_was_cdp: false,
             last_typed_url: None,
             chrome_profile_store,
             chrome_profiles,

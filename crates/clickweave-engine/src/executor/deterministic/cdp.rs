@@ -2,7 +2,10 @@ use std::path::Path;
 
 use super::super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::NodeRun;
-use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
+use clickweave_core::cdp::{
+    SnapshotMatch, build_disambiguation_prompt, build_inventory_prompt_with_extras,
+    find_interactive_in_snapshot, resolve_disambiguation_response, resolve_inventory_response,
+};
 use clickweave_llm::ChatBackend;
 use uuid::Uuid;
 
@@ -48,8 +51,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let snapshot_text = Self::extract_result_text(&snapshot_result);
 
-        // Find matching elements
-        let mut matches = find_elements_in_snapshot(&snapshot_text, target);
+        // Find matching elements, preferring interactive roles (buttons, textboxes, etc.)
+        // over non-interactive ones (images, headings) when both match.
+        let mut matches = find_interactive_in_snapshot(&snapshot_text, target);
         clickweave_core::cdp::narrow_matches(&mut matches, expected.role, expected.href);
         clickweave_core::cdp::narrow_by_parent(
             &mut matches,
@@ -59,10 +63,38 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         if matches.is_empty() {
             self.log(format!(
-                "CDP: no exact match for '{}', trying LLM resolution",
+                "CDP: no exact match for '{}', resolving via element inventory",
                 target
             ));
-            self.resolve_cdp_element_name(target, &snapshot_text).await
+            let extra_inputs = self.query_contenteditable_elements(mcp).await;
+            let mut resolved = self
+                .resolve_via_inventory(target, &snapshot_text, &extra_inputs)
+                .await?;
+            clickweave_core::cdp::narrow_matches(&mut resolved, expected.role, expected.href);
+            clickweave_core::cdp::narrow_by_parent(
+                &mut resolved,
+                expected.parent_role,
+                expected.parent_name,
+            );
+            if resolved.is_empty() {
+                Err(ExecutorError::Cdp(format!(
+                    "No matching elements for '{}' after inventory resolution",
+                    target
+                )))
+            } else if resolved.len() == 1 {
+                self.log(format!(
+                    "CDP: inventory resolved '{}' -> uid='{}'",
+                    target, resolved[0].uid
+                ));
+                Ok(resolved[0].uid.clone())
+            } else {
+                self.log(format!(
+                    "CDP: inventory found {} matches for '{}', disambiguating",
+                    resolved.len(),
+                    target
+                ));
+                self.disambiguate_cdp_elements(target, &resolved).await
+            }
         } else if matches.len() == 1 {
             Ok(matches[0].uid.clone())
         } else {
@@ -137,28 +169,99 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await
     }
 
-    /// Ask the LLM to find the best matching element in the CDP snapshot.
-    async fn resolve_cdp_element_name(
+    /// Query the DOM for contenteditable elements that the accessibility tree
+    /// might represent as `generic` instead of `textbox`. Returns a list of
+    /// labels suitable for appending to the inventory prompt.
+    async fn query_contenteditable_elements(&self, mcp: &(impl Mcp + ?Sized)) -> Vec<String> {
+        // Walk all DOM elements and find editable ones (contenteditable,
+        // textarea, text inputs). CSS selectors miss inherited contenteditable
+        // (e.g. Quill editors), so we check isContentEditable on each element
+        // and skip children of editable parents to avoid duplicates.
+        let js = r#"() => {
+            const results = [];
+            const all = document.querySelectorAll('*');
+            for (const el of all) {
+                const isInput = el.tagName === 'TEXTAREA' ||
+                    (el.tagName === 'INPUT' && (!el.type || el.type === 'text' || el.type === 'search' || el.type === 'url' || el.type === 'email'));
+                const isEditable = el.isContentEditable && el.parentElement && !el.parentElement.isContentEditable;
+                if (!isInput && !isEditable) continue;
+                const label = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('data-placeholder') || '';
+                if (!label) continue;
+                results.push({ label, role: isEditable ? 'contenteditable' : el.tagName.toLowerCase() });
+            }
+            return results;
+        }"#;
+
+        match mcp
+            .call_tool(
+                "cdp_evaluate_script",
+                Some(serde_json::json!({ "function": js })),
+            )
+            .await
+        {
+            Ok(result) if result.is_error != Some(true) => {
+                let text = Self::extract_result_text(&result);
+                // Parse JSON array from the result (may be wrapped in markdown fences).
+                let json_text = text
+                    .trim()
+                    .strip_prefix("```json")
+                    .unwrap_or(&text)
+                    .strip_prefix("```")
+                    .unwrap_or(&text)
+                    .strip_suffix("```")
+                    .unwrap_or(&text)
+                    .trim();
+
+                if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(json_text) {
+                    let labels: Vec<String> = entries
+                        .iter()
+                        .filter_map(|e| {
+                            let label = e.get("label")?.as_str()?;
+                            let role = e.get("role")?.as_str().unwrap_or("input");
+                            if label.is_empty() {
+                                return None;
+                            }
+                            Some(format!("{} ({})", label, role))
+                        })
+                        .collect();
+                    if !labels.is_empty() {
+                        self.log(format!(
+                            "CDP: found {} contenteditable elements via JS: {}",
+                            labels.len(),
+                            labels.join(", ")
+                        ));
+                    }
+                    labels
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Resolve a target with no direct matches by showing the LLM a compact
+    /// element inventory and asking it to pick the best label, then searching
+    /// the snapshot for that label to get structured matches with ancestors.
+    async fn resolve_via_inventory(
         &self,
         target: &str,
         snapshot_text: &str,
-    ) -> ExecutorResult<String> {
-        // Extract a focused window around matching lines instead of blindly
-        // truncating. This ensures the target element (which may be deep in a
-        // large DOM) is visible to the LLM.
-        let context = extract_snapshot_context(target, snapshot_text, 4000);
-
-        let prompt = format!(
-            "Find the element in this page snapshot that best matches the target '{target}'.\n\
-             Return ONLY the uid value, nothing else.\n\n\
-             Page snapshot:\n{context}"
-        );
+        extra_inputs: &[String],
+    ) -> ExecutorResult<Vec<SnapshotMatch>> {
+        let prompt = build_inventory_prompt_with_extras(target, snapshot_text, extra_inputs)
+            .ok_or_else(|| {
+                ExecutorError::Cdp(format!(
+                    "No interactive elements found in CDP snapshot for '{}'",
+                    target
+                ))
+            })?;
 
         let response = self
             .reasoning_backend()
             .chat(vec![clickweave_llm::Message::user(prompt)], None)
             .await
-            .map_err(|e| ExecutorError::Cdp(format!("LLM resolution failed: {e}")))?;
+            .map_err(|e| ExecutorError::Cdp(format!("LLM inventory resolution failed: {e}")))?;
 
         let raw_text = response
             .choices
@@ -166,27 +269,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .and_then(|c| c.message.content_text())
             .ok_or_else(|| ExecutorError::Cdp("LLM returned empty content".to_string()))?;
 
-        let uid = raw_text.trim().trim_matches('"').to_string();
-        if uid.is_empty() {
-            return Err(ExecutorError::Cdp(format!(
-                "LLM could not resolve '{}' in CDP snapshot",
-                target
-            )));
-        }
+        let resolved_label = raw_text.trim().trim_matches('"');
+        self.log(format!(
+            "CDP: inventory resolved '{}' -> '{}'",
+            target, resolved_label
+        ));
 
-        // Validate that the UID actually appears in the snapshot.
-        let uid_exists = snapshot_text.contains(&format!("uid=\"{}\"", uid))
-            || snapshot_text.contains(&format!("uid={} ", uid))
-            || snapshot_text.ends_with(&format!("uid={}", uid));
-        if !uid_exists {
-            return Err(ExecutorError::Cdp(format!(
-                "LLM returned uid '{}' which does not exist in the CDP snapshot",
-                uid
-            )));
-        }
-
-        self.log(format!("CDP: LLM resolved '{}' -> uid='{}'", target, uid));
-        Ok(uid)
+        resolve_inventory_response(target, raw_text, snapshot_text).map_err(ExecutorError::Cdp)
     }
 
     /// Disambiguate between multiple CDP element matches using the LLM.
@@ -195,27 +284,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         matches: &[SnapshotMatch],
     ) -> ExecutorResult<String> {
-        let valid_uids: std::collections::HashSet<&str> =
-            matches.iter().map(|m| m.uid.as_str()).collect();
-
-        let options: Vec<String> = matches
-            .iter()
-            .enumerate()
-            .map(|(i, m)| format!("{}: uid={} — {}", i + 1, m.uid, m.label))
-            .collect();
-
-        let hint_context = self.format_supervision_hint("A previous click attempt failed. ");
-
-        let tried_context = {
-            let tried = self.read_tried_cdp_uids();
-            Self::format_tried_context(&tried, "UIDs")
-        };
-
-        let prompt = format!(
-            "Multiple elements match the target '{target}'. Which one is the best match?\n\
-             Return ONLY the uid value, nothing else.\n\n{}{hint_context}{tried_context}",
-            options.join("\n")
-        );
+        let hint = self.supervision_hint.as_deref();
+        let tried: Vec<String> = self.read_tried_cdp_uids().clone();
+        let prompt = build_disambiguation_prompt(target, matches, hint, &tried);
 
         let response = self
             .reasoning_backend()
@@ -229,17 +300,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .and_then(|c| c.message.content_text())
             .unwrap_or_default();
 
-        let uid = raw_text.trim().trim_matches('"').to_string();
-        if valid_uids.contains(uid.as_str()) {
-            self.write_tried_cdp_uids().push(uid.clone());
-            Ok(uid)
-        } else {
-            self.log(format!(
-                "CDP: LLM returned '{}' which is not in candidate set, using first match",
-                uid
-            ));
-            Ok(matches[0].uid.clone())
+        let uid = resolve_disambiguation_response(raw_text, matches);
+        if raw_text.trim().trim_matches('"') != uid || uid == matches[0].uid.as_str() {
+            // LLM returned invalid uid — we fell back to first match
+            if raw_text.trim().trim_matches('"') != uid {
+                self.log(format!(
+                    "CDP: LLM returned '{}' which is not in candidate set, using first match",
+                    raw_text.trim()
+                ));
+            }
         }
+        self.write_tried_cdp_uids().push(uid.clone());
+        Ok(uid)
     }
 
     /// Ensure a CDP connection is available for the given Electron/Chrome app.
@@ -619,34 +691,6 @@ async fn existing_debug_port(app_name: &str) -> Option<u16> {
             }
         }
         None
-    }
-}
-
-/// Extract a focused context window from a CDP snapshot around lines matching
-/// the target text. If matches are found, returns lines around the first match.
-/// If no matches, falls back to the first `max_chars` of the snapshot.
-fn extract_snapshot_context(target: &str, snapshot: &str, max_chars: usize) -> String {
-    let target_lower = target.to_lowercase();
-    let lines: Vec<&str> = snapshot.lines().collect();
-
-    // Find the first line containing the target text (case-insensitive)
-    let match_idx = lines
-        .iter()
-        .position(|l| l.to_lowercase().contains(&target_lower));
-
-    if let Some(idx) = match_idx {
-        // Include surrounding context: 20 lines before, 20 lines after
-        let start = idx.saturating_sub(20);
-        let end = (idx + 20).min(lines.len());
-        let context: String = lines[start..end].join("\n");
-        if context.len() <= max_chars {
-            return context;
-        }
-        // If still too large, truncate from the context window
-        context[..context.floor_char_boundary(max_chars)].to_string()
-    } else {
-        // No match — fall back to truncated start of snapshot
-        snapshot[..snapshot.floor_char_boundary(max_chars)].to_string()
     }
 }
 
