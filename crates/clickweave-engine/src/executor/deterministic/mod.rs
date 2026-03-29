@@ -406,8 +406,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 if let Some(ref baseline) = navigation_baseline {
                     self.log("Chrome URL navigation: polling for URL change...");
                     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-                    let mut observed_navigation = false;
                     let mut poll_ms: u64 = 100;
+                    // Poll until the URL changes or the deadline expires.
+                    // last_typed_url stays armed through supervision retries
+                    // (cleared by run_loop after supervision passes) so that a
+                    // false-failure retry still enters the navigation-aware
+                    // PressKey path instead of sending a raw Enter to the
+                    // destination page.
                     loop {
                         if self.cancel_token.is_cancelled() {
                             break;
@@ -426,17 +431,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 let text = Self::extract_result_text(&r);
                                 if cdp_pages_show_navigation_progress(baseline, &text) {
                                     self.log("Chrome URL navigation: page URL changed");
-                                    observed_navigation = true;
                                     break;
                                 }
                             }
                         }
-                    }
-                    if observed_navigation {
-                        // Consume the URL intent only once navigation is observed.
-                        // If we timed out, keep it armed so supervision retries
-                        // still use the navigation-aware PressKey path.
-                        self.last_typed_url = None;
                     }
                 } else {
                     self.log("Chrome URL navigation: baseline unavailable, skipping observation");

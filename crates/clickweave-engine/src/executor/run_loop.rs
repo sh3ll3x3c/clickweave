@@ -345,6 +345,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             let verification = self.verify_step(&node_name, &node_type, &mcp).await;
                             if verification.passed {
                                 self.supervision_hint = None;
+                                // Consume the URL navigation intent now that
+                                // supervision confirmed the step succeeded.
+                                self.last_typed_url = None;
                                 self.emit(ExecutorEvent::SupervisionPassed {
                                     node_id,
                                     node_name: node_name.clone(),
