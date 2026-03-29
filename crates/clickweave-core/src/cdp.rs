@@ -416,6 +416,142 @@ pub fn build_element_inventory(snapshot_text: &str, max_samples: usize) -> Eleme
     ElementInventory { groups: result }
 }
 
+// ── Resolution prompt helpers ───────────────────────────────────
+// Pure functions for building LLM prompts and parsing responses.
+// The actual LLM call is the caller's responsibility.
+
+/// Build an LLM prompt asking which element label best matches a target
+/// that had no direct matches in the snapshot.
+///
+/// Returns `None` if the inventory has no interactive elements.
+pub fn build_inventory_prompt(target: &str, snapshot_text: &str) -> Option<String> {
+    let inventory = build_element_inventory(snapshot_text, 10);
+    if inventory.groups.is_empty() {
+        return None;
+    }
+
+    let inventory_text: String = inventory
+        .groups
+        .iter()
+        .map(|g| format!("{} ({}): {}", g.role, g.count, g.sample_labels.join(", ")))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Some(format!(
+        "The target element is '{target}', but no element with that exact name exists on this page.\n\n\
+         Here are all interactive elements grouped by role:\n{inventory_text}\n\n\
+         Which element label is the best match for '{target}'?\n\
+         Return ONLY the exact label text, nothing else."
+    ))
+}
+
+/// Parse the LLM response from an inventory prompt and search the snapshot
+/// for matching elements.
+///
+/// Returns `Ok(matches)` on success, `Err(reason)` if the response is empty
+/// or no elements match the resolved label.
+pub fn resolve_inventory_response(
+    target: &str,
+    llm_response: &str,
+    snapshot_text: &str,
+) -> Result<Vec<SnapshotMatch>, String> {
+    let resolved_label = llm_response.trim().trim_matches('"');
+    if resolved_label.is_empty() {
+        return Err(format!(
+            "LLM could not resolve '{}' from element inventory",
+            target
+        ));
+    }
+
+    let matches = find_elements_in_snapshot(snapshot_text, resolved_label);
+    if matches.is_empty() {
+        return Err(format!(
+            "LLM suggested '{}' for target '{}' but no elements matched",
+            resolved_label, target
+        ));
+    }
+
+    Ok(matches)
+}
+
+/// Build an LLM prompt for disambiguating between multiple element matches.
+///
+/// Each option shows the element's uid, role, label, and ancestor chain.
+/// `hint` and `tried_uids` provide optional context from prior retries.
+pub fn build_disambiguation_prompt(
+    target: &str,
+    matches: &[SnapshotMatch],
+    hint: Option<&str>,
+    tried_uids: &[String],
+) -> String {
+    let options: Vec<String> = matches
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let ancestor_path = if m.ancestors.is_empty() {
+                String::new()
+            } else {
+                let path: Vec<String> = m
+                    .ancestors
+                    .iter()
+                    .map(|(role, name)| {
+                        if name.is_empty() {
+                            role.clone()
+                        } else {
+                            format!("{role} \"{name}\"")
+                        }
+                    })
+                    .collect();
+                format!("\n   ancestors: {}", path.join(" > "))
+            };
+            format!(
+                "{}: uid={} role={} \"{}\"{}",
+                i + 1,
+                m.uid,
+                m.role,
+                m.label,
+                ancestor_path,
+            )
+        })
+        .collect();
+
+    let hint_context = match hint {
+        Some(h) => format!("A previous click attempt failed. {h}\n\n"),
+        None => String::new(),
+    };
+
+    let tried_context = if tried_uids.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nAlready tried UIDs (do NOT pick these): {}\n",
+            tried_uids.join(", ")
+        )
+    };
+
+    format!(
+        "Multiple elements match the target '{target}'. Which one is the best match?\n\
+         Return ONLY the uid value, nothing else.\n\n{}{hint_context}{tried_context}",
+        options.join("\n")
+    )
+}
+
+/// Parse the LLM response from a disambiguation prompt.
+///
+/// Returns the chosen uid if it's in the candidate set, otherwise returns
+/// the first match's uid as a fallback.
+pub fn resolve_disambiguation_response(llm_response: &str, matches: &[SnapshotMatch]) -> String {
+    let valid_uids: std::collections::HashSet<&str> =
+        matches.iter().map(|m| m.uid.as_str()).collect();
+
+    let uid = llm_response.trim().trim_matches('"').to_string();
+    if valid_uids.contains(uid.as_str()) {
+        uid
+    } else {
+        matches[0].uid.clone()
+    }
+}
+
 /// Extract `url=` attribute value from a snapshot line.
 ///
 /// For `uid=1_0 link "Home" url="https://example.com"` → `Some("https://example.com")`.
@@ -429,8 +565,10 @@ fn extract_url(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_element_inventory, extract_label, extract_url, find_elements_in_snapshot,
-        narrow_by_parent, narrow_matches, parse_line_uid, search_interactive_elements,
+        build_disambiguation_prompt, build_element_inventory, build_inventory_prompt,
+        extract_label, extract_url, find_elements_in_snapshot, narrow_by_parent, narrow_matches,
+        parse_line_uid, resolve_disambiguation_response, resolve_inventory_response,
+        search_interactive_elements,
     };
 
     const SNAPSHOT_MIXED_ROLES: &str = r##"
@@ -917,7 +1055,7 @@ uid=1_0 RootWebArea "App"
     #[test]
     fn find_matches_populates_ancestors() {
         let snapshot = "\
-uid=\"1\" RootWebArea \"Signal\"
+uid=\"1\" RootWebArea \"ChatApp\"
   uid=\"2\" navigation \"sidebar\"
     uid=\"3\" region \"Search\"
       uid=\"60\" textbox \"Search\"
@@ -948,5 +1086,116 @@ uid=\"1\" RootWebArea \"Signal\"
                 .any(|(role, name)| role == "region" && name == "Message composition"),
             "ancestors should include region 'Message composition'"
         );
+    }
+
+    // --- Inventory prompt ---
+
+    const SNAPSHOT_CHAT_APP: &str = r##"
+uid="1" RootWebArea "ChatApp"
+  uid="2" navigation "sidebar"
+    uid="50" button "New chat"
+    uid="66" textbox "Search"
+  uid="4" main
+    uid="5" region "Conversation"
+      uid="100" button "Chat with User A"
+      uid="6" region "Message composition"
+        uid="120" textbox "Message"
+        uid="130" button "Send"
+"##;
+
+    #[test]
+    fn inventory_prompt_contains_all_interactive_roles() {
+        let prompt = build_inventory_prompt("Type a message", SNAPSHOT_CHAT_APP).unwrap();
+        assert!(prompt.contains("textbox"), "should list textbox role");
+        assert!(prompt.contains("button"), "should list button role");
+        assert!(prompt.contains("Search"), "should list Search label");
+        assert!(prompt.contains("Message"), "should list Message label");
+        assert!(
+            prompt.contains("Type a message"),
+            "should include the target"
+        );
+    }
+
+    #[test]
+    fn inventory_prompt_none_for_empty_snapshot() {
+        assert!(build_inventory_prompt("anything", "").is_none());
+    }
+
+    #[test]
+    fn resolve_inventory_response_finds_matches() {
+        let matches =
+            resolve_inventory_response("Type a message", "Message", SNAPSHOT_CHAT_APP).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].uid, "120");
+        assert_eq!(matches[0].role, "textbox");
+    }
+
+    #[test]
+    fn resolve_inventory_response_rejects_empty() {
+        let result = resolve_inventory_response("Type a message", "", SNAPSHOT_CHAT_APP);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_inventory_response_rejects_nonexistent_label() {
+        let result = resolve_inventory_response("Type a message", "Nonexistent", SNAPSHOT_CHAT_APP);
+        assert!(result.is_err());
+    }
+
+    // --- Disambiguation prompt ---
+
+    #[test]
+    fn disambiguation_prompt_shows_ancestors() {
+        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "textbox");
+        assert!(
+            matches.len() >= 2,
+            "should have Search and Message textboxes"
+        );
+
+        let prompt = build_disambiguation_prompt("input", &matches, None, &[]);
+        assert!(
+            prompt.contains("ancestors:"),
+            "should include ancestor chains"
+        );
+        assert!(prompt.contains("Search"), "should show Search textbox");
+        assert!(prompt.contains("Message"), "should show Message textbox");
+        assert!(
+            prompt.contains("sidebar"),
+            "should show sidebar ancestor for Search"
+        );
+        assert!(
+            prompt.contains("Message composition"),
+            "should show Message composition ancestor"
+        );
+    }
+
+    #[test]
+    fn disambiguation_prompt_includes_hint_and_tried() {
+        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "textbox");
+        let prompt = build_disambiguation_prompt(
+            "input",
+            &matches,
+            Some("Clicked wrong element"),
+            &["66".to_string()],
+        );
+        assert!(
+            prompt.contains("Clicked wrong element"),
+            "should include hint"
+        );
+        assert!(prompt.contains("66"), "should include tried UIDs");
+    }
+
+    #[test]
+    fn resolve_disambiguation_valid_uid() {
+        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "textbox");
+        let uid = resolve_disambiguation_response("120", &matches);
+        assert_eq!(uid, "120");
+    }
+
+    #[test]
+    fn resolve_disambiguation_invalid_uid_falls_back() {
+        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "textbox");
+        let uid = resolve_disambiguation_response("999", &matches);
+        assert_eq!(uid, matches[0].uid, "should fall back to first match");
     }
 }

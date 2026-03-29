@@ -2,7 +2,10 @@ use std::path::Path;
 
 use super::super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::NodeRun;
-use clickweave_core::cdp::{SnapshotMatch, build_element_inventory, find_elements_in_snapshot};
+use clickweave_core::cdp::{
+    SnapshotMatch, build_disambiguation_prompt, build_inventory_prompt, find_elements_in_snapshot,
+    resolve_disambiguation_response, resolve_inventory_response,
+};
 use clickweave_llm::ChatBackend;
 use uuid::Uuid;
 
@@ -170,28 +173,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         snapshot_text: &str,
     ) -> ExecutorResult<Vec<SnapshotMatch>> {
-        let inventory = build_element_inventory(snapshot_text, 10);
-        if inventory.groups.is_empty() {
-            return Err(ExecutorError::Cdp(format!(
+        let prompt = build_inventory_prompt(target, snapshot_text).ok_or_else(|| {
+            ExecutorError::Cdp(format!(
                 "No interactive elements found in CDP snapshot for '{}'",
                 target
-            )));
-        }
-
-        // Format a compact inventory: "textbox (2): Search, Message\nbutton (27): ..."
-        let inventory_text: String = inventory
-            .groups
-            .iter()
-            .map(|g| format!("{} ({}): {}", g.role, g.count, g.sample_labels.join(", ")))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let prompt = format!(
-            "The target element is '{target}', but no element with that exact name exists on this page.\n\n\
-             Here are all interactive elements grouped by role:\n{inventory_text}\n\n\
-             Which element label is the best match for '{target}'?\n\
-             Return ONLY the exact label text, nothing else."
-        );
+            ))
+        })?;
 
         let response = self
             .reasoning_backend()
@@ -205,28 +192,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .and_then(|c| c.message.content_text())
             .ok_or_else(|| ExecutorError::Cdp("LLM returned empty content".to_string()))?;
 
-        let resolved_label = raw_text.trim().trim_matches('"').to_string();
-        if resolved_label.is_empty() {
-            return Err(ExecutorError::Cdp(format!(
-                "LLM could not resolve '{}' from element inventory",
-                target
-            )));
-        }
-
+        let resolved_label = raw_text.trim().trim_matches('"');
         self.log(format!(
             "CDP: inventory resolved '{}' -> '{}'",
             target, resolved_label
         ));
 
-        let matches = find_elements_in_snapshot(snapshot_text, &resolved_label);
-        if matches.is_empty() {
-            return Err(ExecutorError::Cdp(format!(
-                "LLM suggested '{}' for target '{}' but no elements matched",
-                resolved_label, target
-            )));
-        }
-
-        Ok(matches)
+        resolve_inventory_response(target, &raw_text, snapshot_text)
+            .map_err(|e| ExecutorError::Cdp(e))
     }
 
     /// Disambiguate between multiple CDP element matches using the LLM.
@@ -235,52 +208,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         matches: &[SnapshotMatch],
     ) -> ExecutorResult<String> {
-        let valid_uids: std::collections::HashSet<&str> =
-            matches.iter().map(|m| m.uid.as_str()).collect();
-
-        let options: Vec<String> = matches
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                let ancestor_path = if m.ancestors.is_empty() {
-                    String::new()
-                } else {
-                    let path: Vec<String> = m
-                        .ancestors
-                        .iter()
-                        .map(|(role, name)| {
-                            if name.is_empty() {
-                                role.clone()
-                            } else {
-                                format!("{role} \"{name}\"")
-                            }
-                        })
-                        .collect();
-                    format!("\n   ancestors: {}", path.join(" > "))
-                };
-                format!(
-                    "{}: uid={} role={} \"{}\"{}",
-                    i + 1,
-                    m.uid,
-                    m.role,
-                    m.label,
-                    ancestor_path,
-                )
-            })
-            .collect();
-
-        let hint_context = self.format_supervision_hint("A previous click attempt failed. ");
-
-        let tried_context = {
-            let tried = self.read_tried_cdp_uids();
-            Self::format_tried_context(&tried, "UIDs")
-        };
-
-        let prompt = format!(
-            "Multiple elements match the target '{target}'. Which one is the best match?\n\
-             Return ONLY the uid value, nothing else.\n\n{}{hint_context}{tried_context}",
-            options.join("\n")
-        );
+        let hint = self.supervision_hint.as_deref();
+        let tried = self.read_tried_cdp_uids();
+        let prompt = build_disambiguation_prompt(target, matches, hint, &tried);
 
         let response = self
             .reasoning_backend()
@@ -294,17 +224,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .and_then(|c| c.message.content_text())
             .unwrap_or_default();
 
-        let uid = raw_text.trim().trim_matches('"').to_string();
-        if valid_uids.contains(uid.as_str()) {
-            self.write_tried_cdp_uids().push(uid.clone());
-            Ok(uid)
-        } else {
-            self.log(format!(
-                "CDP: LLM returned '{}' which is not in candidate set, using first match",
-                uid
-            ));
-            Ok(matches[0].uid.clone())
+        let uid = resolve_disambiguation_response(&raw_text, matches);
+        if raw_text.trim().trim_matches('"') != uid || uid == matches[0].uid.as_str() {
+            // LLM returned invalid uid — we fell back to first match
+            if raw_text.trim().trim_matches('"') != uid {
+                self.log(format!(
+                    "CDP: LLM returned '{}' which is not in candidate set, using first match",
+                    raw_text.trim()
+                ));
+            }
         }
+        self.write_tried_cdp_uids().push(uid.clone());
+        Ok(uid)
     }
 
     /// Ensure a CDP connection is available for the given Electron/Chrome app.
