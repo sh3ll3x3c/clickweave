@@ -393,8 +393,94 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 );
                                 continue;
                             } else {
-                                // Exhausted auto-retries, fall through to manual
+                                // Exhausted auto-retries — try runtime resolution
+                                // before falling through to the manual supervision dialog.
                                 self.supervision_hint = None;
+
+                                if self.resolution_tx.is_some() {
+                                    let target_text =
+                                        node_type.target_text().unwrap_or_default().to_string();
+                                    let action_desc = format!(
+                                        "{} (supervision failed: {})",
+                                        node_type.action_description(),
+                                        &verification.reasoning,
+                                    );
+
+                                    self.log(format!(
+                                        "Supervision exhausted for '{}'. Trying runtime resolution...",
+                                        node_name
+                                    ));
+
+                                    // Use the supervision screenshot if available,
+                                    // otherwise take a fresh one.
+                                    let screenshot =
+                                        verification.screenshot.clone().or_else(|| {
+                                            let mut args = serde_json::json!({ "format": "png" });
+                                            if let Some(ref name) = self.focused_app_name() {
+                                                args["app_name"] =
+                                                    serde_json::Value::String(name.clone());
+                                            }
+                                            // extract_screenshot_image is async but we
+                                            // need it sync here — skip if unavailable.
+                                            None
+                                        });
+
+                                    if let Some(resolution) = self
+                                        .request_resolution(
+                                            node_id,
+                                            &node_name,
+                                            &action_desc,
+                                            &target_text,
+                                            &verification.reasoning,
+                                            screenshot,
+                                        )
+                                        .await
+                                    {
+                                        use clickweave_core::RuntimeResolution;
+                                        match resolution {
+                                            RuntimeResolution::Updated(patch) => {
+                                                self.log("Supervision resolution: Updated — applying patch and retrying");
+                                                self.apply_resolution_patch(&patch);
+                                                self.evict_caches_for_node(&node_type);
+                                                if let Some(ref mut run) = node_run {
+                                                    self.finalize_run(run, RunStatus::Cancelled);
+                                                }
+                                                self.emit(ExecutorEvent::NodeCancelled(node_id));
+                                                break (false, false, Some(node_id));
+                                            }
+                                            RuntimeResolution::Rewind {
+                                                patch,
+                                                first_node_id,
+                                            } => {
+                                                self.log(format!(
+                                                    "Supervision resolution: Rewind to {}",
+                                                    first_node_id
+                                                ));
+                                                self.apply_resolution_patch(&patch);
+                                                if let Some(ref mut run) = node_run {
+                                                    self.finalize_run(run, RunStatus::Cancelled);
+                                                }
+                                                self.emit(ExecutorEvent::NodeCancelled(node_id));
+                                                break (false, false, Some(first_node_id));
+                                            }
+                                            RuntimeResolution::Removed(patch) => {
+                                                self.log("Supervision resolution: Removed — retrying current node");
+                                                self.apply_resolution_patch(&patch);
+                                                self.evict_caches_for_node(&node_type);
+                                                if let Some(ref mut run) = node_run {
+                                                    self.finalize_run(run, RunStatus::Cancelled);
+                                                }
+                                                self.emit(ExecutorEvent::NodeCancelled(node_id));
+                                                break (false, false, Some(node_id));
+                                            }
+                                            RuntimeResolution::Rejected => {
+                                                self.log("Supervision resolution: Rejected — showing supervision dialog");
+                                                // Fall through to manual supervision below
+                                            }
+                                        }
+                                    }
+                                }
+
                                 self.emit(ExecutorEvent::SupervisionPaused {
                                     node_id,
                                     node_name: node_name.clone(),
