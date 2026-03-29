@@ -41,7 +41,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use clickweave_core::cdp::{
-    build_disambiguation_prompt, build_inventory_prompt, find_elements_in_snapshot,
+    build_disambiguation_prompt, build_inventory_prompt, find_interactive_in_snapshot,
     narrow_by_parent, narrow_matches, resolve_disambiguation_response, resolve_inventory_response,
 };
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
@@ -196,10 +196,10 @@ async fn main() -> Result<()> {
     println!("Runs: {}", cli.runs);
     println!();
 
-    // Step 1: Direct match
-    let mut matches = find_elements_in_snapshot(&snapshot_text, &cli.target);
+    // Step 1: Direct match (prefer interactive roles)
+    let mut matches = find_interactive_in_snapshot(&snapshot_text, &cli.target);
     println!(
-        "Step 1 — find_elements_in_snapshot(\"{}\") → {} matches",
+        "Step 1 — find_interactive_in_snapshot(\"{}\") → {} matches",
         cli.target,
         matches.len()
     );
@@ -222,7 +222,7 @@ async fn main() -> Result<()> {
         cli.parent_name.as_deref(),
     );
 
-    if matches.len() != find_elements_in_snapshot(&snapshot_text, &cli.target).len() {
+    if matches.len() != find_interactive_in_snapshot(&snapshot_text, &cli.target).len() {
         println!("  After narrowing (role/parent): {} matches", matches.len());
     }
     println!();

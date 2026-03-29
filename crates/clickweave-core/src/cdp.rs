@@ -42,6 +42,54 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
     if exact.is_empty() { substring } else { exact }
 }
 
+fn is_interactive_role(role: &str) -> bool {
+    INTERACTIVE_ROLES
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(role))
+}
+
+/// Like `find_elements_in_snapshot` but prefers interactive elements.
+///
+/// Applies the same exact-over-substring preference, but filters each tier
+/// to interactive roles first. Falls through to the next tier when a tier
+/// has no interactive matches:
+///   interactive exact → all exact → interactive substring → all substring
+pub fn find_interactive_in_snapshot(snapshot_text: &str, target: &str) -> Vec<SnapshotMatch> {
+    let (exact, substring) = find_matches_split(snapshot_text, target);
+
+    if !exact.is_empty() {
+        let interactive: Vec<SnapshotMatch> = exact
+            .iter()
+            .filter(|m| is_interactive_role(&m.role))
+            .cloned()
+            .collect();
+        if !interactive.is_empty() {
+            return interactive;
+        }
+        // Exact matches are all non-interactive — try interactive substring.
+        let interactive_sub: Vec<SnapshotMatch> = substring
+            .iter()
+            .filter(|m| is_interactive_role(&m.role))
+            .cloned()
+            .collect();
+        if !interactive_sub.is_empty() {
+            return interactive_sub;
+        }
+        return exact;
+    }
+
+    let interactive: Vec<SnapshotMatch> = substring
+        .iter()
+        .filter(|m| is_interactive_role(&m.role))
+        .cloned()
+        .collect();
+    if interactive.is_empty() {
+        substring
+    } else {
+        interactive
+    }
+}
+
 /// Core parsing: scan a CDP snapshot for elements matching `target`,
 /// returning exact-label matches and substring matches separately.
 ///
@@ -423,19 +471,37 @@ pub fn build_element_inventory(snapshot_text: &str, max_samples: usize) -> Eleme
 /// Build an LLM prompt asking which element label best matches a target
 /// that had no direct matches in the snapshot.
 ///
-/// Returns `None` if the inventory has no interactive elements.
+/// Returns `None` if the inventory has no interactive elements (and no extras).
 pub fn build_inventory_prompt(target: &str, snapshot_text: &str) -> Option<String> {
+    build_inventory_prompt_with_extras(target, snapshot_text, &[])
+}
+
+/// Like `build_inventory_prompt` but appends extra input elements discovered
+/// via DOM queries (e.g. contenteditable fields invisible to the a11y tree).
+pub fn build_inventory_prompt_with_extras(
+    target: &str,
+    snapshot_text: &str,
+    extra_inputs: &[String],
+) -> Option<String> {
     let inventory = build_element_inventory(snapshot_text, 10);
-    if inventory.groups.is_empty() {
+    if inventory.groups.is_empty() && extra_inputs.is_empty() {
         return None;
     }
 
-    let inventory_text: String = inventory
+    let mut inventory_text: String = inventory
         .groups
         .iter()
         .map(|g| format!("{} ({}): {}", g.role, g.count, g.sample_labels.join(", ")))
         .collect::<Vec<_>>()
         .join("\n");
+
+    if !extra_inputs.is_empty() {
+        inventory_text.push_str(&format!(
+            "\ninput fields ({}): {}",
+            extra_inputs.len(),
+            extra_inputs.join(", ")
+        ));
+    }
 
     Some(format!(
         "The target element is '{target}', but no element with that exact name exists on this page.\n\n\
@@ -459,6 +525,19 @@ pub fn resolve_inventory_response(
     if resolved_label.is_empty() {
         return Err(format!(
             "LLM could not resolve '{}' from element inventory",
+            target
+        ));
+    }
+
+    // Detect LLM refusal patterns (e.g. "No matching element found").
+    let lower = resolved_label.to_lowercase();
+    if lower.contains("no match")
+        || lower.contains("not found")
+        || lower.contains("none")
+        || lower.starts_with("there is no")
+    {
+        return Err(format!(
+            "No element on this page matches target '{}'",
             target
         ));
     }

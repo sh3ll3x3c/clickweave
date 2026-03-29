@@ -3,8 +3,8 @@ use std::path::Path;
 use super::super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::NodeRun;
 use clickweave_core::cdp::{
-    SnapshotMatch, build_disambiguation_prompt, build_inventory_prompt, find_elements_in_snapshot,
-    resolve_disambiguation_response, resolve_inventory_response,
+    SnapshotMatch, build_disambiguation_prompt, build_inventory_prompt_with_extras,
+    find_interactive_in_snapshot, resolve_disambiguation_response, resolve_inventory_response,
 };
 use clickweave_llm::ChatBackend;
 use uuid::Uuid;
@@ -51,8 +51,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let snapshot_text = Self::extract_result_text(&snapshot_result);
 
-        // Find matching elements
-        let mut matches = find_elements_in_snapshot(&snapshot_text, target);
+        // Find matching elements, preferring interactive roles (buttons, textboxes, etc.)
+        // over non-interactive ones (images, headings) when both match.
+        let mut matches = find_interactive_in_snapshot(&snapshot_text, target);
         clickweave_core::cdp::narrow_matches(&mut matches, expected.role, expected.href);
         clickweave_core::cdp::narrow_by_parent(
             &mut matches,
@@ -65,7 +66,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "CDP: no exact match for '{}', resolving via element inventory",
                 target
             ));
-            let mut resolved = self.resolve_via_inventory(target, &snapshot_text).await?;
+            let extra_inputs = self.query_contenteditable_elements(mcp).await;
+            let mut resolved = self
+                .resolve_via_inventory(target, &snapshot_text, &extra_inputs)
+                .await?;
             clickweave_core::cdp::narrow_matches(&mut resolved, expected.role, expected.href);
             clickweave_core::cdp::narrow_by_parent(
                 &mut resolved,
@@ -165,6 +169,77 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await
     }
 
+    /// Query the DOM for contenteditable elements that the accessibility tree
+    /// might represent as `generic` instead of `textbox`. Returns a list of
+    /// labels suitable for appending to the inventory prompt.
+    async fn query_contenteditable_elements(&self, mcp: &(impl Mcp + ?Sized)) -> Vec<String> {
+        // Walk all DOM elements and find editable ones (contenteditable,
+        // textarea, text inputs). CSS selectors miss inherited contenteditable
+        // (e.g. Quill editors), so we check isContentEditable on each element
+        // and skip children of editable parents to avoid duplicates.
+        let js = r#"() => {
+            const results = [];
+            const all = document.querySelectorAll('*');
+            for (const el of all) {
+                const isInput = el.tagName === 'TEXTAREA' ||
+                    (el.tagName === 'INPUT' && (!el.type || el.type === 'text' || el.type === 'search' || el.type === 'url' || el.type === 'email'));
+                const isEditable = el.isContentEditable && el.parentElement && !el.parentElement.isContentEditable;
+                if (!isInput && !isEditable) continue;
+                const label = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('data-placeholder') || '';
+                if (!label) continue;
+                results.push({ label, role: isEditable ? 'contenteditable' : el.tagName.toLowerCase() });
+            }
+            return results;
+        }"#;
+
+        match mcp
+            .call_tool(
+                "cdp_evaluate_script",
+                Some(serde_json::json!({ "function": js })),
+            )
+            .await
+        {
+            Ok(result) if result.is_error != Some(true) => {
+                let text = Self::extract_result_text(&result);
+                // Parse JSON array from the result (may be wrapped in markdown fences).
+                let json_text = text
+                    .trim()
+                    .strip_prefix("```json")
+                    .unwrap_or(&text)
+                    .strip_prefix("```")
+                    .unwrap_or(&text)
+                    .strip_suffix("```")
+                    .unwrap_or(&text)
+                    .trim();
+
+                if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(json_text) {
+                    let labels: Vec<String> = entries
+                        .iter()
+                        .filter_map(|e| {
+                            let label = e.get("label")?.as_str()?;
+                            let role = e.get("role")?.as_str().unwrap_or("input");
+                            if label.is_empty() {
+                                return None;
+                            }
+                            Some(format!("{} ({})", label, role))
+                        })
+                        .collect();
+                    if !labels.is_empty() {
+                        self.log(format!(
+                            "CDP: found {} contenteditable elements via JS: {}",
+                            labels.len(),
+                            labels.join(", ")
+                        ));
+                    }
+                    labels
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Resolve a target with no direct matches by showing the LLM a compact
     /// element inventory and asking it to pick the best label, then searching
     /// the snapshot for that label to get structured matches with ancestors.
@@ -172,13 +247,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         target: &str,
         snapshot_text: &str,
+        extra_inputs: &[String],
     ) -> ExecutorResult<Vec<SnapshotMatch>> {
-        let prompt = build_inventory_prompt(target, snapshot_text).ok_or_else(|| {
-            ExecutorError::Cdp(format!(
-                "No interactive elements found in CDP snapshot for '{}'",
-                target
-            ))
-        })?;
+        let prompt = build_inventory_prompt_with_extras(target, snapshot_text, extra_inputs)
+            .ok_or_else(|| {
+                ExecutorError::Cdp(format!(
+                    "No interactive elements found in CDP snapshot for '{}'",
+                    target
+                ))
+            })?;
 
         let response = self
             .reasoning_backend()
