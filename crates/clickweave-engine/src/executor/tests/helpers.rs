@@ -229,8 +229,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             supervision_hint: None,
             tried_click_indices: RwLock::new(Vec::new()),
             tried_cdp_uids: RwLock::new(Vec::new()),
-            last_click_was_cdp: false,
-            last_url_navigation_was_cdp: false,
             last_typed_url: None,
             chrome_profile_store: clickweave_core::chrome_profiles::ChromeProfileStore::new(
                 std::env::temp_dir().join("clickweave_test_profiles"),

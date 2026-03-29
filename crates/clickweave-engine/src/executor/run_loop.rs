@@ -342,26 +342,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 break (true, false, None);
                             }
 
-                            if self.last_click_was_cdp {
-                                self.skip_supervision_structurally(
-                                    node_id,
-                                    &node_name,
-                                    "CDP click verified structurally",
-                                    "CDP click — element found and clicked in DOM",
-                                );
-                                break (true, false, None);
-                            }
-
-                            if self.last_url_navigation_was_cdp {
-                                self.skip_supervision_structurally(
-                                    node_id,
-                                    &node_name,
-                                    "CDP URL navigation verified structurally",
-                                    "CDP URL navigation — page list moved away from NTP/blank",
-                                );
-                                break (true, false, None);
-                            }
-
                             let verification = self.verify_step(&node_name, &node_type, &mcp).await;
                             if verification.passed {
                                 self.supervision_hint = None;
@@ -790,24 +770,5 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ));
             None
         }
-    }
-
-    fn skip_supervision_structurally(
-        &mut self,
-        node_id: Uuid,
-        node_name: &str,
-        reason: &str,
-        summary: &str,
-    ) {
-        self.supervision_hint = None;
-        self.log(format!(
-            "Skipping supervision for '{}' ({})",
-            node_name, reason
-        ));
-        self.emit(ExecutorEvent::SupervisionPassed {
-            node_id,
-            node_name: node_name.to_string(),
-            summary: summary.to_string(),
-        });
     }
 }

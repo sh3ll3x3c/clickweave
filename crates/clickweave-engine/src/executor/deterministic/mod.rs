@@ -280,12 +280,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             });
         }
 
-        // Reset per-execution; set to true only on CDP click success.
-        self.last_click_was_cdp = false;
-        // Reset per-execution; set to true only when URL navigation is
-        // structurally observed via cdp_list_pages.
-        self.last_url_navigation_was_cdp = false;
-
         // --- TypeText on Chrome/CDP: store URL-like text for navigation delay ---
         if let NodeType::TypeText(p) = node_type {
             let app_kind = self.focused_app_kind();
@@ -358,8 +352,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         let text = Self::extract_result_text(&r);
                         // Only use the baseline if it contains at least one
                         // parseable page entry. An empty map would cause every
-                        // HTTP tab in the next poll to look "new", spuriously
-                        // setting last_url_navigation_was_cdp = true.
+                        // HTTP tab in the next poll to look "new".
                         if parse_cdp_page_payloads(&text).is_empty() {
                             self.log(
                                 "Chrome URL navigation: baseline has no page entries — \
@@ -409,9 +402,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 //
                 // We skip the observation loop when the baseline is unavailable:
                 // without a before-snapshot we cannot distinguish existing tabs
-                // from newly-navigated ones (every http tab would look "new"),
-                // so we would spuriously set last_url_navigation_was_cdp = true
-                // and skip VLM supervision even when Chrome didn't navigate.
+                // from newly-navigated ones (every http tab would look "new").
                 if let Some(ref baseline) = navigation_baseline {
                     self.log("Chrome URL navigation: polling for URL change...");
                     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -441,7 +432,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             }
                         }
                     }
-                    self.last_url_navigation_was_cdp = observed_navigation;
                     if observed_navigation {
                         // Consume the URL intent only once navigation is observed.
                         // If we timed out, keep it armed so supervision retries
@@ -556,7 +546,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let result_text = self
                 .resolve_and_click_cdp(&p.uid, &expected, mcp, node_run.as_deref())
                 .await?;
-            self.last_click_was_cdp = true;
             return Ok(Self::parse_result_text(&result_text));
         }
 
@@ -674,7 +663,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .await
                 {
                     Ok(result_text) => {
-                        self.last_click_was_cdp = true;
                         self.record_event(
                             node_run.as_deref(),
                             "tool_result",
