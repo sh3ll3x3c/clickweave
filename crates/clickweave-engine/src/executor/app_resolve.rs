@@ -19,14 +19,43 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<ResolvedApp> {
-        // Check in-memory cache first (populated during this execution)
-        if let Some(cached) = self.read_app_cache().get(user_input).cloned() {
+        // Check in-memory cache first (populated during this execution).
+        // Clone the cached value out before any .await to avoid holding the
+        // RwLockReadGuard across an await point (which breaks Send).
+        let cached_app = self.read_app_cache().get(user_input).cloned();
+        if let Some(cached) = cached_app {
             debug!(user_input, resolved_name = %cached.name, "app_cache hit");
-            self.log(format!(
-                "App resolved (cached): \"{}\" -> {} (pid {})",
-                user_input, cached.name, cached.pid
-            ));
-            return Ok(cached);
+            // Verify the cached PID is still valid — the app may have been quit and relaunched
+            if let Ok(fresh_pid) = self.lookup_app_pid(&cached.name, mcp).await {
+                if fresh_pid == cached.pid {
+                    self.log(format!(
+                        "App resolved (cached): \"{}\" -> {} (pid {})",
+                        user_input, cached.name, cached.pid
+                    ));
+                    return Ok(cached);
+                }
+                // PID changed — app was restarted; update cache and return fresh entry
+                debug!(
+                    user_input,
+                    old_pid = cached.pid,
+                    new_pid = fresh_pid,
+                    "app_cache PID stale, updating"
+                );
+                let updated = ResolvedApp {
+                    name: cached.name.clone(),
+                    pid: fresh_pid,
+                };
+                self.write_app_cache()
+                    .insert(user_input.to_string(), updated.clone());
+                self.log(format!(
+                    "App resolved (cached, refreshed PID): \"{}\" -> {} (pid {})",
+                    user_input, updated.name, updated.pid
+                ));
+                return Ok(updated);
+            }
+            // App is no longer running — evict stale entry and fall through to full resolution
+            debug!(user_input, "app_cache hit but app no longer running, evicting");
+            self.write_app_cache().remove(user_input);
         }
 
         // Check persistent decision cache (replays Test-mode app name decisions).
@@ -145,7 +174,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         })?;
 
         // Post-validate: ensure the LLM returned a name that actually appears in the app list.
-        if !apps_text.contains(name) {
+        // Parse the JSON array so we match against individual app name entries rather than
+        // doing a raw substring match on the full JSON text (which would accept "Code" as a
+        // match for "Visual Studio Code").
+        let app_names: Vec<String> = serde_json::from_str::<Vec<Value>>(&apps_text)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
+            .collect();
+        let name_lower = name.to_lowercase();
+        let validated = app_names
+            .iter()
+            .any(|n| n.to_lowercase() == name_lower);
+        if !validated {
             return Err(ExecutorError::AppResolution(format!(
                 "App \"{}\" is not running (resolved name \"{}\" not found in app list). \
                  Use launch_app to start it first.",
@@ -249,7 +290,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // still contains the correct app name.
         let (element_target, explicit_app) = match node_type {
             NodeType::Click(p) => (p.target.as_ref().map(|t| t.text()), None),
-            NodeType::FindText(p) => (Some(p.search_text.as_str()), None),
+            NodeType::FindText(p) => (Some(p.search_text.as_str()), p.scope.as_deref()),
             NodeType::McpToolCall(p) if p.tool_name == "find_text" => (
                 p.arguments.get("text").and_then(|v| v.as_str()),
                 p.arguments.get("app_name").and_then(|v| v.as_str()),
