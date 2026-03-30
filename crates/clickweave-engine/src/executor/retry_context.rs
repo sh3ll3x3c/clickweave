@@ -49,6 +49,11 @@ pub(crate) struct RetryContext {
     /// stale cached decision. Set after an eviction on retry; reset to false
     /// after a node succeeds.
     pub force_resolve: bool,
+
+    /// Set to true when an AI step calls a focus-changing tool (launch_app,
+    /// focus_window, quit_app). Used by post-AI-step logic to trigger a state
+    /// refresh (Task 11+).
+    pub focus_dirty: bool,
 }
 
 impl RetryContext {
@@ -64,6 +69,7 @@ impl RetryContext {
             completed_node_ids: Vec::new(),
             rejected_resolutions: HashSet::new(),
             force_resolve: false,
+            focus_dirty: false,
         }
     }
 

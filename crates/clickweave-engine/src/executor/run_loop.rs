@@ -128,8 +128,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         loop {
             let result = match node_type {
                 NodeType::AiStep(params) => {
-                    self.execute_ai_step(params, tools, mcp, timeout_ms, node_run.as_mut())
-                        .await
+                    self.execute_ai_step(
+                        params,
+                        tools,
+                        mcp,
+                        timeout_ms,
+                        node_run.as_mut(),
+                        retry_ctx,
+                    )
+                    .await
                 }
                 other => {
                     self.execute_deterministic(node_id, other, mcp, node_run.as_mut(), retry_ctx)

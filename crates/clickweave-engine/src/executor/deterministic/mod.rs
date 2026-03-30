@@ -712,7 +712,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         {
             let user_input = p.value.as_deref().unwrap();
             let mut app = self
-                .resolve_app_name(node_id, user_input, mcp, node_run.as_deref(), retry_ctx.force_resolve)
+                .resolve_app_name(
+                    node_id,
+                    user_input,
+                    mcp,
+                    node_run.as_deref(),
+                    retry_ctx.force_resolve,
+                )
                 .await?;
             // Upgrade app_kind if the node says Native but detection disagrees.
             let app_kind = if p.app_kind == AppKind::Native {
@@ -742,7 +748,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .await?;
                 // Re-resolve PID -- it may have changed if the app was relaunched.
                 app = self
-                    .resolve_app_name(node_id, user_input, mcp, node_run.as_deref(), retry_ctx.force_resolve)
+                    .resolve_app_name(
+                        node_id,
+                        user_input,
+                        mcp,
+                        node_run.as_deref(),
+                        retry_ctx.force_resolve,
+                    )
                     .await?;
             }
 
@@ -768,7 +780,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         {
             let user_input = p.target.as_deref().unwrap();
             let app = self
-                .resolve_app_name(node_id, user_input, mcp, node_run.as_deref(), retry_ctx.force_resolve)
+                .resolve_app_name(
+                    node_id,
+                    user_input,
+                    mcp,
+                    node_run.as_deref(),
+                    retry_ctx.force_resolve,
+                )
                 .await?;
             resolved_ss = NodeType::TakeScreenshot(TakeScreenshotParams {
                 mode: p.mode,
@@ -802,6 +820,27 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         } else {
             None
         };
+
+        // Extract app_name for quit_app and focus_window (McpToolCall path)
+        // before args is moved into call_tool.
+        let quit_app_name = if tool_name == "quit_app" {
+            args.as_ref()
+                .and_then(|a| a.get("app_name"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+
+        let mcp_focus_window_app =
+            if tool_name == "focus_window" && matches!(node_type, NodeType::McpToolCall(_)) {
+                args.as_ref()
+                    .and_then(|a| a.get("app_name"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
 
         // Extract app_name and app_kind before args is moved into call_tool
         let launch_app_name = if tool_name == "launch_app" {
@@ -958,6 +997,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 )
                 .await?;
             }
+        }
+
+        // McpToolCall generic dispatch: update focused_app/cdp state for
+        // focus_window and quit_app so executor state stays consistent when
+        // these tools are called via a generic tool-call node.
+        // McpToolCall generic dispatch: update focused_app for focus_window so
+        // executor state stays consistent when called via a generic tool-call node.
+        if let Some(ref app_name) = mcp_focus_window_app {
+            *self.write_focused_app() = Some((app_name.clone(), AppKind::Native));
+        }
+
+        // quit_app clears focused_app and cdp_connected_app when the app being quit
+        // is the currently focused or connected app.
+        if let Some(ref app_name) = quit_app_name {
+            if self.focused_app_name().as_deref() == Some(app_name.as_str())
+                || self.focused_app_name().is_none()
+            {
+                *self.write_focused_app() = None;
+            }
+            if self.cdp_connected_app.as_deref() == Some(app_name.as_str()) {
+                self.cdp_connected_app = None;
+            }
+            self.write_app_cache().remove(app_name.as_str());
         }
 
         let images = self.save_result_images(&result, "result", &mut node_run);

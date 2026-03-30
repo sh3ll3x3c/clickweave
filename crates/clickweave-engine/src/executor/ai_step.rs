@@ -1,6 +1,7 @@
 use super::Mcp;
+use super::retry_context::RetryContext;
 use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
-use clickweave_core::{AiStepParams, NodeRun};
+use clickweave_core::{AiStepParams, AppKind, NodeRun};
 use clickweave_llm::{
     ChatBackend, Message, analyze_images, build_step_prompt, workflow_system_prompt,
 };
@@ -10,12 +11,13 @@ use tracing::debug;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn execute_ai_step(
-        &self,
+        &mut self,
         params: &AiStepParams,
         tools: &[Value],
         mcp: &(impl Mcp + ?Sized),
         timeout_ms: Option<u64>,
         mut node_run: Option<&mut NodeRun>,
+        retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<Value> {
         let mut messages = vec![
             Message::system(workflow_system_prompt()),
@@ -136,6 +138,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 };
                 let args = self.resolve_image_paths(args);
 
+                // Extract app_name for focus-changing tools before args is moved.
+                let tool_app_name: Option<String> = args
+                    .as_ref()
+                    .and_then(|a| a.get("app_name"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
                 self.record_event(
                     node_run.as_deref(),
                     "tool_call",
@@ -178,6 +187,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 "image_count": pending_images.len(),
                             }),
                         );
+
+                        // Update executor focus state for focus-changing tools.
+                        match tool_call.function.name.as_str() {
+                            "focus_window" | "launch_app" => {
+                                if let Some(ref app) = tool_app_name {
+                                    *self.write_focused_app() =
+                                        Some((app.clone(), AppKind::Native));
+                                    retry_ctx.focus_dirty = true;
+                                }
+                            }
+                            "quit_app" => {
+                                if let Some(ref app) = tool_app_name {
+                                    if self.focused_app_name().as_deref() == Some(app.as_str()) {
+                                        *self.write_focused_app() = None;
+                                        retry_ctx.focus_dirty = true;
+                                    }
+                                    if self.cdp_connected_app.as_deref() == Some(app.as_str()) {
+                                        self.cdp_connected_app = None;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
 
                         messages.push(Message::tool_result(&tool_call.id, result_text));
                     }
