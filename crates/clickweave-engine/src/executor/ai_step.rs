@@ -19,6 +19,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mut node_run: Option<&mut NodeRun>,
         retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<Value> {
+        // Clear deterministic tool result so supervision doesn't attribute
+        // a previous node's output to this AI step.
+        retry_ctx.last_tool_result = None;
+
         let mut messages = vec![
             Message::system(workflow_system_prompt()),
             Message::user(build_step_prompt(

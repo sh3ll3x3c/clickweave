@@ -113,16 +113,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         }
                     }
 
-                    // Tier 3: cdp_element_at_point failed, fall back to native click.
+                    // cdp_element_at_point failed — fall through to inventory resolution.
+                    // Don't return CdpNativeClickFallback here because this resolver
+                    // is shared by click and hover; native-click fallback only makes
+                    // sense for click and is handled at the call site.
                     self.log(format!(
-                        "CDP: cdp_element_at_point failed for '{}', falling back to native click",
+                        "CDP: cdp_element_at_point failed for '{}', trying inventory",
                         target
                     ));
-                    return Err(ExecutorError::CdpNativeClickFallback {
-                        target: target.to_string(),
-                        screen_x,
-                        screen_y,
-                    });
                 }
             }
 
