@@ -53,26 +53,40 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         available_elements: &[String],
         app_name: Option<&str>,
         node_run: Option<&NodeRun>,
+        force_resolve: bool,
     ) -> ExecutorResult<String> {
         let cache_key = (target.to_string(), app_name.map(|s| s.to_string()));
 
-        // Check in-memory cache first (populated during this execution)
+        // Check in-memory cache first (populated during this execution).
+        // Validate against available_elements so a stale entry (element renamed
+        // or screen changed) doesn't silently replay the wrong resolution.
         if let Some(cached) = self.read_element_cache().get(&cache_key).cloned() {
-            debug!(target = target, resolved_name = %cached, "element_cache hit");
-            self.log(format!(
-                "Element resolved (cached): \"{}\" -> \"{}\"",
-                target, cached
-            ));
-            return Ok(cached);
+            if available_elements.iter().any(|e| e == &cached) {
+                debug!(target = target, resolved_name = %cached, "element_cache hit");
+                self.log(format!(
+                    "Element resolved (cached): \"{}\" -> \"{}\"",
+                    target, cached
+                ));
+                return Ok(cached);
+            }
+            // Stale — evict and continue to decision cache / LLM
+            debug!(
+                target = target,
+                cached_name = %cached,
+                "element_cache hit but name not in available elements, evicting"
+            );
+            self.write_element_cache().remove(&cache_key);
         }
 
-        // Check persistent decision cache (replays Test-mode decisions in Run mode)
+        // Check persistent decision cache (replays Test-mode decisions in Run mode).
+        // Skip when force_resolve is set so a retry after eviction re-resolves via LLM.
         let ck = decision_cache::cache_key(node_id, target, app_name);
-        if let Some(cached) = self
-            .read_decision_cache()
-            .element_resolution
-            .get(&ck)
-            .cloned()
+        if !force_resolve
+            && let Some(cached) = self
+                .read_decision_cache()
+                .element_resolution
+                .get(&ck)
+                .cloned()
         {
             if available_elements
                 .iter()
@@ -319,6 +333,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let chosen = &matches[index];
         let chosen_text = chosen["text"].as_str().unwrap_or("?");
         let chosen_role = chosen["role"].as_str().unwrap_or("unknown");
+        let chosen_x = chosen["x"].as_f64();
+        let chosen_y = chosen["y"].as_f64();
 
         self.record_event(
             node_run,
@@ -329,6 +345,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "chosen_index": index,
                 "chosen_text": chosen_text,
                 "chosen_role": chosen_role,
+                "chosen_x": chosen_x,
+                "chosen_y": chosen_y,
             }),
         );
 
@@ -347,6 +365,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     app_name: app_name.map(|s| s.to_string()),
                     chosen_text: chosen_text.to_string(),
                     chosen_role: chosen_role.to_string(),
+                    chosen_x,
+                    chosen_y,
                 },
             );
         }

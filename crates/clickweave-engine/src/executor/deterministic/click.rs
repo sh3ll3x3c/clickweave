@@ -78,7 +78,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Fallback: if no matches but available_elements present, ask LLM to resolve
         if matches.is_empty()
             && let Some(retry_text) = self
-                .try_resolve_find_text(node_id, &find_args, &result_text, mcp, node_run.as_deref())
+                .try_resolve_find_text(
+                    node_id,
+                    &find_args,
+                    &result_text,
+                    mcp,
+                    node_run.as_deref(),
+                    retry_ctx.force_resolve,
+                )
                 .await
         {
             matches = serde_json::from_str(&retry_text).unwrap_or_default();
@@ -93,17 +100,46 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         } else if matches.len() == 1 {
             &matches[0]
         } else {
-            // Check decision cache first
+            // Check decision cache first.
+            // When multiple live matches share the same text and role, use the
+            // cached coordinates as a tiebreaker (closest Euclidean distance wins).
             let ck = cache_key(node_id, target, scoped_app.as_deref());
             let cached_idx = self
                 .read_decision_cache()
                 .click_disambiguation
                 .get(&ck)
+                .cloned()
                 .and_then(|cached| {
-                    matches.iter().position(|m| {
-                        m["text"].as_str() == Some(cached.chosen_text.as_str())
-                            && m["role"].as_str() == Some(cached.chosen_role.as_str())
-                    })
+                    let text_role_matches: Vec<(usize, &Value)> = matches
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, m)| {
+                            m["text"].as_str() == Some(cached.chosen_text.as_str())
+                                && m["role"].as_str() == Some(cached.chosen_role.as_str())
+                        })
+                        .collect();
+
+                    match text_role_matches.len() {
+                        0 => None,
+                        1 => Some(text_role_matches[0].0),
+                        _ => {
+                            // Multiple matches share text+role — use coordinates as tiebreaker.
+                            if let (Some(cx), Some(cy)) = (cached.chosen_x, cached.chosen_y) {
+                                text_role_matches
+                                    .into_iter()
+                                    .min_by_key(|(_, m)| {
+                                        let dx = m["x"].as_f64().unwrap_or(0.0) - cx;
+                                        let dy = m["y"].as_f64().unwrap_or(0.0) - cy;
+                                        // Use integer distance² for ordering (no need for sqrt)
+                                        ((dx * dx + dy * dy) * 1000.0) as i64
+                                    })
+                                    .map(|(idx, _)| idx)
+                            } else {
+                                // No cached coordinates — fall back to first match
+                                Some(text_role_matches[0].0)
+                            }
+                        }
+                    }
                 });
 
             let idx = if let Some(idx) = cached_idx {
@@ -274,9 +310,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         original_result_text: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
+        force_resolve: bool,
     ) -> Option<String> {
         let retry_args = self
-            .prepare_find_text_retry(node_id, original_args, original_result_text, node_run)
+            .prepare_find_text_retry(
+                node_id,
+                original_args,
+                original_result_text,
+                node_run,
+                force_resolve,
+            )
             .await?;
         let retry_result = mcp.call_tool("find_text", Some(retry_args)).await.ok()?;
         if retry_result.is_error == Some(true) {
@@ -297,6 +340,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         original_args: &Value,
         original_result_text: &str,
         node_run: Option<&NodeRun>,
+        force_resolve: bool,
     ) -> Option<Value> {
         let target = original_args.get("text")?.as_str()?;
         let available =
@@ -308,7 +352,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .map(|s| s.to_string())
             .or_else(|| self.focused_app_name());
         let resolved_name = self
-            .resolve_element_name(node_id, target, &available, scoped_app.as_deref(), node_run)
+            .resolve_element_name(
+                node_id,
+                target,
+                &available,
+                scoped_app.as_deref(),
+                node_run,
+                force_resolve,
+            )
             .await
             .ok()?;
 

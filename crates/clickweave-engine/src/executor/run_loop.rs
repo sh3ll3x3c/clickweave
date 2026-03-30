@@ -138,7 +138,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             };
 
             match result {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    retry_ctx.force_resolve = false;
+                    return Ok(value);
+                }
                 Err(e) if attempt < retries => {
                     attempt += 1;
                     self.log(format!(
@@ -149,6 +152,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         e
                     ));
                     self.evict_caches_for_node(node_type);
+                    retry_ctx.force_resolve = true;
                     self.record_event(
                         node_run.as_ref(),
                         "retry",
@@ -368,6 +372,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         let verification = self.verify_step(node_name, node_type, mcp, ctx).await;
                         if verification.passed {
                             ctx.supervision_hint = None;
+                            ctx.force_resolve = false;
                             // Consume the URL navigation intent now that
                             // supervision confirmed the step succeeded.
                             ctx.last_typed_url = None;
@@ -389,6 +394,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             ));
                             ctx.supervision_hint = Some(verification.reasoning.clone());
                             self.evict_caches_for_node(node_type);
+                            ctx.force_resolve = true;
                             self.record_event(
                                 node_run.as_ref(),
                                 "supervision_retry",

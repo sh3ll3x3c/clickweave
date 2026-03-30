@@ -712,7 +712,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         {
             let user_input = p.value.as_deref().unwrap();
             let mut app = self
-                .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
+                .resolve_app_name(node_id, user_input, mcp, node_run.as_deref(), retry_ctx.force_resolve)
                 .await?;
             // Upgrade app_kind if the node says Native but detection disagrees.
             let app_kind = if p.app_kind == AppKind::Native {
@@ -742,7 +742,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .await?;
                 // Re-resolve PID -- it may have changed if the app was relaunched.
                 app = self
-                    .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
+                    .resolve_app_name(node_id, user_input, mcp, node_run.as_deref(), retry_ctx.force_resolve)
                     .await?;
             }
 
@@ -768,7 +768,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         {
             let user_input = p.target.as_deref().unwrap();
             let app = self
-                .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
+                .resolve_app_name(node_id, user_input, mcp, node_run.as_deref(), retry_ctx.force_resolve)
                 .await?;
             resolved_ss = NodeType::TakeScreenshot(TakeScreenshotParams {
                 mode: p.mode,
@@ -983,6 +983,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 &result_text,
                 mcp,
                 node_run.as_deref(),
+                retry_ctx.force_resolve,
             )
             .await
             .unwrap_or(result_text)

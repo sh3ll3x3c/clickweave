@@ -18,6 +18,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         user_input: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
+        force_resolve: bool,
     ) -> ExecutorResult<ResolvedApp> {
         // Check in-memory cache first (populated during this execution).
         // Clone the cached value out before any .await to avoid holding the
@@ -59,10 +60,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         // Check persistent decision cache (replays Test-mode app name decisions).
+        // Skip when force_resolve is set so a retry after eviction re-resolves via LLM.
         // Clone the cached value out before any .await to avoid holding the
         // RwLockReadGuard across an await point (which breaks Send).
         let ck = decision_cache::cache_key(node_id, user_input, None);
-        let cached_app = self.read_decision_cache().app_resolution.get(&ck).cloned();
+        let cached_app = if force_resolve {
+            None
+        } else {
+            self.read_decision_cache().app_resolution.get(&ck).cloned()
+        };
         if let Some(cached) = cached_app {
             debug!(user_input, resolved_name = %cached.resolved_name, "decision_cache app hit");
             // We have the app name but need a fresh PID — look it up

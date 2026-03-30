@@ -43,6 +43,12 @@ pub(crate) struct RetryContext {
 
     /// Rejected resolutions keyed by (node_id, target) -- skip callback on retry.
     pub rejected_resolutions: HashSet<(Uuid, String)>,
+
+    /// When true, skip the persistent decision cache during element and app
+    /// resolution so the executor re-resolves via LLM instead of replaying a
+    /// stale cached decision. Set after an eviction on retry; reset to false
+    /// after a node succeeds.
+    pub force_resolve: bool,
 }
 
 impl RetryContext {
@@ -57,6 +63,7 @@ impl RetryContext {
             runtime_verdicts: Vec::new(),
             completed_node_ids: Vec::new(),
             rejected_resolutions: HashSet::new(),
+            force_resolve: false,
         }
     }
 

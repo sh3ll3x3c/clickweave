@@ -12,9 +12,16 @@ async fn resolve_element_name_successful_match() {
     let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
     let available = strs(&["Calculator", "Multiply", "Divide"]);
     assert_eq!(
-        exec.resolve_element_name(Uuid::new_v4(), "×", &available, Some("Calculator"), None)
-            .await
-            .unwrap(),
+        exec.resolve_element_name(
+            Uuid::new_v4(),
+            "×",
+            &available,
+            Some("Calculator"),
+            None,
+            false,
+        )
+        .await
+        .unwrap(),
         "Multiply"
     );
 }
@@ -26,11 +33,11 @@ async fn resolve_element_name_caches_result() {
     let available = strs(&["Subtract", "Add"]);
     let node_id = Uuid::new_v4();
     let first = exec
-        .resolve_element_name(node_id, "−", &available, None, None)
+        .resolve_element_name(node_id, "−", &available, None, None, false)
         .await
         .unwrap();
     let second = exec
-        .resolve_element_name(node_id, "−", &available, None, None)
+        .resolve_element_name(node_id, "−", &available, None, None, false)
         .await
         .unwrap();
     assert_eq!(first, "Subtract");
@@ -47,6 +54,7 @@ async fn resolve_element_name_null_match_returns_error() {
             &strs(&["Multiply"]),
             None,
             None,
+            false,
         )
         .await
         .unwrap_err();
@@ -63,6 +71,7 @@ async fn resolve_element_name_rejects_hallucinated_name() {
             &strs(&["Multiply", "Divide"]),
             None,
             None,
+            false,
         )
         .await
         .unwrap_err();
@@ -78,7 +87,8 @@ async fn resolve_element_name_handles_code_block_wrapped_response() {
             "AC",
             &strs(&["All Clear", "Equals"]),
             Some("Calculator"),
-            None
+            None,
+            false,
         )
         .await
         .unwrap(),
@@ -97,7 +107,8 @@ async fn resolve_element_name_handles_prose_wrapped_response() {
             "÷",
             &strs(&["Multiply", "Divide"]),
             None,
-            None
+            None,
+            false,
         )
         .await
         .unwrap(),
@@ -121,6 +132,7 @@ async fn prepare_find_text_retry_full_flow() {
             &serde_json::json!({"text": "×", "app_name": "Calculator"}),
             AVAILABLE_ELEMENTS_RESPONSE,
             None,
+            false,
         )
         .await
         .expect("should produce retry args");
@@ -137,6 +149,7 @@ async fn prepare_find_text_retry_preserves_extra_fields() {
             &serde_json::json!({"text": "−", "app_name": "Calculator", "match_mode": "exact"}),
             "[]\n{\"available_elements\":[\"Add\",\"Subtract\"]}",
             None,
+            false,
         )
         .await
         .unwrap();
@@ -156,6 +169,7 @@ async fn prepare_find_text_retry_falls_back_to_focused_app() {
             &serde_json::json!({"text": "×"}),
             AVAILABLE_ELEMENTS_RESPONSE,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -173,6 +187,7 @@ async fn prepare_find_text_retry_none_when_no_available_elements() {
             &serde_json::json!({"text": "×"}),
             "[{\"text\":\"×\",\"x\":100,\"y\":200}]",
             None,
+            false,
         )
         .await
         .is_none()
@@ -188,6 +203,7 @@ async fn prepare_find_text_retry_none_when_llm_finds_no_match() {
             &serde_json::json!({"text": "zzz"}),
             AVAILABLE_ELEMENTS_RESPONSE,
             None,
+            false,
         )
         .await
         .is_none()

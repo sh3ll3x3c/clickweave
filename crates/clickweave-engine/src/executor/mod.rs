@@ -202,7 +202,7 @@ impl WorkflowExecutor {
             tracing::warn!("Chrome profile setup failed (non-fatal): {e}");
             chrome_profile_store.load_profiles()
         });
-        let decision_cache = DecisionCache::load(&storage.cache_path())
+        let decision_cache = DecisionCache::load(&storage.cache_path(), workflow.id)
             .unwrap_or_else(|| DecisionCache::new(workflow.id));
         let verdict_vlm = vlm_config
             .as_ref()
