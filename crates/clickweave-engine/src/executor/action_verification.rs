@@ -111,13 +111,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Wait for UI to settle after action
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // Capture screenshot and extract base64 image data
-        let screenshot_result = mcp
-            .call_tool(
-                "take_screenshot",
-                Some(serde_json::json!({"mode": "screen", "include_ocr": false})),
-            )
-            .await;
+        // Capture screenshot and extract base64 image data.
+        // Prefer the focused app window; fall back to full-screen only when no
+        // app is known, so unrelated windows don't dominate the VLM observation.
+        let mut screenshot_args = serde_json::json!({"include_ocr": false});
+        if let Some(app_name) = self.focused_app_name() {
+            screenshot_args["app_name"] = serde_json::Value::String(app_name);
+        } else {
+            screenshot_args["mode"] = serde_json::Value::String("screen".to_string());
+        }
+        let screenshot_result = mcp.call_tool("take_screenshot", Some(screenshot_args)).await;
 
         let image_b64 = match screenshot_result {
             Ok(result) => {
