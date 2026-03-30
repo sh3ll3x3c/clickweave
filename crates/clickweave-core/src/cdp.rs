@@ -141,8 +141,7 @@ fn find_matches_split(
         let label_lower = label.to_lowercase();
         let is_match = if label_lower == target_lower {
             Some(true)
-        } else if label_lower.contains(&target_lower) || line.to_lowercase().contains(&target_lower)
-        {
+        } else if label_lower.contains(&target_lower) {
             Some(false)
         } else {
             None
@@ -688,13 +687,13 @@ uid=1_0 RootWebArea "App" url="https://app.example.com/"
 
     #[test]
     fn search_interactive_role_filter() {
-        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "button", None, 10);
+        // "S" matches Settings (button), Search (textbox), Submit (button) labels.
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "S", None, 10);
         let all_uids: Vec<&str> = result.matches.iter().map(|m| m.uid.as_str()).collect();
         assert!(all_uids.contains(&"1_2"), "Settings button should match");
         assert!(all_uids.contains(&"1_8"), "Submit button should match");
 
-        let filtered =
-            search_interactive_elements(SNAPSHOT_MIXED_ROLES, "button", Some("button"), 10);
+        let filtered = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "S", Some("button"), 10);
         assert!(filtered.matches.iter().all(|m| m.role == "button"));
     }
 
@@ -825,10 +824,13 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
 
     #[test]
     fn multiple_matches() {
-        // "Friends" appears in the link; searching for a broader term
-        let matches = find_elements_in_snapshot(SNAPSHOT, "button");
-        // "Go back" and "Submit Form" both have button in the line
-        assert!(matches.len() >= 2);
+        // "Message" appears as a label substring in "Direct Messages" (treeitem).
+        // "Form" appears as a label substring in "Submit Form" (button).
+        // Use a term that has multiple label-level substring matches.
+        let matches = find_elements_in_snapshot(SNAPSHOT, "DM");
+        // "Add Friends to DM" label contains "DM"
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].uid, "1_7");
     }
 
     #[test]
@@ -909,27 +911,6 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
     fn parse_uid_detects_inline_text_box() {
         let (_, _, is_leaf) = parse_line_uid(r#"uid=1_8 InlineTextBox "Hello""#).unwrap();
         assert!(is_leaf);
-    }
-
-    // --- find_elements_in_snapshot: line-level substring ---
-
-    #[test]
-    fn line_substring_match_when_target_in_role() {
-        // "button" doesn't appear in the label "Go back", but does in the line.
-        let matches = find_elements_in_snapshot(SNAPSHOT, "button");
-        let uids: Vec<&str> = matches.iter().map(|m| m.uid.as_str()).collect();
-        assert!(
-            uids.contains(&"1_1"),
-            "should match 'Go back' button via line"
-        );
-        assert!(
-            uids.contains(&"1_4"),
-            "should match 'Submit Form' button via line"
-        );
-        assert!(
-            uids.contains(&"1_7"),
-            "should match 'Add Friends to DM' button via line"
-        );
     }
 
     // --- extract_url ---
@@ -1225,55 +1206,57 @@ uid="1" RootWebArea "ChatApp"
 
     #[test]
     fn disambiguation_prompt_shows_ancestors() {
-        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "textbox");
-        assert!(
-            matches.len() >= 2,
-            "should have Search and Message textboxes"
-        );
+        // "Chat" matches "ChatApp" (RootWebArea), "New chat" (button),
+        // and "Chat with User A" (button) via label substring.
+        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "Chat");
+        assert!(matches.len() >= 2, "should have multiple Chat matches");
 
         let prompt = build_disambiguation_prompt("input", &matches, None, &[]);
         assert!(
             prompt.contains("ancestors:"),
             "should include ancestor chains"
         );
-        assert!(prompt.contains("Search"), "should show Search textbox");
-        assert!(prompt.contains("Message"), "should show Message textbox");
+        assert!(prompt.contains("New chat"), "should show New chat");
         assert!(
-            prompt.contains("sidebar"),
-            "should show sidebar ancestor for Search"
+            prompt.contains("Chat with User A"),
+            "should show Chat with User A"
         );
         assert!(
-            prompt.contains("Message composition"),
-            "should show Message composition ancestor"
+            prompt.contains("sidebar"),
+            "should show sidebar ancestor for New chat"
+        );
+        assert!(
+            prompt.contains("Conversation"),
+            "should show Conversation ancestor"
         );
     }
 
     #[test]
     fn disambiguation_prompt_includes_hint_and_tried() {
-        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "textbox");
+        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "Chat");
         let prompt = build_disambiguation_prompt(
             "input",
             &matches,
             Some("Clicked wrong element"),
-            &["66".to_string()],
+            &["50".to_string()],
         );
         assert!(
             prompt.contains("Clicked wrong element"),
             "should include hint"
         );
-        assert!(prompt.contains("66"), "should include tried UIDs");
+        assert!(prompt.contains("50"), "should include tried UIDs");
     }
 
     #[test]
     fn resolve_disambiguation_valid_uid() {
-        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "textbox");
-        let uid = resolve_disambiguation_response("120", &matches);
-        assert_eq!(uid, "120");
+        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "Chat");
+        let uid = resolve_disambiguation_response("100", &matches);
+        assert_eq!(uid, "100");
     }
 
     #[test]
     fn resolve_disambiguation_invalid_uid_falls_back() {
-        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "textbox");
+        let matches = find_elements_in_snapshot(SNAPSHOT_CHAT_APP, "Chat");
         let uid = resolve_disambiguation_response("999", &matches);
         assert_eq!(uid, matches[0].uid, "should fall back to first match");
     }
