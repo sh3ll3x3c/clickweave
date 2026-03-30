@@ -163,6 +163,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         retries + 1,
                         e
                     ));
+                    // Plain retries should not inherit supervision-driven
+                    // candidate exclusions — clear disambiguation state for a
+                    // fresh start on each plain retry.
+                    retry_ctx.write_tried_click_indices().clear();
+                    retry_ctx.write_tried_cdp_uids().clear();
                     self.evict_caches_for_node(node_type);
                     retry_ctx.force_resolve = true;
                     self.record_event(
@@ -489,6 +494,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             {
                                 SupervisionAction::Retry => {
                                     self.log("Supervision: user chose Retry");
+                                    // Reset supervision state so the manual retry gets a
+                                    // fresh start with the full auto-retry budget.
+                                    supervision_attempts = 0;
+                                    ctx.write_tried_click_indices().clear();
+                                    ctx.write_tried_cdp_uids().clear();
+                                    ctx.supervision_hint = None;
                                     self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
                                         .await;
                                     continue;
