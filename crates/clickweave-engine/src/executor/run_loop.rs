@@ -28,6 +28,8 @@ enum StepOutcome {
     Failed,
     /// Inline verification-role node produced a failing verdict.
     VerificationFailed,
+    /// Cancellation token fired during node execution.
+    Cancelled,
 }
 
 async fn wait_for_supervision_command(
@@ -126,6 +128,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let mut attempt = 0;
 
         loop {
+            if self.is_cancelled() {
+                return Err(ExecutorError::Cancelled);
+            }
             let result = match node_type {
                 NodeType::AiStep(params) => {
                     self.execute_ai_step(
@@ -566,6 +571,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     self.emit(ExecutorEvent::NodeFailed(node_id, msg));
                     return StepOutcome::Failed;
                 }
+                Err(ExecutorError::Cancelled) => {
+                    self.log(format!("Node '{}' cancelled", node_name));
+                    if let Some(run) = node_run {
+                        self.finalize_run(run, RunStatus::Cancelled);
+                    }
+                    self.emit(ExecutorEvent::NodeCancelled(node_id));
+                    return StepOutcome::Cancelled;
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.emit_error(format!("Node {} failed: {}", node_name, msg));
@@ -819,6 +832,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }
                 StepOutcome::Failed => {
                     // Error already emitted/finalized inside execute_with_supervision
+                    break;
+                }
+                StepOutcome::Cancelled => {
+                    self.log("Node cancelled");
+                    user_cancelled = true;
                     break;
                 }
                 StepOutcome::VerificationFailed => {
