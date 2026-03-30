@@ -1,6 +1,7 @@
 use super::Mcp;
+use super::retry_context::RetryContext;
 use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
-use clickweave_core::{AiStepParams, NodeRun};
+use clickweave_core::{AiStepParams, AppKind, NodeRun};
 use clickweave_llm::{
     ChatBackend, Message, analyze_images, build_step_prompt, workflow_system_prompt,
 };
@@ -10,12 +11,13 @@ use tracing::debug;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn execute_ai_step(
-        &self,
+        &mut self,
         params: &AiStepParams,
         tools: &[Value],
         mcp: &(impl Mcp + ?Sized),
         timeout_ms: Option<u64>,
         mut node_run: Option<&mut NodeRun>,
+        retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<Value> {
         let mut messages = vec![
             Message::system(workflow_system_prompt()),
@@ -52,11 +54,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let mut last_assistant_text = String::new();
 
         loop {
-            if tool_call_count >= max_tool_calls {
-                self.log("Max tool calls reached");
-                break;
-            }
-
             if let Some(timeout) = timeout_ms
                 && step_start.elapsed().as_millis() as u64 > timeout
             {
@@ -112,6 +109,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let mut last_image_tool = String::new();
 
             for tool_call in tool_calls {
+                if tool_call_count >= max_tool_calls {
+                    self.log("Max tool calls reached mid-response, skipping remaining");
+                    break;
+                }
                 tool_call_count += 1;
                 self.log(format!("Tool call: {}", tool_call.function.name));
                 debug!(
@@ -120,8 +121,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "Tool call arguments"
                 );
 
-                let args: Option<Value> = serde_json::from_str(&tool_call.function.arguments).ok();
+                let args: Option<Value> = match serde_json::from_str(&tool_call.function.arguments)
+                {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        self.log(format!(
+                            "Malformed tool call arguments for {}: {} — skipping",
+                            tool_call.function.name, e
+                        ));
+                        messages.push(Message::tool_result(
+                            &tool_call.id,
+                            format!("Error: invalid arguments — {}", e),
+                        ));
+                        continue;
+                    }
+                };
                 let args = self.resolve_image_paths(args);
+
+                // Extract app_name for focus-changing tools before args is moved.
+                let tool_app_name: Option<String> = args
+                    .as_ref()
+                    .and_then(|a| a.get("app_name"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 self.record_event(
                     node_run.as_deref(),
@@ -166,6 +188,38 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             }),
                         );
 
+                        // Update executor focus state for focus-changing tools,
+                        // but only when the tool succeeded (not an error payload).
+                        // PID is not resolvable inline in the AI step; use 0 as placeholder.
+                        if result.is_error != Some(true) {
+                            match tool_call.function.name.as_str() {
+                                "focus_window" | "launch_app" => {
+                                    if let Some(ref app) = tool_app_name {
+                                        *self.write_focused_app() =
+                                            Some((app.clone(), AppKind::Native, 0));
+                                        retry_ctx.focus_dirty = true;
+                                    }
+                                }
+                                "quit_app" => {
+                                    if let Some(ref app) = tool_app_name {
+                                        if self.focused_app_name().as_deref() == Some(app.as_str())
+                                        {
+                                            *self.write_focused_app() = None;
+                                            retry_ctx.focus_dirty = true;
+                                        }
+                                        if self
+                                            .cdp_connected_app
+                                            .as_ref()
+                                            .is_some_and(|(name, _)| name == app)
+                                        {
+                                            self.cdp_connected_app = None;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
                         messages.push(Message::tool_result(&tool_call.id, result_text));
                     }
                     Err(e) => {
@@ -174,6 +228,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     }
                 }
             }
+
+            let budget_exhausted = tool_call_count >= max_tool_calls;
 
             if !pending_images.is_empty() {
                 let image_count = pending_images.len();
@@ -229,6 +285,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         prepared_images,
                     ));
                 }
+            }
+
+            if budget_exhausted {
+                self.log("Max tool calls reached");
+                break;
             }
         }
 

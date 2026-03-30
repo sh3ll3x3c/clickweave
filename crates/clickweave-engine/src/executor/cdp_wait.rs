@@ -1,5 +1,5 @@
 use super::Mcp;
-use super::{ExecutorResult, WorkflowExecutor};
+use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_llm::ChatBackend;
 use serde_json::Value;
 
@@ -26,8 +26,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             })?;
 
         if result.is_error == Some(true) {
-            // Timeout — wait_for returns error on timeout
-            return Ok(serde_json::json!({"found": false}));
+            let err_text = result
+                .content
+                .first()
+                .and_then(|c| c.as_text())
+                .unwrap_or("unknown error");
+            // Only treat timeout / not-found errors as a normal "not found" result.
+            // All other errors (connection failures, protocol errors, etc.) are propagated.
+            if err_text.contains("imeout") || err_text.contains("not found") {
+                return Ok(serde_json::json!({"found": false}));
+            }
+            return Err(ExecutorError::Cdp(format!(
+                "cdp_wait_for failed: {}",
+                err_text
+            )));
         }
 
         Ok(serde_json::json!({"found": true}))

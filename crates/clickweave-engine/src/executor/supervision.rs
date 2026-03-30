@@ -261,11 +261,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 {
                     let mut history = retry_ctx.write_supervision_history();
                     history.push(Message::assistant(format!(
-                        "{{\"passed\": true, \"reasoning\": \"verification error: {}\"}}",
+                        "{{\"passed\": false, \"reasoning\": \"verification error (defaulting to fail): {}\"}}",
                         e
                     )));
                 }
-                (true, format!("Verification error: {}", e))
+                (
+                    false,
+                    format!("Verification error (defaulting to fail): {}", e),
+                )
             }
         };
 
@@ -365,7 +368,7 @@ fn parse_verification_response(raw: &str) -> (bool, String) {
     if let Some(json_str) = json_text
         && let Ok(parsed) = serde_json::from_str::<Value>(json_str)
     {
-        let passed = parsed["passed"].as_bool().unwrap_or(true);
+        let passed = parsed["passed"].as_bool().unwrap_or(false);
         let reasoning = parsed["reasoning"]
             .as_str()
             .unwrap_or("no reasoning provided")
@@ -373,9 +376,9 @@ fn parse_verification_response(raw: &str) -> (bool, String) {
         return (passed, reasoning);
     }
 
-    // If we can't parse, assume pass
+    // If we can't parse, assume fail (fail-closed)
     (
-        true,
+        false,
         format!("Could not parse verification response: {}", raw),
     )
 }
@@ -410,8 +413,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_verification_malformed_assumes_pass() {
+    fn parse_verification_malformed_defaults_to_fail() {
         let (passed, _) = parse_verification_response("I think it worked fine");
-        assert!(passed);
+        assert!(!passed);
+    }
+
+    #[test]
+    fn parse_verification_missing_passed_field_defaults_to_fail() {
+        let (passed, _) = parse_verification_response(r#"{"reasoning": "all good"}"#);
+        assert!(!passed);
     }
 }

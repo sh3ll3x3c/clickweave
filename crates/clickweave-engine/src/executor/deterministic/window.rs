@@ -35,6 +35,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
         let app_name = self.focused_app_name();
+        if app_name.is_none() {
+            return Err(ExecutorError::AppResolution(
+                "No focused app — cannot determine target window for control click".to_string(),
+            ));
+        }
         self.log(format!(
             "Resolving window control '{}' for app {:?}",
             action.display_name(),
@@ -45,7 +50,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // behind other windows) after a CDP relaunch or app switch.
         if let Some(ref name) = app_name {
             let focus_args = Some(serde_json::json!({"app_name": name}));
-            let _ = mcp.call_tool("focus_window", focus_args).await;
+            let focus_result = mcp
+                .call_tool("focus_window", focus_args)
+                .await
+                .map_err(|e| ExecutorError::ToolCall {
+                    tool: "focus_window".to_string(),
+                    message: format!("Failed to focus window: {}", e),
+                })?;
+            Self::check_tool_error(&focus_result, "focus_window")?;
         }
 
         // Call list_windows to get window bounds.

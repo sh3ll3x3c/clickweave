@@ -29,7 +29,7 @@ use clickweave_core::storage::RunStorage;
 use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, RuntimeResolution, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -144,12 +144,13 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     event_tx: Sender<ExecutorEvent>,
     storage: RunStorage,
     app_cache: RwLock<HashMap<String, ResolvedApp>>,
-    focused_app: RwLock<Option<(String, AppKind)>>,
+    focused_app: RwLock<Option<(String, AppKind, i32)>>,
     element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
     decision_cache: RwLock<DecisionCache>,
-    /// The app name for which a CDP connection is active (via cdp_connect).
-    cdp_connected_app: Option<String>,
+    /// The app name and PID for which a CDP connection is active (via cdp_connect).
+    /// PID is used to distinguish same-name app instances within a single execution.
+    cdp_connected_app: Option<(String, i32)>,
     cancel_token: CancellationToken,
     /// Store for Chrome user-data-dir profiles (resolves profile names to paths).
     chrome_profile_store: ChromeProfileStore,
@@ -202,7 +203,7 @@ impl WorkflowExecutor {
             tracing::warn!("Chrome profile setup failed (non-fatal): {e}");
             chrome_profile_store.load_profiles()
         });
-        let decision_cache = DecisionCache::load(&storage.cache_path())
+        let decision_cache = DecisionCache::load(&storage.cache_path(), workflow.id)
             .unwrap_or_else(|| DecisionCache::new(workflow.id));
         let verdict_vlm = vlm_config
             .as_ref()
@@ -252,13 +253,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     pub(crate) fn read_focused_app(
         &self,
-    ) -> std::sync::RwLockReadGuard<'_, Option<(String, AppKind)>> {
+    ) -> std::sync::RwLockReadGuard<'_, Option<(String, AppKind, i32)>> {
         self.focused_app.read().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn write_focused_app(
         &self,
-    ) -> std::sync::RwLockWriteGuard<'_, Option<(String, AppKind)>> {
+    ) -> std::sync::RwLockWriteGuard<'_, Option<(String, AppKind, i32)>> {
         self.focused_app.write().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -329,22 +330,38 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) fn focused_app_name(&self) -> Option<String> {
         self.read_focused_app()
             .as_ref()
-            .map(|(name, _)| name.clone())
-    }
-
-    /// Check whether a CDP connection is active for the currently focused app.
-    pub(crate) fn cdp_connected_to_focused_app(&self) -> bool {
-        let Some(app_name) = self.focused_app_name() else {
-            return false;
-        };
-        self.cdp_connected_app.as_deref() == Some(app_name.as_str())
+            .map(|(name, _, _)| name.clone())
     }
 
     pub(crate) fn focused_app_kind(&self) -> AppKind {
         self.read_focused_app()
             .as_ref()
-            .map(|(_, kind)| *kind)
+            .map(|(_, kind, _)| *kind)
             .unwrap_or(AppKind::Native)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn focused_app_pid(&self) -> Option<i32> {
+        self.read_focused_app().as_ref().map(|(_, _, pid)| *pid)
+    }
+
+    /// Check whether a CDP connection is active for the currently focused app.
+    /// Uses PID to distinguish same-name instances within a single execution.
+    pub(crate) fn cdp_connected_to_focused_app(&self) -> bool {
+        match (&self.cdp_connected_app, &*self.read_focused_app()) {
+            (Some((cdp_name, cdp_pid)), Some((focus_name, _, focus_pid))) => {
+                if cdp_name != focus_name {
+                    return false;
+                }
+                // If both PIDs are known (non-zero), require they match.
+                // PID=0 means "unknown" (e.g., from AI step bookkeeping).
+                if *cdp_pid != 0 && *focus_pid != 0 {
+                    return cdp_pid == focus_pid;
+                }
+                true // Name matches, at least one PID unknown
+            }
+            _ => false,
+        }
     }
 
     /// Format a "previously tried" list as a prompt suffix for disambiguation.
@@ -420,7 +437,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             screenshot,
             element_inventory: element_inventory.to_string(),
             current_node_id: node_id,
-            completed_node_ids: retry_ctx.completed_node_ids.clone(),
+            completed_node_ids: retry_ctx
+                .completed_node_ids
+                .iter()
+                .map(|(id, _)| *id)
+                .collect(),
             response_tx,
         };
 
@@ -429,6 +450,45 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         response_rx.await.ok()
+    }
+
+    /// Roll back execution state to just after the given target node.
+    ///
+    /// Removes all completed nodes after `target` from `ctx.completed_node_ids`,
+    /// strips the corresponding variables from `self.context`, clears loop
+    /// counters, and removes verdicts for invalidated nodes.
+    fn rollback_to(&mut self, target: Uuid, ctx: &mut retry_context::RetryContext) {
+        // Use rposition to find the LAST (most recent) occurrence of the target.
+        // In loops, the same node appears multiple times; we want to keep all
+        // iterations up to and including the most recent completion of the target.
+        let rollback_from = ctx
+            .completed_node_ids
+            .iter()
+            .rposition(|(id, _)| *id == target)
+            .map(|pos| pos + 1)
+            .unwrap_or(ctx.completed_node_ids.len());
+
+        let invalidated: Vec<(Uuid, String)> =
+            ctx.completed_node_ids.drain(rollback_from..).collect();
+
+        for (_, prefix) in &invalidated {
+            self.context.remove_variables_with_prefix(prefix);
+        }
+
+        // NOTE: Loop counters are intentionally NOT cleared here.
+        // completed_node_ids doesn't track Loop/EndLoop control-flow nodes,
+        // so we cannot determine which loops the rewind crosses. Clearing
+        // all counters resets active parent loops; clearing none preserves
+        // stale counters if the rewind crosses a loop boundary. Both are
+        // wrong in different edge cases. In practice, runtime resolution
+        // rewinds stay within the same loop iteration or advance forward,
+        // so preserving counters is the safer default. A proper fix requires
+        // tracking loop entry/exit in the rewind path (deferred).
+
+        let inv_ids: HashSet<Uuid> = invalidated.iter().map(|(id, _)| *id).collect();
+
+        ctx.runtime_verdicts
+            .retain(|v| !inv_ids.contains(&v.node_id));
     }
 
     /// Apply a resolution patch to the in-memory workflow.

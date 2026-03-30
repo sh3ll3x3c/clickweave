@@ -29,6 +29,13 @@ pub struct ClickDisambiguation {
     pub app_name: Option<String>,
     pub chosen_text: String,
     pub chosen_role: String,
+    /// Screen coordinates of the chosen element at the time the disambiguation
+    /// was recorded. Used as a tiebreaker when multiple matches share the same
+    /// text and role on replay.
+    #[serde(default)]
+    pub chosen_x: Option<f64>,
+    #[serde(default)]
+    pub chosen_y: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,9 +74,16 @@ impl DecisionCache {
         }
     }
 
-    pub fn load(path: &Path) -> Option<Self> {
+    /// Load a decision cache from disk, validating that it belongs to the
+    /// expected workflow. Returns `None` if the file does not exist, cannot
+    /// be deserialized, or belongs to a different workflow.
+    pub fn load(path: &Path, expected_workflow_id: Uuid) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data).ok()
+        let cache: Self = serde_json::from_str(&data).ok()?;
+        if cache.workflow_id != expected_workflow_id {
+            return None;
+        }
+        Some(cache)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -113,7 +127,8 @@ mod tests {
         let path = dir.join("decisions.json");
 
         let node_id = Uuid::new_v4();
-        let mut cache = DecisionCache::new(Uuid::new_v4());
+        let workflow_id = Uuid::new_v4();
+        let mut cache = DecisionCache::new(workflow_id);
         cache.click_disambiguation.insert(
             cache_key(node_id, "2", Some("Calculator")),
             ClickDisambiguation {
@@ -121,6 +136,8 @@ mod tests {
                 app_name: Some("Calculator".to_string()),
                 chosen_text: "2".to_string(),
                 chosen_role: "AXButton".to_string(),
+                chosen_x: Some(100.0),
+                chosen_y: Some(200.0),
             },
         );
         cache.element_resolution.insert(
@@ -132,7 +149,7 @@ mod tests {
         );
 
         cache.save(&path).expect("save");
-        let loaded = DecisionCache::load(&path).expect("load");
+        let loaded = DecisionCache::load(&path, workflow_id).expect("load");
 
         assert_eq!(loaded.version, 1);
         assert_eq!(loaded.click_disambiguation.len(), 1);
@@ -144,6 +161,8 @@ mod tests {
             .unwrap();
         assert_eq!(disambig.chosen_text, "2");
         assert_eq!(disambig.chosen_role, "AXButton");
+        assert_eq!(disambig.chosen_x, Some(100.0));
+        assert_eq!(disambig.chosen_y, Some(200.0));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -155,12 +174,13 @@ mod tests {
             .join(Uuid::new_v4().to_string());
         let path = dir.join("decisions.json");
 
-        let mut cache = DecisionCache::new(Uuid::new_v4());
+        let workflow_id = Uuid::new_v4();
+        let mut cache = DecisionCache::new(workflow_id);
         let key = "Discord".to_string();
         cache.cdp_port.insert(key.clone(), CdpPort { port: 52341 });
 
         cache.save(&path).expect("save");
-        let loaded = DecisionCache::load(&path).expect("load");
+        let loaded = DecisionCache::load(&path, workflow_id).expect("load");
 
         assert_eq!(loaded.cdp_port.len(), 1);
         let entry = loaded.cdp_port.get("Discord").unwrap();
@@ -171,6 +191,30 @@ mod tests {
 
     #[test]
     fn load_nonexistent_returns_none() {
-        assert!(DecisionCache::load(std::path::Path::new("/nonexistent/path.json")).is_none());
+        assert!(
+            DecisionCache::load(std::path::Path::new("/nonexistent/path.json"), Uuid::nil())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn load_rejects_wrong_workflow_id() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_test_cache")
+            .join(Uuid::new_v4().to_string());
+        let path = dir.join("decisions.json");
+
+        let workflow_id = Uuid::new_v4();
+        let cache = DecisionCache::new(workflow_id);
+        cache.save(&path).expect("save");
+
+        // Load with the correct ID succeeds
+        assert!(DecisionCache::load(&path, workflow_id).is_some());
+
+        // Load with a different ID returns None
+        let other_id = Uuid::new_v4();
+        assert!(DecisionCache::load(&path, other_id).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

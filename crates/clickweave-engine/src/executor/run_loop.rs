@@ -28,6 +28,8 @@ enum StepOutcome {
     Failed,
     /// Inline verification-role node produced a failing verdict.
     VerificationFailed,
+    /// Cancellation token fired during node execution.
+    Cancelled,
 }
 
 async fn wait_for_supervision_command(
@@ -126,10 +128,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let mut attempt = 0;
 
         loop {
+            if self.is_cancelled() {
+                return Err(ExecutorError::Cancelled);
+            }
             let result = match node_type {
                 NodeType::AiStep(params) => {
-                    self.execute_ai_step(params, tools, mcp, timeout_ms, node_run.as_mut())
-                        .await
+                    self.execute_ai_step(
+                        params,
+                        tools,
+                        mcp,
+                        timeout_ms,
+                        node_run.as_mut(),
+                        retry_ctx,
+                    )
+                    .await
                 }
                 other => {
                     self.execute_deterministic(node_id, other, mcp, node_run.as_mut(), retry_ctx)
@@ -138,7 +150,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             };
 
             match result {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    retry_ctx.force_resolve = false;
+                    return Ok(value);
+                }
                 Err(e) if attempt < retries => {
                     attempt += 1;
                     self.log(format!(
@@ -148,7 +163,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         retries + 1,
                         e
                     ));
+                    // Plain retries should not inherit supervision-driven
+                    // candidate exclusions — clear disambiguation state for a
+                    // fresh start on each plain retry.
+                    retry_ctx.write_tried_click_indices().clear();
+                    retry_ctx.write_tried_cdp_uids().clear();
                     self.evict_caches_for_node(node_type);
+                    retry_ctx.force_resolve = true;
                     self.record_event(
                         node_run.as_ref(),
                         "retry",
@@ -221,14 +242,30 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     Some(StepOutcome::Rewind(first_node_id))
                 }
                 RuntimeResolution::Removed(patch) => {
-                    self.log("Runtime resolution: Removed — retrying current node");
+                    self.log("Runtime resolution: Removed — applying patch");
                     self.apply_resolution_patch(&patch);
                     self.evict_caches_for_node(node_type);
                     if let Some(run) = node_run {
                         self.finalize_run(run, RunStatus::Cancelled);
                     }
                     self.emit(ExecutorEvent::NodeCancelled(node_id));
-                    Some(StepOutcome::Rewind(node_id))
+
+                    if self.workflow.find_node(node_id).is_some() {
+                        // Node still exists — retry it (redundant steps ahead were removed)
+                        Some(StepOutcome::Rewind(node_id))
+                    } else {
+                        // Current node was removed — follow updated edges
+                        let next = self
+                            .follow_single_edge(node_id)
+                            .or_else(|| self.entry_points().first().copied());
+                        match next {
+                            Some(next_id) => Some(StepOutcome::Rewind(next_id)),
+                            None => {
+                                self.log("No successor after node removal — workflow complete");
+                                Some(StepOutcome::Succeeded)
+                            }
+                        }
+                    }
                 }
                 RuntimeResolution::Rejected => {
                     self.log("Runtime resolution: Rejected — falling through");
@@ -343,7 +380,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             node_name,
                             if failed { "FAIL" } else { "PASS" },
                         ));
+                        let has_warn = v
+                            .check_results
+                            .iter()
+                            .any(|r| r.verdict == clickweave_core::CheckVerdict::Warn);
                         ctx.runtime_verdicts.push(v);
+                        if has_warn {
+                            self.log(format!(
+                                "WARNING: Verification node '{}' has no expected_outcome — \
+                                 verification was not evaluated. \
+                                 Set expected_outcome to enable actual verification.",
+                                node_name,
+                            ));
+                        }
                         if failed {
                             self.emit_error(format!("Verification failed: '{}'", node_name));
                             return StepOutcome::VerificationFailed;
@@ -368,6 +417,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         let verification = self.verify_step(node_name, node_type, mcp, ctx).await;
                         if verification.passed {
                             ctx.supervision_hint = None;
+                            ctx.force_resolve = false;
                             // Consume the URL navigation intent now that
                             // supervision confirmed the step succeeded.
                             ctx.last_typed_url = None;
@@ -389,6 +439,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             ));
                             ctx.supervision_hint = Some(verification.reasoning.clone());
                             self.evict_caches_for_node(node_type);
+                            ctx.force_resolve = true;
                             self.record_event(
                                 node_run.as_ref(),
                                 "supervision_retry",
@@ -459,6 +510,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             {
                                 SupervisionAction::Retry => {
                                     self.log("Supervision: user chose Retry");
+                                    // Reset supervision state so the manual retry gets a
+                                    // fresh start with the full auto-retry budget.
+                                    supervision_attempts = 0;
+                                    ctx.write_tried_click_indices().clear();
+                                    ctx.write_tried_cdp_uids().clear();
+                                    ctx.supervision_hint = None;
                                     self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
                                         .await;
                                     continue;
@@ -540,6 +597,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     }
                     self.emit(ExecutorEvent::NodeFailed(node_id, msg));
                     return StepOutcome::Failed;
+                }
+                Err(ExecutorError::Cancelled) => {
+                    self.log(format!("Node '{}' cancelled", node_name));
+                    if let Some(run) = node_run {
+                        self.finalize_run(run, RunStatus::Cancelled);
+                    }
+                    self.emit(ExecutorEvent::NodeCancelled(node_id));
+                    return StepOutcome::Cancelled;
                 }
                 Err(e) => {
                     let msg = e.to_string();
@@ -684,8 +749,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             .await
                         {
                             SupervisionAction::Retry => {
-                                // Can't re-run a loop; treat as skip
-                                self.log("Supervision: user chose Retry (continuing past loop)");
+                                self.log("Supervision: Retry not supported for loop exit (treating as Skip)");
+                                self.emit(ExecutorEvent::Log(
+                                    "Loop cannot be re-run after exit. Continuing past loop."
+                                        .to_string(),
+                                ));
                             }
                             SupervisionAction::Skip => {
                                 self.log("Supervision: user chose Skip for loop exit");
@@ -772,11 +840,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         self.finalize_run(run, RunStatus::Ok);
                     }
                     self.emit(ExecutorEvent::NodeCompleted(node_id));
-                    ctx.completed_node_ids.push(node_id);
+                    ctx.completed_node_ids.push((
+                        node_id,
+                        clickweave_core::storage::sanitize_name(&node_auto_id),
+                    ));
 
                     current = self.follow_single_edge(node_id);
                 }
                 StepOutcome::Rewind(target) => {
+                    self.rollback_to(target, &mut ctx);
                     current = Some(target);
                 }
                 StepOutcome::Aborted => {
@@ -791,6 +863,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }
                 StepOutcome::Failed => {
                     // Error already emitted/finalized inside execute_with_supervision
+                    break;
+                }
+                StepOutcome::Cancelled => {
+                    self.log("Node cancelled");
+                    user_cancelled = true;
                     break;
                 }
                 StepOutcome::VerificationFailed => {
