@@ -270,6 +270,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mut node_run: Option<&mut NodeRun>,
         retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<Value> {
+        retry_ctx.last_tool_result = None;
+
         // Resolve OutputRef parameters before execution.
         let resolved = self.resolve_output_refs(node_type)?;
         let node_type = resolved.as_ref();
@@ -441,7 +443,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     self.log("Chrome URL navigation: baseline unavailable, skipping observation");
                 }
 
-                return Ok(Self::parse_result_text(&result_text));
+                return Self::set_tool_result_and_parse(retry_ctx, &result_text);
             }
             retry_ctx.last_typed_url = None;
         } else {
@@ -481,7 +483,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             }),
                         );
                         tokio::time::sleep(tokio::time::Duration::from_millis(p.dwell_ms)).await;
-                        return Ok(Self::parse_result_text(&result_text));
+                        return Self::set_tool_result_and_parse(retry_ctx, &result_text);
                     }
                     Err(e) => {
                         self.log(format!("CDP hover failed, falling back to native: {e}"));
@@ -534,7 +536,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // Dwell: hold position for the configured duration
             tokio::time::sleep(tokio::time::Duration::from_millis(p.dwell_ms)).await;
 
-            return Ok(Self::parse_result_text(&result_text));
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         if let NodeType::FindApp(p) = node_type {
@@ -557,7 +559,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     retry_ctx,
                 )
                 .await?;
-            return Ok(Self::parse_result_text(&result_text));
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         // CDP Hover: same resolve path as CdpClick
@@ -572,7 +574,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     retry_ctx,
                 )
                 .await?;
-            return Ok(Self::parse_result_text(&result_text));
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         // CDP Type: call cdp_type_text directly
@@ -591,7 +593,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     message: e.to_string(),
                 })?;
             Self::check_tool_error(&result, "cdp_type_text")?;
-            return Ok(Self::parse_result_text(&Self::extract_result_text(&result)));
+            return Self::set_tool_result_and_parse(retry_ctx, &Self::extract_result_text(&result));
         }
 
         // CDP Press Key: call cdp_press_key directly
@@ -613,7 +615,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     message: e.to_string(),
                 })?;
             Self::check_tool_error(&result, "cdp_press_key")?;
-            return Ok(Self::parse_result_text(&Self::extract_result_text(&result)));
+            return Self::set_tool_result_and_parse(retry_ctx, &Self::extract_result_text(&result));
         }
 
         if let NodeType::AppDebugKitOp(p) = node_type {
@@ -645,7 +647,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "text_len": result_text.len(),
                 }),
             );
-            return Ok(Self::parse_result_text(&result_text));
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         if let NodeType::McpToolCall(p) = node_type
@@ -689,7 +691,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 "result": Self::truncate_for_trace(&result_text, 8192),
                             }),
                         );
-                        return Ok(Self::parse_result_text(&result_text));
+                        return Self::set_tool_result_and_parse(retry_ctx, &result_text);
                     }
                     Err(e) => {
                         self.log(format!("CDP click failed, falling back to native: {e}"));
@@ -945,7 +947,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "tool_result",
                 serde_json::json!({"name": "launch_app", "text": &result_text}),
             );
-            return Ok(Self::parse_result_text(&result_text));
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         self.record_event(
@@ -1090,7 +1092,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             images.len()
         ));
 
-        Ok(Self::parse_result_text(&result_text))
+        Self::set_tool_result_and_parse(retry_ctx, &result_text)
     }
 
     pub(crate) fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> ExecutorResult<()> {
@@ -1111,6 +1113,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         } else {
             Value::String(text.to_string())
         })
+    }
+
+    /// Store the tool result for supervision, then parse and return.
+    fn set_tool_result_and_parse(
+        retry_ctx: &mut RetryContext,
+        result_text: &str,
+    ) -> ExecutorResult<Value> {
+        retry_ctx.last_tool_result = Some(result_text.to_string());
+        Ok(Self::parse_result_text(result_text))
     }
 }
 

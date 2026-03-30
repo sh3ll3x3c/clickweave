@@ -83,10 +83,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         };
 
         // Stage 2: Ask planner with persistent conversation history
-        let step_message = format!(
-            "Step label (may be stale): \"{}\"\nExecuted action: {}\nApp: {}\n\nVisual observation: {}",
-            node_name, action, app_name, observation
-        );
+        let step_message = if let Some(ref tool_result) = retry_ctx.last_tool_result {
+            format!(
+                "Step label (may be stale): \"{}\"\nExecuted action: {}\nActual tool result: {}\nApp: {}\n\nVisual observation: {}",
+                node_name, action, tool_result, app_name, observation
+            )
+        } else {
+            format!(
+                "Step label (may be stale): \"{}\"\nExecuted action: {}\nApp: {}\n\nVisual observation: {}",
+                node_name, action, app_name, observation
+            )
+        };
         let (passed, reasoning) = self
             .judge_with_history(&step_message, node_name, retry_ctx)
             .await;

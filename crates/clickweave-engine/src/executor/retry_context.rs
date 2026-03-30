@@ -56,6 +56,11 @@ pub(crate) struct RetryContext {
     /// focus_window, quit_app). Used by post-AI-step logic to trigger a state
     /// refresh (Task 11+).
     pub focus_dirty: bool,
+
+    /// Raw tool result text from the last deterministic MCP tool call.
+    /// Set by deterministic execution, read by supervision to include
+    /// actual-vs-intended comparison in the step message.
+    pub last_tool_result: Option<String>,
 }
 
 impl RetryContext {
@@ -72,6 +77,7 @@ impl RetryContext {
             rejected_resolutions: HashSet::new(),
             force_resolve: false,
             focus_dirty: false,
+            last_tool_result: None,
         }
     }
 
