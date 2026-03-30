@@ -347,7 +347,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             node_name,
                             if failed { "FAIL" } else { "PASS" },
                         ));
+                        let has_warn = v
+                            .check_results
+                            .iter()
+                            .any(|r| r.verdict == clickweave_core::CheckVerdict::Warn);
                         ctx.runtime_verdicts.push(v);
+                        if has_warn {
+                            self.log(format!(
+                                "WARNING: Verification node '{}' has no expected_outcome — \
+                                 verification was not evaluated. \
+                                 Set expected_outcome to enable actual verification.",
+                                node_name,
+                            ));
+                        }
                         if failed {
                             self.emit_error(format!("Verification failed: '{}'", node_name));
                             return StepOutcome::VerificationFailed;
@@ -690,8 +702,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             .await
                         {
                             SupervisionAction::Retry => {
-                                // Can't re-run a loop; treat as skip
-                                self.log("Supervision: user chose Retry (continuing past loop)");
+                                self.log("Supervision: Retry not supported for loop exit (treating as Skip)");
+                                self.emit(ExecutorEvent::Log(
+                                    "Loop cannot be re-run after exit. Continuing past loop."
+                                        .to_string(),
+                                ));
                             }
                             SupervisionAction::Skip => {
                                 self.log("Supervision: user chose Skip for loop exit");
