@@ -125,11 +125,23 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
 
             // Check decision cache for VLM-resolved name from a prior Test run.
-            // Skip when force_resolve is set (retry after eviction).
-            if !retry_ctx.force_resolve {
-                let app = self.focused_app_name();
-                let ck =
-                    clickweave_core::decision_cache::cache_key(node_id, target, app.as_deref());
+            // Skip when force_resolve is set (retry after eviction), and
+            // remove the stale persistent entry so it doesn't replay later.
+            let app = self.focused_app_name();
+            let ck = clickweave_core::decision_cache::cache_key(node_id, target, app.as_deref());
+            if retry_ctx.force_resolve {
+                if self
+                    .write_decision_cache()
+                    .element_resolution
+                    .remove(&ck)
+                    .is_some()
+                {
+                    self.log(format!(
+                        "CDP: evicted stale element_resolution cache for '{}'",
+                        target
+                    ));
+                }
+            } else {
                 let cached_resolution = {
                     self.read_decision_cache()
                         .element_resolution
