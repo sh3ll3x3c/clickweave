@@ -134,6 +134,12 @@ pub(crate) fn extract_result_variables(
                         serde_json::json!({"x": x, "y": y}),
                     );
                 }
+                // Synthesize .confidence from score or confidence for FindImage
+                if matches!(node_type, NodeType::FindImage(_))
+                    && let Some(score) = first.get("score").or_else(|| first.get("confidence"))
+                {
+                    set(format!("{}.confidence", prefix), score.clone());
+                }
             }
             // Typed alias for the full array based on node type
             if let Some(alias) = array_alias_for_node_type(node_type) {
@@ -143,6 +149,11 @@ pub(crate) fn extract_result_variables(
         }
         Value::String(s) => {
             set(format!("{}.result", prefix), Value::String(s.clone()));
+            // Query nodes that fall through to string result had no matches
+            if matches!(node_type, NodeType::FindText(_) | NodeType::FindImage(_)) {
+                set(format!("{}.found", prefix), Value::Bool(false));
+                set(format!("{}.count", prefix), serde_json::json!(0));
+            }
         }
         Value::Null => {
             set(format!("{}.result", prefix), Value::String(String::new()));
@@ -346,5 +357,80 @@ mod tests {
                 "The login button is at the top right".into()
             ))
         );
+    }
+
+    #[test]
+    fn find_image_array_result_synthesizes_confidence_from_score() {
+        let mut ctx = RuntimeContext::new();
+        let result = serde_json::json!([{"x": 100.0, "y": 200.0, "score": 0.88}]);
+        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
+        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
+
+        assert_eq!(
+            ctx.get_variable("find_image.confidence"),
+            Some(&serde_json::json!(0.88))
+        );
+    }
+
+    #[test]
+    fn find_image_array_result_synthesizes_confidence_from_confidence_field() {
+        let mut ctx = RuntimeContext::new();
+        let result = serde_json::json!([{"x": 50.0, "y": 75.0, "confidence": 0.95}]);
+        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
+        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
+
+        assert_eq!(
+            ctx.get_variable("find_image.confidence"),
+            Some(&serde_json::json!(0.95))
+        );
+    }
+
+    #[test]
+    fn find_text_string_result_synthesizes_found_false_and_count_zero() {
+        let mut ctx = RuntimeContext::new();
+        let result = Value::String("no matches found".into());
+        let node_type = NodeType::FindText(clickweave_core::FindTextParams::default());
+        extract_result_variables(&mut ctx, "find_text", &result, &node_type);
+
+        assert_eq!(
+            ctx.get_variable("find_text.result"),
+            Some(&Value::String("no matches found".into()))
+        );
+        assert_eq!(
+            ctx.get_variable("find_text.found"),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(
+            ctx.get_variable("find_text.count"),
+            Some(&serde_json::json!(0))
+        );
+    }
+
+    #[test]
+    fn find_image_string_result_synthesizes_found_false_and_count_zero() {
+        let mut ctx = RuntimeContext::new();
+        let result = Value::String("image not found".into());
+        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
+        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
+
+        assert_eq!(
+            ctx.get_variable("find_image.found"),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(
+            ctx.get_variable("find_image.count"),
+            Some(&serde_json::json!(0))
+        );
+    }
+
+    #[test]
+    fn non_query_node_string_result_does_not_synthesize_found() {
+        let mut ctx = RuntimeContext::new();
+        let result = Value::String("screenshot taken".into());
+        let node_type = NodeType::TakeScreenshot(clickweave_core::TakeScreenshotParams::default());
+        extract_result_variables(&mut ctx, "screenshot", &result, &node_type);
+
+        assert!(ctx.get_variable("screenshot.found").is_none());
+        assert!(ctx.get_variable("screenshot.count").is_none());
     }
 }
