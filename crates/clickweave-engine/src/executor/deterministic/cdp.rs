@@ -25,6 +25,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Shared by both click and hover CDP paths. Returns the resolved element UID.
     pub(in crate::executor) async fn resolve_cdp_element_uid(
         &self,
+        node_id: Uuid,
         target: &str,
         expected: &CdpExpected<'_>,
         mcp: &(impl Mcp + ?Sized),
@@ -64,6 +65,101 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         if matches.is_empty() {
+            // Tier 2: VLM visual resolution (Test mode only, requires vision backend).
+            if self.execution_mode == clickweave_core::ExecutionMode::Test {
+                if let Some((screen_x, screen_y)) = self.vlm_locate_element(target, mcp).await {
+                    self.log(format!(
+                        "CDP: VLM located '{}', trying cdp_element_at_point at ({:.0}, {:.0})",
+                        target, screen_x, screen_y
+                    ));
+                    let eap_result = mcp
+                        .call_tool(
+                            "cdp_element_at_point",
+                            Some(serde_json::json!({ "x": screen_x, "y": screen_y })),
+                        )
+                        .await;
+
+                    if let Ok(ref result) = eap_result {
+                        if result.is_error != Some(true) {
+                            let text = Self::extract_result_text(result);
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if let Some(uid) = parsed["uid"].as_str() {
+                                    let name = parsed["name"].as_str().unwrap_or("");
+                                    self.log(format!(
+                                        "CDP: VLM resolved '{}' -> uid='{}' name='{}'",
+                                        target, uid, name
+                                    ));
+
+                                    // Cache the resolved name for Run mode replay.
+                                    if !name.is_empty() {
+                                        let app = self.focused_app_name();
+                                        let key = clickweave_core::decision_cache::cache_key(
+                                            node_id,
+                                            target,
+                                            app.as_deref(),
+                                        );
+                                        self.write_decision_cache().element_resolution.insert(
+                                            key,
+                                            clickweave_core::decision_cache::ElementResolution {
+                                                target: target.to_string(),
+                                                resolved_name: name.to_string(),
+                                            },
+                                        );
+                                    }
+
+                                    return Ok(uid.to_string());
+                                }
+                            }
+                        }
+                    }
+
+                    // Tier 3: cdp_element_at_point failed, fall back to native click.
+                    self.log(format!(
+                        "CDP: cdp_element_at_point failed for '{}', falling back to native click",
+                        target
+                    ));
+                    return Err(ExecutorError::CdpNativeClickFallback {
+                        target: target.to_string(),
+                        screen_x,
+                        screen_y,
+                    });
+                }
+            }
+
+            // Check decision cache for VLM-resolved name from a prior Test run.
+            let app = self.focused_app_name();
+            let ck = clickweave_core::decision_cache::cache_key(node_id, target, app.as_deref());
+            let cached_resolution = {
+                self.read_decision_cache()
+                    .element_resolution
+                    .get(&ck)
+                    .cloned()
+            };
+            if let Some(cached) = cached_resolution {
+                self.log(format!(
+                    "CDP: trying cached VLM resolution '{}' -> '{}'",
+                    target, cached.resolved_name
+                ));
+                let cached_matches =
+                    find_interactive_in_snapshot(&snapshot_text, &cached.resolved_name);
+                if cached_matches.len() == 1 {
+                    return Ok(cached_matches[0].uid.clone());
+                } else if cached_matches.len() > 1 {
+                    return self
+                        .disambiguate_cdp_elements(
+                            &cached.resolved_name,
+                            &cached_matches,
+                            retry_ctx,
+                        )
+                        .await;
+                }
+                self.log(format!(
+                    "CDP: cached name '{}' not found in snapshot, falling through",
+                    cached.resolved_name
+                ));
+            }
+
+            // Existing inventory resolution fallback.
             self.log(format!(
                 "CDP: no exact match for '{}', resolving via element inventory",
                 target
@@ -116,6 +212,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn execute_cdp_action(
         &self,
         action: &str,
+        node_id: Uuid,
         target: &str,
         expected: &CdpExpected<'_>,
         mcp: &(impl Mcp + ?Sized),
@@ -123,7 +220,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
         let uid = self
-            .resolve_cdp_element_uid(target, expected, mcp, retry_ctx)
+            .resolve_cdp_element_uid(node_id, target, expected, mcp, retry_ctx)
             .await?;
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
@@ -155,26 +252,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Resolve a CDP element and click it. Returns the click result text.
     pub(in crate::executor) async fn resolve_and_click_cdp(
         &self,
+        node_id: Uuid,
         target: &str,
         expected: &CdpExpected<'_>,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
         retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
-        self.execute_cdp_action("click", target, expected, mcp, node_run, retry_ctx)
+        self.execute_cdp_action("click", node_id, target, expected, mcp, node_run, retry_ctx)
             .await
     }
 
     /// Resolve a CDP element and hover it. Returns the hover result text.
     pub(in crate::executor) async fn resolve_and_hover_cdp(
         &self,
+        node_id: Uuid,
         target: &str,
         expected: &CdpExpected<'_>,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
         retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
-        self.execute_cdp_action("hover", target, expected, mcp, node_run, retry_ctx)
+        self.execute_cdp_action("hover", node_id, target, expected, mcp, node_run, retry_ctx)
             .await
     }
 

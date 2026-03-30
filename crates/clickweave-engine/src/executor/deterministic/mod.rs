@@ -464,6 +464,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 let expected = cdp::CdpExpected::default();
                 match self
                     .resolve_and_hover_cdp(
+                        node_id,
                         target.text(),
                         &expected,
                         mcp,
@@ -550,16 +551,50 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // CDP Click: resolve target via snapshot + LLM
         if let NodeType::CdpClick(p) = node_type {
             let expected = cdp::CdpExpected::default();
-            let result_text = self
+            match self
                 .resolve_and_click_cdp(
+                    node_id,
                     p.target.as_str(),
                     &expected,
                     mcp,
                     node_run.as_deref(),
                     retry_ctx,
                 )
-                .await?;
-            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+                .await
+            {
+                Ok(result_text) => {
+                    return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+                }
+                Err(ExecutorError::CdpNativeClickFallback {
+                    target,
+                    screen_x,
+                    screen_y,
+                }) => {
+                    self.log(format!(
+                        "CDP: Tier 3 native click fallback for '{}' at ({:.0}, {:.0})",
+                        target, screen_x, screen_y
+                    ));
+                    let click_args = serde_json::json!({
+                        "x": screen_x,
+                        "y": screen_y,
+                    });
+                    let result = mcp
+                        .call_tool("click", Some(click_args))
+                        .await
+                        .map_err(|e| {
+                            ExecutorError::Cdp(format!("native click fallback failed: {e}"))
+                        })?;
+                    if result.is_error == Some(true) {
+                        return Err(ExecutorError::Cdp(format!(
+                            "native click fallback error: {}",
+                            Self::extract_result_text(&result)
+                        )));
+                    }
+                    let result_text = Self::extract_result_text(&result);
+                    return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         // CDP Hover: same resolve path as CdpClick
@@ -567,6 +602,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let expected = cdp::CdpExpected::default();
             let result_text = self
                 .resolve_and_hover_cdp(
+                    node_id,
                     p.target.as_str(),
                     &expected,
                     mcp,
@@ -678,7 +714,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             if app_kind.uses_cdp() && self.cdp_connected_to_focused_app() {
                 let expected = cdp::CdpExpected::default();
                 match self
-                    .resolve_and_click_cdp(target, &expected, mcp, node_run.as_deref(), retry_ctx)
+                    .resolve_and_click_cdp(
+                        node_id,
+                        target,
+                        &expected,
+                        mcp,
+                        node_run.as_deref(),
+                        retry_ctx,
+                    )
                     .await
                 {
                     Ok(result_text) => {
@@ -691,6 +734,34 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 "result": Self::truncate_for_trace(&result_text, 8192),
                             }),
                         );
+                        return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+                    }
+                    Err(ExecutorError::CdpNativeClickFallback {
+                        target,
+                        screen_x,
+                        screen_y,
+                    }) => {
+                        self.log(format!(
+                            "CDP: Tier 3 native click fallback for '{}' at ({:.0}, {:.0})",
+                            target, screen_x, screen_y
+                        ));
+                        let click_args = serde_json::json!({
+                            "x": screen_x,
+                            "y": screen_y,
+                        });
+                        let result =
+                            mcp.call_tool("click", Some(click_args))
+                                .await
+                                .map_err(|e| {
+                                    ExecutorError::Cdp(format!("native click fallback failed: {e}"))
+                                })?;
+                        if result.is_error == Some(true) {
+                            return Err(ExecutorError::Cdp(format!(
+                                "native click fallback error: {}",
+                                Self::extract_result_text(&result)
+                            )));
+                        }
+                        let result_text = Self::extract_result_text(&result);
                         return Self::set_tool_result_and_parse(retry_ctx, &result_text);
                     }
                     Err(e) => {

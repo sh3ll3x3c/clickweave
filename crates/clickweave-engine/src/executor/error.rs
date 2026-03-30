@@ -45,6 +45,15 @@ pub enum ExecutorError {
 
     #[error("Rewind to node {0}")]
     Rewind(uuid::Uuid),
+
+    /// VLM located the element but CDP element resolution failed.
+    /// Coordinates are screen points for native click fallback.
+    #[error("CDP native click fallback for '{target}' at ({screen_x:.0}, {screen_y:.0})")]
+    CdpNativeClickFallback {
+        target: String,
+        screen_x: f64,
+        screen_y: f64,
+    },
 }
 
 /// Alias used throughout the executor.
