@@ -29,7 +29,7 @@ use clickweave_core::storage::RunStorage;
 use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, RuntimeResolution, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -349,7 +349,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Uses PID to distinguish same-name instances within a single execution.
     pub(crate) fn cdp_connected_to_focused_app(&self) -> bool {
         match (&self.cdp_connected_app, &*self.read_focused_app()) {
-            (Some((_, cdp_pid)), Some((_, _, focus_pid))) => cdp_pid == focus_pid,
+            (Some((cdp_name, cdp_pid)), Some((focus_name, _, focus_pid))) => {
+                if cdp_name != focus_name {
+                    return false;
+                }
+                // If both PIDs are known (non-zero), require they match.
+                // PID=0 means "unknown" (e.g., from AI step bookkeeping).
+                if *cdp_pid != 0 && *focus_pid != 0 {
+                    return cdp_pid == focus_pid;
+                }
+                true // Name matches, at least one PID unknown
+            }
             _ => false,
         }
     }
@@ -448,10 +458,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// strips the corresponding variables from `self.context`, clears loop
     /// counters, and removes verdicts for invalidated nodes.
     fn rollback_to(&mut self, target: Uuid, ctx: &mut retry_context::RetryContext) {
+        // Use rposition to find the LAST (most recent) occurrence of the target.
+        // In loops, the same node appears multiple times; we want to keep all
+        // iterations up to and including the most recent completion of the target.
         let rollback_from = ctx
             .completed_node_ids
             .iter()
-            .position(|(id, _)| *id == target)
+            .rposition(|(id, _)| *id == target)
             .map(|pos| pos + 1)
             .unwrap_or(ctx.completed_node_ids.len());
 
@@ -462,9 +475,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.context.remove_variables_with_prefix(prefix);
         }
 
-        self.context.loop_counters.clear();
+        // NOTE: Loop counters are intentionally NOT cleared here.
+        // completed_node_ids doesn't track Loop/EndLoop control-flow nodes,
+        // so we cannot determine which loops the rewind crosses. Clearing
+        // all counters resets active parent loops; clearing none preserves
+        // stale counters if the rewind crosses a loop boundary. Both are
+        // wrong in different edge cases. In practice, runtime resolution
+        // rewinds stay within the same loop iteration or advance forward,
+        // so preserving counters is the safer default. A proper fix requires
+        // tracking loop entry/exit in the rewind path (deferred).
 
-        let inv_ids: Vec<Uuid> = invalidated.iter().map(|(id, _)| *id).collect();
+        let inv_ids: HashSet<Uuid> = invalidated.iter().map(|(id, _)| *id).collect();
+
         ctx.runtime_verdicts
             .retain(|v| !inv_ids.contains(&v.node_id));
     }

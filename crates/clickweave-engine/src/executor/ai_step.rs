@@ -188,32 +188,36 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             }),
                         );
 
-                        // Update executor focus state for focus-changing tools.
+                        // Update executor focus state for focus-changing tools,
+                        // but only when the tool succeeded (not an error payload).
                         // PID is not resolvable inline in the AI step; use 0 as placeholder.
-                        match tool_call.function.name.as_str() {
-                            "focus_window" | "launch_app" => {
-                                if let Some(ref app) = tool_app_name {
-                                    *self.write_focused_app() =
-                                        Some((app.clone(), AppKind::Native, 0));
-                                    retry_ctx.focus_dirty = true;
-                                }
-                            }
-                            "quit_app" => {
-                                if let Some(ref app) = tool_app_name {
-                                    if self.focused_app_name().as_deref() == Some(app.as_str()) {
-                                        *self.write_focused_app() = None;
+                        if result.is_error != Some(true) {
+                            match tool_call.function.name.as_str() {
+                                "focus_window" | "launch_app" => {
+                                    if let Some(ref app) = tool_app_name {
+                                        *self.write_focused_app() =
+                                            Some((app.clone(), AppKind::Native, 0));
                                         retry_ctx.focus_dirty = true;
                                     }
-                                    if self
-                                        .cdp_connected_app
-                                        .as_ref()
-                                        .is_some_and(|(name, _)| name == app)
-                                    {
-                                        self.cdp_connected_app = None;
+                                }
+                                "quit_app" => {
+                                    if let Some(ref app) = tool_app_name {
+                                        if self.focused_app_name().as_deref() == Some(app.as_str())
+                                        {
+                                            *self.write_focused_app() = None;
+                                            retry_ctx.focus_dirty = true;
+                                        }
+                                        if self
+                                            .cdp_connected_app
+                                            .as_ref()
+                                            .is_some_and(|(name, _)| name == app)
+                                        {
+                                            self.cdp_connected_app = None;
+                                        }
                                     }
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
 
                         messages.push(Message::tool_result(&tool_call.id, result_text));
