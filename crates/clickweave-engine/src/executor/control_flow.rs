@@ -95,7 +95,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             NodeType::Loop(params) => {
                 let iteration = *self.context.loop_counters.get(&node_id).unwrap_or(&0);
 
-                let exit_reason = if iteration >= params.max_iterations {
+                let exit_reason = if iteration > 0 && iteration >= params.max_iterations {
                     self.log(format!(
                         "Loop '{}' hit max iterations ({}), exiting",
                         node_name, params.max_iterations

@@ -4,14 +4,15 @@ use serde_json::Value;
 
 use super::error::{ExecutorError, ExecutorResult};
 
-/// Resolve an OutputRef against the runtime context. Fails if the variable is missing.
+/// Resolve an OutputRef against the runtime context. Fails if the variable is absent.
+///
+/// Uses the variables map directly so that a variable explicitly set to `null` is
+/// treated as a valid (present) value rather than conflated with a missing variable.
 pub(crate) fn resolve_ref(ctx: &RuntimeContext, output_ref: &OutputRef) -> ExecutorResult<Value> {
-    let value = ctx.resolve_output_ref(output_ref);
-    if value.is_null() {
-        let key = format!("{}.{}", output_ref.node, output_ref.field);
-        Err(ExecutorError::VariableNotFound { reference: key })
-    } else {
-        Ok(value)
+    let key = format!("{}.{}", output_ref.node, output_ref.field);
+    match ctx.get_variable(&key) {
+        Some(value) => Ok(value.clone()),
+        None => Err(ExecutorError::VariableNotFound { reference: key }),
     }
 }
 
