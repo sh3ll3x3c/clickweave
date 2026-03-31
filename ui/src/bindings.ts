@@ -364,15 +364,33 @@ export type CdpAppConfig = { name: string;
  * Path to the app binary (from file picker). None for already-running apps.
  */
 binary_path: string | null; app_kind: AppKind }
-export type CdpClickParams = { uid: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpClickParams = { target: CdpTarget; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpClosePageParams = { page_index?: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpFillParams = { uid: string; value: string; value_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpHandleDialogParams = { accept: boolean; prompt_text?: string | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpHoverParams = { uid: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpHoverParams = { target: CdpTarget; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpNavigateParams = { url: string; url_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpNewPageParams = { url?: string; url_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpPressKeyParams = { key: string; modifiers?: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpSelectPageParams = { page_index: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+/**
+ * Distinguishes how a CDP element target was produced, so the executor can
+ * choose the right resolution strategy.
+ */
+export type CdpTarget = 
+/**
+ * Precise element name from `cdp_find_elements` or walkthrough recording.
+ */
+{ kind: "ExactLabel"; value: string } | 
+/**
+ * Semantic description (e.g. "the message input field") — always resolved
+ * via snapshot + LLM at execution time.
+ */
+{ kind: "Intent"; value: string } | 
+/**
+ * Concrete DOM UID resolved at execution time (for Run mode / decision cache).
+ */
+{ kind: "ResolvedUid"; value: string }
 export type CdpTypeParams = { text: string; text_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpWaitParams = { text: string; timeout_ms?: number }
 /**
