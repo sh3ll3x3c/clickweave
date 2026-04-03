@@ -628,12 +628,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         self.log("Starting workflow execution");
 
         self.log_model_info("Agent", &self.agent).await;
-        if let Some(vlm) = &self.vlm {
-            self.log(format!("VLM configured: {}", vlm.model_name()));
-            self.log_model_info("VLM", vlm).await;
+        if let Some(fast) = &self.fast {
+            self.log(format!("Fast model configured: {}", fast.model_name()));
+            self.log_model_info("Fast", fast).await;
         } else if let Some(planner) = &self.supervision {
             self.log(format!(
-                "VLM not configured — using planner ({}) for vision",
+                "Fast model not configured — using planner ({}) for vision",
                 planner.model_name()
             ));
         } else {
@@ -936,7 +936,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let screenshot_b64 = self.extract_screenshot_image(mcp, args).await;
             match screenshot_b64 {
                 Some(img) => {
-                    let verdict = if let Some(ref vb) = self.verdict_vlm {
+                    let verdict = if let Some(ref vb) = self.verdict_fast {
                         super::verdict::screenshot_verdict(vb, node_id, node_name, outcome, &img)
                             .await
                     } else {

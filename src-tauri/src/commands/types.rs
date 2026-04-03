@@ -98,7 +98,7 @@ pub struct RunRequest {
     pub workflow: Workflow,
     pub project_path: Option<String>,
     pub agent: EndpointConfig,
-    pub vlm: Option<EndpointConfig>,
+    pub fast: Option<EndpointConfig>,
     /// Planner LLM used for supervision in Test mode.
     pub planner: Option<EndpointConfig>,
     pub execution_mode: ExecutionMode,
@@ -190,6 +190,7 @@ pub struct AssistantChatRequest {
     pub user_message: String,
     pub run_context: Option<RunContext>,
     pub planner: EndpointConfig,
+    pub fast: Option<EndpointConfig>,
     pub allow_ai_transforms: bool,
     pub allow_agent_steps: bool,
     pub max_repair_attempts: u32,

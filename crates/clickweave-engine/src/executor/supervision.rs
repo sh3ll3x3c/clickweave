@@ -244,7 +244,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let backend = self
             .supervision
             .as_ref()
-            .or(self.vlm.as_ref())
+            .or(self.fast.as_ref())
             .unwrap_or(&self.agent);
 
         let messages = {

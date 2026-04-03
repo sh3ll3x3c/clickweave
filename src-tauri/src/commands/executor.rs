@@ -59,8 +59,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         .map_err(|e| CommandError::validation(format!("Validation failed: {}", e)))?;
 
     let agent_config = request.agent.into_llm_config(None);
-    let vlm_config = request
-        .vlm
+    let fast_config = request
+        .fast
         .filter(|v| !v.is_empty())
         .map(|v| v.into_llm_config(Some(0.0)));
     let supervision_config = request
@@ -120,7 +120,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         let mut executor = WorkflowExecutor::new(
             request.workflow,
             agent_config,
-            vlm_config,
+            fast_config,
             supervision_config,
             mcp_binary_path,
             request.execution_mode,

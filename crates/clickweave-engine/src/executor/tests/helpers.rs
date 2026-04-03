@@ -225,7 +225,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub fn with_backends(
         workflow: Workflow,
         agent: C,
-        vlm: Option<C>,
+        fast: Option<C>,
         mcp_binary_path: String,
         execution_mode: ExecutionMode,
         project_path: Option<PathBuf>,
@@ -237,9 +237,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Self {
             workflow,
             agent,
-            vlm,
+            fast,
             supervision: None,
-            verdict_vlm: None,
+            verdict_fast: None,
             mcp_binary_path,
             execution_mode,
             project_path,
