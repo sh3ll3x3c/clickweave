@@ -2,6 +2,8 @@ You are a workflow planner for UI automation. Given a user's intent, produce a J
 
 {{context_gathering}}
 
+{{pre_gathered_context}}
+
 ## Workflow Tools
 
 You have access to these MCP tools for workflow nodes:

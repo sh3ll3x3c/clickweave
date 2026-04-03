@@ -97,6 +97,8 @@ async fn test_assistant_chat_plans_empty_workflow() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -135,6 +137,8 @@ async fn test_assistant_chat_patches_existing_workflow() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -171,6 +175,8 @@ async fn test_assistant_chat_conversational_response() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -184,7 +190,7 @@ async fn test_assistant_chat_conversational_response() {
 #[test]
 fn test_assistant_prompt_empty_workflow_includes_control_flow() {
     let wf = Workflow::new("Test");
-    let prompt = assistant_system_prompt(&wf, &[], false, false, None, None, false);
+    let prompt = assistant_system_prompt(&wf, &[], false, false, None, None, false, None, false);
     assert!(
         prompt.contains("Loop"),
         "Assistant prompt should mention Loop"
@@ -198,7 +204,8 @@ fn test_assistant_prompt_empty_workflow_includes_control_flow() {
 #[test]
 fn test_assistant_prompt_existing_workflow_includes_control_flow() {
     let (_, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
-    let prompt = assistant_system_prompt(&workflow, &[], false, false, None, None, false);
+    let prompt =
+        assistant_system_prompt(&workflow, &[], false, false, None, None, false, None, false);
     assert!(
         prompt.contains("add_nodes"),
         "Patcher assistant prompt should mention add_nodes for control flow"
@@ -252,6 +259,8 @@ async fn test_assistant_patches_with_add_nodes_and_add_edges() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -307,6 +316,8 @@ async fn test_assistant_plans_graph_format_for_empty_workflow() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -364,6 +375,8 @@ async fn test_assistant_retry_succeeds_on_second_attempt() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -417,6 +430,8 @@ async fn test_assistant_repair_callback_is_invoked() {
         Some(&on_repair),
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -459,6 +474,8 @@ async fn test_assistant_retry_exhausted_returns_last_patch() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -501,6 +518,8 @@ async fn test_assistant_no_validation_when_max_is_zero() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -542,6 +561,8 @@ async fn test_assistant_validate_only_no_retry_when_max_is_one() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -574,6 +595,8 @@ async fn test_assistant_valid_patch_no_retry_needed() {
         None,
         None,
         None::<&NoExecutor>,
+        None,
+        false,
     )
     .await
     .unwrap();

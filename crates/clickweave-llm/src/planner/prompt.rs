@@ -5,9 +5,26 @@ use serde_json::Value;
 ///
 /// When `has_planning_tools` is true, includes instructions about using
 /// planning tools. When false, the section is empty (no context gathering).
-pub(crate) fn context_gathering_section(has_planning_tools: bool) -> String {
+pub(crate) fn context_gathering_section(
+    has_planning_tools: bool,
+    has_pre_gathered: bool,
+    cdp_connected: bool,
+) -> String {
     if !has_planning_tools {
         return String::new();
+    }
+
+    if has_pre_gathered {
+        let cdp_note = if cdp_connected {
+            "do NOT re-probe apps or re-connect to CDP — that was already done."
+        } else {
+            "CDP connection was NOT established during pre-gather. If an app needs CDP, you must handle the full probe → quit → relaunch-with-debug-port → cdp_connect flow yourself."
+        };
+        return format!(
+            "## Context Gathering\n\n\
+             App context has already been gathered and is shown below. Use the pre-gathered data for workflow planning.\n\n\
+             Planning tools are still available for targeted follow-up queries (e.g. `cdp_find_elements` for UID lookups needed by `fill`), but {cdp_note}\n\n"
+        );
     }
 
     r#"## Context Gathering
@@ -69,6 +86,8 @@ pub(crate) fn planner_system_prompt(
     template_override: Option<&str>,
     chrome_profiles: Option<&[ChromeProfile]>,
     has_planning_tools: bool,
+    pre_gathered_context: Option<&str>,
+    cdp_connected: bool,
 ) -> String {
     let tool_list = serde_json::to_string_pretty(tools_json).unwrap_or_default();
 
@@ -174,10 +193,14 @@ Use `"role": "Verification"` when the user asks to **verify**, **check**, **conf
 
     let template = template_override.unwrap_or(include_str!("../../prompts/planner.md"));
 
-    let context_gathering = context_gathering_section(has_planning_tools);
+    let has_pre_gathered = pre_gathered_context.is_some();
+    let context_gathering =
+        context_gathering_section(has_planning_tools, has_pre_gathered, cdp_connected);
+    let pre_gathered = pre_gathered_context.unwrap_or("");
 
     template
         .replace("{{context_gathering}}", &context_gathering)
+        .replace("{{pre_gathered_context}}", pre_gathered)
         .replace("{{tool_list}}", &tool_list)
         .replace("{{step_types}}", &step_types)
         .replace("{{chrome_profiles}}", &chrome_profiles_section)
@@ -243,7 +266,7 @@ pub(crate) fn patcher_system_prompt(
     step_types.push_str("see the tool schemas below).");
     step_types.push_str(" For control flow nodes (Loop, EndLoop, If), use \"add_nodes\" + \"add_edges\" instead of \"add\".");
 
-    let context_gathering = context_gathering_section(has_planning_tools);
+    let context_gathering = context_gathering_section(has_planning_tools, false, false);
 
     format!(
         r#"You are a workflow editor for UI automation. Given an existing workflow and a user's modification request, produce a JSON patch.
@@ -314,8 +337,10 @@ pub(crate) fn assistant_system_prompt(
     run_context: Option<&str>,
     chrome_profiles: Option<&[ChromeProfile]>,
     has_planning_tools: bool,
+    pre_gathered_context: Option<&str>,
+    cdp_connected: bool,
 ) -> String {
-    use super::tool_use::is_planning_only_tool;
+    use super::tool_use::{is_planning_only_tool, tool_name};
 
     // When planning tools are available, filter them out of the workflow catalog
     // so the LLM prompt only shows tools valid as workflow nodes.
@@ -323,11 +348,7 @@ pub(crate) fn assistant_system_prompt(
         tools_json
             .iter()
             .filter(|tool| {
-                let name = tool
-                    .get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("");
+                let name = tool_name(tool).unwrap_or("");
                 !is_planning_only_tool(name)
             })
             .cloned()
@@ -344,6 +365,8 @@ pub(crate) fn assistant_system_prompt(
             None,
             chrome_profiles,
             has_planning_tools,
+            pre_gathered_context,
+            cdp_connected,
         );
         let mut prompt = format!(
             "You are a conversational workflow assistant for UI automation. \

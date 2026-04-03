@@ -132,12 +132,12 @@ pub(crate) struct ResolvedApp {
 pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     workflow: Workflow,
     agent: C,
-    vlm: Option<C>,
+    fast: Option<C>,
     /// Planner-class LLM used for supervision verification in Test mode.
-    /// Falls back to VLM, then agent if not configured.
+    /// Falls back to fast model, then agent if not configured.
     supervision: Option<C>,
-    /// Dedicated VLM for screenshot verification: low max_tokens, thinking disabled.
-    verdict_vlm: Option<LlmClient>,
+    /// Dedicated fast model for screenshot verification: low max_tokens, thinking disabled.
+    verdict_fast: Option<LlmClient>,
     mcp_binary_path: String,
     execution_mode: ExecutionMode,
     project_path: Option<PathBuf>,
@@ -187,7 +187,7 @@ impl WorkflowExecutor {
     pub fn new(
         workflow: Workflow,
         agent_config: LlmConfig,
-        vlm_config: Option<LlmConfig>,
+        fast_config: Option<LlmConfig>,
         supervision_config: Option<LlmConfig>,
         mcp_binary_path: String,
         execution_mode: ExecutionMode,
@@ -205,16 +205,16 @@ impl WorkflowExecutor {
         });
         let decision_cache = DecisionCache::load(&storage.cache_path(), workflow.id)
             .unwrap_or_else(|| DecisionCache::new(workflow.id));
-        let verdict_vlm = vlm_config
+        let verdict_fast = fast_config
             .as_ref()
             .or(supervision_config.as_ref())
             .map(|cfg| LlmClient::new(cfg.clone().with_max_tokens(4096).with_thinking(false)));
         Self {
             workflow,
             agent: LlmClient::new(agent_config),
-            vlm: vlm_config.map(|c| LlmClient::new(c.with_thinking(false))),
+            fast: fast_config.map(|c| LlmClient::new(c.with_thinking(false))),
             supervision: supervision_config.map(|c| LlmClient::new(c.with_thinking(false))),
-            verdict_vlm,
+            verdict_fast,
             mcp_binary_path,
             execution_mode,
             project_path,
@@ -400,7 +400,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) fn reasoning_backend(&self) -> &C {
         self.supervision
             .as_ref()
-            .or(self.vlm.as_ref())
+            .or(self.fast.as_ref())
             .unwrap_or(&self.agent)
     }
 
@@ -508,6 +508,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// back to supervision (planner-class). Returns `None` only when neither
     /// VLM nor planner is configured.
     pub(crate) fn vision_backend(&self) -> Option<&C> {
-        self.vlm.as_ref().or(self.supervision.as_ref())
+        self.fast.as_ref().or(self.supervision.as_ref())
     }
 }

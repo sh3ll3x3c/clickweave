@@ -14,7 +14,7 @@ export const DEFAULT_ENDPOINT: EndpointConfig = {
   model: "local",
 };
 
-export const DEFAULT_VLM_ENABLED = false;
+export const DEFAULT_FAST_ENABLED = false;
 
 export interface ToolPermissions {
   allowAll: boolean;

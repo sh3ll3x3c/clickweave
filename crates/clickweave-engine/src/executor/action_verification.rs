@@ -155,10 +155,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         };
 
-        // Select the VLM backend: prefer verdict_vlm, fall back to vlm/supervision, then agent.
-        // We branch here because verdict_vlm is a concrete LlmClient while
+        // Select the VLM backend: prefer verdict_fast, fall back to fast/supervision, then agent.
+        // We branch here because verdict_fast is a concrete LlmClient while
         // vision_backend() returns &C (generic).
-        if let Some(ref vlm) = self.verdict_vlm {
+        if let Some(ref vlm) = self.verdict_fast {
             self.vlm_describe_and_judge(vlm, auto_id, assertion, &prepared_b64, &mime)
                 .await
         } else if let Some(vlm) = self.vision_backend() {
@@ -170,7 +170,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Two-stage VLM verification: describe the screenshot, then judge the assertion.
-    /// Generic over any `ChatBackend` so it works with both `LlmClient` (verdict_vlm)
+    /// Generic over any `ChatBackend` so it works with both `LlmClient` (verdict_fast)
     /// and the generic `C` (vision_backend).
     async fn vlm_describe_and_judge(
         &self,

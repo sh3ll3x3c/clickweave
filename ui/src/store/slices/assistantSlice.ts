@@ -69,7 +69,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   },
 
   sendAssistantMessage: async (message) => {
-    const { plannerConfig, allowAiTransforms, allowAgentSteps, maxRepairAttempts, pushLog, projectPath } = get();
+    const { plannerConfig, fastConfig, fastEnabled, allowAiTransforms, allowAgentSteps, maxRepairAttempts, pushLog, projectPath } = get();
     set({ assistantLoading: true, assistantError: null, assistantRetrying: false });
 
     // Messages are now appended by assistant://message events from the backend.
@@ -80,6 +80,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
         user_message: message,
         run_context: null,
         planner: toEndpoint(plannerConfig),
+        fast: fastEnabled ? toEndpoint(fastConfig) : null,
         allow_ai_transforms: allowAiTransforms,
         allow_agent_steps: allowAgentSteps,
         max_repair_attempts: maxRepairAttempts,

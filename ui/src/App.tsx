@@ -78,12 +78,12 @@ function App() {
     })),
   );
 
-  const { plannerConfig, agentConfig, vlmConfig, vlmEnabled, maxRepairAttempts, hoverDwellThreshold, toolPermissions } = useStore(
+  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, toolPermissions } = useStore(
     useShallow((s) => ({
       plannerConfig: s.plannerConfig,
       agentConfig: s.agentConfig,
-      vlmConfig: s.vlmConfig,
-      vlmEnabled: s.vlmEnabled,
+      fastConfig: s.fastConfig,
+      fastEnabled: s.fastEnabled,
       maxRepairAttempts: s.maxRepairAttempts,
       hoverDwellThreshold: s.hoverDwellThreshold,
       toolPermissions: s.toolPermissions,
@@ -114,8 +114,8 @@ function App() {
   const saveProject = useStore((s) => s.saveProject);
   const setPlannerConfig = useStore((s) => s.setPlannerConfig);
   const setAgentConfig = useStore((s) => s.setAgentConfig);
-  const setVlmConfig = useStore((s) => s.setVlmConfig);
-  const setVlmEnabled = useStore((s) => s.setVlmEnabled);
+  const setFastConfig = useStore((s) => s.setFastConfig);
+  const setFastEnabled = useStore((s) => s.setFastEnabled);
   const setMaxRepairAttempts = useStore((s) => s.setMaxRepairAttempts);
   const setHoverDwellThreshold = useStore((s) => s.setHoverDwellThreshold);
   const setToolPermissions = useStore((s) => s.setToolPermissions);
@@ -313,16 +313,16 @@ function App() {
         open={showSettings}
         plannerConfig={plannerConfig}
         agentConfig={agentConfig}
-        vlmConfig={vlmConfig}
-        vlmEnabled={vlmEnabled}
+        fastConfig={fastConfig}
+        fastEnabled={fastEnabled}
         maxRepairAttempts={maxRepairAttempts}
         hoverDwellThreshold={hoverDwellThreshold}
         toolPermissions={toolPermissions}
         onClose={() => setShowSettings(false)}
         onPlannerConfigChange={setPlannerConfig}
         onAgentConfigChange={setAgentConfig}
-        onVlmConfigChange={setVlmConfig}
-        onVlmEnabledChange={setVlmEnabled}
+        onFastConfigChange={setFastConfig}
+        onFastEnabledChange={setFastEnabled}
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
         onHoverDwellThresholdChange={setHoverDwellThreshold}
         onToolPermissionsChange={setToolPermissions}
