@@ -1,12 +1,12 @@
 import { load } from "@tauri-apps/plugin-store";
 import type { EndpointConfig, ToolPermissions } from "./state";
-import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_VLM_ENABLED } from "./state";
+import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_FAST_ENABLED } from "./state";
 
 export interface PersistedSettings {
   plannerConfig: EndpointConfig;
   agentConfig: EndpointConfig;
-  vlmConfig: EndpointConfig;
-  vlmEnabled: boolean;
+  fastConfig: EndpointConfig;
+  fastEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
   toolPermissions: ToolPermissions;
@@ -15,8 +15,8 @@ export interface PersistedSettings {
 const SETTINGS_DEFAULTS: PersistedSettings = {
   plannerConfig: DEFAULT_ENDPOINT,
   agentConfig: DEFAULT_ENDPOINT,
-  vlmConfig: DEFAULT_ENDPOINT,
-  vlmEnabled: DEFAULT_VLM_ENABLED,
+  fastConfig: DEFAULT_ENDPOINT,
+  fastEnabled: DEFAULT_FAST_ENABLED,
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
   toolPermissions: DEFAULT_TOOL_PERMISSIONS,
@@ -31,16 +31,41 @@ export async function loadSettings(): Promise<PersistedSettings> {
 
   const plannerConfig = await store.get<EndpointConfig>("plannerConfig");
   const agentConfig = await store.get<EndpointConfig>("agentConfig");
-  const vlmConfig = await store.get<EndpointConfig>("vlmConfig");
-  const vlmEnabled = await store.get<boolean>("vlmEnabled");
   const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
   const hoverDwellThreshold = await store.get<number>("hoverDwellThreshold");
   const toolPermissions = await store.get<ToolPermissions>("toolPermissions");
+
+  // Migration: vlmConfig → fastConfig
+  const legacyVlmConfig = await store.get<EndpointConfig>("vlmConfig");
+  const legacyVlmEnabled = await store.get<boolean>("vlmEnabled");
+
+  const fastConfig =
+    (await store.get<EndpointConfig>("fastConfig")) ??
+    legacyVlmConfig ??
+    SETTINGS_DEFAULTS.fastConfig;
+
+  const fastEnabled =
+    (await store.get<boolean>("fastEnabled")) ??
+    legacyVlmEnabled ??
+    SETTINGS_DEFAULTS.fastEnabled;
+
+  // Clean up old keys if migration happened
+  if (legacyVlmConfig && !(await store.get<EndpointConfig>("fastConfig"))) {
+    await store.set("fastConfig", fastConfig);
+    await store.delete("vlmConfig");
+    await store.save();
+  }
+  if (legacyVlmEnabled !== null && legacyVlmEnabled !== undefined && !(await store.get<boolean>("fastEnabled"))) {
+    await store.set("fastEnabled", fastEnabled);
+    await store.delete("vlmEnabled");
+    await store.save();
+  }
+
   return {
     plannerConfig: plannerConfig ?? fallback,
     agentConfig: agentConfig ?? fallback,
-    vlmConfig: vlmConfig ?? SETTINGS_DEFAULTS.vlmConfig,
-    vlmEnabled: vlmEnabled ?? SETTINGS_DEFAULTS.vlmEnabled,
+    fastConfig,
+    fastEnabled,
     maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
     hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
     toolPermissions: toolPermissions ?? SETTINGS_DEFAULTS.toolPermissions,
