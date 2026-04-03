@@ -30,6 +30,9 @@ export function useAssistantEvents() {
     sub(listen<{ session_id: string }>("assistant://session_started", (e) => {
       useStore.getState().setExpectedSessionId(e.payload.session_id);
     }));
+    sub(listen<{ message: string }>("assistant://fast_model_warning", (e) => {
+      useStore.getState().pushLog(e.payload.message);
+    }));
 
     return () => {
       cancelled = true;

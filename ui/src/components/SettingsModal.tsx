@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChromeProfile } from "../bindings";
 import { commands } from "../bindings";
 import type { EndpointConfig } from "../store/useAppStore";
@@ -6,22 +6,68 @@ import type { ToolPermissions } from "../store/state";
 import { Modal } from "./Modal";
 import { PermissionsTab } from "./PermissionsTab";
 
+type HealthState = "idle" | "pending" | "checking" | "ok" | "error";
+
+function EndpointStatus({ baseUrl, apiKey, model }: { baseUrl: string; apiKey?: string; model?: string }) {
+  const [state, setState] = useState<HealthState>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    if (!baseUrl || baseUrl.trim() === "") {
+      setState("idle");
+      return;
+    }
+
+    let cancelled = false;
+    setState("pending");
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setState("checking");
+      const result = await commands.checkEndpoint(baseUrl, apiKey || null, model || null);
+      if (cancelled) return;
+      if (result.status === "ok") {
+        setState("ok");
+        setError(null);
+      } else {
+        setState("error");
+        setError(result.error.message ?? "Unreachable");
+      }
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(debounceRef.current);
+    };
+  }, [baseUrl, apiKey, model]);
+
+  if (state === "idle") return null;
+  if (state === "pending") return null;
+  if (state === "checking") return <span className="ml-2 text-gray-400 text-xs">checking...</span>;
+  if (state === "ok") return <span className="ml-2 text-green-500 text-xs">●</span>;
+  return (
+    <span className="ml-2 text-red-500 text-xs" title={error ?? "Unreachable"}>
+      ●
+    </span>
+  );
+}
+
 type SettingsTab = "general" | "permissions";
 
 interface SettingsModalProps {
   open: boolean;
   plannerConfig: EndpointConfig;
   agentConfig: EndpointConfig;
-  vlmConfig: EndpointConfig;
-  vlmEnabled: boolean;
+  fastConfig: EndpointConfig;
+  fastEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
   toolPermissions: ToolPermissions;
   onClose: () => void;
   onPlannerConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
-  onVlmConfigChange: (config: EndpointConfig) => void;
-  onVlmEnabledChange: (enabled: boolean) => void;
+  onFastConfigChange: (config: EndpointConfig) => void;
+  onFastEnabledChange: (enabled: boolean) => void;
   onMaxRepairAttemptsChange: (n: number) => void;
   onHoverDwellThresholdChange: (ms: number) => void;
   onToolPermissionsChange: (perms: ToolPermissions) => void;
@@ -84,6 +130,7 @@ function ConfigSection({
     <div>
       <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
         {title}
+        <EndpointStatus baseUrl={config.baseUrl} apiKey={config.apiKey} model={config.model} />
       </h3>
       <p className="mb-2 text-[10px] text-[var(--text-muted)]">{description}</p>
       <EndpointFields config={config} onChange={onChange} />
@@ -201,16 +248,16 @@ export function SettingsModal({
   open,
   plannerConfig,
   agentConfig,
-  vlmConfig,
-  vlmEnabled,
+  fastConfig,
+  fastEnabled,
   maxRepairAttempts,
   hoverDwellThreshold,
   toolPermissions,
   onClose,
   onPlannerConfigChange,
   onAgentConfigChange,
-  onVlmConfigChange,
-  onVlmEnabledChange,
+  onFastConfigChange,
+  onFastEnabledChange,
   onMaxRepairAttemptsChange,
   onHoverDwellThresholdChange,
   onToolPermissionsChange,
@@ -274,26 +321,27 @@ export function SettingsModal({
           <div>
             <div className="mb-2 flex items-center gap-2">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                Vision (VLM)
+                Fast Model
+                {fastEnabled && <EndpointStatus baseUrl={fastConfig.baseUrl} apiKey={fastConfig.apiKey} model={fastConfig.model} />}
               </h3>
               <label className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={vlmEnabled}
-                  onChange={(e) => onVlmEnabledChange(e.target.checked)}
+                  checked={fastEnabled}
+                  onChange={(e) => onFastEnabledChange(e.target.checked)}
                   className="accent-[var(--accent-coral)]"
                 />
                 Separate model
               </label>
             </div>
-            {vlmEnabled ? (
+            {fastEnabled ? (
               <>
                 <p className="mb-2 text-[10px] text-[var(--text-muted)]">
                   Analyzes screenshots and images, returns text summaries to the agent.
                 </p>
                 <EndpointFields
-                  config={vlmConfig}
-                  onChange={onVlmConfigChange}
+                  config={fastConfig}
+                  onChange={onFastConfigChange}
                 />
               </>
             ) : (

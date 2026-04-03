@@ -1,9 +1,11 @@
 use super::error::CommandError;
 use super::planner_session::{AssistantSessionHandle, PlannerHandle, PlannerSession};
 use super::types::*;
+use clickweave_llm::LlmClient;
 use clickweave_llm::planner::conversation::{ChatEntry, ChatRole, RunContext};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
+use tracing::warn;
 
 fn format_run_context(ctx: &RunContext) -> String {
     let mut lines = vec![format!("Execution: {}", ctx.execution_dir)];
@@ -85,6 +87,54 @@ pub async fn assistant_chat(
         );
     }
 
+    // Health check: planner endpoint (hard fail)
+    clickweave_llm::check_endpoint(
+        &request.planner.base_url,
+        request.planner.api_key.as_deref(),
+        Some(&request.planner.model),
+    )
+    .await
+    .map_err(|e| CommandError::validation(format!("Cannot reach planner model: {}", e)))?;
+
+    // Health check: fast endpoint (warn and degrade)
+    let fast_client: Option<LlmClient> = if let Some(ref fast_config) = request.fast {
+        if fast_config.is_empty() {
+            None
+        } else {
+            match clickweave_llm::check_endpoint(
+                &fast_config.base_url,
+                fast_config.api_key.as_deref(),
+                Some(&fast_config.model),
+            )
+            .await
+            {
+                Ok(()) => Some(LlmClient::new(
+                    fast_config
+                        .clone()
+                        .into_llm_config(Some(0.0))
+                        .with_thinking(false)
+                        .with_max_tokens(256),
+                )),
+                Err(e) => {
+                    warn!("Fast model unreachable, falling back to planner: {}", e);
+                    let _ = app.emit(
+                        "assistant://fast_model_warning",
+                        serde_json::json!({
+                            "message": format!(
+                                "Fast model at {} is unreachable. Falling back to planner model.",
+                                fast_config.base_url
+                            ),
+                            "error": e,
+                        }),
+                    );
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
     // Step 3: Take session out and wrap in Arc (brief lock)
     let (session, conversation, config_for_task) = {
         let mut guard = session_handle_state.lock().await;
@@ -95,7 +145,11 @@ pub async fn assistant_chat(
                 .ok_or_else(|| CommandError::validation("No planning session available"))?,
         );
         let conversation = guard.conversation.clone();
-        let config = request.planner.clone().into_llm_config(None);
+        let config = request
+            .planner
+            .clone()
+            .into_llm_config(None)
+            .with_thinking(false);
         (session, conversation, config)
     };
 
@@ -140,7 +194,31 @@ pub async fn assistant_chat(
         let run_context_text = request_run_context_for_task
             .as_ref()
             .map(format_run_context);
+
+        // Pre-gather context (may cdp_connect and refresh the MCP tool set)
+        let pre_gather_result = super::pre_gather::pre_gather(
+            &request.user_message,
+            &*session_for_task,
+            fast_client.as_ref(),
+        )
+        .await;
+
+        // Fetch tools AFTER pre-gather so cdp_connect-refreshed tools are included
         let workflow_tools = session_for_task.mcp_tools_openai().await;
+
+        // Filter tools based on app type
+        let workflow_tools = clickweave_llm::planner::tool_use::filter_tools_by_app_type(
+            &workflow_tools,
+            pre_gather_result.all_cdp,
+            pre_gather_result.all_native,
+        );
+
+        // Pass pre-gathered context to the LLM call
+        let pre_gathered_context = if pre_gather_result.context_text.is_empty() {
+            None
+        } else {
+            Some(pre_gather_result.context_text.as_str())
+        };
 
         let result = clickweave_llm::planner::assistant_chat(
             &request.workflow,
@@ -155,6 +233,8 @@ pub async fn assistant_chat(
             Some(&on_repair),
             profiles_ref,
             Some(&*session_for_task),
+            pre_gathered_context,
+            pre_gather_result.cdp_connected,
         )
         .await
         .map_err(|e| {
@@ -256,7 +336,7 @@ pub async fn assistant_chat(
             guard.conversation.set_summary(summary.clone(), None);
         }
         // Update config
-        guard.assistant_config = Some(request.planner.into_llm_config(None));
+        guard.assistant_config = Some(request.planner.into_llm_config(None).with_thinking(false));
     }
 
     // Emit tool call/result events
