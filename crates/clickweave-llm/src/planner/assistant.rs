@@ -42,6 +42,8 @@ pub async fn assistant_chat<E: PlannerToolExecutor>(
     on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
     chrome_profiles: Option<&[ChromeProfile]>,
     executor: Option<&E>,
+    pre_gathered_context: Option<&str>,
+    cdp_connected: bool,
 ) -> Result<AssistantResult> {
     let client = LlmClient::new(config);
     assistant_chat_with_backend(
@@ -57,6 +59,8 @@ pub async fn assistant_chat<E: PlannerToolExecutor>(
         on_repair_attempt,
         chrome_profiles,
         executor,
+        pre_gathered_context,
+        cdp_connected,
     )
     .await
 }
@@ -76,6 +80,8 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
     on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
     chrome_profiles: Option<&[ChromeProfile]>,
     executor: Option<&E>,
+    pre_gathered_context: Option<&str>,
+    cdp_connected: bool,
 ) -> Result<AssistantResult> {
     // 1. Optionally summarize overflow (non-fatal on error)
     let new_summary = if session.needs_summarization(None) {
@@ -104,6 +110,8 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
         run_context_text,
         chrome_profiles,
         has_planning_tools,
+        pre_gathered_context,
+        cdp_connected,
     );
 
     // 3. Assemble messages: system + optional summary context + recent window + new user message

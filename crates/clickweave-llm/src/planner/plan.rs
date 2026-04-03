@@ -68,6 +68,8 @@ pub async fn plan_workflow_with_backend(
         prompt_template,
         chrome_profiles,
         false, // has_planning_tools
+        None,  // pre_gathered_context
+        false, // cdp_connected
     );
     let user_msg = format!("Plan a workflow for: {}", intent);
 
