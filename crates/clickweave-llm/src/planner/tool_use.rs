@@ -279,10 +279,27 @@ mod tests {
     /// Every forbidden_tools entry in eval TOML cases must be a member of
     /// NATIVE_ACTION_TOOLS or CDP_ACTION_TOOLS. Catches silent desync when
     /// tool families change.
+    ///
+    /// Requires `--features eval` (for toml_edit serde support).
     #[test]
     #[cfg(feature = "eval")]
     fn forbidden_tools_match_canonical_constants() {
         use std::collections::HashSet;
+
+        #[derive(serde::Deserialize)]
+        struct Case {
+            turns: Vec<Turn>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Turn {
+            #[serde(default)]
+            expect: Option<Expect>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Expect {
+            #[serde(default)]
+            forbidden_tools: Vec<String>,
+        }
 
         let native: HashSet<&str> = NATIVE_ACTION_TOOLS.iter().copied().collect();
         let cdp: HashSet<&str> = CDP_ACTION_TOOLS.iter().copied().collect();
@@ -295,24 +312,19 @@ mod tests {
                 continue;
             }
             let content = std::fs::read_to_string(&path).unwrap();
-            let case: toml_edit::DocumentMut = content.parse().unwrap();
-            if let Some(turns) = case.get("turns").and_then(|t| t.as_array_of_tables()) {
-                for turn in turns.iter() {
-                    if let Some(expect) = turn.get("expect") {
-                        if let Some(forbidden) =
-                            expect.get("forbidden_tools").and_then(|f| f.as_array())
-                        {
-                            for tool in forbidden.iter() {
-                                let name = tool.as_str().unwrap();
-                                assert!(
-                                    all_known.contains(name),
-                                    "Unknown forbidden tool '{}' in {} \
-                                     — not in NATIVE_ACTION_TOOLS or CDP_ACTION_TOOLS",
-                                    name,
-                                    path.display()
-                                );
-                            }
-                        }
+            let case: Case = toml_edit::de::from_str(&content).unwrap_or_else(|e| {
+                panic!("Failed to parse {}: {}", path.display(), e);
+            });
+            for turn in &case.turns {
+                if let Some(expect) = &turn.expect {
+                    for tool in &expect.forbidden_tools {
+                        assert!(
+                            all_known.contains(tool.as_str()),
+                            "Unknown forbidden tool '{}' in {} \
+                             — not in NATIVE_ACTION_TOOLS or CDP_ACTION_TOOLS",
+                            tool,
+                            path.display()
+                        );
                     }
                 }
             }
