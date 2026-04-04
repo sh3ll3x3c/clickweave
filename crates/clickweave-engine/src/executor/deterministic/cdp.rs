@@ -10,6 +10,17 @@ use clickweave_core::cdp::{
 use clickweave_llm::ChatBackend;
 use uuid::Uuid;
 
+/// A contenteditable or input element discovered via DOM query.
+#[derive(Debug)]
+struct ContenteditableElement {
+    label: String,
+    role: String,
+    /// Center X coordinate in viewport pixels.
+    cx: f64,
+    /// Center Y coordinate in viewport pixels.
+    cy: f64,
+}
+
 /// Expected CDP element attributes for matching during snapshot search.
 #[derive(Debug, Default)]
 pub(crate) struct CdpExpected<'a> {
@@ -53,6 +64,106 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         let snapshot_text = Self::extract_result_text(&snapshot_result);
+
+        // Tier 0: contenteditable/input elements discovered via DOM query.
+        // These are often invisible to the accessibility tree (generic with no
+        // label) but have placeholder/aria-label attributes. Run this BEFORE
+        // fuzzy snapshot matching to avoid false positives like "React to Message"
+        // when the target is "Message" (the input placeholder).
+        //
+        // Strategy: ask the LLM which contenteditable matches the target,
+        // then use cdp_element_at_point with that element's center coordinates
+        // to get the exact uid (bypasses broken snapshot text search entirely).
+        let ce_elements = self.query_contenteditable_elements_raw(mcp).await;
+        if !ce_elements.is_empty() {
+            self.log(format!(
+                "CDP: checking {} contenteditable inputs for '{}'",
+                ce_elements.len(),
+                target
+            ));
+
+            // If there's only one contenteditable with a plausible label match,
+            // skip the LLM call entirely.
+            let matched_ce = if ce_elements.len() == 1 {
+                Some(&ce_elements[0])
+            } else {
+                // Ask the LLM: "which of these input fields matches the target?"
+                let options: Vec<String> = ce_elements
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| format!("{}. {} ({})", i + 1, e.label, e.role))
+                    .collect();
+                let prompt = format!(
+                    "The user wants to interact with: \"{}\"\n\n\
+                     Which of these input fields is the correct target? \
+                     Reply with ONLY the label, nothing else.\n\n{}",
+                    target,
+                    options.join("\n")
+                );
+                let response = self
+                    .reasoning_backend()
+                    .chat(vec![clickweave_llm::Message::user(prompt)], None)
+                    .await;
+                match response {
+                    Ok(resp) => {
+                        let text = resp
+                            .choices
+                            .first()
+                            .and_then(|c| c.message.content_text())
+                            .unwrap_or_default()
+                            .trim()
+                            .trim_matches('"')
+                            .to_string();
+                        // Strip role suffix if present (e.g. "Message (contenteditable)" → "Message")
+                        let label = text.rfind(" (").map(|i| &text[..i]).unwrap_or(&text);
+                        self.log(format!("CDP: LLM picked contenteditable '{}'", label));
+                        ce_elements
+                            .iter()
+                            .find(|e| e.label.eq_ignore_ascii_case(label))
+                    }
+                    Err(_) => None,
+                }
+            };
+
+            if let Some(ce) = matched_ce {
+                if ce.cx > 0.0 && ce.cy > 0.0 {
+                    self.log(format!(
+                        "CDP: contenteditable '{}' at ({:.0}, {:.0}), resolving via element_at_point",
+                        ce.label, ce.cx, ce.cy
+                    ));
+                    let eap_result = mcp
+                        .call_tool(
+                            "cdp_element_at_point",
+                            Some(serde_json::json!({ "x": ce.cx, "y": ce.cy })),
+                        )
+                        .await;
+                    if let Ok(ref result) = eap_result {
+                        if result.is_error != Some(true) {
+                            let text = Self::extract_result_text(result);
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if let Some(uid) = parsed["uid"].as_str() {
+                                    self.log(format!(
+                                        "CDP: contenteditable resolved '{}' -> uid='{}'",
+                                        target, uid
+                                    ));
+                                    return Ok(uid.to_string());
+                                }
+                            }
+                        }
+                    }
+                    self.log(format!(
+                        "CDP: cdp_element_at_point failed for contenteditable '{}', continuing",
+                        ce.label
+                    ));
+                }
+            } else {
+                self.log("CDP: no contenteditable matched target, continuing");
+            }
+        }
+        let contenteditable_inputs: Vec<String> = ce_elements
+            .iter()
+            .map(|e| format!("{} ({})", e.label, e.role))
+            .collect();
 
         // Find matching elements, preferring interactive roles (buttons, textboxes, etc.)
         // over non-interactive ones (images, headings) when both match.
@@ -187,14 +298,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }
             }
 
-            // Existing inventory resolution fallback.
+            // Existing inventory resolution fallback (reuses contenteditable
+            // inputs already queried above).
             self.log(format!(
                 "CDP: no exact match for '{}', resolving via element inventory",
                 target
             ));
-            let extra_inputs = self.query_contenteditable_elements(mcp).await;
             let mut resolved = self
-                .resolve_via_inventory(target, &snapshot_text, &extra_inputs)
+                .resolve_via_inventory(target, &snapshot_text, &contenteditable_inputs)
                 .await?;
             clickweave_core::cdp::narrow_matches(&mut resolved, expected.role, expected.href);
             clickweave_core::cdp::narrow_by_parent(
@@ -305,10 +416,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await
     }
 
-    /// Query the DOM for contenteditable elements that the accessibility tree
-    /// might represent as `generic` instead of `textbox`. Returns a list of
-    /// labels suitable for appending to the inventory prompt.
-    async fn query_contenteditable_elements(&self, mcp: &(impl Mcp + ?Sized)) -> Vec<String> {
+    /// Query the DOM for contenteditable elements, returning full metadata
+    /// including bounding rect center for coordinate-based resolution.
+    async fn query_contenteditable_elements_raw(
+        &self,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Vec<ContenteditableElement> {
         // Walk all DOM elements and find editable ones (contenteditable,
         // textarea, text inputs). CSS selectors miss inherited contenteditable
         // (e.g. Quill editors), so we check isContentEditable on each element
@@ -323,7 +436,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 if (!isInput && !isEditable) continue;
                 const label = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('data-placeholder') || '';
                 if (!label) continue;
-                results.push({ label, role: isEditable ? 'contenteditable' : el.tagName.toLowerCase() });
+                const rect = el.getBoundingClientRect();
+                results.push({
+                    label,
+                    role: isEditable ? 'contenteditable' : el.tagName.toLowerCase(),
+                    cx: Math.round(rect.left + rect.width / 2),
+                    cy: Math.round(rect.top + rect.height / 2)
+                });
             }
             return results;
         }"#;
@@ -349,25 +468,36 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .trim();
 
                 if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(json_text) {
-                    let labels: Vec<String> = entries
+                    let elements: Vec<ContenteditableElement> = entries
                         .iter()
                         .filter_map(|e| {
-                            let label = e.get("label")?.as_str()?;
-                            let role = e.get("role")?.as_str().unwrap_or("input");
+                            let label = e.get("label")?.as_str()?.to_string();
+                            let role = e.get("role")?.as_str().unwrap_or("input").to_string();
                             if label.is_empty() {
                                 return None;
                             }
-                            Some(format!("{} ({})", label, role))
+                            let cx = e.get("cx").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let cy = e.get("cy").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            Some(ContenteditableElement {
+                                label,
+                                role,
+                                cx,
+                                cy,
+                            })
                         })
                         .collect();
-                    if !labels.is_empty() {
+                    if !elements.is_empty() {
+                        let display: Vec<String> = elements
+                            .iter()
+                            .map(|e| format!("{} ({})", e.label, e.role))
+                            .collect();
                         self.log(format!(
                             "CDP: found {} contenteditable elements via JS: {}",
-                            labels.len(),
-                            labels.join(", ")
+                            elements.len(),
+                            display.join(", ")
                         ));
                     }
-                    labels
+                    elements
                 } else {
                     Vec::new()
                 }
