@@ -141,11 +141,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             let text = Self::extract_result_text(result);
                             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if let Some(uid) = parsed["uid"].as_str() {
-                                    self.log(format!(
-                                        "CDP: contenteditable resolved '{}' -> uid='{}'",
-                                        target, uid
-                                    ));
-                                    return Ok(uid.to_string());
+                                    let name = parsed["name"].as_str().unwrap_or("");
+                                    let role = parsed["role"].as_str().unwrap_or("");
+                                    if name.is_empty() && role == "generic" {
+                                        // Nameless generic = container wrapping the
+                                        // actual input. Focus it via JS and find the
+                                        // focused element in a fresh snapshot.
+                                        self.log(format!(
+                                            "CDP: element_at_point returned nameless generic for '{}', focusing via JS",
+                                            ce.label
+                                        ));
+                                        if let Some(focused_uid) =
+                                            self.focus_contenteditable_via_js(&ce.label, mcp).await
+                                        {
+                                            return Ok(focused_uid);
+                                        }
+                                    } else {
+                                        self.log(format!(
+                                            "CDP: contenteditable resolved '{}' -> uid='{}'",
+                                            target, uid
+                                        ));
+                                        return Ok(uid.to_string());
+                                    }
                                 }
                             }
                         }
@@ -345,6 +362,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
+    /// Sentinel UID returned when a contenteditable element was focused
+    /// directly via JS — the caller should skip the `cdp_click` because the
+    /// element already has DOM focus.
+    const FOCUSED_VIA_JS: &'static str = "__focused_via_js__";
+
     /// Resolve a CDP element and perform an action (click or hover) on it.
     /// Returns the action result text.
     pub(in crate::executor) async fn execute_cdp_action(
@@ -360,6 +382,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let uid = self
             .resolve_cdp_element_uid(node_id, target, expected, mcp, retry_ctx)
             .await?;
+
+        // Contenteditable elements focused via JS don't have a clickable
+        // UID — skip the action to avoid stealing focus.
+        if uid == Self::FOCUSED_VIA_JS {
+            self.log(format!(
+                "CDP: '{}' already focused via JS, skipping {}",
+                target, action
+            ));
+            self.record_event(
+                node_run,
+                &format!("cdp_{}", action),
+                serde_json::json!({ "target": target, "uid": uid }),
+            );
+            return Ok(format!("Focused '{}' via JS", target));
+        }
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
         let result = mcp
@@ -415,6 +452,49 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await
     }
 
+    /// Focus a contenteditable element by label via JS.
+    ///
+    /// Contenteditable elements are often invisible in the accessibility tree
+    /// (nameless generic containers all the way up). Instead of trying to
+    /// resolve a UID, we focus the element directly via JS and return the
+    /// `FOCUSED_VIA_JS` sentinel so the caller skips `cdp_click`.
+    async fn focus_contenteditable_via_js(
+        &self,
+        label: &str,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<String> {
+        let focus_js = format!(
+            r#"() => {{
+                const all = document.querySelectorAll('*');
+                for (const el of all) {{
+                    if (!el.isContentEditable || !el.parentElement || el.parentElement.isContentEditable) continue;
+                    const lbl = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('data-placeholder') || '';
+                    if (lbl === '{}') {{ el.focus(); el.click(); return true; }}
+                }}
+                return false;
+            }}"#,
+            label.replace('\\', "\\\\").replace('\'', "\\'")
+        );
+        let focus_result = mcp
+            .call_tool(
+                "cdp_evaluate_script",
+                Some(serde_json::json!({ "function": focus_js })),
+            )
+            .await;
+        match focus_result {
+            Ok(ref r) if r.is_error != Some(true) => {
+                let text = Self::extract_result_text(r);
+                if text.contains("true") {
+                    self.log(format!("CDP: focused contenteditable '{}' via JS", label));
+                    return Some(Self::FOCUSED_VIA_JS.to_string());
+                }
+            }
+            _ => {}
+        }
+        self.log("CDP: JS focus call failed for contenteditable");
+        None
+    }
+
     /// Query the DOM for contenteditable elements, returning full metadata
     /// including bounding rect center for coordinate-based resolution.
     async fn query_contenteditable_elements_raw(
@@ -427,6 +507,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // and skip children of editable parents to avoid duplicates.
         let js = r#"() => {
             const results = [];
+            // cdp_element_at_point expects screen coordinates (points), so
+            // convert getBoundingClientRect viewport coords to screen coords.
+            const chromeH = window.outerHeight - window.innerHeight;
             const all = document.querySelectorAll('*');
             for (const el of all) {
                 const isInput = el.tagName === 'TEXTAREA' ||
@@ -439,8 +522,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 results.push({
                     label,
                     role: isEditable ? 'contenteditable' : el.tagName.toLowerCase(),
-                    cx: Math.round(rect.left + rect.width / 2),
-                    cy: Math.round(rect.top + rect.height / 2)
+                    cx: Math.round(window.screenX + rect.left + rect.width / 2),
+                    cy: Math.round(window.screenY + chromeH + rect.top + rect.height / 2)
                 });
             }
             return results;
