@@ -47,23 +47,63 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .call_tool("cdp_list_pages", Some(serde_json::json!({})))
             .await;
 
-        // Take CDP snapshot
-        self.log(format!("CDP: taking snapshot to find '{}'", target));
-        let snapshot_result = mcp
-            .call_tool("cdp_take_snapshot", Some(serde_json::json!({})))
-            .await
-            .map_err(|e| ExecutorError::Cdp(format!("take_snapshot failed: {e}")))?;
+        // Take CDP snapshot, retrying if the element isn't found on the first
+        // attempt (the DOM may still be re-rendering from the previous action).
+        let (snapshot_text, ce_elements) = {
+            let max_snapshot_attempts = 3;
+            let mut snapshot_text = String::new();
+            let mut ce_elements_out = Vec::new();
 
-        if snapshot_result.is_error == Some(true) {
-            let error_text = Self::extract_result_text(&snapshot_result);
-            self.log(format!("CDP take_snapshot error: {}", error_text));
-            return Err(ExecutorError::Cdp(format!(
-                "take_snapshot error: {}",
-                error_text
-            )));
-        }
+            for attempt in 0..max_snapshot_attempts {
+                if attempt > 0 {
+                    self.log(format!(
+                        "CDP: snapshot retry {}/{} for '{}' (waiting for DOM to settle)",
+                        attempt,
+                        max_snapshot_attempts - 1,
+                        target
+                    ));
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
 
-        let snapshot_text = Self::extract_result_text(&snapshot_result);
+                self.log(format!("CDP: taking snapshot to find '{}'", target));
+                let snapshot_result = mcp
+                    .call_tool("cdp_take_snapshot", Some(serde_json::json!({})))
+                    .await
+                    .map_err(|e| ExecutorError::Cdp(format!("take_snapshot failed: {e}")))?;
+
+                if snapshot_result.is_error == Some(true) {
+                    let error_text = Self::extract_result_text(&snapshot_result);
+                    self.log(format!("CDP take_snapshot error: {}", error_text));
+                    return Err(ExecutorError::Cdp(format!(
+                        "take_snapshot error: {}",
+                        error_text
+                    )));
+                }
+
+                snapshot_text = Self::extract_result_text(&snapshot_result);
+
+                // Check contenteditable elements
+                let ce = self.query_contenteditable_elements_raw(mcp).await;
+
+                // Check if the target can be found in the snapshot or contenteditable list
+                let snapshot_matches = find_interactive_in_snapshot(&snapshot_text, target);
+                let ce_has_match = !ce.is_empty();
+                ce_elements_out = ce;
+
+                if !snapshot_matches.is_empty() || ce_has_match {
+                    break;
+                }
+
+                if attempt < max_snapshot_attempts - 1 {
+                    self.log(format!(
+                        "CDP: '{}' not found in snapshot or DOM, will retry",
+                        target
+                    ));
+                }
+            }
+
+            (snapshot_text, ce_elements_out)
+        };
 
         // Tier 0: contenteditable/input elements discovered via DOM query.
         // These are often invisible to the accessibility tree (generic with no
@@ -74,7 +114,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Strategy: ask the LLM which contenteditable matches the target,
         // then use cdp_element_at_point with that element's center coordinates
         // to get the exact uid (bypasses broken snapshot text search entirely).
-        let ce_elements = self.query_contenteditable_elements_raw(mcp).await;
         if !ce_elements.is_empty() {
             self.log(format!(
                 "CDP: checking {} contenteditable inputs for '{}'",
