@@ -33,9 +33,10 @@ High-level flow in `run()`:
 5. Find entry points
 6. Walk graph (with inline verification for Verification-role nodes and per-step supervision in Test mode)
 7. Emit accumulated `runtime_verdicts` via `ChecksCompleted` (if any)
-8. Save decision cache (Test mode only)
-9. Emit `WorkflowCompleted` when completed normally or when a verification failure stopped the walk
-10. Emit `StateChanged(Idle)`
+8. Outcome verification: if `verify_outcome` is enabled and the walk completed successfully, run two-stage VLM verification (query generation + screenshot evaluation) and emit `OutcomeVerification`
+9. Save decision cache (Test mode only)
+10. Emit `WorkflowCompleted` when completed normally or when a verification failure stopped the walk
+11. Emit `StateChanged(Idle)`
 
 ## Graph Walk
 
@@ -93,6 +94,8 @@ Error variants: `ExecutorError::Rewind(Uuid)` propagates through the supervision
 | `Error(String)` | message | Fatal error |
 | `SupervisionPassed` | `node_id`, `node_name`, `summary` | Step passed verification (Test mode) |
 | `SupervisionPaused` | `node_id`, `node_name`, `finding`, `screenshot?` | Step failed verification, awaiting user action (Test mode) |
+| `NodeCancelled(Uuid)` | node id | Node cancelled (e.g. resolution cancelled the attempt) |
+| `OutcomeVerification` | `passed`, `query`, `reasoning`, `screenshot?` | Two-stage VLM outcome verification result (when `verify_outcome` is enabled) |
 
 ### Entry Points
 
@@ -329,6 +332,7 @@ Common event types recorded in trace files:
 - `cdp_click`
 - `cdp_connected`
 - `supervision_retry`
+- `outcome_verification`
 
 ## Inline Verification Verdicts
 

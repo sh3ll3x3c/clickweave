@@ -20,6 +20,7 @@ export interface AssistantSlice {
   pendingPatch: WorkflowPatch | null;
   pendingPatchWarnings: string[];
   pendingIntent: string | null;
+  hasPendingIntent: boolean;
   contextUsage: number | null;
 
   setAssistantOpen: (open: boolean) => void;
@@ -44,6 +45,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   pendingPatch: null,
   pendingPatchWarnings: [],
   pendingIntent: null,
+  hasPendingIntent: false,
   contextUsage: null,
 
   setAssistantOpen: (open) => {
@@ -99,6 +101,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
           pendingPatchWarnings: data.patch ? data.warnings : s.pendingPatchWarnings,
           contextUsage: data.context_usage ?? s.contextUsage,
           pendingIntent: data.intent && isNewWorkflow ? data.intent : s.pendingIntent,
+          hasPendingIntent: (data.intent && isNewWorkflow) ? true : s.hasPendingIntent,
         }));
 
         pushLog(`Assistant: ${data.patch ? "generated changes" : "responded"}`);
@@ -155,14 +158,14 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
         patchedCounters[base] = num;
       }
     }
-    const { pendingIntent } = get();
+    const { pendingIntent, hasPendingIntent } = get();
     const patched: Workflow = {
       ...workflow,
       nodes,
       edges,
       groups: cleanedGroups,
       next_id_counters: patchedCounters,
-      ...(pendingIntent !== null ? { intent: pendingIntent } : {}),
+      ...(hasPendingIntent ? { intent: pendingIntent } : {}),
     };
     try {
       const validation = await commands.validate(patched);
@@ -184,6 +187,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       pendingPatch: null,
       pendingPatchWarnings: [],
       pendingIntent: null,
+      hasPendingIntent: false,
       assistantError: null,
       isNewWorkflow: false,
     });
@@ -195,6 +199,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       pendingPatch: null,
       pendingPatchWarnings: [],
       pendingIntent: null,
+      hasPendingIntent: false,
       assistantError: null,
     });
   },
@@ -212,6 +217,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       pendingPatch: null,
       pendingPatchWarnings: [],
       pendingIntent: null,
+      hasPendingIntent: false,
       assistantError: null,
       contextUsage: null,
     });

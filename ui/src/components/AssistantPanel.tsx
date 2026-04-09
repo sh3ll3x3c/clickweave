@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { ChatEntry, WorkflowPatch } from "../bindings";
 import { ChatMessage } from "./ChatMessage";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
@@ -79,7 +79,6 @@ export function AssistantPanel({
   );
 
   const hasMessages = messages.length > 0;
-  const intent = useStore((s) => s.workflow.intent);
 
   return (
     <div className="relative flex h-full flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]" style={{ width, minWidth: width }}>
@@ -120,13 +119,8 @@ export function AssistantPanel({
         </div>
       </div>
 
-      {/* Intent display */}
-      {intent && (
-        <div className="flex items-center gap-1.5 border-b border-[var(--border)] px-4 py-1.5">
-          <span className="text-[10px] font-medium text-[var(--text-muted)]">Intent:</span>
-          <span className="text-[11px] text-[var(--text-secondary)] truncate">{intent}</span>
-        </div>
-      )}
+      {/* Intent — editable inline */}
+      <IntentBar />
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-3 py-3">
@@ -226,5 +220,76 @@ export function AssistantPanel({
         </p>
       </div>
     </div>
+  );
+}
+
+function IntentBar() {
+  const workflowIntent = useStore((s) => s.workflow.intent);
+  const pendingIntent = useStore((s) => s.pendingIntent);
+  const hasPendingPatch = useStore((s) => s.pendingPatch !== null);
+  const hasPendingIntent = useStore((s) => s.hasPendingIntent);
+  const setIntent = useStore((s) => s.setIntent);
+  const isRunning = useStore((s) => s.executorState === "running");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  // Close editor when execution starts
+  useEffect(() => {
+    if (isRunning && editing) setEditing(false);
+  }, [isRunning, editing]);
+
+  // Show staged intent when explicitly set, otherwise fall back to committed.
+  const displayIntent = hasPendingPatch && hasPendingIntent ? pendingIntent : workflowIntent;
+
+  const startEdit = () => {
+    if (isRunning) return;
+    setDraft(displayIntent ?? "");
+    setEditing(true);
+  };
+
+  const commit = () => {
+    const value = draft.trim() || null;
+    if (hasPendingPatch) {
+      // Update the staged pendingIntent so it's applied with the patch
+      useStore.setState({ pendingIntent: value, hasPendingIntent: true });
+    } else {
+      setIntent(value);
+    }
+    setEditing(false);
+  };
+
+  const cancel = () => setEditing(false);
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1 border-b border-[var(--border)] px-4 py-1.5">
+        <span className="text-[10px] font-medium text-[var(--text-muted)] shrink-0">Intent:</span>
+        <input
+          autoFocus
+          className="flex-1 bg-transparent text-[11px] text-[var(--text-primary)] outline-none border-b border-[var(--accent-blue)]"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") cancel();
+          }}
+          onBlur={commit}
+          placeholder="Describe what this workflow should accomplish..."
+        />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={startEdit}
+      disabled={isRunning}
+      className={`flex items-center gap-1.5 border-b border-[var(--border)] px-4 py-1.5 w-full text-left transition-colors ${isRunning ? "opacity-50 cursor-default" : "hover:bg-[var(--bg-hover)]"}`}
+    >
+      <span className="text-[10px] font-medium text-[var(--text-muted)] shrink-0">Intent:</span>
+      <span className="text-[11px] text-[var(--text-secondary)] truncate">
+        {displayIntent || "Click to set intent for outcome verification..."}
+      </span>
+    </button>
   );
 }

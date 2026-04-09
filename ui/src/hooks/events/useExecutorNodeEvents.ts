@@ -53,6 +53,9 @@ export function useExecutorNodeEvents() {
     }));
     sub(listen<OutcomeVerification>("executor://outcome_verification", (e) => {
       useStore.getState().setOutcomeVerification(e.payload);
+      if (!e.payload.passed) {
+        useStore.getState().setLastRunStatus("failed");
+      }
     }));
     sub(listen("executor://workflow_completed", () => {
       useStore.getState().pushLog("Workflow completed");

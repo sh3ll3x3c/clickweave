@@ -88,7 +88,14 @@ export const createVerdictSlice: StateCreator<StoreState, [], [], VerdictSlice> 
       verdictBarVisible: verdicts.length > 0,
     }),
 
-  setOutcomeVerification: (result) => set({ outcomeVerification: result }),
+  setOutcomeVerification: (result) =>
+    set((state) => ({
+      outcomeVerification: result,
+      verdictStatus: !result.passed && state.verdictStatus !== "failed"
+        ? "failed"
+        : state.verdictStatus,
+      verdictBarVisible: true,
+    })),
 
   dismissVerdictBar: () => set({ verdictBarVisible: false }),
 

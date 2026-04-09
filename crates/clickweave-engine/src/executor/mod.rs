@@ -497,28 +497,30 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         ctx.runtime_verdicts
             .retain(|v| !inv_ids.contains(&v.node_id));
 
-        // Prune execution_history to match the retained completed_node_ids.
-        // Count how many NodeCompleted entries should remain (same as
-        // retained completed_node_ids length), then truncate at the position
-        // after the last retained NodeCompleted.
+        // Prune execution_history: truncate right after the last retained
+        // NodeCompleted so that stale control-flow entries (BranchTaken,
+        // LoopIteration, etc.) recorded after the rewind target are also removed.
         let target_completed_count = ctx.completed_node_ids.len();
-        let mut seen = 0usize;
-        let cutoff = ctx
-            .execution_history
-            .iter()
-            .position(|e| {
+        if target_completed_count == 0 {
+            ctx.execution_history.clear();
+        } else {
+            // Find position right after the Nth NodeCompleted (N = retained count)
+            let mut seen = 0usize;
+            let mut cutoff = 0;
+            for (i, e) in ctx.execution_history.iter().enumerate() {
                 if matches!(
                     e,
                     retry_context::ExecutionHistoryEntry::NodeCompleted { .. }
                 ) {
                     seen += 1;
-                    seen > target_completed_count
-                } else {
-                    false
+                    if seen == target_completed_count {
+                        cutoff = i + 1;
+                        break;
+                    }
                 }
-            })
-            .unwrap_or(ctx.execution_history.len());
-        ctx.execution_history.truncate(cutoff);
+            }
+            ctx.execution_history.truncate(cutoff);
+        }
     }
 
     /// Apply a resolution patch to the in-memory workflow.

@@ -109,22 +109,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log("Outcome verification: generating visual query...".to_string());
 
-        // Stage 1: Build execution summary and generate VLM query
         let summary = build_execution_summary(&ctx.execution_history);
-
         let query = self.generate_verification_query(intent, &summary).await?;
 
         self.log(format!("Outcome verification query: {}", query));
 
-        // Stage 2: Take screenshot (app-scoped, fallback to full-screen)
-        let screenshot = self.capture_outcome_screenshot(mcp).await;
-        if screenshot.is_none() {
+        let Some(screenshot) = self.capture_outcome_screenshot(mcp).await else {
             self.log("Outcome verification: screenshot capture failed, skipping".to_string());
             return None;
-        }
-        let screenshot = screenshot.unwrap();
+        };
 
-        // Stage 3: Evaluate screenshot against query
         let (passed, reasoning) = match self.evaluate_outcome_query(&query, &screenshot).await {
             Some(result) => result,
             None => return None,
@@ -224,41 +218,36 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let messages = vec![Message::system(QUERY_EVALUATION_PROMPT), user_msg];
 
         if let Some(ref vlm) = self.verdict_fast {
-            match vlm.chat(messages, None).await {
-                Ok(response) => {
-                    let raw = response
-                        .choices
-                        .first()
-                        .and_then(|c| c.message.content_text())
-                        .unwrap_or("");
-                    return Some(parse_outcome_response(raw));
-                }
-                Err(e) => {
-                    self.log(format!(
-                        "Outcome verification: verdict VLM failed: {}, skipping",
-                        e
-                    ));
-                    return None;
-                }
-            }
+            self.evaluate_outcome_with_vlm(vlm, messages).await
         } else if let Some(vlm) = self.vision_backend() {
-            match vlm.chat(messages, None).await {
-                Ok(response) => {
-                    let raw = response
-                        .choices
-                        .first()
-                        .and_then(|c| c.message.content_text())
-                        .unwrap_or("");
-                    return Some(parse_outcome_response(raw));
-                }
-                Err(e) => {
-                    self.log(format!("Outcome verification: VLM failed: {}, skipping", e));
-                    return None;
-                }
-            }
+            self.evaluate_outcome_with_vlm(vlm, messages).await
         } else {
             self.log("Outcome verification: no VLM configured, skipping".to_string());
-            return None;
+            None
+        }
+    }
+
+    async fn evaluate_outcome_with_vlm(
+        &self,
+        vlm: &impl ChatBackend,
+        messages: Vec<Message>,
+    ) -> Option<(bool, String)> {
+        match vlm.chat(messages, None).await {
+            Ok(response) => {
+                let raw = response
+                    .choices
+                    .first()
+                    .and_then(|c| c.message.content_text())
+                    .unwrap_or("");
+                Some(parse_outcome_response(raw))
+            }
+            Err(e) => {
+                self.log(format!(
+                    "Outcome verification: VLM evaluation failed: {}, skipping",
+                    e
+                ));
+                None
+            }
         }
     }
 }

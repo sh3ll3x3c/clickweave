@@ -209,7 +209,7 @@ fn parse_and_build_workflow(
         groups: vec![],
         next_id_counters: std::collections::HashMap::new(),
         auto_approve_resolutions: false,
-        intent: parsed_intent.clone(),
+        intent: parsed_intent,
         verify_outcome: false,
     };
 
@@ -226,9 +226,10 @@ fn parse_and_build_workflow(
         warnings.len()
     );
 
+    let intent = workflow.intent.clone();
     Ok(PlanResult {
         workflow,
         warnings,
-        intent: parsed_intent,
+        intent,
     })
 }
