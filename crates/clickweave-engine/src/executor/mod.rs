@@ -8,6 +8,7 @@ mod element_resolve;
 pub mod error;
 mod find_app;
 mod graph_nav;
+mod outcome_verification;
 mod output_ref;
 pub(crate) mod retry_context;
 mod run_loop;
