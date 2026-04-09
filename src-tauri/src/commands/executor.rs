@@ -137,6 +137,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             executor_token,
             chrome_profiles_dir,
             resolution_tx,
+            request.outcome_delay_ms,
+            request.supervision_delay_ms,
         );
         executor.run(cmd_rx).await;
     });
@@ -235,6 +237,20 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                     NodePayload {
                         node_id: id.to_string(),
                     },
+                ),
+                ExecutorEvent::OutcomeVerification {
+                    passed,
+                    query,
+                    reasoning,
+                    screenshot,
+                } => emit_handle.emit(
+                    "executor://outcome_verification",
+                    serde_json::json!({
+                        "passed": passed,
+                        "query": query,
+                        "reasoning": reasoning,
+                        "screenshot": screenshot,
+                    }),
                 ),
             };
             if let Err(e) = emit_result {

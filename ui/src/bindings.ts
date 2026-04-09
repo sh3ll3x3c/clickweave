@@ -363,7 +363,7 @@ export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
 export type AssistantChatRequest = { workflow: Workflow; user_message: string; run_context: RunContext | null; planner: EndpointConfig; fast: EndpointConfig | null; allow_ai_transforms: boolean; allow_agent_steps: boolean; max_repair_attempts: number; project_path?: string | null }
-export type AssistantChatResponse = { patch: WorkflowPatch | null; warnings: string[]; context_usage: number | null }
+export type AssistantChatResponse = { patch: WorkflowPatch | null; warnings: string[]; context_usage: number | null; intent: string | null }
 /**
  * User-selected app for CDP during walkthrough.
  */
@@ -518,7 +518,7 @@ export type RunRequest = { workflow: Workflow; project_path: string | null; agen
 /**
  * Planner LLM used for supervision in Test mode.
  */
-planner: EndpointConfig | null; execution_mode: ExecutionMode; auto_approve_resolutions?: boolean }
+planner: EndpointConfig | null; execution_mode: ExecutionMode; auto_approve_resolutions?: boolean; outcome_delay_ms?: number; supervision_delay_ms?: number }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 /**
@@ -593,7 +593,7 @@ export type WindowControlAction = "Close" | "Minimize" | "Maximize" |
  * macOS subrole (`AXZoomButton` vs `AXFullScreenButton`).
  */
 "Zoom"
-export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[]; groups?: NodeGroup[]; next_id_counters?: Partial<{ [key in string]: number }>; auto_approve_resolutions?: boolean }
+export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[]; groups?: NodeGroup[]; next_id_counters?: Partial<{ [key in string]: number }>; auto_approve_resolutions?: boolean; intent?: string | null; verify_outcome?: boolean }
 export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 
 /** tauri-specta globals **/

@@ -4,6 +4,7 @@ import { commands } from "../bindings";
 import type { EndpointConfig } from "../store/useAppStore";
 import type { ToolPermissions } from "../store/state";
 import { Modal } from "./Modal";
+import { ExecutionTab } from "./ExecutionTab";
 import { PermissionsTab } from "./PermissionsTab";
 
 type HealthState = "idle" | "pending" | "checking" | "ok" | "error";
@@ -52,7 +53,7 @@ function EndpointStatus({ baseUrl, apiKey, model }: { baseUrl: string; apiKey?: 
   );
 }
 
-type SettingsTab = "general" | "permissions";
+type SettingsTab = "general" | "execution" | "permissions";
 
 interface SettingsModalProps {
   open: boolean;
@@ -62,6 +63,8 @@ interface SettingsModalProps {
   fastEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  outcomeDelayMs: number;
+  supervisionDelayMs: number;
   toolPermissions: ToolPermissions;
   onClose: () => void;
   onPlannerConfigChange: (config: EndpointConfig) => void;
@@ -70,6 +73,8 @@ interface SettingsModalProps {
   onFastEnabledChange: (enabled: boolean) => void;
   onMaxRepairAttemptsChange: (n: number) => void;
   onHoverDwellThresholdChange: (ms: number) => void;
+  onOutcomeDelayMsChange: (ms: number) => void;
+  onSupervisionDelayMsChange: (ms: number) => void;
   onToolPermissionsChange: (perms: ToolPermissions) => void;
   onToolPermissionChange: (toolName: string, level: "ask" | "allow") => void;
 }
@@ -252,6 +257,8 @@ export function SettingsModal({
   fastEnabled,
   maxRepairAttempts,
   hoverDwellThreshold,
+  outcomeDelayMs,
+  supervisionDelayMs,
   toolPermissions,
   onClose,
   onPlannerConfigChange,
@@ -260,6 +267,8 @@ export function SettingsModal({
   onFastEnabledChange,
   onMaxRepairAttemptsChange,
   onHoverDwellThresholdChange,
+  onOutcomeDelayMsChange,
+  onSupervisionDelayMsChange,
   onToolPermissionsChange,
   onToolPermissionChange,
 }: SettingsModalProps) {
@@ -281,7 +290,7 @@ export function SettingsModal({
 
         {/* Tab bar */}
         <div className="flex border-b border-[var(--border)]">
-          {(["general", "permissions"] as const).map((t) => (
+          {(["general", "execution", "permissions"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -301,6 +310,15 @@ export function SettingsModal({
             toolPermissions={toolPermissions}
             onToolPermissionsChange={onToolPermissionsChange}
             onToolPermissionChange={onToolPermissionChange}
+          />
+        ) : tab === "execution" ? (
+          <ExecutionTab
+            maxRepairAttempts={maxRepairAttempts}
+            supervisionDelayMs={supervisionDelayMs}
+            outcomeDelayMs={outcomeDelayMs}
+            onMaxRepairAttemptsChange={onMaxRepairAttemptsChange}
+            onSupervisionDelayMsChange={onSupervisionDelayMsChange}
+            onOutcomeDelayMsChange={onOutcomeDelayMsChange}
           />
         ) : (
         <div className="space-y-4 p-4">
@@ -349,34 +367,6 @@ export function SettingsModal({
                 Using agent model for vision. Enable to use a separate vision model.
               </p>
             )}
-          </div>
-
-          <div>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              Assistant
-            </h3>
-            <p className="mb-2 text-[10px] text-[var(--text-muted)]">
-              Controls how the assistant validates and retries generated patches.
-            </p>
-            <div>
-              <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-                Max repair attempts
-              </label>
-              <input
-                type="number"
-                min={0}
-                max={10}
-                value={maxRepairAttempts}
-                onChange={(e) => {
-                  const clamped = Math.max(0, Math.min(10, Math.floor(Number(e.target.value) || 0)));
-                  onMaxRepairAttemptsChange(clamped);
-                }}
-                className={inputClass}
-              />
-              <p className="mt-1 text-[10px] text-[var(--text-muted)]">
-                Validate patches and retry on failure. 0 = skip validation, 1 = validate only, 2+ = validate and retry.
-              </p>
-            </div>
           </div>
 
           <ChromeProfileSection />

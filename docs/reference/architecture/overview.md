@@ -225,6 +225,7 @@ Emitted from `src-tauri/src/commands/executor.rs` and `src-tauri/src/commands/as
 | `executor://resolution_auto_approved` | `{ node_id: string, node_name: string, reason: string, patch: WorkflowPatch }` |
 | `executor://resolution_dismissed` | `()` |
 | `executor://patch_applied` | `{ patch: WorkflowPatch }` |
+| `executor://outcome_verification` | `{ passed: bool, query: string, reasoning: string, screenshot: string? }` |
 | `assistant://message` | `{ session_id: string, entry: ChatEntry }` |
 | `assistant://session_started` | `{ session_id: string }` |
 | `assistant://repairing` | `[attempt: number, max: number]` |

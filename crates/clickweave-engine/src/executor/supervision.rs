@@ -309,9 +309,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Waits briefly for UI animations to settle, then tries an app-scoped
     /// window screenshot up to 3 times with 500ms delays (the window may not
     /// be ready right after `launch_app`).
-    async fn capture_verification_screenshot(&self, mcp: &(impl Mcp + ?Sized)) -> Option<String> {
+    pub(crate) async fn capture_verification_screenshot(
+        &self,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<String> {
         // Let UI animations/transitions settle before capturing.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let delay = self.supervision_delay_ms;
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
 
         let app_name = self.focused_app_name();
         let mut args = serde_json::json!({ "mode": "window" });

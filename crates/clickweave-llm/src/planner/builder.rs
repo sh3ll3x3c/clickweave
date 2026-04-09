@@ -782,6 +782,8 @@ pub(crate) fn build_workflow_from_graph(
         return Err(anyhow::anyhow!("No valid nodes produced from graph output"));
     }
 
+    let parsed_intent = output.intent.clone();
+
     let workflow = Workflow {
         id: Uuid::new_v4(),
         name: truncate_intent(intent),
@@ -790,12 +792,19 @@ pub(crate) fn build_workflow_from_graph(
         groups: vec![],
         next_id_counters,
         auto_approve_resolutions: false,
+        intent: parsed_intent,
+        verify_outcome: false,
     };
 
     clickweave_core::validate_workflow(&workflow)
         .map_err(|e| anyhow::anyhow!("Generated workflow failed validation: {}", e))?;
 
-    Ok(PlanResult { workflow, warnings })
+    let intent = workflow.intent.clone();
+    Ok(PlanResult {
+        workflow,
+        warnings,
+        intent,
+    })
 }
 
 // ── Auto-ID normalization ────────────────────────────────────────

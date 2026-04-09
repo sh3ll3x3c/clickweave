@@ -104,6 +104,18 @@ pub struct RunRequest {
     pub execution_mode: ExecutionMode,
     #[serde(default)]
     pub auto_approve_resolutions: bool,
+    #[serde(default = "default_outcome_delay_ms")]
+    pub outcome_delay_ms: u64,
+    #[serde(default = "default_supervision_delay_ms")]
+    pub supervision_delay_ms: u64,
+}
+
+fn default_outcome_delay_ms() -> u64 {
+    1000
+}
+
+fn default_supervision_delay_ms() -> u64 {
+    500
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -205,6 +217,7 @@ pub struct AssistantChatResponse {
     pub patch: Option<WorkflowPatch>,
     pub warnings: Vec<String>,
     pub context_usage: Option<f32>,
+    pub intent: Option<String>,
 }
 
 // --- Walkthrough event payloads ---

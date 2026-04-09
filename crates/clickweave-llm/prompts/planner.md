@@ -14,11 +14,12 @@ You have access to these MCP tools for workflow nodes:
 
 ## Output format
 
-- For **simple linear workflows** (no loops or branches), output: `{"steps": [...]}`
-- For **workflows with control flow** (loops, branches), output a graph: `{"nodes": [...], "edges": [...]}`
+- For **simple linear workflows** (no loops or branches), output: `{"intent": "...", "steps": [...]}`
+- For **workflows with control flow** (loops, branches), output a graph: `{"intent": "...", "nodes": [...], "edges": [...]}`
   - Each node must have an `"id"` field (e.g. "n1", "n2").
   - Each edge has `"from"`, `"to"`, and optional `"output"` (one of: `{"type": "LoopBody"}`, `{"type": "LoopDone"}`, `{"type": "IfTrue"}`, `{"type": "IfFalse"}`).
   - Regular sequential edges omit `"output"`.
+- Include an `"intent"` field: a clear, specific one-sentence description of what the workflow will accomplish, refined from the user's prompt. This is used for post-execution verification. Example: `"intent": "Send the message 'hello' to the contact Alice in Signal Desktop"`.
 
 ## Critical: graph connectivity
 

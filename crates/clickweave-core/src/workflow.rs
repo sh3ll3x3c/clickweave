@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 const DEFAULT_SUPERVISION_RETRIES: u32 = 2;
-
 fn default_supervision_retries() -> u32 {
     DEFAULT_SUPERVISION_RETRIES
 }
@@ -23,6 +22,10 @@ pub struct Workflow {
     pub next_id_counters: HashMap<String, u32>,
     #[serde(default)]
     pub auto_approve_resolutions: bool,
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub verify_outcome: bool,
 }
 
 impl Default for Workflow {
@@ -35,6 +38,8 @@ impl Default for Workflow {
             groups: vec![],
             next_id_counters: HashMap::new(),
             auto_approve_resolutions: false,
+            intent: None,
+            verify_outcome: false,
         }
     }
 }

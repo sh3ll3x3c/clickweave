@@ -844,6 +844,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         node_id,
                         clickweave_core::storage::sanitize_name(&node_auto_id),
                     ));
+                    ctx.execution_history.push(
+                        super::retry_context::ExecutionHistoryEntry::NodeCompleted {
+                            node_name: node_name.clone(),
+                            action_description: node_type.action_description(),
+                        },
+                    );
 
                     current = self.follow_single_edge(node_id);
                 }
@@ -900,6 +906,45 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             match save_result {
                 Ok(()) => self.log("Decision cache saved"),
                 Err(e) => self.log(format!("Warning: failed to save decision cache: {}", e)),
+            }
+        }
+
+        // Outcome verification — only on successful completion
+        let run_succeeded = !user_cancelled && current.is_none();
+        if run_succeeded {
+            if let Some(result) = self.verify_outcome(&ctx, mcp).await {
+                self.record_event(
+                    None,
+                    "outcome_verification",
+                    serde_json::json!({
+                        "passed": result.passed,
+                        "query": result.query,
+                        "reasoning": result.reasoning,
+                    }),
+                );
+
+                if let Some(ref screenshot) = result.screenshot {
+                    if let Some(exec_dir) = self.storage.execution_dir_name() {
+                        let path = self.storage.base_path().join(exec_dir).join("artifacts");
+                        let _ = std::fs::create_dir_all(&path);
+                        let png_path = path.join("outcome_verification.png");
+                        if let Ok(bytes) = base64_decode_png(screenshot) {
+                            if let Err(e) = std::fs::write(&png_path, bytes) {
+                                tracing::warn!(
+                                    "Failed to save outcome verification screenshot: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+
+                self.emit(ExecutorEvent::OutcomeVerification {
+                    passed: result.passed,
+                    query: result.query,
+                    reasoning: result.reasoning,
+                    screenshot: result.screenshot,
+                });
             }
         }
 
@@ -973,4 +1018,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             None
         }
     }
+}
+
+fn base64_decode_png(b64: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(b64)
 }

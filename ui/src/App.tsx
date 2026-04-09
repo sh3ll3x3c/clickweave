@@ -56,6 +56,7 @@ function App() {
   );
 
   const autoApproveResolutions = useStore((s) => s.workflow.auto_approve_resolutions ?? false);
+  const verifyOutcome = useStore((s) => s.workflow.verify_outcome ?? false);
 
   const { selectedNode, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
     useShallow((s) => ({
@@ -82,7 +83,7 @@ function App() {
     })),
   );
 
-  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, toolPermissions } = useStore(
+  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, outcomeDelayMs, supervisionDelayMs, toolPermissions } = useStore(
     useShallow((s) => ({
       plannerConfig: s.plannerConfig,
       agentConfig: s.agentConfig,
@@ -90,6 +91,8 @@ function App() {
       fastEnabled: s.fastEnabled,
       maxRepairAttempts: s.maxRepairAttempts,
       hoverDwellThreshold: s.hoverDwellThreshold,
+      outcomeDelayMs: s.outcomeDelayMs,
+      supervisionDelayMs: s.supervisionDelayMs,
       toolPermissions: s.toolPermissions,
     })),
   );
@@ -141,6 +144,10 @@ function App() {
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const setAutoApproveResolutions = useStore((s) => s.setAutoApproveResolutions);
+  const setVerifyOutcome = useStore((s) => s.setVerifyOutcome);
+  const setOutcomeDelayMs = useStore((s) => s.setOutcomeDelayMs);
+  const setSupervisionDelayMs = useStore((s) => s.setSupervisionDelayMs);
+
   const dismissAutoApproveBanner = useStore((s) => s.dismissAutoApproveBanner);
 
   // ── Workflow mutations ───────────────────────────────────────────
@@ -280,7 +287,9 @@ function App() {
                   onOpenWalkthroughPanel={() => setWalkthroughPanelOpen(true)}
                   onRecord={() => useStore.getState().openCdpModal()}
                   autoApproveResolutions={autoApproveResolutions}
+                  verifyOutcome={verifyOutcome}
                   onToggleAutoApprove={setAutoApproveResolutions}
+                  onToggleVerifyOutcome={setVerifyOutcome}
                 />
               </div>
 
@@ -335,6 +344,8 @@ function App() {
         fastEnabled={fastEnabled}
         maxRepairAttempts={maxRepairAttempts}
         hoverDwellThreshold={hoverDwellThreshold}
+        outcomeDelayMs={outcomeDelayMs}
+        supervisionDelayMs={supervisionDelayMs}
         toolPermissions={toolPermissions}
         onClose={() => setShowSettings(false)}
         onPlannerConfigChange={setPlannerConfig}
@@ -343,6 +354,8 @@ function App() {
         onFastEnabledChange={setFastEnabled}
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
         onHoverDwellThresholdChange={setHoverDwellThreshold}
+        onOutcomeDelayMsChange={setOutcomeDelayMs}
+        onSupervisionDelayMsChange={setSupervisionDelayMs}
         onToolPermissionsChange={setToolPermissions}
         onToolPermissionChange={setToolPermission}
       />

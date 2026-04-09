@@ -484,10 +484,13 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       nodes,
       edges,
       auto_approve_resolutions: workflow.auto_approve_resolutions,
+      intent: null,
+      verify_outcome: false,
     };
 
     get().pushHistory("Apply Walkthrough");
     get().setWorkflow(modifiedDraft);
+    set({ pendingPatch: null, pendingPatchWarnings: [], pendingIntent: null, hasPendingIntent: false });
 
     // Seed decision cache.
     seedCache(modifiedDraft, get);

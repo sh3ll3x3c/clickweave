@@ -8,6 +8,7 @@ mod element_resolve;
 pub mod error;
 mod find_app;
 mod graph_nav;
+mod outcome_verification;
 mod output_ref;
 pub(crate) mod retry_context;
 mod run_loop;
@@ -121,6 +122,12 @@ pub enum ExecutorEvent {
         screenshot: Option<String>,
     },
     NodeCancelled(Uuid),
+    OutcomeVerification {
+        passed: bool,
+        query: String,
+        reasoning: String,
+        screenshot: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +165,10 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     chrome_profiles: Vec<ChromeProfile>,
     /// Channel to send resolution queries to the Tauri listener (Test mode only).
     resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
+    /// Delay (ms) before capturing the outcome verification screenshot.
+    outcome_delay_ms: u64,
+    /// Delay (ms) before capturing the per-step supervision screenshot.
+    supervision_delay_ms: u64,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -197,6 +208,8 @@ impl WorkflowExecutor {
         cancel_token: CancellationToken,
         chrome_profiles_dir: PathBuf,
         resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
+        outcome_delay_ms: u64,
+        supervision_delay_ms: u64,
     ) -> Self {
         let chrome_profile_store = ChromeProfileStore::new(chrome_profiles_dir);
         let chrome_profiles = chrome_profile_store.ensure_profiles().unwrap_or_else(|e| {
@@ -230,6 +243,8 @@ impl WorkflowExecutor {
             chrome_profile_store,
             chrome_profiles,
             resolution_tx,
+            outcome_delay_ms,
+            supervision_delay_ms,
         }
     }
 }
@@ -489,6 +504,31 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         ctx.runtime_verdicts
             .retain(|v| !inv_ids.contains(&v.node_id));
+
+        // Prune execution_history: truncate right after the last retained
+        // NodeCompleted so that stale control-flow entries (BranchTaken,
+        // LoopIteration, etc.) recorded after the rewind target are also removed.
+        let target_completed_count = ctx.completed_node_ids.len();
+        if target_completed_count == 0 {
+            ctx.execution_history.clear();
+        } else {
+            // Find position right after the Nth NodeCompleted (N = retained count)
+            let mut seen = 0usize;
+            let mut cutoff = 0;
+            for (i, e) in ctx.execution_history.iter().enumerate() {
+                if matches!(
+                    e,
+                    retry_context::ExecutionHistoryEntry::NodeCompleted { .. }
+                ) {
+                    seen += 1;
+                    if seen == target_completed_count {
+                        cutoff = i + 1;
+                        break;
+                    }
+                }
+            }
+            ctx.execution_history.truncate(cutoff);
+        }
     }
 
     /// Apply a resolution patch to the in-memory workflow.
