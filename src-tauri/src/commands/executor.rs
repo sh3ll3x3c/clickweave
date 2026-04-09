@@ -236,6 +236,20 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                         node_id: id.to_string(),
                     },
                 ),
+                ExecutorEvent::OutcomeVerification {
+                    passed,
+                    query,
+                    reasoning,
+                    screenshot,
+                } => emit_handle.emit(
+                    "executor://outcome_verification",
+                    serde_json::json!({
+                        "passed": passed,
+                        "query": query,
+                        "reasoning": reasoning,
+                        "screenshot": screenshot,
+                    }),
+                ),
             };
             if let Err(e) = emit_result {
                 warn!("Failed to emit executor event to UI: {}", e);

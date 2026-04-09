@@ -121,6 +121,12 @@ pub enum ExecutorEvent {
         screenshot: Option<String>,
     },
     NodeCancelled(Uuid),
+    OutcomeVerification {
+        passed: bool,
+        query: String,
+        reasoning: String,
+        screenshot: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
