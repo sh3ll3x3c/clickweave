@@ -199,6 +199,8 @@ fn parse_and_build_workflow(
     super::pair_endloop_with_loop(&mut nodes, &mut warnings);
     super::infer_control_flow_edges(&nodes, &mut edges, &mut warnings);
 
+    let parsed_intent = planner_output.intent.clone();
+
     let mut workflow = Workflow {
         id: Uuid::new_v4(),
         name: truncate_intent(intent),
@@ -207,7 +209,7 @@ fn parse_and_build_workflow(
         groups: vec![],
         next_id_counters: std::collections::HashMap::new(),
         auto_approve_resolutions: false,
-        intent: None,
+        intent: parsed_intent.clone(),
         verify_outcome: false,
     };
 
@@ -224,5 +226,9 @@ fn parse_and_build_workflow(
         warnings.len()
     );
 
-    Ok(PlanResult { workflow, warnings })
+    Ok(PlanResult {
+        workflow,
+        warnings,
+        intent: parsed_intent,
+    })
 }

@@ -63,6 +63,8 @@ pub enum PlanStep {
 #[derive(Debug, Deserialize)]
 pub struct PlannerOutput {
     #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
     pub steps: Vec<Value>,
 }
 
@@ -95,6 +97,8 @@ pub struct PlanEdge {
 /// workflow construction.
 #[derive(Debug, Deserialize)]
 pub struct PlannerGraphOutput {
+    #[serde(default)]
+    pub intent: Option<String>,
     pub nodes: Vec<Value>,
     #[serde(default)]
     pub edges: Vec<Value>,
@@ -105,6 +109,7 @@ pub struct PlannerGraphOutput {
 pub struct PlanResult {
     pub workflow: Workflow,
     pub warnings: Vec<String>,
+    pub intent: Option<String>,
 }
 
 // ── Patch types ─────────────────────────────────────────────────
