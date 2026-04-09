@@ -182,8 +182,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Take a screenshot for outcome verification.
     /// Tries app-scoped window first, falls back to full-screen.
+    /// Does NOT go through `capture_verification_screenshot` to avoid
+    /// double-delaying (outcome_delay_ms is already applied by the caller).
     async fn capture_outcome_screenshot(&self, mcp: &(impl Mcp + ?Sized)) -> Option<String> {
-        if let Some(img) = self.capture_verification_screenshot(mcp).await {
+        let app_name = self.focused_app_name();
+        let mut args = serde_json::json!({ "mode": "window" });
+        if let Some(ref name) = app_name {
+            args["app_name"] = serde_json::Value::String(name.clone());
+        }
+
+        if let Some(img) = self.extract_screenshot_image(mcp, args).await {
             return Some(img);
         }
 
