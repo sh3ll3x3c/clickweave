@@ -8,7 +8,7 @@ const CHARS_PER_TOKEN: usize = 4;
 /// Estimate the number of tokens in a string.
 pub fn estimate_tokens(text: &str) -> usize {
     // Rough approximation: 1 token ≈ 4 characters
-    (text.len() + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN
+    text.len().div_ceil(CHARS_PER_TOKEN)
 }
 
 /// Estimate the total token count across a list of messages.
