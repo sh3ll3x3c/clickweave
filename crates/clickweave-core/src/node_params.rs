@@ -715,9 +715,8 @@ mod tests {
     }
 
     #[test]
-    fn click_params_default_has_no_refs() {
+    fn click_params_default_has_no_verification() {
         let params = ClickParams::default();
-        assert!(params.target_ref.is_none());
         assert!(params.verification_method.is_none());
         assert!(params.verification_assertion.is_none());
     }
