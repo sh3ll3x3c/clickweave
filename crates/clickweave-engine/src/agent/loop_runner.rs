@@ -62,7 +62,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// * `mcp` - MCP client for tool execution.
     /// * `variant_context` - Optional context about the current variant.
     /// * `mcp_tools` - Pre-fetched MCP tool definitions in OpenAI format.
-    pub async fn run(
+    pub(crate) async fn run(
         &mut self,
         goal: String,
         workflow: Workflow,
