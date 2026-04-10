@@ -1,7 +1,6 @@
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{ExecutionMode, NodeType, Workflow};
 use clickweave_llm::LlmConfig;
-use clickweave_llm::planner::conversation::RunContext;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
@@ -118,25 +117,6 @@ fn default_supervision_delay_ms() -> u64 {
     500
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct PatchRequest {
-    pub workflow: Workflow,
-    pub user_prompt: String,
-    pub planner: EndpointConfig,
-    pub allow_ai_transforms: bool,
-    pub allow_agent_steps: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct WorkflowPatch {
-    pub added_nodes: Vec<clickweave_core::Node>,
-    pub removed_node_ids: Vec<String>,
-    pub updated_nodes: Vec<clickweave_core::Node>,
-    pub added_edges: Vec<clickweave_core::Edge>,
-    pub removed_edges: Vec<clickweave_core::Edge>,
-    pub warnings: Vec<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct RunsQuery {
     pub project_path: Option<String>,
@@ -198,28 +178,6 @@ pub struct SupervisionPausedPayload {
     pub screenshot: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct AssistantChatRequest {
-    pub workflow: Workflow,
-    pub user_message: String,
-    pub run_context: Option<RunContext>,
-    pub planner: EndpointConfig,
-    pub fast: Option<EndpointConfig>,
-    pub allow_ai_transforms: bool,
-    pub allow_agent_steps: bool,
-    pub max_repair_attempts: u32,
-    #[serde(default)]
-    pub project_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct AssistantChatResponse {
-    pub patch: Option<WorkflowPatch>,
-    pub warnings: Vec<String>,
-    pub context_usage: Option<f32>,
-    pub intent: Option<String>,
-}
-
 // --- Walkthrough event payloads ---
 
 #[derive(Debug, Clone, Serialize)]
@@ -244,49 +202,4 @@ pub struct WalkthroughEventPayload {
 pub struct AppResolutionSeedEntry {
     pub node_id: String,
     pub app_name: String,
-}
-
-// --- Planner session event payloads ---
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PlannerToolCallPayload {
-    pub session_id: String,
-    pub tool_name: String,
-    pub args: serde_json::Value,
-    pub result: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PlannerConfirmationPayload {
-    pub session_id: String,
-    pub message: String,
-    pub tool_name: String,
-}
-
-// --- Resolution event payloads ---
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolutionProposedPayload {
-    pub node_id: String,
-    pub node_name: String,
-    pub reason: String,
-    pub patch: WorkflowPatch,
-    pub screenshot: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssistantMessagePayload {
-    pub session_id: String,
-    pub entry: clickweave_llm::planner::conversation::ChatEntry,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionStartedPayload {
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PatchAppliedPayload {
-    pub patch: WorkflowPatch,
 }
