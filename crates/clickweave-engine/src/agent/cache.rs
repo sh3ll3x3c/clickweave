@@ -18,15 +18,8 @@ impl AgentCache {
     /// ensuring stale cache entries are not reused when the page has changed.
     pub fn lookup(&self, goal: &str, elements: &[CdpFindElementMatch]) -> Option<&CachedDecision> {
         let key = cache_key(goal, elements);
-        let entry = self.entries.get(&key)?;
-
-        // Validate that the element fingerprint still matches
-        let current_fp = page_fingerprint(elements);
-        if entry.element_fingerprint == current_fp {
-            Some(entry)
-        } else {
-            None
-        }
+        // The key already encodes the page fingerprint, so a hit implies fingerprint match.
+        self.entries.get(&key)
     }
 
     /// Store a decision in the cache.
@@ -40,9 +33,9 @@ impl AgentCache {
         let key = cache_key(goal, elements);
         let fp = page_fingerprint(elements);
         let entry = self.entries.entry(key).or_insert_with(|| CachedDecision {
-            tool_name: tool_name.clone(),
-            arguments: arguments.clone(),
-            element_fingerprint: fp.clone(),
+            tool_name: String::new(),
+            arguments: serde_json::Value::Null,
+            element_fingerprint: String::new(),
             hit_count: 0,
         });
         entry.tool_name = tool_name;

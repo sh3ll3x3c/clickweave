@@ -152,7 +152,8 @@ pub fn summarize_steps(steps: &[AgentStep]) -> String {
         let outcome = match &step.outcome {
             super::types::StepOutcome::Success(text) => {
                 let truncated = if text.len() > 100 {
-                    format!("{}...", &text[..100])
+                    let end = text.floor_char_boundary(100);
+                    format!("{}...", &text[..end])
                 } else {
                     text.clone()
                 };

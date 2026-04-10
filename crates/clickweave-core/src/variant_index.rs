@@ -1,3 +1,4 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -31,18 +32,11 @@ impl VariantIndex {
     }
 
     /// Append entry to JSONL file.
-    pub fn append(path: &Path, entry: &VariantEntry) -> std::io::Result<()> {
-        use std::io::Write;
+    pub fn append(path: &Path, entry: &VariantEntry) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        let json = serde_json::to_string(entry)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        writeln!(file, "{}", json)
+        crate::storage::append_jsonl(path, entry)
     }
 
     /// Format as compact text for agent context.

@@ -22,7 +22,7 @@ pub fn estimate_messages_tokens(messages: &[Message]) -> usize {
                     .map(|tc| tc.function.name.len() + tc.function.arguments.len())
                     .sum()
             });
-            estimate_tokens(&" ".repeat(content_len + tool_calls_len))
+            (content_len + tool_calls_len).div_ceil(CHARS_PER_TOKEN)
         })
         .sum()
 }

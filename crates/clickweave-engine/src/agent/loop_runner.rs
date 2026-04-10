@@ -26,14 +26,6 @@ fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
         .join("\n")
 }
 
-/// Parse AX snapshot text into element matches.
-///
-/// TODO: Implement full parsing of accessibility tree text format.
-/// For now, returns an empty vec — the agent relies on `cdp_find_elements`.
-fn parse_ax_to_matches(_text: &str) -> Vec<CdpFindElementMatch> {
-    Vec::new()
-}
-
 /// The main agent runner that implements the observe-act loop.
 pub struct AgentRunner<'a, B: ChatBackend> {
     llm: &'a B,
@@ -309,22 +301,6 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             }
         }
 
-        // Fallback: take_ax_snapshot
-        if mcp.has_tool("take_ax_snapshot") {
-            match mcp
-                .call_tool("take_ax_snapshot", Some(serde_json::json!({})))
-                .await
-            {
-                Ok(result) => {
-                    let text = extract_result_text(&result);
-                    return parse_ax_to_matches(&text);
-                }
-                Err(e) => {
-                    debug!(error = %e, "take_ax_snapshot failed");
-                }
-            }
-        }
-
         Vec::new()
     }
 
@@ -436,40 +412,5 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         }
 
         self.state.last_node_id = Some(node_id);
-    }
-
-    /// Check if the agent has diverged from its expected path.
-    ///
-    /// Returns true if the current page state is significantly different
-    /// from what was expected based on previous steps.
-    pub fn check_divergence(&self) -> bool {
-        if self.state.steps.len() < 2 {
-            return false;
-        }
-
-        let last = &self.state.steps[self.state.steps.len() - 1];
-        let prev = &self.state.steps[self.state.steps.len() - 2];
-
-        // If a tool call resulted in an error but elements didn't change,
-        // the agent may be stuck trying the same thing
-        if matches!(last.outcome, StepOutcome::Error(_))
-            && !transition::detect_transition(&prev.elements, &last.elements)
-        {
-            if let (
-                AgentCommand::ToolCall {
-                    tool_name: name_a, ..
-                },
-                AgentCommand::ToolCall {
-                    tool_name: name_b, ..
-                },
-            ) = (&prev.command, &last.command)
-            {
-                if name_a == name_b {
-                    return true;
-                }
-            }
-        }
-
-        false
     }
 }

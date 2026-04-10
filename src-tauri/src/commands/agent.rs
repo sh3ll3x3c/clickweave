@@ -25,11 +25,6 @@ pub struct AgentStepPayload {
     pub step_number: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct AgentPlanPayload {
-    pub horizon: Vec<String>,
-}
-
 // ── Handle ──────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -60,12 +55,12 @@ impl AgentHandle {
 fn step_summary(step: &AgentStep) -> String {
     match &step.outcome {
         StepOutcome::Success(text) => {
-            let trimmed = if text.len() > 120 {
-                format!("{}...", &text[..120])
+            if text.len() > 120 {
+                let end = text.floor_char_boundary(120);
+                format!("{}...", &text[..end])
             } else {
                 text.clone()
-            };
-            trimmed
+            }
         }
         StepOutcome::Error(err) => format!("Error: {}", err),
         StepOutcome::Done(summary) => format!("Done: {}", summary),
