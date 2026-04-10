@@ -51,6 +51,8 @@ pub struct Node {
     pub node_type: NodeType,
     pub position: Position,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default)]
     pub auto_id: String,
     pub enabled: bool,
@@ -119,6 +121,7 @@ impl Node {
             node_type,
             position,
             name: name.into(),
+            description: None,
             auto_id: auto_id.into(),
             enabled: true,
             timeout_ms: None,
