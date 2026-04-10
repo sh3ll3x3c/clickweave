@@ -138,6 +138,7 @@ mod tests {
                 ..Default::default()
             }),
             position: Position { x: 0.0, y: 0.0 },
+            description: None,
             auto_id: String::new(),
             enabled: true,
             timeout_ms: None,

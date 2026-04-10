@@ -45,6 +45,7 @@ fn apply_resolution_patch_changes_node_type() {
             ..Default::default()
         }),
         position: Position { x: 0.0, y: 0.0 },
+        description: None,
         auto_id: String::new(),
         enabled: true,
         timeout_ms: None,
@@ -95,6 +96,7 @@ fn apply_resolution_patch_preserves_edges() {
             ..Default::default()
         }),
         position: Position { x: 0.0, y: 0.0 },
+        description: None,
         auto_id: String::new(),
         enabled: true,
         timeout_ms: None,
@@ -198,6 +200,7 @@ async fn request_resolution_sends_query_and_receives_response() {
                         ..Default::default()
                     }),
                     position: Position { x: 0.0, y: 0.0 },
+                    description: None,
                     auto_id: String::new(),
                     enabled: true,
                     timeout_ms: None,
@@ -262,6 +265,7 @@ async fn resolution_updated_changes_executor_workflow() {
                         ..Default::default()
                     }),
                     position: Position { x: 0.0, y: 0.0 },
+                    description: None,
                     auto_id: String::new(),
                     enabled: true,
                     timeout_ms: None,
