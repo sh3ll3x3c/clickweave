@@ -61,6 +61,26 @@ impl AgentCache {
     pub fn save(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(&self.entries)
     }
+
+    /// Load cache from a file path. Returns an empty cache if the file
+    /// doesn't exist or can't be parsed.
+    pub fn load_from_path(path: &std::path::Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(json) => Self::load(&json).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Save cache to a file path.
+    pub fn save_to_path(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let json = self
+            .save()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, json)
+    }
 }
 
 #[cfg(test)]

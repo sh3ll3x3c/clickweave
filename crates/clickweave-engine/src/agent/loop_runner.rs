@@ -54,6 +54,22 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         }
     }
 
+    /// Create a runner pre-loaded with a cross-run decision cache.
+    pub fn with_cache(llm: &'a B, config: AgentConfig, cache: AgentCache) -> Self {
+        Self {
+            llm,
+            config,
+            state: AgentState::new(Workflow::new("Agent Workflow")),
+            messages: Vec::new(),
+            cache,
+        }
+    }
+
+    /// Consume the runner and return the accumulated cache.
+    pub fn into_cache(self) -> AgentCache {
+        self.cache
+    }
+
     /// Run the agent loop to completion or max steps.
     ///
     /// # Arguments

@@ -1,6 +1,7 @@
 use super::error::CommandError;
 use super::types::*;
-use clickweave_engine::agent::{AgentCommand, AgentConfig, AgentStep, StepOutcome};
+use clickweave_core::variant_index::{VariantEntry, VariantIndex};
+use clickweave_engine::agent::{AgentCache, AgentCommand, AgentConfig, AgentStep, StepOutcome};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -145,10 +146,20 @@ pub async fn run_agent(
         // Begin storage execution
         let _exec_dir = storage.begin_execution();
 
+        // Load cross-run variant index and decision cache
+        let variant_index = VariantIndex::load(&storage.variant_index_path());
+        let variant_context = variant_index.as_context_text();
+        let cache = AgentCache::load_from_path(&storage.agent_cache_path());
+
         // Run the agent loop
         let result = tokio::select! {
             res = clickweave_engine::agent::run_agent_workflow(
-                &llm, config, goal, &mcp, None,
+                &llm,
+                config,
+                goal,
+                &mcp,
+                if variant_context.is_empty() { None } else { Some(&variant_context) },
+                Some(cache),
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
@@ -161,7 +172,29 @@ pub async fn run_agent(
         };
 
         match result {
-            Ok(state) => {
+            Ok((state, updated_cache)) => {
+                // Persist the updated cache
+                let _ = updated_cache.save_to_path(&storage.agent_cache_path());
+
+                // Record this run as a variant entry
+                let variant_entry = VariantEntry {
+                    execution_dir: storage
+                        .execution_dir_name()
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    diverged_at_step: None,
+                    divergence_summary: if state.completed {
+                        "Followed reference trajectory".to_string()
+                    } else {
+                        format!(
+                            "Stopped after {} steps without completing",
+                            state.steps.len()
+                        )
+                    },
+                    success: state.completed,
+                };
+                let _ = VariantIndex::append(&storage.variant_index_path(), &variant_entry);
+
                 // Emit step events for each completed step
                 for step in &state.steps {
                     let _ = emit_handle.emit(
