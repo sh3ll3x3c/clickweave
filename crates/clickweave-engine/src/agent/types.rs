@@ -228,3 +228,30 @@ pub struct AgentCache {
     /// Map from cache key to cached decision.
     pub entries: HashMap<String, CachedDecision>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_summary_short_text_unchanged() {
+        assert_eq!(truncate_summary("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_summary_long_text_truncated() {
+        let long = "a".repeat(200);
+        let result = truncate_summary(&long, 50);
+        assert!(result.len() < 60);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_summary_multibyte_snaps_to_boundary() {
+        // 3 bytes per char × 4 = 12 bytes; truncate at 5 snaps to char boundary
+        let text = "café!"; // 'é' is 2 bytes
+        let result = truncate_summary(text, 4);
+        assert!(result.ends_with("..."));
+        // Should not panic or split a multibyte char
+    }
+}

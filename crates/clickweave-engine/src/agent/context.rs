@@ -69,9 +69,9 @@ pub fn compact_step_summaries(
     // Add compact summary as a user message
     compacted.push(Message::user(summary));
 
-    // Each tool step contributes 3 messages: user observation + assistant tool-call + tool result.
-    // Cache-replayed steps also contribute 2 messages (tool-call + tool-result).
-    // Use 3 as the multiplier to avoid discarding context prematurely.
+    // LLM steps contribute 3 messages (user observation + assistant tool-call + tool result).
+    // Cache-replayed steps contribute 2 (tool-call + tool-result).
+    // Use 3 (the maximum across step types) to avoid discarding context prematurely.
     let messages_per_step = 3;
     let recent_message_count = keep_recent * messages_per_step;
     let skip = messages.len().saturating_sub(recent_message_count);
