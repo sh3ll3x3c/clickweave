@@ -45,7 +45,7 @@ describe("useEdgeSync", () => {
     expect(result.current.rfEdges).toHaveLength(0);
   });
 
-  it("generates edge IDs in from-to-handle format", () => {
+  it("generates edge IDs in from-to format", () => {
     const wf = makeWorkflow(
       [node("a", "AiStep"), node("b", "Click")],
       [edge("a", "b")],

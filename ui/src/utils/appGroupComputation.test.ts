@@ -133,7 +133,7 @@ describe("computeAppMembers", () => {
     expect(groups.get("appgroup-fw2")).toEqual(["fw2", "c2"]);
   });
 
-  it("ungrouped nodes between app groups are excluded", () => {
+  it("includes ungrouped nodes between app switches in the preceding group", () => {
     const wf = makeWorkflow(
       [
         node("fw1", "FocusWindow", { method: "AppName", value: "Discord", bring_to_front: true }),

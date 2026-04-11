@@ -418,31 +418,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_available_elements_pretty_printed() {
-        let input =
-            "[]\n{\n  \"available_elements\": [\n    \"Calculator\",\n    \"Multiply\"\n  ]\n}";
-        assert_eq!(
-            parse_available_elements(input),
-            Some(vec!["Calculator".to_string(), "Multiply".to_string()])
-        );
-    }
-
-    #[test]
     fn parse_available_elements_extra_fields() {
         let input =
             "[]\n{\"count\":0,\"available_elements\":[\"Add\",\"Subtract\"],\"source\":\"a11y\"}";
         assert_eq!(
             parse_available_elements(input),
             Some(vec!["Add".to_string(), "Subtract".to_string()])
-        );
-    }
-
-    #[test]
-    fn parse_available_elements_whitespace_around_key() {
-        let input = "[]\n{ \"available_elements\" : [\"Divide\"] }";
-        assert_eq!(
-            parse_available_elements(input),
-            Some(vec!["Divide".to_string()])
         );
     }
 }

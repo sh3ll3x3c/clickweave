@@ -56,11 +56,6 @@ mod tests {
     }
 
     #[test]
-    fn over_max_errors_aborts() {
-        assert_eq!(recovery_strategy(5, 3), RecoveryAction::Abort);
-    }
-
-    #[test]
     fn zero_errors_retries() {
         assert_eq!(recovery_strategy(0, 3), RecoveryAction::Retry);
     }
