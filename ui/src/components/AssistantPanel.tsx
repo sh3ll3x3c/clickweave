@@ -203,9 +203,15 @@ export function AssistantPanel({
             </button>
             <button
               onClick={rejectAction}
+              className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+            >
+              Skip
+            </button>
+            <button
+              onClick={stopAgent}
               className="rounded-lg border border-red-500/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10"
             >
-              Reject
+              Stop
             </button>
           </div>
         </div>
