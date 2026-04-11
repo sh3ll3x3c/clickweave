@@ -151,6 +151,25 @@ pub enum TerminalReason {
     ApprovalUnavailable,
 }
 
+impl TerminalReason {
+    pub fn is_completed(&self) -> bool {
+        matches!(self, Self::Completed { .. })
+    }
+
+    pub fn divergence_summary(&self) -> String {
+        match self {
+            Self::Completed { summary } => format!("Completed: {}", summary),
+            Self::MaxStepsReached { steps_executed } => {
+                format!("Stopped after {} steps (max steps reached)", steps_executed)
+            }
+            Self::MaxErrorsReached { consecutive_errors } => {
+                format!("Aborted after {} consecutive errors", consecutive_errors)
+            }
+            Self::ApprovalUnavailable => "Aborted: approval system unavailable".to_string(),
+        }
+    }
+}
+
 /// The result of executing a single step.
 #[derive(Debug, Clone)]
 pub enum StepOutcome {

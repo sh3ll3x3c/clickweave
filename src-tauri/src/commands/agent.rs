@@ -168,20 +168,7 @@ pub async fn run_agent(
                 // Derive variant metadata from terminal reason
                 use clickweave_engine::agent::TerminalReason;
                 let (divergence_summary, success) = match &state.terminal_reason {
-                    Some(TerminalReason::Completed { summary }) => {
-                        (format!("Completed: {}", summary), true)
-                    }
-                    Some(TerminalReason::MaxStepsReached { steps_executed }) => (
-                        format!("Stopped after {} steps (max steps reached)", steps_executed),
-                        false,
-                    ),
-                    Some(TerminalReason::MaxErrorsReached { consecutive_errors }) => (
-                        format!("Aborted after {} consecutive errors", consecutive_errors),
-                        false,
-                    ),
-                    Some(TerminalReason::ApprovalUnavailable) => {
-                        ("Aborted: approval system unavailable".to_string(), false)
-                    }
+                    Some(reason) => (reason.divergence_summary(), reason.is_completed()),
                     None => ("Stopped: unknown reason".to_string(), false),
                 };
 
@@ -196,9 +183,9 @@ pub async fn run_agent(
                 };
                 let _ = VariantIndex::append(&storage.variant_index_path(), &variant_entry);
 
-                // Emit truthful terminal event.
-                // NOTE: This match must stay in sync with the variant metadata
-                // match above — both are exhaustive over TerminalReason.
+                // Emit truthful terminal event. Stopped payloads use serde
+                // directly on TerminalReason to avoid duplicating variant
+                // structure in json! macros.
                 match &state.terminal_reason {
                     Some(TerminalReason::Completed { summary }) => {
                         let _ = emit_handle.emit(
@@ -206,29 +193,9 @@ pub async fn run_agent(
                             serde_json::json!({ "summary": summary }),
                         );
                     }
-                    Some(TerminalReason::MaxStepsReached { steps_executed }) => {
-                        let _ = emit_handle.emit(
-                            "agent://stopped",
-                            serde_json::json!({
-                                "reason": "max_steps_reached",
-                                "steps_executed": steps_executed,
-                            }),
-                        );
-                    }
-                    Some(TerminalReason::MaxErrorsReached { consecutive_errors }) => {
-                        let _ = emit_handle.emit(
-                            "agent://stopped",
-                            serde_json::json!({
-                                "reason": "max_errors_reached",
-                                "consecutive_errors": consecutive_errors,
-                            }),
-                        );
-                    }
-                    Some(TerminalReason::ApprovalUnavailable) => {
-                        let _ = emit_handle.emit(
-                            "agent://stopped",
-                            serde_json::json!({ "reason": "approval_unavailable" }),
-                        );
+                    Some(reason) => {
+                        let payload = serde_json::to_value(reason).unwrap_or_default();
+                        let _ = emit_handle.emit("agent://stopped", payload);
                     }
                     None => {
                         let _ = emit_handle.emit(

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { Node, Edge } from "../../bindings";
 import { useStore } from "../../store/useAppStore";
+import type { AgentStatus } from "../../store/slices/agentSlice";
 
 interface AgentStepPayload {
   summary: string;
@@ -146,24 +147,25 @@ export function useAgentEvents() {
       }),
     );
 
+    // Only transition status if the agent was still active — prevents
+    // a backend event from overriding a user-initiated stop.
+    const setStatusIfActive = (status: AgentStatus) => {
+      const current = useStore.getState().agentStatus;
+      if (current === "running" || current === "paused") {
+        useStore.getState().setAgentStatus(status);
+      }
+    };
+
     sub(
       listen("agent://complete", () => {
-        const current = useStore.getState().agentStatus;
-        if (current === "running" || current === "paused") {
-          useStore.getState().setAgentStatus("complete");
-        }
+        setStatusIfActive("complete");
         useStore.getState().pushLog("Agent completed");
       }),
     );
 
     sub(
       listen<AgentStoppedPayload>("agent://stopped", (e) => {
-        // Only transition to "stopped" if the agent was still active.
-        // If user already hit Stop, status is already "stopped" or "idle".
-        const current = useStore.getState().agentStatus;
-        if (current === "running" || current === "paused") {
-          useStore.getState().setAgentStatus("stopped");
-        }
+        setStatusIfActive("stopped");
         const detail =
           e.payload.reason === "max_steps_reached"
             ? `after ${e.payload.steps_executed} steps`
