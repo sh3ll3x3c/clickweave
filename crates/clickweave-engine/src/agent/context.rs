@@ -82,10 +82,12 @@ pub fn compact_step_summaries(
     // Use 3 (the maximum across step types) to avoid discarding context prematurely.
     let messages_per_step = 3;
     let recent_message_count = keep_recent * messages_per_step;
-    // Start copying from at least index 2 to skip the system message and
-    // goal message that were already prepended above. This prevents
-    // repeated compaction from duplicating preserved preamble content.
-    let skip = messages.len().saturating_sub(recent_message_count).max(2);
+    // Start copying from at least index 3 to skip the system message,
+    // goal message, and any previously injected summary that were already
+    // prepended above. This prevents repeated compaction from accumulating
+    // stale summaries. Index 3 is safe because compaction only runs when
+    // steps.len() > keep_recent, guaranteeing enough step messages exist.
+    let skip = messages.len().saturating_sub(recent_message_count).max(3);
     for msg in messages.iter().skip(skip) {
         compacted.push(msg.clone());
     }
