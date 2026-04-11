@@ -509,3 +509,138 @@ async fn agent_state_reports_max_errors_reason() {
         state.terminal_reason,
     );
 }
+
+#[tokio::test]
+async fn approval_success_allows_execution() {
+    let agent_llm = MockAgent::new(vec![
+        MockAgent::tool_call_response("click", r#"{"x": 10, "y": 20}"#, "call_0"),
+        MockAgent::done_response("Clicked successfully"),
+    ]);
+
+    let mcp = MockMcp::with_click_tool();
+    let config = AgentConfig {
+        max_steps: 5,
+        build_workflow: false,
+        use_cache: false,
+        ..Default::default()
+    };
+
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(64);
+    let (approval_tx, mut approval_rx) =
+        tokio::sync::mpsc::channel::<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>(1);
+
+    // Spawn a task that auto-approves everything
+    tokio::spawn(async move {
+        while let Some((_req, resp_tx)) = approval_rx.recv().await {
+            let _ = resp_tx.send(true);
+        }
+    });
+
+    let mut runner = AgentRunner::new(&agent_llm, config);
+    runner = runner.with_events(event_tx).with_approval(approval_tx);
+    let workflow = clickweave_core::Workflow::new("Test");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .await
+        .unwrap();
+
+    assert!(state.completed);
+    // First step should succeed (click was approved and executed)
+    assert!(
+        matches!(state.steps[0].outcome, StepOutcome::Success(_)),
+        "Expected Success after approval, got {:?}",
+        state.steps[0].outcome,
+    );
+}
+
+#[tokio::test]
+async fn approval_rejection_triggers_replan() {
+    let agent_llm = MockAgent::new(vec![
+        MockAgent::tool_call_response("click", r#"{"x": 10, "y": 20}"#, "call_0"),
+        MockAgent::done_response("Found another way"),
+    ]);
+
+    let mcp = MockMcp::with_click_tool();
+    let config = AgentConfig {
+        max_steps: 5,
+        build_workflow: false,
+        use_cache: false,
+        ..Default::default()
+    };
+
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(64);
+    let (approval_tx, mut approval_rx) =
+        tokio::sync::mpsc::channel::<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>(1);
+
+    // Spawn a task that rejects everything
+    tokio::spawn(async move {
+        while let Some((_req, resp_tx)) = approval_rx.recv().await {
+            let _ = resp_tx.send(false);
+        }
+    });
+
+    let mut runner = AgentRunner::new(&agent_llm, config);
+    runner = runner.with_events(event_tx).with_approval(approval_tx);
+    let workflow = clickweave_core::Workflow::new("Test");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .await
+        .unwrap();
+
+    assert!(state.completed);
+    assert!(
+        matches!(state.steps[0].outcome, StepOutcome::Replan(_)),
+        "Expected Replan after rejection, got {:?}",
+        state.steps[0].outcome,
+    );
+}
+
+#[tokio::test]
+async fn approval_channel_failure_terminates_agent() {
+    let agent_llm = MockAgent::new(vec![
+        // LLM chooses click (needs approval) — but approval channel is dead
+        MockAgent::tool_call_response("click", r#"{"x": 10, "y": 20}"#, "call_0"),
+        // More responses in case the loop continues (it shouldn't)
+        MockAgent::done_response("Should not reach this"),
+    ]);
+
+    let mcp = MockMcp::with_click_tool();
+    let config = AgentConfig {
+        max_steps: 5,
+        build_workflow: false,
+        use_cache: false,
+        ..Default::default()
+    };
+
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(64);
+    // Create an approval channel and immediately drop the receiver.
+    // This means the sender's `send()` will fail.
+    let (approval_tx, _dropped_rx) = tokio::sync::mpsc::channel(1);
+    drop(_dropped_rx);
+
+    let mut runner = AgentRunner::new(&agent_llm, config);
+    runner = runner.with_events(event_tx).with_approval(approval_tx);
+    let workflow = clickweave_core::Workflow::new("Test");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .await
+        .unwrap();
+
+    // The agent should have terminated immediately — approval system is
+    // permanently unavailable, so no state-changing tools can execute.
+    assert!(!state.completed);
+    assert!(
+        matches!(
+            state.terminal_reason,
+            Some(TerminalReason::ApprovalUnavailable)
+        ),
+        "Expected ApprovalUnavailable, got {:?}",
+        state.terminal_reason,
+    );
+}

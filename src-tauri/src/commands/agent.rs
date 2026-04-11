@@ -196,7 +196,9 @@ pub async fn run_agent(
                 };
                 let _ = VariantIndex::append(&storage.variant_index_path(), &variant_entry);
 
-                // Emit truthful terminal event
+                // Emit truthful terminal event.
+                // NOTE: This match must stay in sync with the variant metadata
+                // match above — both are exhaustive over TerminalReason.
                 match &state.terminal_reason {
                     Some(TerminalReason::Completed { summary }) => {
                         let _ = emit_handle.emit(

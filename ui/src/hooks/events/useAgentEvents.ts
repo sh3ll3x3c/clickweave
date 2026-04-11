@@ -148,7 +148,10 @@ export function useAgentEvents() {
 
     sub(
       listen("agent://complete", () => {
-        useStore.getState().setAgentStatus("complete");
+        const current = useStore.getState().agentStatus;
+        if (current === "running" || current === "paused") {
+          useStore.getState().setAgentStatus("complete");
+        }
         useStore.getState().pushLog("Agent completed");
       }),
     );

@@ -16,6 +16,20 @@ use super::transition;
 use super::types::*;
 use crate::executor::Mcp;
 
+/// Internal error type for the agent loop.
+/// Distinguishes approval-system failure from other runtime errors.
+#[derive(Debug)]
+enum LoopError {
+    ApprovalUnavailable,
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for LoopError {
+    fn from(e: anyhow::Error) -> Self {
+        LoopError::Other(e)
+    }
+}
+
 /// Extract text content from an MCP tool call result.
 fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
     result
@@ -263,7 +277,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 .context("No choices in LLM response")?;
 
             // 6. Parse and execute the response
-            let (command, outcome) = self
+            let (command, outcome) = match self
                 .execute_response(
                     &choice.message,
                     mcp,
@@ -272,7 +286,16 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     &mcp_tools,
                     step_index,
                 )
-                .await?;
+                .await
+            {
+                Ok(pair) => pair,
+                Err(LoopError::ApprovalUnavailable) => {
+                    warn!("Approval system unavailable, terminating agent");
+                    self.state.terminal_reason = Some(TerminalReason::ApprovalUnavailable);
+                    break;
+                }
+                Err(LoopError::Other(e)) => return Err(e),
+            };
 
             // Auto-connect CDP for Electron/Chrome apps after the app becomes
             // the foreground target. Covers both fresh launches and cases where
@@ -625,7 +648,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         _elements: &[CdpFindElementMatch],
         _mcp_tools: &[Value],
         step_index: usize,
-    ) -> Result<(AgentCommand, StepOutcome)> {
+    ) -> Result<(AgentCommand, StepOutcome), LoopError> {
         // Check for tool calls
         if let Some(tool_calls) = &message.tool_calls {
             if let Some(tc) = tool_calls.first() {
@@ -696,18 +719,15 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                     ));
                                 }
                                 Err(_) => {
-                                    // Channel closed — approval system gone, treat as rejection
-                                    let command = AgentCommand::ToolCall {
-                                        tool_name: tc.function.name.clone(),
-                                        arguments: args.clone(),
-                                        tool_call_id: tc.id.clone(),
-                                    };
-                                    return Ok((
-                                        command,
-                                        StepOutcome::Replan("Approval channel closed".to_string()),
-                                    ));
+                                    // Oneshot receiver dropped — approval system gone
+                                    warn!(tool = %tc.function.name, "Approval channel closed, aborting");
+                                    return Err(LoopError::ApprovalUnavailable);
                                 }
                             }
+                        } else {
+                            // mpsc send failed — receiver dropped, approval system permanently gone
+                            warn!(tool = %tc.function.name, "Approval channel send failed, aborting");
+                            return Err(LoopError::ApprovalUnavailable);
                         }
                     }
                 }
