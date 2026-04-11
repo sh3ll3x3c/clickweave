@@ -95,6 +95,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         info!(goal = %goal, max_steps = self.config.max_steps, "Agent starting");
 
         let mut previous_result: Option<String> = None;
+        let mut last_cache_key: Option<String> = None;
 
         for step_index in 0..self.config.max_steps {
             if self.state.completed {
@@ -117,51 +118,61 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 }
             }
 
-            // 2. Check cache for a previously seen decision — replay if hit
+            // 2. Check cache for a previously seen decision — replay if hit.
+            //    Skip if the same cache key was just replayed (prevents infinite
+            //    replay loops when the tool result doesn't change page state).
             if self.config.use_cache {
-                if let Some(cached) = self.cache.lookup(&goal, &elements) {
-                    let cached_tool = cached.tool_name.clone();
-                    let cached_args = cached.arguments.clone();
-                    debug!(
-                        tool = %cached_tool,
-                        hits = cached.hit_count,
-                        "Cache hit — replaying cached decision"
-                    );
+                let current_key = super::cache::cache_key(&goal, &elements);
+                let is_repeat = last_cache_key.as_ref() == Some(&current_key);
 
-                    match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
-                        Ok(result) if !result.is_error.unwrap_or(false) => {
-                            let result_text = extract_result_text(&result);
-                            let command = AgentCommand::ToolCall {
-                                tool_name: cached_tool.clone(),
-                                arguments: cached_args.clone(),
-                                tool_call_id: format!("cache-{}", step_index),
-                            };
+                if !is_repeat {
+                    if let Some(cached) = self.cache.lookup(&goal, &elements) {
+                        let cached_tool = cached.tool_name.clone();
+                        let cached_args = cached.arguments.clone();
+                        debug!(
+                            tool = %cached_tool,
+                            hits = cached.hit_count,
+                            "Cache hit — replaying cached decision"
+                        );
 
-                            if self.config.build_workflow {
-                                self.add_workflow_node(&cached_tool, &cached_args, &mcp_tools);
+                        match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
+                            Ok(result) if !result.is_error.unwrap_or(false) => {
+                                let result_text = extract_result_text(&result);
+                                let command = AgentCommand::ToolCall {
+                                    tool_name: cached_tool.clone(),
+                                    arguments: cached_args.clone(),
+                                    tool_call_id: format!("cache-{}", step_index),
+                                };
+
+                                if self.config.build_workflow {
+                                    self.add_workflow_node(&cached_tool, &cached_args, &mcp_tools);
+                                }
+
+                                let step = AgentStep {
+                                    index: step_index,
+                                    elements: elements.clone(),
+                                    command,
+                                    outcome: StepOutcome::Success(result_text.clone()),
+                                    page_url: self.state.current_url.clone(),
+                                };
+                                self.state.steps.push(step);
+                                self.state.consecutive_errors = 0;
+                                previous_result = Some(result_text);
+                                last_cache_key = Some(current_key);
+                                continue;
                             }
-
-                            let step = AgentStep {
-                                index: step_index,
-                                elements: elements.clone(),
-                                command,
-                                outcome: StepOutcome::Success(result_text.clone()),
-                                page_url: self.state.current_url.clone(),
-                            };
-                            self.state.steps.push(step);
-                            self.state.consecutive_errors = 0;
-                            previous_result = Some(result_text);
-                            continue;
-                        }
-                        Ok(result) => {
-                            let err_text = extract_result_text(&result);
-                            debug!(error = %err_text, "Cached decision returned error, falling through to LLM");
-                        }
-                        Err(e) => {
-                            debug!(error = %e, "Cached decision execution failed, falling through to LLM");
+                            Ok(result) => {
+                                let err_text = extract_result_text(&result);
+                                debug!(error = %err_text, "Cached decision returned error, falling through to LLM");
+                            }
+                            Err(e) => {
+                                debug!(error = %e, "Cached decision execution failed, falling through to LLM");
+                            }
                         }
                     }
                 }
+                // Reset cache key tracking when falling through to LLM
+                last_cache_key = None;
             }
 
             // 3. Build the step observation message
