@@ -88,6 +88,7 @@ pub async fn run_agent(
 
     let cancel_token = CancellationToken::new();
     let agent_token = cancel_token.clone();
+    let forwarder_token = cancel_token.clone();
 
     let (_steering_tx, _steering_rx) = tokio::sync::mpsc::channel::<String>(8);
 
@@ -109,13 +110,26 @@ pub async fn run_agent(
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
 
     let task_handle = tauri::async_runtime::spawn(async move {
-        // Spawn MCP server
-        let mcp = match clickweave_mcp::McpClient::spawn(&mcp_binary_path, &[]).await {
-            Ok(m) => m,
-            Err(e) => {
+        // Spawn MCP server — cancellation-aware so stop_agent() works
+        // even during slow MCP startup / handshake.
+        let mcp = tokio::select! {
+            res = clickweave_mcp::McpClient::spawn(&mcp_binary_path, &[]) => {
+                match res {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let _ = emit_handle.emit(
+                            "agent://error",
+                            serde_json::json!({ "message": format!("MCP spawn failed: {e}") }),
+                        );
+                        let _ = done_tx.send(());
+                        return;
+                    }
+                }
+            }
+            _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
-                    "agent://error",
-                    serde_json::json!({ "message": format!("MCP spawn failed: {e}") }),
+                    "agent://stopped",
+                    serde_json::json!({ "reason": "cancelled" }),
                 );
                 let _ = done_tx.send(());
                 return;
@@ -279,16 +293,31 @@ pub async fn run_agent(
 
     // Spawn a task to forward approval requests to the Tauri frontend
     // and store the oneshot response sender in the handle.
+    // Cancellation-aware so it stops when force_stop() fires, preventing
+    // stale approvals from leaking into a subsequent run.
     tauri::async_runtime::spawn(async move {
-        while let Some((request, resp_tx)) = approval_rx.recv().await {
-            // Store the response sender so `approve_agent_action` can use it
-            {
-                let handle = approval_emit_handle.state::<Mutex<AgentHandle>>();
-                let mut guard = handle.lock().unwrap();
-                guard.pending_approval_tx = Some(resp_tx);
+        loop {
+            tokio::select! {
+                req = approval_rx.recv() => {
+                    match req {
+                        Some((request, resp_tx)) => {
+                            // After winning the select race, re-check cancellation
+                            // to avoid leaking a stale approval into the next run.
+                            if forwarder_token.is_cancelled() {
+                                break;
+                            }
+                            {
+                                let handle = approval_emit_handle.state::<Mutex<AgentHandle>>();
+                                let mut guard = handle.lock().unwrap();
+                                guard.pending_approval_tx = Some(resp_tx);
+                            }
+                            let _ = approval_emit_handle.emit("agent://approval_required", &request);
+                        }
+                        None => break,
+                    }
+                }
+                _ = forwarder_token.cancelled() => break,
             }
-            // Emit the approval request to the frontend
-            let _ = approval_emit_handle.emit("agent://approval_required", &request);
         }
     });
 

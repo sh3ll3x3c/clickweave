@@ -102,6 +102,9 @@ export function useAgentEvents() {
 
     sub(
       listen<ApprovalRequiredPayload>("agent://approval_required", (e) => {
+        // Ignore stale approval requests that arrive after stop/cancel
+        const current = useStore.getState().agentStatus;
+        if (current !== "running" && current !== "paused") return;
         useStore.getState().setPendingApproval({
           stepIndex: e.payload.step_index,
           toolName: e.payload.tool_name,
@@ -182,8 +185,13 @@ export function useAgentEvents() {
 
     sub(
       listen<AgentErrorPayload>("agent://error", (e) => {
-        useStore.getState().setAgentError(e.payload.message);
-        useStore.getState().setAgentStatus("error");
+        // Only transition to error if the agent was still active —
+        // a racing error after stop should not override "stopped".
+        const current = useStore.getState().agentStatus;
+        if (current === "running" || current === "paused") {
+          useStore.getState().setAgentError(e.payload.message);
+          useStore.getState().setAgentStatus("error");
+        }
         useStore
           .getState()
           .pushLog(`Agent error: ${e.payload.message}`);
