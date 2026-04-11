@@ -3,15 +3,16 @@ use std::collections::BTreeSet;
 
 /// Generate a stable fingerprint for a single element.
 ///
-/// The fingerprint is a concatenation of role, label, tag, and parent info,
-/// producing a deterministic string that can be compared across observations.
+/// The fingerprint includes the element's `uid`, `role`, `label`, `tag`, and
+/// parent info so that elements with the same visual description but different
+/// DOM identities produce different fingerprints.
 pub fn element_fingerprint(el: &CdpFindElementMatch) -> String {
     let parent = match (&el.parent_role, &el.parent_name) {
         (Some(role), Some(name)) => format!("{}:{}", role, name),
         (Some(role), None) => role.clone(),
         _ => String::new(),
     };
-    format!("{}|{}|{}|{}", el.role, el.label, el.tag, parent)
+    format!("{}|{}|{}|{}|{}", el.uid, el.role, el.label, el.tag, parent)
 }
 
 /// Detect whether a page transition occurred between two observations.

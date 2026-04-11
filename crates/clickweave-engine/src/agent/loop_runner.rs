@@ -30,14 +30,20 @@ impl From<anyhow::Error> for LoopError {
     }
 }
 
-/// Extract text content from an MCP tool call result.
+/// Extract a text representation from an MCP tool call result.
+///
+/// Text content is included verbatim. Non-text content (images, unknown types)
+/// is represented as a placeholder so the caller knows something was returned.
 fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
     result
         .content
         .iter()
         .filter_map(|c| match c {
-            clickweave_mcp::ToolContent::Text { text } => Some(text.as_str()),
-            _ => None,
+            clickweave_mcp::ToolContent::Text { text } => Some(text.clone()),
+            clickweave_mcp::ToolContent::Image { mime_type, .. } => {
+                Some(format!("[image: {}]", mime_type))
+            }
+            clickweave_mcp::ToolContent::Unknown => Some("[unknown content]".to_string()),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -109,10 +115,15 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         self.cache
     }
 
-    /// Send an event through the channel (non-blocking, best-effort).
+    /// Send an event through the channel (non-blocking).
+    ///
+    /// Logs a warning if the send fails — the UI depends on these events
+    /// for workflow state, so dropped events should not be silent.
     fn emit_event(&self, event: AgentEvent) {
         if let Some(tx) = &self.event_tx {
-            let _ = tx.try_send(event);
+            if let Err(e) = tx.try_send(event) {
+                warn!("Failed to emit agent event: {}", e);
+            }
         }
     }
 
@@ -134,12 +145,17 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     ) -> Result<AgentState> {
         self.state = AgentState::new(workflow);
 
-        // Build the system prompt
-        let mut system_text = prompt::system_prompt(&goal);
+        // Build conversation: system instructions + goal as a user message.
+        // The goal is kept out of the system prompt so user-controlled text
+        // does not occupy the highest-priority instruction layer.
+        let mut system_text = prompt::system_prompt();
         if let Some(ctx) = variant_context {
             system_text.push_str(&format!("\n\nVariant context: {}", ctx));
         }
-        self.messages = vec![Message::system(system_text)];
+        self.messages = vec![
+            Message::system(system_text),
+            Message::user(prompt::goal_message(&goal)),
+        ];
 
         // Build the tool list: MCP tools + agent_done + agent_replan
         let mut tools = mcp_tools.clone();
@@ -192,14 +208,35 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
                             Ok(result) if !result.is_error.unwrap_or(false) => {
                                 let result_text = extract_result_text(&result);
+                                let tool_call_id = format!("cache-{}", step_index);
                                 let command = AgentCommand::ToolCall {
                                     tool_name: cached_tool.clone(),
                                     arguments: cached_args.clone(),
-                                    tool_call_id: format!("cache-{}", step_index),
+                                    tool_call_id: tool_call_id.clone(),
                                 };
 
-                                // Cache replays do NOT create workflow nodes — the
-                                // original execution already added the node.
+                                // Rebuild workflow node for this run — the cache
+                                // stores decisions across runs, so the current
+                                // workflow needs the replayed action as a node.
+                                if self.config.build_workflow {
+                                    self.add_workflow_node(&cached_tool, &cached_args, &mcp_tools);
+                                }
+
+                                // Reconstruct transcript so the LLM sees the full
+                                // action history, not just the raw result text.
+                                self.messages.push(Message::assistant_tool_calls(vec![
+                                    clickweave_llm::ToolCall {
+                                        id: tool_call_id.clone(),
+                                        call_type: "function".to_string(),
+                                        function: clickweave_llm::FunctionCall {
+                                            name: cached_tool.clone(),
+                                            arguments: serde_json::to_string(&cached_args)
+                                                .unwrap_or_default(),
+                                        },
+                                    },
+                                ]));
+                                self.messages
+                                    .push(Message::tool_result(&tool_call_id, &result_text));
 
                                 // Emit live step event for cached replay
                                 let summary_text = if result_text.len() > 120 {
@@ -310,10 +347,10 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     && matches!(&outcome, StepOutcome::Success(_))
                 {
                     if let Some(app_name) = arguments["app_name"].as_str() {
-                        if self.auto_connect_cdp(app_name, mcp).await {
+                        if let Some(cdp_port) = self.auto_connect_cdp(app_name, mcp).await {
                             self.emit_event(AgentEvent::CdpConnected {
                                 app_name: app_name.to_string(),
-                                port: 0, // actual port is logged internally
+                                port: cdp_port,
                             });
                             // CDP connected — refresh the MCP tool list so newly
                             // registered tools (cdp_click, cdp_type_text, etc.)
@@ -451,12 +488,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 }
             }
 
-            // Add the assistant's response to the conversation
+            // Add the assistant's response to the conversation.
+            // Only the first tool call is included — we execute exactly one
+            // tool per turn, so appending extras would create transcript
+            // entries with no corresponding tool result.
             if let Some(tool_calls) = &choice.message.tool_calls {
-                self.messages
-                    .push(Message::assistant_tool_calls(tool_calls.clone()));
-                // Add tool result message
                 if let Some(tc) = tool_calls.first() {
+                    self.messages
+                        .push(Message::assistant_tool_calls(vec![tc.clone()]));
                     let result_text = previous_result.as_deref().unwrap_or("ok");
                     self.messages
                         .push(Message::tool_result(&tc.id, result_text));
@@ -486,11 +525,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
     /// Fetch interactive elements from the current page via MCP.
     ///
-    /// Calls `cdp_find_elements` unconditionally — the tool is dynamically
-    /// registered by the MCP server after `cdp_connect`, so it won't appear
-    /// in the initial tool listing. If no CDP connection is active, the call
-    /// simply fails and we return an empty list.
+    /// Only calls `cdp_find_elements` if the tool is available (i.e., a CDP
+    /// connection has been established). This avoids unnecessary failed MCP
+    /// round-trips and log noise on native-app paths.
     async fn fetch_elements(&mut self, mcp: &(impl Mcp + ?Sized)) -> Vec<CdpFindElementMatch> {
+        if !mcp.has_tool("cdp_find_elements") {
+            return Vec::new();
+        }
         match mcp
             .call_tool(
                 "cdp_find_elements",
@@ -520,25 +561,36 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
     /// After a successful `launch_app`, probe the app type and auto-connect CDP
     /// for Electron/Chrome apps. This ensures `fetch_elements` returns structured
-    /// element data on subsequent steps. Returns `true` if CDP was connected.
-    async fn auto_connect_cdp(&self, app_name: &str, mcp: &(impl Mcp + ?Sized)) -> bool {
+    /// element data on subsequent steps.
+    ///
+    /// Returns `Some(port)` if CDP was connected, `None` otherwise.
+    ///
+    /// This method performs several hidden sub-actions (probe, quit, relaunch,
+    /// connect) that are not individually approved. Each sub-action is logged
+    /// via `StepCompleted` events so the UI can surface the full chain.
+    async fn auto_connect_cdp(&self, app_name: &str, mcp: &(impl Mcp + ?Sized)) -> Option<u16> {
         if !mcp.has_tool("probe_app") || !mcp.has_tool("cdp_connect") {
-            return false;
+            return None;
         }
 
         // 1. Probe app type
         let probe_args = serde_json::json!({"app_name": app_name});
+        self.emit_event(AgentEvent::StepCompleted {
+            step_index: usize::MAX,
+            tool_name: "probe_app".to_string(),
+            summary: format!("Auto: probing {} for CDP support", app_name),
+        });
         let probe_text = match mcp.call_tool("probe_app", Some(probe_args)).await {
             Ok(r) => extract_result_text(&r),
             Err(e) => {
                 debug!(app = app_name, error = %e, "probe_app failed, skipping CDP");
-                return false;
+                return None;
             }
         };
 
         if !probe_text.contains("ElectronApp") && !probe_text.contains("ChromeBrowser") {
             debug!(app = app_name, "Not an Electron/Chrome app, skipping CDP");
-            return false;
+            return None;
         }
 
         info!(
@@ -551,13 +603,18 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         {
             info!(app = app_name, port, "Reusing existing debug port");
             if self.cdp_connect_with_retries(port, mcp).await {
-                return true;
+                return Some(port);
             }
         }
 
         // 3. Quit, relaunch with a debug port, then connect CDP
         let port = clickweave_core::cdp::rand_ephemeral_port();
 
+        self.emit_event(AgentEvent::StepCompleted {
+            step_index: usize::MAX,
+            tool_name: "quit_app".to_string(),
+            summary: format!("Auto: quitting {} for CDP relaunch", app_name),
+        });
         let quit_args = serde_json::json!({"app_name": app_name});
         let _ = mcp.call_tool("quit_app", Some(quit_args)).await;
 
@@ -582,6 +639,11 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         }
 
         // Relaunch with debug port
+        self.emit_event(AgentEvent::StepCompleted {
+            step_index: usize::MAX,
+            tool_name: "launch_app".to_string(),
+            summary: format!("Auto: relaunching {} with debug port {}", app_name, port),
+        });
         let launch_args = serde_json::json!({
             "app_name": app_name,
             "args": [format!("--remote-debugging-port={}", port)],
@@ -593,25 +655,30 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 warn!(app = app_name, error = %err, "Relaunch with debug port failed");
                 let fallback = serde_json::json!({"app_name": app_name});
                 let _ = mcp.call_tool("launch_app", Some(fallback)).await;
-                return false;
+                return None;
             }
             Err(e) => {
                 warn!(app = app_name, error = %e, "Relaunch with debug port failed");
                 let fallback = serde_json::json!({"app_name": app_name});
                 let _ = mcp.call_tool("launch_app", Some(fallback)).await;
-                return false;
+                return None;
             }
         }
 
         // Wait for the app to finish starting
         tokio::time::sleep(Duration::from_secs(3)).await;
 
+        self.emit_event(AgentEvent::StepCompleted {
+            step_index: usize::MAX,
+            tool_name: "cdp_connect".to_string(),
+            summary: format!("Auto: connecting CDP on port {}", port),
+        });
         if self.cdp_connect_with_retries(port, mcp).await {
             info!(app = app_name, port, "CDP connected");
-            true
+            Some(port)
         } else {
             warn!(app = app_name, port, "CDP connection failed after retries");
-            false
+            None
         }
     }
 
@@ -651,9 +718,33 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     ) -> Result<(AgentCommand, StepOutcome), LoopError> {
         // Check for tool calls
         if let Some(tool_calls) = &message.tool_calls {
+            if tool_calls.len() > 1 {
+                warn!(
+                    count = tool_calls.len(),
+                    "LLM returned multiple tool calls — only the first will be executed"
+                );
+            }
             if let Some(tc) = tool_calls.first() {
-                let args: Value = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or(Value::Object(serde_json::Map::new()));
+                let args: Value = match serde_json::from_str(&tc.function.arguments) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
+                            tool = %tc.function.name,
+                            error = %e,
+                            raw = %tc.function.arguments,
+                            "Malformed tool-call arguments from LLM"
+                        );
+                        let command = AgentCommand::ToolCall {
+                            tool_name: tc.function.name.clone(),
+                            arguments: Value::Null,
+                            tool_call_id: tc.id.clone(),
+                        };
+                        return Ok((
+                            command,
+                            StepOutcome::Error(format!("Malformed tool arguments: {}", e)),
+                        ));
+                    }
+                };
 
                 // Handle pseudo-tools
                 match tc.function.name.as_str() {
@@ -799,7 +890,10 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         let node_type = match tool_invocation_to_node_type(tool_name, arguments, known_tools) {
             Ok(nt) => nt,
             Err(e) => {
-                debug!(error = %e, tool = tool_name, "Could not map tool to node type");
+                warn!(error = %e, tool = tool_name, "Could not map tool to workflow node type — workflow graph will be incomplete");
+                self.emit_event(AgentEvent::Error {
+                    message: format!("Failed to map tool '{}' to workflow node: {}", tool_name, e),
+                });
                 return;
             }
         };

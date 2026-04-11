@@ -3,12 +3,17 @@ use serde_json::{Value, json};
 
 use super::types::AgentStep;
 
-/// Build the system prompt for the agent LLM.
-pub fn system_prompt(goal: &str) -> String {
-    format!(
-        r#"You are an autonomous desktop automation agent. Your goal:
+/// Maximum character length for previous tool results injected into prompts.
+/// Results longer than this are truncated to avoid dominating prompt context.
+const MAX_PREVIOUS_RESULT_CHARS: usize = 2000;
 
-{goal}
+/// Build the system prompt for the agent LLM.
+///
+/// The goal is placed in a dedicated user message (see `goal_message`) rather
+/// than here, so that user-controlled text does not occupy the system-level
+/// instruction layer.
+pub fn system_prompt() -> String {
+    r#"You are an autonomous desktop automation agent.
 
 You operate in an observe-act loop:
 1. You receive a list of interactive UI elements on the current page.
@@ -40,7 +45,15 @@ elements are listed in the observation.
 
 When NO elements are listed, use `take_screenshot` to see the screen, then
 `find_text` to locate elements by name."#
-    )
+        .to_string()
+}
+
+/// Build a user message containing the goal.
+///
+/// Separated from the system prompt so that user-controlled text stays in the
+/// user-message layer rather than the system-instruction layer.
+pub fn goal_message(goal: &str) -> String {
+    format!("## Goal\n{}", goal)
 }
 
 /// Build a user message for a single observation step.
@@ -53,7 +66,17 @@ pub fn step_message(
     let mut msg = String::new();
 
     if let Some(result) = previous_result {
-        msg.push_str(&format!("## Previous Action Result\n{}\n\n", result));
+        let truncated = if result.len() > MAX_PREVIOUS_RESULT_CHARS {
+            let end = result.floor_char_boundary(MAX_PREVIOUS_RESULT_CHARS);
+            format!(
+                "{}... [truncated, {} chars total]",
+                &result[..end],
+                result.len()
+            )
+        } else {
+            result.to_string()
+        };
+        msg.push_str(&format!("## Previous Action Result\n{}\n\n", truncated));
     }
 
     msg.push_str(&format!(
@@ -68,17 +91,6 @@ pub fn step_message(
     }
 
     msg.push_str("\nChoose your next action.");
-    msg
-}
-
-/// Build a user message requesting a plan from the LLM.
-pub fn plan_request_message(goal: &str, elements: &[CdpFindElementMatch]) -> String {
-    let mut msg = format!(
-        "## Planning Request\nGoal: {}\n\nCurrent page elements:\n",
-        goal
-    );
-    msg.push_str(&format_elements(elements));
-    msg.push_str("\nOutline a brief plan (3-5 steps) to achieve the goal, then execute step 1.");
     msg
 }
 
@@ -187,11 +199,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_prompt_includes_goal() {
-        let prompt = system_prompt("Open the calculator app");
-        assert!(prompt.contains("Open the calculator app"));
+    fn system_prompt_contains_instructions() {
+        let prompt = system_prompt();
+        assert!(prompt.contains("autonomous desktop automation agent"));
         assert!(prompt.contains("agent_done"));
         assert!(prompt.contains("agent_replan"));
+    }
+
+    #[test]
+    fn goal_message_contains_goal_text() {
+        let msg = goal_message("Open the calculator app");
+        assert!(msg.contains("Open the calculator app"));
+        assert!(msg.contains("Goal"));
+    }
+
+    #[test]
+    fn step_message_truncates_large_previous_result() {
+        let large_result = "x".repeat(5000);
+        let msg = step_message(0, &[], "https://example.com", Some(&large_result));
+        assert!(msg.contains("[truncated, 5000 chars total]"));
+        assert!(msg.len() < 5000);
     }
 
     #[test]

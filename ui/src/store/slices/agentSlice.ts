@@ -12,7 +12,7 @@ export interface AgentStep {
   pageTransitioned: boolean;
 }
 
-export type AgentStatus = "idle" | "running" | "paused" | "complete" | "stopped" | "error";
+export type AgentStatus = "idle" | "running" | "complete" | "stopped" | "error";
 
 export interface PendingApproval {
   stepIndex: number;
@@ -25,13 +25,10 @@ export interface AgentSlice {
   agentStatus: AgentStatus;
   agentGoal: string;
   agentSteps: AgentStep[];
-  agentPlanHorizon: string[];
   agentError: string | null;
   currentAgentStep: number;
   pendingApproval: PendingApproval | null;
   startAgent: (goal: string) => Promise<void>;
-  pauseAgent: () => Promise<void>;
-  resumeAgent: () => Promise<void>;
   stopAgent: () => Promise<void>;
   addAgentStep: (step: AgentStep) => void;
   addAgentNode: (node: Node) => void;
@@ -39,7 +36,6 @@ export interface AgentSlice {
   setPendingApproval: (approval: PendingApproval | null) => void;
   approveAction: () => Promise<void>;
   rejectAction: () => Promise<void>;
-  setAgentPlanHorizon: (horizon: string[]) => void;
   setAgentStatus: (status: AgentStatus) => void;
   setAgentError: (error: string | null) => void;
   resetAgent: () => void;
@@ -52,7 +48,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentStatus: "idle",
   agentGoal: "",
   agentSteps: [],
-  agentPlanHorizon: [],
   agentError: null,
   currentAgentStep: 0,
   pendingApproval: null,
@@ -63,7 +58,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentStatus: "running",
       agentGoal: goal,
       agentSteps: [],
-      agentPlanHorizon: [],
       agentError: null,
       currentAgentStep: 0,
       pendingApproval: null,
@@ -84,16 +78,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       set({ agentStatus: "error", agentError: msg });
       pushLog(`Agent failed: ${msg}`);
     }
-  },
-
-  pauseAgent: async () => {
-    set({ agentStatus: "paused" });
-    get().pushLog("Agent paused");
-  },
-
-  resumeAgent: async () => {
-    set({ agentStatus: "running" });
-    get().pushLog("Agent resumed");
   },
 
   stopAgent: async () => {
@@ -156,8 +140,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }
   },
 
-  setAgentPlanHorizon: (horizon) => set({ agentPlanHorizon: horizon }),
-
   setAgentStatus: (status) => set({ agentStatus: status }),
 
   setAgentError: (error) => set({ agentError: error }),
@@ -167,7 +149,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentStatus: "idle",
       agentGoal: "",
       agentSteps: [],
-      agentPlanHorizon: [],
       agentError: null,
       currentAgentStep: 0,
       pendingApproval: null,

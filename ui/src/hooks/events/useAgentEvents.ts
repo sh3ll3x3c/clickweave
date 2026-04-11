@@ -10,10 +10,6 @@ interface AgentStepPayload {
   step_number: number;
 }
 
-interface AgentPlanPayload {
-  horizon: string[];
-}
-
 interface CdpConnectedPayload {
   app_name: string;
   port: number;
@@ -104,7 +100,7 @@ export function useAgentEvents() {
       listen<ApprovalRequiredPayload>("agent://approval_required", (e) => {
         // Ignore stale approval requests that arrive after stop/cancel
         const current = useStore.getState().agentStatus;
-        if (current !== "running" && current !== "paused") return;
+        if (current !== "running") return;
         useStore.getState().setPendingApproval({
           stepIndex: e.payload.step_index,
           toolName: e.payload.tool_name,
@@ -144,17 +140,11 @@ export function useAgentEvents() {
       }),
     );
 
-    sub(
-      listen<AgentPlanPayload>("agent://plan", (e) => {
-        useStore.getState().setAgentPlanHorizon(e.payload.horizon);
-      }),
-    );
-
     // Only transition status if the agent was still active — prevents
     // a backend event from overriding a user-initiated stop.
     const setStatusIfActive = (status: AgentStatus) => {
       const current = useStore.getState().agentStatus;
-      if (current === "running" || current === "paused") {
+      if (current === "running") {
         useStore.getState().setAgentStatus(status);
       }
     };
@@ -188,7 +178,7 @@ export function useAgentEvents() {
         // Only transition to error if the agent was still active —
         // a racing error after stop should not override "stopped".
         const current = useStore.getState().agentStatus;
-        if (current === "running" || current === "paused") {
+        if (current === "running") {
           useStore.getState().setAgentError(e.payload.message);
           useStore.getState().setAgentStatus("error");
         }

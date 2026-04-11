@@ -5,7 +5,7 @@ use clickweave_engine::agent::{
     AgentCache, AgentChannels, AgentConfig, AgentEvent, ApprovalRequest,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 
@@ -32,7 +32,6 @@ pub struct AgentStepPayload {
 #[derive(Default)]
 pub struct AgentHandle {
     cancel_token: Option<CancellationToken>,
-    steering_tx: Option<tokio::sync::mpsc::Sender<String>>,
     task_handle: Option<tauri::async_runtime::JoinHandle<()>>,
     /// Pending approval oneshot sender — set when the agent is waiting for approval.
     pending_approval_tx: Option<tokio::sync::oneshot::Sender<bool>>,
@@ -49,7 +48,6 @@ impl AgentHandle {
         // Do NOT abort the task — let the cancellation token propagate
         // through tokio::select! so the cancel branch can emit agent://stopped.
         // The cleanup task will clear task_handle after done_tx fires.
-        self.steering_tx = None;
         self.pending_approval_tx = None;
         had_task
     }
@@ -79,18 +77,17 @@ pub async fn run_agent(
         .parse()
         .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
 
-    let mut storage = resolve_storage(
+    let storage = resolve_storage(
         &app,
         &request.project_path,
         &request.workflow_name,
         workflow_id,
     );
+    let storage = Arc::new(Mutex::new(storage));
 
     let cancel_token = CancellationToken::new();
     let agent_token = cancel_token.clone();
     let forwarder_token = cancel_token.clone();
-
-    let (_steering_tx, _steering_rx) = tokio::sync::mpsc::channel::<String>(8);
 
     // Live event channel: agent runner -> Tauri event emitter
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
@@ -105,6 +102,8 @@ pub async fn run_agent(
     let approval_emit_handle = app.clone();
     let cleanup_handle = app.clone();
     let goal = request.goal.clone();
+    let task_storage = storage.clone();
+    let event_storage = storage.clone();
 
     // Channel used to signal the cleanup task when the agent task finishes.
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
@@ -141,12 +140,13 @@ pub async fn run_agent(
         let config = AgentConfig::default();
 
         // Begin storage execution
-        let _exec_dir = storage.begin_execution();
+        let storage = task_storage;
+        let _exec_dir = storage.lock().unwrap().begin_execution();
 
         // Load cross-run variant index and decision cache
-        let variant_index = VariantIndex::load(&storage.variant_index_path());
+        let variant_index = VariantIndex::load(&storage.lock().unwrap().variant_index_path());
         let variant_context = variant_index.as_context_text();
-        let cache = AgentCache::load_from_path(&storage.agent_cache_path());
+        let cache = AgentCache::load_from_path(&storage.lock().unwrap().agent_cache_path());
 
         let channels = AgentChannels {
             event_tx,
@@ -177,7 +177,7 @@ pub async fn run_agent(
         match result {
             Ok((state, updated_cache)) => {
                 // Persist the updated cache
-                let _ = updated_cache.save_to_path(&storage.agent_cache_path());
+                let _ = updated_cache.save_to_path(&storage.lock().unwrap().agent_cache_path());
 
                 // Derive variant metadata from terminal reason
                 use clickweave_engine::agent::TerminalReason;
@@ -188,6 +188,8 @@ pub async fn run_agent(
 
                 let variant_entry = VariantEntry {
                     execution_dir: storage
+                        .lock()
+                        .unwrap()
                         .execution_dir_name()
                         .unwrap_or("unknown")
                         .to_string(),
@@ -195,7 +197,10 @@ pub async fn run_agent(
                     divergence_summary,
                     success,
                 };
-                let _ = VariantIndex::append(&storage.variant_index_path(), &variant_entry);
+                let _ = VariantIndex::append(
+                    &storage.lock().unwrap().variant_index_path(),
+                    &variant_entry,
+                );
 
                 // Emit truthful terminal event. Stopped payloads use serde
                 // directly on TerminalReason to avoid duplicating variant
@@ -230,9 +235,13 @@ pub async fn run_agent(
         let _ = done_tx.send(());
     });
 
-    // Spawn a task to forward live agent events to the Tauri frontend.
+    // Spawn a task to forward live agent events to the Tauri frontend
+    // and persist them durably for post-run replay and debugging.
     tauri::async_runtime::spawn(async move {
         while let Some(event) = event_rx.recv().await {
+            // Durable trace: persist every event to events.jsonl
+            let _ = event_storage.lock().unwrap().append_agent_event(&event);
+
             match &event {
                 AgentEvent::StepCompleted {
                     step_index,
@@ -325,7 +334,6 @@ pub async fn run_agent(
         let handle = app.state::<Mutex<AgentHandle>>();
         let mut guard = handle.lock().unwrap();
         guard.cancel_token = Some(cancel_token);
-        guard.steering_tx = Some(_steering_tx);
         guard.task_handle = Some(task_handle);
     }
 
@@ -336,7 +344,6 @@ pub async fn run_agent(
         let handle = cleanup_handle.state::<Mutex<AgentHandle>>();
         let mut guard = handle.lock().unwrap();
         guard.cancel_token = None;
-        guard.steering_tx = None;
         guard.task_handle = None;
         guard.pending_approval_tx = None;
     });
@@ -353,22 +360,6 @@ pub async fn stop_agent(app: tauri::AppHandle) -> Result<(), CommandError> {
         return Err(CommandError::validation("No agent is running"));
     }
     Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn steer_agent(app: tauri::AppHandle, message: String) -> Result<(), CommandError> {
-    let handle = app.state::<Mutex<AgentHandle>>();
-    let guard = handle.lock().unwrap();
-    let tx = guard
-        .steering_tx
-        .as_ref()
-        .ok_or(CommandError::validation("No agent is running"))?
-        .clone();
-    drop(guard);
-
-    tx.try_send(message)
-        .map_err(|e| CommandError::internal(format!("Failed to send steering message: {e}")))
 }
 
 #[tauri::command]

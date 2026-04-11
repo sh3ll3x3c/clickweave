@@ -69,8 +69,10 @@ pub fn compact_step_summaries(
     // Add compact summary as a user message
     compacted.push(Message::user(summary));
 
-    // Keep the most recent messages (roughly 2 messages per step: user observation + assistant response)
-    let messages_per_step = 2;
+    // Each tool step contributes 3 messages: user observation + assistant tool-call + tool result.
+    // Cache-replayed steps contribute 0 messages (they skip transcript reconstruction).
+    // Use 3 as the multiplier to avoid discarding context prematurely.
+    let messages_per_step = 3;
     let recent_message_count = keep_recent * messages_per_step;
     let skip = messages.len().saturating_sub(recent_message_count);
     for msg in messages.iter().skip(skip) {

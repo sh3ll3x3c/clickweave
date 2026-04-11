@@ -121,7 +121,6 @@ fn main() {
         check_endpoint,
         run_agent,
         stop_agent,
-        steer_agent,
         approve_agent_action,
     ]);
 
