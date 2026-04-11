@@ -39,16 +39,16 @@ pub struct AgentHandle {
 }
 
 impl AgentHandle {
-    /// Cancel the running agent task and abort the tokio task.
+    /// Cancel the running agent task.
     /// Returns `true` if a task was actually running.
     pub fn force_stop(&mut self) -> bool {
         let had_task = self.task_handle.is_some();
         if let Some(token) = self.cancel_token.take() {
             token.cancel();
         }
-        if let Some(task) = self.task_handle.take() {
-            task.abort();
-        }
+        // Do NOT abort the task — let the cancellation token propagate
+        // through tokio::select! so the cancel branch can emit agent://stopped.
+        // The cleanup task will clear task_handle after done_tx fires.
         self.steering_tx = None;
         self.pending_approval_tx = None;
         had_task
@@ -152,8 +152,8 @@ pub async fn run_agent(
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
-                    "agent://error",
-                    serde_json::json!({ "message": "Agent cancelled" }),
+                    "agent://stopped",
+                    serde_json::json!({ "reason": "cancelled" }),
                 );
                 let _ = done_tx.send(());
                 return;
@@ -165,27 +165,76 @@ pub async fn run_agent(
                 // Persist the updated cache
                 let _ = updated_cache.save_to_path(&storage.agent_cache_path());
 
-                // Record this run as a variant entry
+                // Derive variant metadata from terminal reason
+                use clickweave_engine::agent::TerminalReason;
+                let (divergence_summary, success) = match &state.terminal_reason {
+                    Some(TerminalReason::Completed { summary }) => {
+                        (format!("Completed: {}", summary), true)
+                    }
+                    Some(TerminalReason::MaxStepsReached { steps_executed }) => (
+                        format!("Stopped after {} steps (max steps reached)", steps_executed),
+                        false,
+                    ),
+                    Some(TerminalReason::MaxErrorsReached { consecutive_errors }) => (
+                        format!("Aborted after {} consecutive errors", consecutive_errors),
+                        false,
+                    ),
+                    Some(TerminalReason::ApprovalUnavailable) => {
+                        ("Aborted: approval system unavailable".to_string(), false)
+                    }
+                    None => ("Stopped: unknown reason".to_string(), false),
+                };
+
                 let variant_entry = VariantEntry {
                     execution_dir: storage
                         .execution_dir_name()
                         .unwrap_or("unknown")
                         .to_string(),
                     diverged_at_step: None,
-                    divergence_summary: if state.completed {
-                        "Followed reference trajectory".to_string()
-                    } else {
-                        format!(
-                            "Stopped after {} steps without completing",
-                            state.steps.len()
-                        )
-                    },
-                    success: state.completed,
+                    divergence_summary,
+                    success,
                 };
                 let _ = VariantIndex::append(&storage.variant_index_path(), &variant_entry);
 
-                // Final complete event (steps are emitted live now)
-                let _ = emit_handle.emit("agent://complete", ());
+                // Emit truthful terminal event
+                match &state.terminal_reason {
+                    Some(TerminalReason::Completed { summary }) => {
+                        let _ = emit_handle.emit(
+                            "agent://complete",
+                            serde_json::json!({ "summary": summary }),
+                        );
+                    }
+                    Some(TerminalReason::MaxStepsReached { steps_executed }) => {
+                        let _ = emit_handle.emit(
+                            "agent://stopped",
+                            serde_json::json!({
+                                "reason": "max_steps_reached",
+                                "steps_executed": steps_executed,
+                            }),
+                        );
+                    }
+                    Some(TerminalReason::MaxErrorsReached { consecutive_errors }) => {
+                        let _ = emit_handle.emit(
+                            "agent://stopped",
+                            serde_json::json!({
+                                "reason": "max_errors_reached",
+                                "consecutive_errors": consecutive_errors,
+                            }),
+                        );
+                    }
+                    Some(TerminalReason::ApprovalUnavailable) => {
+                        let _ = emit_handle.emit(
+                            "agent://stopped",
+                            serde_json::json!({ "reason": "approval_unavailable" }),
+                        );
+                    }
+                    None => {
+                        let _ = emit_handle.emit(
+                            "agent://stopped",
+                            serde_json::json!({ "reason": "unknown" }),
+                        );
+                    }
+                }
             }
             Err(e) => {
                 let _ = emit_handle.emit(
