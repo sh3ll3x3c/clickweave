@@ -140,6 +140,19 @@ export function useAgentEvents() {
       }),
     );
 
+    sub(
+      listen<{ tool_name: string; summary: string }>(
+        "agent://sub_action",
+        (e) => {
+          useStore
+            .getState()
+            .pushLog(
+              `Agent auto-action: ${e.payload.tool_name} — ${e.payload.summary}`,
+            );
+        },
+      ),
+    );
+
     // Only transition status if the agent was still active — prevents
     // a backend event from overriding a user-initiated stop.
     const setStatusIfActive = (status: AgentStatus) => {

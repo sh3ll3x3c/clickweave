@@ -268,14 +268,6 @@ async stopAgent() : Promise<Result<null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async steerAgent(message: string) : Promise<Result<null, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("steer_agent", { message }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async approveAgentAction(approved: boolean) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("approve_agent_action", { approved }) };

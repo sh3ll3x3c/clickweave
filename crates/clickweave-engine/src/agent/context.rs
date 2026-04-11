@@ -56,13 +56,21 @@ pub fn compact_step_summaries(
     // Build a compact summary of old steps
     let summary = summarize_steps(old_steps);
 
-    // Rebuild messages: system prompt + summary + recent step messages
+    // Rebuild messages: system prompt + goal + summary + recent step messages
     let mut compacted = Vec::new();
 
     // Keep the system message (always first)
     if let Some(system_msg) = messages.first() {
         if system_msg.role == "system" {
             compacted.push(system_msg.clone());
+        }
+    }
+
+    // Keep the goal message (second message — user-controlled goal text
+    // that must survive compaction to keep the LLM on-task).
+    if let Some(goal_msg) = messages.get(1) {
+        if goal_msg.role == "user" {
+            compacted.push(goal_msg.clone());
         }
     }
 
