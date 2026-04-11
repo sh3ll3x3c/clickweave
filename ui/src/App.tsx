@@ -67,7 +67,7 @@ function App() {
     })),
   );
 
-  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, messages, contextUsage } = useStore(
+  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, messages, contextUsage, agentStatus } = useStore(
     useShallow((s) => ({
       assistantOpen: s.assistantOpen,
       assistantLoading: s.assistantLoading,
@@ -75,6 +75,7 @@ function App() {
       assistantError: s.assistantError,
       messages: s.messages,
       contextUsage: s.contextUsage,
+      agentStatus: s.agentStatus,
     })),
   );
 
@@ -130,7 +131,7 @@ function App() {
   const toggleAssistant = useStore((s) => s.toggleAssistant);
   const setWalkthroughPanelOpen = useStore((s) => s.setWalkthroughPanelOpen);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
-  const sendAssistantMessage = useStore((s) => s.sendAssistantMessage);
+  const startAgent = useStore((s) => s.startAgent);
   const cancelAssistantChat = useStore((s) => s.cancelAssistantChat);
   const clearConversation = useStore((s) => s.clearConversation);
   const undo = useStore((s) => s.undo);
@@ -213,14 +214,14 @@ function App() {
               onGenerate={(intent) => {
                 setAssistantOpen(true);
                 skipIntentEntry();
-                sendAssistantMessage(intent);
+                startAgent(intent);
               }}
               onSkip={skipIntentEntry}
               onRecordWalkthrough={() => {
                 skipIntentEntry();
                 useStore.getState().openCdpModal();
               }}
-              loading={assistantLoading}
+              loading={agentStatus === "running"}
             />
           ) : (
             <>
@@ -290,7 +291,7 @@ function App() {
                 error={assistantError}
                 messages={messages}
                 contextUsage={contextUsage}
-                onSendMessage={sendAssistantMessage}
+                onSendMessage={startAgent}
                 onCancel={cancelAssistantChat}
                 onClearConversation={clearConversation}
                 onClose={() => setAssistantOpen(false)}

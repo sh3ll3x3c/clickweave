@@ -708,6 +708,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 continue;
             }
 
+            if matches!(node.node_type, NodeType::Unknown) {
+                tracing::warn!("Skipping Unknown node: {} ({})", node.name, node_id);
+                self.log(format!("Skipping Unknown node: {}", node.name));
+                current = self.follow_single_edge(node_id);
+                continue;
+            }
+
             let node_name = node.name.clone();
             let node_auto_id = node.auto_id.clone();
             let node_type = node.node_type.clone();
