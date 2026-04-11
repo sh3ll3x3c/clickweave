@@ -97,7 +97,6 @@ UI
      - record: add node to workflow
      - evaluate: check goal completion
   -> emit agent://* events to UI
-  -> steer_agent: mid-execution user guidance
 ```
 
 ### Workflow Execution
@@ -123,7 +122,7 @@ UI
 ### Agent Commands
 - `run_agent` — start an agent session with a goal
 - `stop_agent` — cancel a running agent
-- `steer_agent` — send mid-execution guidance
+- `approve_agent_action` — approve or reject a pending agent action
 
 ### Executor Commands
 - `run_workflow` — execute a workflow graph

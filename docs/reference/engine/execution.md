@@ -52,6 +52,6 @@ Tauri command `run_agent` (`src-tauri/src/commands/agent.rs`) creates an `AgentR
 
 The agent uses a variant index (`VariantIndex`) and action cache to avoid re-running identical actions. Cache keys are derived from app state and action parameters.
 
-### Steering
+### Operator Controls
 
-The `steer_agent` command allows the user to provide mid-execution guidance, adjusting the agent's behavior without stopping the loop.
+The operator can `stop_agent` to cancel a running agent, or approve/reject individual actions via `approve_agent_action` when the approval gate is active.
