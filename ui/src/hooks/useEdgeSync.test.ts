@@ -51,7 +51,7 @@ describe("useEdgeSync", () => {
       [edge("a", "b")],
     );
     const { result } = renderEdgeSync({ workflow: wf });
-    expect(result.current.rfEdges[0].id).toBe("a-b-default");
+    expect(result.current.rfEdges[0].id).toBe("a-b");
   });
 
 });

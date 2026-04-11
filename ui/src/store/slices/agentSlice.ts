@@ -1,4 +1,6 @@
 import type { StateCreator } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
+import { toEndpoint } from "../settings";
 import type { StoreState } from "./types";
 
 export interface AgentStep {
@@ -41,7 +43,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   currentAgentStep: 0,
 
   startAgent: async (goal) => {
-    const { pushLog } = get();
+    const { pushLog, agentConfig, projectPath, workflow } = get();
     set({
       agentStatus: "running",
       agentGoal: goal,
@@ -51,7 +53,21 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       currentAgentStep: 0,
     });
     pushLog(`Agent started with goal: ${goal}`);
-    // TODO: call Tauri run_agent command once bindings are regenerated
+    try {
+      await invoke("run_agent", {
+        request: {
+          goal,
+          agent: toEndpoint(agentConfig),
+          project_path: projectPath,
+          workflow_name: workflow.name,
+          workflow_id: workflow.id,
+        },
+      });
+    } catch (err) {
+      const msg = `${err}`;
+      set({ agentStatus: "error", agentError: msg });
+      pushLog(`Agent failed: ${msg}`);
+    }
   },
 
   pauseAgent: async () => {

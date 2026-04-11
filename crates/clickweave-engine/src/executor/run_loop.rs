@@ -711,7 +711,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             if matches!(node.node_type, NodeType::Unknown) {
                 tracing::warn!("Skipping Unknown node: {} ({})", node.name, node_id);
                 self.log(format!("Skipping Unknown node: {}", node.name));
-                current = self.follow_single_edge(node_id);
+                current = None;
                 continue;
             }
 
