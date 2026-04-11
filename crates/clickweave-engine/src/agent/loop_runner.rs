@@ -182,9 +182,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                     tool_call_id: format!("cache-{}", step_index),
                                 };
 
-                                if self.config.build_workflow {
-                                    self.add_workflow_node(&cached_tool, &cached_args, &mcp_tools);
-                                }
+                                // Cache replays do NOT create workflow nodes — the
+                                // original execution already added the node.
 
                                 // Emit live step event for cached replay
                                 let summary_text = if result_text.len() > 120 {
