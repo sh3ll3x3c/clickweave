@@ -76,26 +76,6 @@ describe("buildAppNameMap", () => {
     expect(map.has("b")).toBe(false);
   });
 
-  it("excludes EndLoop back-edges from propagation", () => {
-    const wf = makeWorkflow(
-      [
-        node("fw1", "FocusWindow", { method: "AppName", value: "Discord", bring_to_front: true }),
-        node("loop1", "Loop", { exit_condition: { type: "Always" }, max_iterations: 3 }),
-        node("c1", "Click"),
-        node("end1", "EndLoop", { loop_id: "loop1" }),
-      ],
-      [
-        edge("fw1", "loop1"),
-        edge("loop1", "c1"),
-        edge("c1", "end1"),
-        edge("end1", "loop1"),
-        edge("loop1", "fw1"),
-      ],
-    );
-    const map = buildAppNameMap(wf);
-    expect(map.get("loop1")).toBe("Discord");
-    expect(map.get("c1")).toBe("Discord");
-  });
 });
 
 describe("computeAppMembers", () => {
@@ -130,23 +110,6 @@ describe("computeAppMembers", () => {
     const groups = computeAppMembers(wf, nameMap);
     expect(groups.size).toBe(2);
     expect(groups.get("appgroup-fw1")).toEqual(["fw1", "c1"]);
-    expect(groups.get("appgroup-fw2")).toEqual(["fw2", "c2"]);
-  });
-
-  it("includes ungrouped nodes between app switches in the preceding group", () => {
-    const wf = makeWorkflow(
-      [
-        node("fw1", "FocusWindow", { method: "AppName", value: "Discord", bring_to_front: true }),
-        node("c1", "Click"),
-        node("if1", "If", { condition: { type: "Always" } }),
-        node("fw2", "FocusWindow", { method: "AppName", value: "Signal", bring_to_front: true }),
-        node("c2", "Click"),
-      ],
-      [edge("fw1", "c1"), edge("c1", "if1"), edge("if1", "fw2"), edge("fw2", "c2")],
-    );
-    const nameMap = buildAppNameMap(wf);
-    const groups = computeAppMembers(wf, nameMap);
-    expect(groups.get("appgroup-fw1")).toEqual(["fw1", "c1", "if1"]);
     expect(groups.get("appgroup-fw2")).toEqual(["fw2", "c2"]);
   });
 

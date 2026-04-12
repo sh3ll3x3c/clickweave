@@ -13,8 +13,7 @@ export function useAppGrouping(workflow: Workflow) {
   const [collapsedApps, setCollapsedApps] = useState<Set<string>>(new Set());
 
   // Build DAG once, share between buildAppNameMap and computeAppMembers.
-  // skipLoopDone: true because LoopDone edges can create cycles in app name propagation.
-  const dag = useMemo(() => buildDag(workflow, { skipLoopDone: true }), [workflow.nodes, workflow.edges]);
+  const dag = useMemo(() => buildDag(workflow), [workflow.nodes, workflow.edges]);
 
   const appNameMap = useMemo(() => buildAppNameMap(workflow, dag), [workflow, dag]);
 

@@ -4,8 +4,6 @@ import type { Workflow } from "../../bindings";
 import type { AppGroupMeta } from "../useAppGrouping";
 import type { UserGroupMeta } from "../useUserGrouping";
 import {
-  LOOP_HEADER_HEIGHT,
-  LOOP_PADDING,
   APP_GROUP_HEADER_HEIGHT,
   APP_GROUP_PADDING,
   USER_GROUP_HEADER_HEIGHT,
@@ -23,12 +21,6 @@ interface UseRfNodeBuilderParams {
   workflow: Workflow;
   selectedNode: string | null;
   activeNode: string | null;
-  collapsedLoops: Set<string>;
-  loopMembers: Map<string, string[]>;
-  nodeToLoops: Map<string, string[]>;
-  endLoopIds: Set<string>;
-  endLoopForLoop: Map<string, string>;
-  toggleLoopCollapse: (loopId: string) => void;
   collapsedApps: Set<string>;
   appGroups: Map<string, string[]>;
   nodeToAppGroup: Map<string, string>;
@@ -48,20 +40,13 @@ interface UseRfNodeBuilderParams {
 /**
  * Syncs workflow nodes into ReactFlow node state.
  *
- * Handles loop groups, app groups, user groups, collapsed/expanded states,
- * and parent-child relationships. Runs whenever workflow structure or
- * grouping state changes.
+ * Handles app groups, user groups, collapsed/expanded states, and parent-child
+ * relationships. Runs whenever workflow structure or grouping state changes.
  */
 export function useRfNodeBuilder({
   workflow,
   selectedNode,
   activeNode,
-  collapsedLoops,
-  loopMembers,
-  nodeToLoops,
-  endLoopIds,
-  endLoopForLoop,
-  toggleLoopCollapse,
   collapsedApps,
   appGroups,
   nodeToAppGroup,
@@ -96,70 +81,14 @@ export function useRfNodeBuilder({
       for (const node of workflow.nodes) {
         const existing = prevMap.get(node.id);
 
-        // EndLoop nodes are always hidden
-        if (endLoopIds.has(node.id)) {
-          const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
-          nodes.push({ ...base, hidden: true });
-          continue;
-        }
-
-        // Loop nodes: collapsed vs expanded
-        if (node.node_type.type === "Loop") {
-          const bodyIds = loopMembers.get(node.id) ?? [];
-          const bodyCount = bodyIds.length;
-
-          if (collapsedLoops.has(node.id)) {
-            const endLoopId = endLoopForLoop.get(node.id);
-            const base = toRFNode(node, selectedNode, activeNode, () => {
-              const ids = [...bodyIds];
-              if (endLoopId) ids.push(endLoopId);
-              ids.push(node.id);
-              onDeleteNodes(ids);
-            }, appKindMap.get(node.id), existing);
-            nodes.push({
-              ...base,
-              type: "workflow",
-              data: {
-                ...base.data,
-                bodyCount,
-                onToggleCollapse: () => toggleLoopCollapse(node.id),
-              },
-            });
-          } else {
-            const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
-            expandedGroupChildren.set(node.id, []);
-            const idx = nodes.length;
-            nodes.push({
-              ...base,
-              type: "loopGroup",
-              data: {
-                label: node.name,
-                bodyCount,
-                isActive: node.id === activeNode,
-                enabled: node.enabled,
-                onToggleCollapse: () => toggleLoopCollapse(node.id),
-              },
-            });
-            groupNodeIndices.set(node.id, idx);
-          }
-          continue;
-        }
-
-        // App group anchor nodes (skip if inside a loop — loop takes precedence)
-        if (appGroupAnchors.has(node.id) && !nodeToLoops.has(node.id)) {
+        // App group anchor nodes
+        if (appGroupAnchors.has(node.id)) {
           const groupId = nodeToAppGroup.get(node.id);
           if (!groupId) continue;
           const meta = appGroupMeta.get(groupId);
           if (!meta) continue;
           const memberIds = appGroups.get(groupId) ?? [];
-          // Visible members: exclude nodes that render inside loops (loop takes precedence),
-          // and exclude Loop/EndLoop nodes themselves (they render as their own group type)
-          const visibleMemberIds = memberIds.filter((id) => {
-            if (nodeToLoops.has(id)) return false;
-            const wfNode = wfNodeMap.get(id);
-            if (wfNode?.node_type.type === "Loop" || wfNode?.node_type.type === "EndLoop") return false;
-            return true;
-          });
+          const visibleMemberIds = memberIds;
 
           if (collapsedApps.has(groupId)) {
             // Collapsed — render as workflow pill using anchor's real ID
@@ -222,9 +151,8 @@ export function useRfNodeBuilder({
         }
 
         // App group member nodes (non-anchor)
-        // Skip if this node is a loop body member — loop takes precedence (spec edge case)
         const appGroup = nodeToAppGroup.get(node.id);
-        if (appGroup && !appGroupAnchors.has(node.id) && !nodeToLoops.has(node.id)) {
+        if (appGroup && !appGroupAnchors.has(node.id)) {
           const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
 
           if (collapsedApps.has(appGroup)) {
@@ -256,44 +184,6 @@ export function useRfNodeBuilder({
           continue;
         }
 
-        // Body nodes of a loop
-        const parentLoops = nodeToLoops.get(node.id);
-        if (parentLoops && parentLoops.length > 0) {
-          const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
-
-          const anyCollapsed = parentLoops.some((lid) => collapsedLoops.has(lid));
-          if (anyCollapsed) {
-            nodes.push({ ...base, hidden: true });
-          } else {
-            const parentId = parentLoops[parentLoops.length - 1];
-            const loopWfNode = wfNodeMap.get(parentId);
-
-            let relativePosition = base.position;
-            if (existing?.parentId === parentId) {
-              relativePosition = existing.position;
-            } else if (loopWfNode) {
-              relativePosition = {
-                x: node.position.x - loopWfNode.position.x + LOOP_PADDING,
-                y: node.position.y - loopWfNode.position.y + LOOP_HEADER_HEIGHT + LOOP_PADDING,
-              };
-            }
-
-            const childNode: RFNode = {
-              ...base,
-              parentId,
-              extent: "parent" as const,
-              position: relativePosition,
-              style: {
-                ...base.style,
-                transition: "opacity 150ms ease 50ms",
-              },
-            };
-            nodes.push(childNode);
-            expandedGroupChildren.get(parentId)?.push(childNode);
-          }
-          continue;
-        }
-
         // Regular node
         const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
         nodes.push(base);
@@ -304,7 +194,7 @@ export function useRfNodeBuilder({
         const idx = groupNodeIndices.get(groupId);
         if (idx === undefined) continue;
         const groupNode = nodes[idx];
-        const gc = groupConstants(groupNode.type ?? "loopGroup");
+        const gc = groupConstants(groupNode.type ?? "appGroup");
 
         let maxX = 0;
         let maxY = 0;
@@ -338,7 +228,7 @@ export function useRfNodeBuilder({
       }
 
       // ── Second pass: user group rendering ──────────────────────────
-      // Runs after auto-groups (loops, app groups) are resolved.
+      // Runs after auto-groups (app groups) are resolved.
       // Reassigns rendered nodes into user group containers or collapses them into pills.
       const nodeIndexById = new Map<string, number>();
       for (let i = 0; i < nodes.length; i++) nodeIndexById.set(nodes[i].id, i);
@@ -572,12 +462,6 @@ export function useRfNodeBuilder({
     workflow.groups,
     activeNode,
     onDeleteNodes,
-    collapsedLoops,
-    loopMembers,
-    nodeToLoops,
-    endLoopIds,
-    endLoopForLoop,
-    toggleLoopCollapse,
     collapsedApps,
     appGroups,
     nodeToAppGroup,

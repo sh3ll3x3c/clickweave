@@ -121,10 +121,6 @@ export function nodeTypeIcon(nodeType: Node["node_type"]): { icon: string; color
     case "FindText":
     case "FindImage": return { icon: "\u25C7", color: "text-[var(--text-muted)]" };
     case "AppDebugKitOp": return { icon: "\u2699", color: "text-[var(--text-muted)]" };
-    case "If":
-    case "Switch":
-    case "Loop":
-    case "EndLoop": return { icon: "\u25C6", color: "text-yellow-400" };
     default: return { icon: "\u25CB", color: "text-[var(--text-muted)]" };
   }
 }

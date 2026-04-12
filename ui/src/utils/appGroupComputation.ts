@@ -40,24 +40,15 @@ export interface DagGraph {
 }
 
 /**
- * Build a cycle-safe DAG from a workflow, skipping EndLoop back-edges.
- * When skipLoopDone is true, also skip LoopDone edges (needed for app group
- * computation where LoopDone back-edges can create cycles in test workflows).
- * buildAppKindMap needs LoopDone edges to propagate context past loops.
+ * Build a DAG from a workflow.
  */
-export function buildDag(workflow: Workflow, opts?: { skipLoopDone?: boolean }): DagGraph {
-  const skipLoopDone = opts?.skipLoopDone ?? false;
+export function buildDag(workflow: Workflow): DagGraph {
   const nodeById = new Map(workflow.nodes.map((n) => [n.id, n]));
-
-  const endLoopNodeIds = new Set(
-    workflow.nodes.filter((n) => n.node_type.type === "EndLoop").map((n) => n.id),
-  );
 
   const outgoing = new Map<string, string[]>();
   const inDegree = new Map<string, number>();
   for (const n of workflow.nodes) inDegree.set(n.id, 0);
   for (const e of workflow.edges) {
-    if (endLoopNodeIds.has(e.from)) continue;
     const list = outgoing.get(e.from) ?? [];
     list.push(e.to);
     outgoing.set(e.from, list);
@@ -68,7 +59,7 @@ export function buildDag(workflow: Workflow, opts?: { skipLoopDone?: boolean }):
 }
 
 export function buildAppNameMap(workflow: Workflow, dag?: DagGraph): Map<string, string | null> {
-  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow, { skipLoopDone: true });
+  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow);
   // Clone inDegree since we mutate it during the walk
   const inDegree = new Map(inDegreeOriginal);
 
@@ -109,7 +100,7 @@ export function computeAppMembers(
   appNameMap: Map<string, string | null>,
   dag?: DagGraph,
 ): Map<string, string[]> {
-  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow, { skipLoopDone: true });
+  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow);
   const inDegree = new Map(inDegreeOriginal);
 
   const queue: string[] = [];

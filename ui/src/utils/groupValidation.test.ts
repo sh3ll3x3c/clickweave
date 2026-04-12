@@ -62,7 +62,7 @@ describe("isConnectedSubgraph", () => {
 describe("validateGroupCreation", () => {
   it("rejects fewer than 2 nodes", () => {
     const workflow = makeWorkflow([node("a", "AiStep")], []);
-    const result = validateGroupCreation(["a"], workflow, [], new Map(), new Map());
+    const result = validateGroupCreation(["a"], workflow, [], new Map());
     expect(result.valid).toBe(false);
     expect(result.error).toMatch(/at least 2/i);
   });
@@ -72,7 +72,7 @@ describe("validateGroupCreation", () => {
       [node("a", "AiStep"), node("b", "AiStep"), node("c", "AiStep")],
       [edge("a", "b")],
     );
-    const result = validateGroupCreation(["a", "c"], workflow, [], new Map(), new Map());
+    const result = validateGroupCreation(["a", "c"], workflow, [], new Map());
     expect(result.valid).toBe(false);
     expect(result.error).toMatch(/connected/i);
   });
@@ -95,7 +95,6 @@ describe("validateGroupCreation", () => {
       ["b", "c", "d"],
       workflow,
       [existingGroup],
-      new Map(),
       new Map(),
     );
     expect(result.valid).toBe(false);
@@ -120,7 +119,6 @@ describe("validateGroupCreation", () => {
       ["a", "b", "c", "d"],
       workflow,
       [existingGroup],
-      new Map(),
       new Map(),
     );
     expect(result.valid).toBe(true);
@@ -153,7 +151,6 @@ describe("validateGroupCreation", () => {
       workflow,
       [parentGroup, subGroup],
       new Map(),
-      new Map(),
     );
     expect(result.valid).toBe(false);
     expect(result.error).toMatch(/nesting/i);
@@ -164,21 +161,9 @@ describe("validateGroupCreation", () => {
       [node("a", "AiStep"), node("b", "AiStep"), node("c", "AiStep")],
       [edge("a", "b"), edge("b", "c")],
     );
-    const result = validateGroupCreation(["a", "b"], workflow, [], new Map(), new Map());
+    const result = validateGroupCreation(["a", "b"], workflow, [], new Map());
     expect(result.valid).toBe(true);
     expect(result.parentGroupId).toBeUndefined();
-  });
-
-  it("rejects partial overlap with loop auto-group", () => {
-    // loopId "loop1" owns nodes a, b, c; we try to select b and d (partial overlap)
-    const loopMembers = new Map([["loop1", ["a", "b", "c"]]]);
-    const workflow = makeWorkflow(
-      [node("a", "AiStep"), node("b", "AiStep"), node("c", "AiStep"), node("d", "AiStep")],
-      [edge("a", "b"), edge("b", "c"), edge("c", "d")],
-    );
-    const result = validateGroupCreation(["b", "c", "d"], workflow, [], loopMembers, new Map());
-    expect(result.valid).toBe(false);
-    expect(result.error).toMatch(/overlap/i);
   });
 
   it("rejects partial overlap with app auto-group", () => {
@@ -189,26 +174,9 @@ describe("validateGroupCreation", () => {
       [node("a", "AiStep"), node("b", "AiStep"), node("c", "AiStep")],
       [edge("a", "b"), edge("b", "c")],
     );
-    const result = validateGroupCreation(["b", "c"], workflow, [], new Map(), appGroups);
+    const result = validateGroupCreation(["b", "c"], workflow, [], appGroups);
     expect(result.valid).toBe(false);
     expect(result.error).toMatch(/overlap/i);
-  });
-
-  it("allows wrapping entire auto-group", () => {
-    const loopMembers = new Map([["loop1", ["b", "c"]]]);
-    const workflow = makeWorkflow(
-      [node("a", "AiStep"), node("b", "AiStep"), node("c", "AiStep"), node("d", "AiStep")],
-      [edge("a", "b"), edge("b", "c"), edge("c", "d")],
-    );
-    // Selecting all 4 nodes fully contains the loop
-    const result = validateGroupCreation(
-      ["a", "b", "c", "d"],
-      workflow,
-      [],
-      loopMembers,
-      new Map(),
-    );
-    expect(result.valid).toBe(true);
   });
 
   it("allows grouping inside an auto-group (all selected nodes within auto-group)", () => {
@@ -218,7 +186,7 @@ describe("validateGroupCreation", () => {
       [node("a", "AiStep"), node("b", "AiStep"), node("c", "AiStep")],
       [edge("a", "b"), edge("b", "c")],
     );
-    const result = validateGroupCreation(["a", "b"], workflow, [], new Map(), appGroups);
+    const result = validateGroupCreation(["a", "b"], workflow, [], appGroups);
     expect(result.valid).toBe(true);
   });
 });

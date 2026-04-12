@@ -11,7 +11,6 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Workflow, Edge } from "../bindings";
-import { useLoopGrouping } from "../hooks/useLoopGrouping";
 import { useAppGrouping } from "../hooks/useAppGrouping";
 import { useUserGrouping } from "../hooks/useUserGrouping";
 import { useNodeSync } from "../hooks/useNodeSync";
@@ -73,7 +72,6 @@ export function GraphCanvas({
     [],
   );
 
-  const loopState = useLoopGrouping(workflow);
   const appState = useAppGrouping(workflow);
   const userGroupState = useUserGrouping(workflow);
 
@@ -96,7 +94,6 @@ export function GraphCanvas({
     workflow,
     selectedNode,
     activeNode,
-    ...loopState,
     collapsedApps: appState.collapsedApps,
     appGroups: appState.appGroups,
     nodeToAppGroup: appState.nodeToAppGroup,
@@ -120,30 +117,15 @@ export function GraphCanvas({
   rfNodesRef.current = rfNodes;
 
   const mergedHiddenNodeIds = useMemo(() => {
-    const ids = new Set(loopState.hiddenNodeIds);
+    const ids = new Set<string>();
     for (const id of userGroupState.hiddenUserGroupNodeIds) ids.add(id);
     return ids;
-  }, [loopState.hiddenNodeIds, userGroupState.hiddenUserGroupNodeIds]);
-
-  // Filter app group edge rewrites to exclude nodes that render independently
-  // (Loop/EndLoop nodes and loop body members — they have their own rendering path)
-  const filteredAppEdgeRewrites = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const [nodeId, anchorId] of appState.collapsedAppEdgeRewrites) {
-      // Skip loop body members, loop nodes, and endloop nodes
-      if (loopState.nodeToLoops.has(nodeId)) continue;
-      if (loopState.endLoopIds.has(nodeId)) continue;
-      const wfNode = workflow.nodes.find((n) => n.id === nodeId);
-      if (wfNode?.node_type.type === "Loop") continue;
-      map.set(nodeId, anchorId);
-    }
-    return map;
-  }, [appState.collapsedAppEdgeRewrites, loopState.nodeToLoops, loopState.endLoopIds, workflow.nodes]);
+  }, [userGroupState.hiddenUserGroupNodeIds]);
 
   const { rfEdges, handleEdgesChange, handleConnect } = useEdgeSync({
     workflow,
     hiddenNodeIds: mergedHiddenNodeIds,
-    collapsedAppEdgeRewrites: filteredAppEdgeRewrites,
+    collapsedAppEdgeRewrites: appState.collapsedAppEdgeRewrites,
     collapsedUserGroupEdgeRewrites: userGroupState.userGroupEdgeRewrites,
     deletedNodeIdsRef,
     onEdgesChange,
@@ -278,11 +260,10 @@ export function GraphCanvas({
             );
             if (!hasEdge) continue;
             // Validate: don't allow adding a node that would break auto-group invariants
-            // (e.g., adding one member of a loop without the rest)
             const candidateIds = [...group.node_ids, rfNode.id];
             const validation = validateGroupCreation(
               candidateIds, workflow, existingGroups.filter((g) => g.id !== group.id),
-              loopState.loopMembers, appState.appGroups,
+              appState.appGroups,
             );
             if (!validation.valid) continue;
             items.push({
@@ -307,7 +288,6 @@ export function GraphCanvas({
         const expandedIds = expandCollapsedSelection(
           rawSelectedIds,
           appState.collapsedApps, appState.nodeToAppGroup, appState.appGroups,
-          loopState.collapsedLoops, loopState.loopMembers,
         );
         const existingGroups = workflow.groups ?? [];
 
@@ -315,7 +295,6 @@ export function GraphCanvas({
           expandedIds,
           workflow,
           existingGroups,
-          loopState.loopMembers,
           appState.appGroups,
         );
 
@@ -343,8 +322,6 @@ export function GraphCanvas({
     },
     [
       workflow,
-      loopState.loopMembers,
-      loopState.collapsedLoops,
       appState.appGroups,
       appState.collapsedApps,
       appState.nodeToAppGroup,
@@ -356,6 +333,7 @@ export function GraphCanvas({
       onDeleteGroupWithContents,
       onRemoveNodesFromGroup,
       onAddNodesToGroup,
+      onRecolorGroup,
     ],
   );
 
@@ -387,13 +365,12 @@ export function GraphCanvas({
       const expandedIds = expandCollapsedSelection(
         rawSelectedIds,
         appState.collapsedApps, appState.nodeToAppGroup, appState.appGroups,
-        loopState.collapsedLoops, loopState.loopMembers,
       );
 
       const existingGroups = workflow.groups ?? [];
       const result = validateGroupCreation(
         expandedIds, workflow, existingGroups,
-        loopState.loopMembers, appState.appGroups,
+        appState.appGroups,
       );
       if (!result.valid) return;
 
@@ -414,14 +391,7 @@ export function GraphCanvas({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [workflow, loopState, appState]);
-
-  // Memoized node lookup for O(1) access during drag validation
-  const nodeById = useMemo(() => {
-    const map = new Map<string, (typeof workflow.nodes)[number]>();
-    for (const n of workflow.nodes) map.set(n.id, n);
-    return map;
-  }, [workflow.nodes]);
+  }, [workflow, appState]);
 
   // Type-safe connection validation for data port drag (called on every mousemove)
   const isValidConnection = useCallback(

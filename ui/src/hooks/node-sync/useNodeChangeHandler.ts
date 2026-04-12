@@ -21,7 +21,6 @@ interface UseNodeChangeHandlerParams {
   appGroups: Map<string, string[]>;
   nodeToAppGroup: Map<string, string>;
   appGroupMeta: Map<string, AppGroupMeta>;
-  nodeToLoops: Map<string, string[]>;
   collapsedUserGroups: Set<string>;
   nodeToUserGroup: Map<string, string>;
   userGroupMeta: Map<string, UserGroupMeta>;
@@ -44,7 +43,6 @@ export function useNodeChangeHandler({
   appGroups,
   nodeToAppGroup,
   appGroupMeta,
-  nodeToLoops,
   collapsedUserGroups,
   nodeToUserGroup,
   userGroupMeta,
@@ -129,7 +127,7 @@ export function useNodeChangeHandler({
         for (const n of updatedNodes) {
           if (n.parentId && n.parentId !== prevParents.get(n.id)) {
             // Check if this node actually belongs to this group
-            if (nodeToAppGroup.get(n.id) !== n.parentId && !nodeToLoops.get(n.id)?.includes(n.parentId) && nodeToUserGroup.get(n.id) !== n.parentId) {
+            if (nodeToAppGroup.get(n.id) !== n.parentId && nodeToUserGroup.get(n.id) !== n.parentId) {
               n.parentId = prevParents.get(n.id);
               n.extent = prevParents.get(n.id) ? "parent" as const : undefined;
             }
@@ -147,7 +145,7 @@ export function useNodeChangeHandler({
               affectedGroups.add(rfNode.parentId);
               const parentRfNode = nodeMap.get(rfNode.parentId);
               if (parentRfNode) {
-                const { headerHeight, padding } = groupConstants(parentRfNode.type ?? "loopGroup");
+                const { headerHeight, padding } = groupConstants(parentRfNode.type ?? "appGroup");
                 // Synthetic group containers need anchor remapping even as children
                 const groupAnchor = userGroupMeta.get(change.id)?.anchorId ?? appGroupMeta.get(change.id)?.anchorId;
                 const posKey = groupAnchor ?? change.id;
@@ -180,7 +178,7 @@ export function useNodeChangeHandler({
               for (const child of updatedNodes) {
                 if (child.parentId === change.id) {
                   const parentNode = nodeMap.get(change.id);
-                  const { headerHeight: ph, padding: pp } = groupConstants(parentNode?.type ?? "loopGroup");
+                  const { headerHeight: ph, padding: pp } = groupConstants(parentNode?.type ?? "appGroup");
                   posUpdates.set(child.id, {
                     x: child.position.x + change.position.x - pp,
                     y: child.position.y + change.position.y - ph - pp,
@@ -221,7 +219,7 @@ export function useNodeChangeHandler({
               maxX = Math.max(maxX, child.position.x + childW);
               maxY = Math.max(maxY, child.position.y + childH);
             }
-            const gc = groupConstants(updatedNodes[groupIdx].type ?? "loopGroup");
+            const gc = groupConstants(updatedNodes[groupIdx].type ?? "appGroup");
             updatedNodes[groupIdx] = {
               ...updatedNodes[groupIdx],
               style: {
@@ -236,6 +234,6 @@ export function useNodeChangeHandler({
         return updatedNodes;
       });
     },
-    [onNodePositionsChange, onSelectNode, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToLoops, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef],
+    [onNodePositionsChange, onSelectNode, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef],
   );
 }

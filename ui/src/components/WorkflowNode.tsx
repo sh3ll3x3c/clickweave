@@ -2,18 +2,6 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NodeRole } from "../bindings";
 import { InlineRenameInput } from "./InlineRenameInput";
-import { typeColor } from "../utils/typeColors";
-
-interface OutputFieldInfo {
-  name: string;
-  field_type: string;
-  description: string;
-}
-
-interface WiredInput {
-  key: string;
-  fieldType: string;
-}
 
 interface WorkflowNodeData {
   label: string;
@@ -23,7 +11,6 @@ interface WorkflowNodeData {
   isActive: boolean;
   enabled: boolean;
   onDelete: () => void;
-  switchCases: string[];
   role: NodeRole;
   autoId?: string;
   bodyCount?: number;
@@ -34,107 +21,11 @@ interface WorkflowNodeData {
   hideSourceHandle?: boolean;
   onRenameConfirm?: (newName: string) => void;
   onRenameCancel?: () => void;
-  outputFields?: OutputFieldInfo[];
-  wiredInputs?: WiredInput[];
-  availableInputs?: WiredInput[];
   [key: string]: unknown;
 }
 
-const CONTROL_FLOW_TYPES = new Set(["If", "Switch", "Loop", "EndLoop"]);
 const EXEC_HANDLE_CLS = "!h-2 !w-2 !rounded-full !border !bg-[var(--bg-panel)]";
 const EXEC_STYLE = { borderColor: "var(--text-muted)" };
-
-function SourceHandles({ data }: { data: WorkflowNodeData }) {
-  const { nodeType, switchCases } = data;
-
-  if (nodeType === "If") {
-    return (
-      <>
-        <Handle type="source" position={Position.Right} id="IfTrue"
-          className={EXEC_HANDLE_CLS} style={{ borderColor: "#10b981", top: "30%" }} />
-        <span className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-          style={{ top: "26%" }}>T</span>
-        <Handle type="source" position={Position.Right} id="IfFalse"
-          className={EXEC_HANDLE_CLS} style={{ borderColor: "#ef4444", top: "70%" }} />
-        <span className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-          style={{ top: "66%" }}>F</span>
-      </>
-    );
-  }
-
-  if (nodeType === "Loop") {
-    return (
-      <Handle type="source" position={Position.Right} id="LoopDone"
-        className={EXEC_HANDLE_CLS} style={{ borderColor: "#f59e0b" }} />
-    );
-  }
-
-  if (nodeType === "Switch") {
-    const totalHandles = switchCases.length + 1;
-    return (
-      <>
-        {switchCases.map((caseName, i) => {
-          const pct = ((i + 1) / (totalHandles + 1)) * 100;
-          return (
-            <span key={caseName}>
-              <Handle type="source" position={Position.Right} id={`SwitchCase:${caseName}`}
-                className={EXEC_HANDLE_CLS} style={{ borderColor: "#10b981", top: `${pct}%` }} />
-              <span className="absolute right-5 text-[8px] text-[var(--text-muted)] whitespace-nowrap"
-                style={{ top: `${pct - 4}%` }}>{caseName}</span>
-            </span>
-          );
-        })}
-        {(() => {
-          const pct = (totalHandles / (totalHandles + 1)) * 100;
-          return (
-            <span>
-              <Handle type="source" position={Position.Right} id="SwitchDefault"
-                className={EXEC_HANDLE_CLS} style={{ borderColor: "#666", top: `${pct}%` }} />
-              <span className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-                style={{ top: `${pct - 4}%` }}>default</span>
-            </span>
-          );
-        })()}
-      </>
-    );
-  }
-
-  return (
-    <Handle type="source" position={Position.Right}
-      className={EXEC_HANDLE_CLS} style={EXEC_STYLE}
-      isConnectable={!data.hideSourceHandle} />
-  );
-}
-
-const DATA_PORT_CLS = "!h-2.5 !w-2.5 !rounded-full !border-0";
-
-/** Data port handles — renders colored dots for output fields or wired input refs. */
-function PortHandles({ items, type, position, idPrefix, sideOffset }: {
-  items: { key: string; color: string }[];
-  type: "source" | "target";
-  position: typeof Position.Left | typeof Position.Right;
-  idPrefix: string;
-  sideOffset: "left" | "right";
-}) {
-  if (items.length === 0) return null;
-  return (
-    <>
-      {items.map((item, i) => {
-        const pct = 30 + ((i + 1) / (items.length + 1)) * 60;
-        return (
-          <Handle
-            key={`${idPrefix}${item.key}`}
-            type={type}
-            position={position}
-            id={`${idPrefix}${item.key}`}
-            className={DATA_PORT_CLS}
-            style={{ top: `${pct}%`, backgroundColor: item.color, [sideOffset]: -10 }}
-          />
-        );
-      })}
-    </>
-  );
-}
 
 export const WorkflowNode = memo(function WorkflowNode({
   data,
@@ -148,7 +39,6 @@ export const WorkflowNode = memo(function WorkflowNode({
     isActive,
     enabled,
     onDelete,
-    nodeType,
     role,
     autoId,
     bodyCount,
@@ -161,17 +51,14 @@ export const WorkflowNode = memo(function WorkflowNode({
   } = d;
   const isVerification = role === "Verification";
   const isCollapsedGroup = bodyCount != null;
-  const isControlFlow = CONTROL_FLOW_TYPES.has(nodeType);
-  const needsTallNode = nodeType === "If";
-  const needsExtraTallNode = nodeType === "Switch" && d.switchCases.length > 1;
 
   return (
     <div
       className={`group relative min-w-[140px] rounded-lg border-2 bg-[var(--bg-panel)] transition-shadow ${
         !enabled ? "opacity-50" : ""
-      } ${isHypothetical ? "opacity-50 border-dashed" : ""} ${needsTallNode ? "min-h-[60px]" : ""} ${needsExtraTallNode ? "min-h-[80px]" : ""}`}
+      } ${isHypothetical ? "opacity-50 border-dashed" : ""}`}
       style={{
-        borderColor: selected ? color : isVerification ? "#f59e0b" : isControlFlow ? "#10b98144" : "var(--border)",
+        borderColor: selected ? color : isVerification ? "#f59e0b" : "var(--border)",
         boxShadow: selected ? `0 0 12px ${color}33` : "none",
       }}
     >
@@ -240,30 +127,20 @@ export const WorkflowNode = memo(function WorkflowNode({
               onToggleCollapse();
             }}
             className="ml-auto flex h-5 w-5 items-center justify-center rounded text-[10px] text-[var(--text-muted)] transition-opacity duration-150 hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
-            title="Expand loop"
+            title="Expand"
           >
             &#x25B6;
           </button>
         )}
       </div>
 
-      <SourceHandles data={d} />
-      {d.outputFields && d.outputFields.length > 0 && (
-        <PortHandles
-          items={d.outputFields.map((f: OutputFieldInfo) => ({ key: f.name, color: typeColor(f.field_type) }))}
-          type="source" position={Position.Right} idPrefix="data-" sideOffset="right"
-        />
-      )}
-      {/* Input port dots for all ref-capable params (wired and unwired) */}
-      {d.availableInputs && d.availableInputs.length > 0 && (
-        <PortHandles
-          items={d.availableInputs.map((a) => {
-            const wired = d.wiredInputs?.find((w) => w.key === a.key);
-            return { key: a.key, color: typeColor(wired?.fieldType ?? a.fieldType) };
-          })}
-          type="target" position={Position.Left} idPrefix="data-input-" sideOffset="left"
-        />
-      )}
+      <Handle
+        type="source"
+        position={Position.Right}
+        className={EXEC_HANDLE_CLS}
+        style={EXEC_STYLE}
+        isConnectable={!d.hideSourceHandle}
+      />
     </div>
   );
 });

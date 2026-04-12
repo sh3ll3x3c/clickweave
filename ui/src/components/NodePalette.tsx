@@ -40,7 +40,6 @@ const PALETTE_GROUPS: PaletteGroup[] = [
     ],
   },
   { label: "AI", types: ["AiStep"] },
-  { label: "Control Flow", types: ["If", "Switch", "Loop", "EndLoop"] },
   { label: "Generic", types: ["McpToolCall", "AppDebugKitOp"] },
 ];
 
