@@ -42,9 +42,11 @@ pub struct AgentHandle {
 
 impl AgentHandle {
     /// Cancel the running agent task.
-    /// Returns `true` if a task was actually running.
+    /// Returns `true` if a task was actually running (or starting).
     pub fn force_stop(&mut self) -> bool {
-        let had_task = self.task_handle.is_some();
+        // Check cancel_token too — it's installed before the task handle
+        // so stop_agent works even during the spawn window.
+        let had_task = self.cancel_token.is_some() || self.task_handle.is_some();
         if let Some(token) = self.cancel_token.take() {
             token.cancel();
         }
@@ -69,7 +71,8 @@ pub async fn run_agent(
 ) -> Result<(), CommandError> {
     {
         let handle = app.state::<Mutex<AgentHandle>>();
-        if handle.lock().unwrap().task_handle.is_some() {
+        let guard = handle.lock().unwrap();
+        if guard.cancel_token.is_some() || guard.task_handle.is_some() {
             return Err(CommandError::already_running());
         }
     }
@@ -119,10 +122,20 @@ pub async fn run_agent(
     let event_run_id = run_id.clone();
     let approval_run_id = run_id.clone();
 
-    // Channels used to signal cleanup when both the agent task and event
-    // forwarder have finished, preventing stale event leakage.
+    // Channels used to signal cleanup when the agent task, event forwarder,
+    // and approval forwarder have all finished, preventing stale event leakage.
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
     let (events_done_tx, events_done_rx) = tokio::sync::oneshot::channel::<()>();
+    let (approval_done_tx, approval_done_rx) = tokio::sync::oneshot::channel::<()>();
+
+    // Install cancel_token and run_id before spawning so stop_agent() works
+    // even during the spawn window (before task_handle is available).
+    {
+        let handle = app.state::<Mutex<AgentHandle>>();
+        let mut guard = handle.lock().unwrap();
+        guard.cancel_token = Some(cancel_token);
+        guard.run_id = Some(run_id.clone());
+    }
 
     // Emit agent://started so the frontend knows the run_id before any other events.
     let _ = app.emit("agent://started", serde_json::json!({ "run_id": &run_id }));
@@ -318,11 +331,10 @@ pub async fn run_agent(
                                     let _ = event_emit_handle.emit("agent://edge_added",
                                         serde_json::json!({ "run_id": event_run_id, "edge": edge }));
                                 }
-                                AgentEvent::GoalComplete { summary } => {
-                                    let _ = event_emit_handle.emit(
-                                        "agent://goal_complete",
-                                        serde_json::json!({ "run_id": event_run_id, "summary": summary }),
-                                    );
+                                AgentEvent::GoalComplete { .. } => {
+                                    // Terminal completion is emitted as agent://complete
+                                    // by the main task after the agent loop finishes.
+                                    // This in-band event is only used for durable tracing.
                                 }
                                 AgentEvent::Error { message } => {
                                     let _ = event_emit_handle.emit(
@@ -418,25 +430,35 @@ pub async fn run_agent(
                         None => break,
                     }
                 }
-                _ = forwarder_token.cancelled() => break,
+                _ = forwarder_token.cancelled() => {
+                    // Drain any queued approval requests, sending rejection
+                    // so the engine sees Ok(false) instead of a channel drop.
+                    while let Ok((_req, resp_tx)) = approval_rx.try_recv() {
+                        let _ = resp_tx.send(false);
+                    }
+                    break;
+                }
             }
         }
+        let _ = approval_done_tx.send(());
     });
 
+    // Store task_handle now that it's available (cancel_token + run_id
+    // were already installed before spawn).
     {
         let handle = app.state::<Mutex<AgentHandle>>();
         let mut guard = handle.lock().unwrap();
-        guard.cancel_token = Some(cancel_token);
         guard.task_handle = Some(task_handle);
-        guard.run_id = Some(run_id);
     }
 
-    // Spawn cleanup task: wait for both the agent task and the event forwarder
-    // to complete before clearing the handle. This prevents stale buffered
-    // events from leaking into a subsequent run.
+    // Spawn cleanup task: wait for the agent task, event forwarder, and
+    // approval forwarder to all complete before clearing the handle. This
+    // prevents stale buffered events or approvals from leaking into a
+    // subsequent run.
     tauri::async_runtime::spawn(async move {
         let _ = done_rx.await;
         let _ = events_done_rx.await;
+        let _ = approval_done_rx.await;
 
         let handle = cleanup_handle.state::<Mutex<AgentHandle>>();
         let mut guard = handle.lock().unwrap();

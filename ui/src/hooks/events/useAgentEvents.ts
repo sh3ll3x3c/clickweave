@@ -86,10 +86,10 @@ export function useAgentEvents() {
             .pushLog(`Critical: agent event listener failed: ${err}`);
         });
 
-    /** Reject events from a stale run. */
+    /** Reject events from a stale run or during the null gap before agent://started. */
     const isStale = (runId: string): boolean => {
       const activeRunId = useStore.getState().agentRunId;
-      return activeRunId !== null && runId !== activeRunId;
+      return activeRunId === null || runId !== activeRunId;
     };
 
     // ── Run lifecycle ──────────────────────────────────────────
