@@ -57,3 +57,48 @@ describe("agentSlice.startAgent", () => {
     expect(useStore.getState().agentRunId).toBeNull();
   });
 });
+
+describe("agentSlice approval actions", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+  });
+
+  it("formats structured Tauri errors from approveAction into the activity log", async () => {
+    useStore.getState().setPendingApproval({
+      stepIndex: 0,
+      toolName: "click",
+      arguments: {},
+      description: "Click the button",
+    });
+    invokeMock.mockRejectedValueOnce({
+      kind: "Validation",
+      message: "No pending approval request",
+    });
+
+    await useStore.getState().approveAction();
+
+    const lastLog = useStore.getState().logs.at(-1);
+    expect(lastLog).toContain("No pending approval request");
+    expect(lastLog).not.toContain("[object Object]");
+  });
+
+  it("formats structured Tauri errors from rejectAction into the activity log", async () => {
+    useStore.getState().setPendingApproval({
+      stepIndex: 0,
+      toolName: "click",
+      arguments: {},
+      description: "Click the button",
+    });
+    invokeMock.mockRejectedValueOnce({
+      kind: "Validation",
+      message: "Approval channel closed — agent task may have ended",
+    });
+
+    await useStore.getState().rejectAction();
+
+    const lastLog = useStore.getState().logs.at(-1);
+    expect(lastLog).toContain("Approval channel closed");
+    expect(lastLog).not.toContain("[object Object]");
+  });
+});
