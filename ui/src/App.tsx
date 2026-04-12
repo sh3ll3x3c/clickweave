@@ -13,7 +13,6 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
-import { SupervisorConfirmation } from "./components/SupervisorConfirmation";
 import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
 import { useEffect, useMemo } from "react";
 import { useEscapeKey } from "./hooks/useEscapeKey";
@@ -62,14 +61,11 @@ function App() {
     })),
   );
 
-  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, messages, contextUsage, agentStatus } = useStore(
+  const { assistantOpen, assistantError, messages, agentStatus } = useStore(
     useShallow((s) => ({
       assistantOpen: s.assistantOpen,
-      assistantLoading: s.assistantLoading,
-      assistantRetrying: s.assistantRetrying,
       assistantError: s.assistantError,
       messages: s.messages,
-      contextUsage: s.contextUsage,
       agentStatus: s.agentStatus,
     })),
   );
@@ -126,8 +122,6 @@ function App() {
   const setWalkthroughPanelOpen = useStore((s) => s.setWalkthroughPanelOpen);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
   const startAgent = useStore((s) => s.startAgent);
-  const cancelAssistantChat = useStore((s) => s.cancelAssistantChat);
-  const clearConversation = useStore((s) => s.clearConversation);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const setSupervisionDelayMs = useStore((s) => s.setSupervisionDelayMs);
@@ -261,14 +255,9 @@ function App() {
 
               <AssistantPanel
                 open={assistantOpen}
-                loading={assistantLoading}
-                retrying={assistantRetrying}
                 error={assistantError}
                 messages={messages}
-                contextUsage={contextUsage}
                 onSendMessage={startAgent}
-                onCancel={cancelAssistantChat}
-                onClearConversation={clearConversation}
                 onClose={() => setAssistantOpen(false)}
               />
 
@@ -328,8 +317,6 @@ function App() {
           onRespond={supervisionRespond}
         />
       )}
-
-      <SupervisorConfirmation />
 
       <CdpAppSelectModal
         open={cdpModalOpen}

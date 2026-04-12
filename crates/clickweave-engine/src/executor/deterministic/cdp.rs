@@ -102,11 +102,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    /// Sentinel UID returned when a contenteditable element was focused
-    /// directly via JS — the caller should skip the `cdp_click` because the
-    /// element already has DOM focus.
-    const FOCUSED_VIA_JS: &'static str = "__focused_via_js__";
-
     /// Sentinel prefix for native fallback when an element is visible on
     /// screen but invisible in the CDP accessibility tree. Format:
     /// `__native_at__:X:Y` where X,Y are screen coordinates.
@@ -124,21 +119,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         _retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
         let uid = self.resolve_cdp_element_uid(target, mcp).await?;
-
-        // Contenteditable elements focused via JS don't have a clickable
-        // UID — skip the action to avoid stealing focus.
-        if uid == Self::FOCUSED_VIA_JS {
-            self.log(format!(
-                "CDP: '{}' already focused via JS, skipping {}",
-                target, action
-            ));
-            self.record_event(
-                node_run,
-                &format!("cdp_{}", action),
-                serde_json::json!({ "target": target, "uid": uid }),
-            );
-            return Ok(format!("Focused '{}' via JS", target));
-        }
 
         // Element visible on screen but not in CDP snapshot — use native
         // click/move_mouse at screen coordinates instead of cdp_click/hover.
@@ -238,49 +218,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ) -> ExecutorResult<String> {
         self.execute_cdp_action("hover", node_id, target, mcp, node_run, retry_ctx)
             .await
-    }
-
-    /// Focus a contenteditable element by label via JS.
-    ///
-    /// Contenteditable elements are often invisible in the accessibility tree
-    /// (nameless generic containers all the way up). Instead of trying to
-    /// resolve a UID, we focus the element directly via JS and return the
-    /// `FOCUSED_VIA_JS` sentinel so the caller skips `cdp_click`.
-    async fn focus_contenteditable_via_js(
-        &self,
-        label: &str,
-        mcp: &(impl Mcp + ?Sized),
-    ) -> Option<String> {
-        let focus_js = format!(
-            r#"() => {{
-                const all = document.querySelectorAll('*');
-                for (const el of all) {{
-                    if (!el.isContentEditable || !el.parentElement || el.parentElement.isContentEditable) continue;
-                    const lbl = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('data-placeholder') || '';
-                    if (lbl === '{}') {{ el.focus(); el.click(); return true; }}
-                }}
-                return false;
-            }}"#,
-            label.replace('\\', "\\\\").replace('\'', "\\'")
-        );
-        let focus_result = mcp
-            .call_tool(
-                "cdp_evaluate_script",
-                Some(serde_json::json!({ "function": focus_js })),
-            )
-            .await;
-        match focus_result {
-            Ok(ref r) if r.is_error != Some(true) => {
-                let text = Self::extract_result_text(r);
-                if text.contains("true") {
-                    self.log(format!("CDP: focused contenteditable '{}' via JS", label));
-                    return Some(Self::FOCUSED_VIA_JS.to_string());
-                }
-            }
-            _ => {}
-        }
-        self.log("CDP: JS focus call failed for contenteditable");
-        None
     }
 
     /// Ensure a CDP connection is available for the given Electron/Chrome app.

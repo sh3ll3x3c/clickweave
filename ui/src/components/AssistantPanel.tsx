@@ -1,32 +1,21 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import type { ChatEntry } from "../bindings";
-import { ChatMessage } from "./ChatMessage";
+import { useState, useRef, useEffect } from "react";
+import type { AssistantMessage } from "../store/slices/assistantSlice";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import { useStore } from "../store/useAppStore";
 
 interface AssistantPanelProps {
   open: boolean;
-  loading: boolean;
-  retrying: boolean;
   error: string | null;
-  messages: ChatEntry[];
-  contextUsage: number | null;
+  messages: AssistantMessage[];
   onSendMessage: (message: string) => void;
-  onCancel: () => void;
-  onClearConversation: () => void;
   onClose: () => void;
 }
 
 export function AssistantPanel({
   open,
-  loading,
-  retrying,
   error,
   messages,
-  contextUsage,
   onSendMessage,
-  onCancel,
-  onClearConversation,
   onClose,
 }: AssistantPanelProps) {
   const [input, setInput] = useState("");
@@ -44,7 +33,7 @@ export function AssistantPanel({
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, loading]);
+  }, [messages.length]);
 
   // Focus textarea when panel opens
   useEffect(() => {
@@ -59,7 +48,7 @@ export function AssistantPanel({
 
   const handleSend = () => {
     const trimmed = input.trim();
-    if (!trimmed || loading) return;
+    if (!trimmed) return;
     setInput("");
     onSendMessage(trimmed);
   };
@@ -70,12 +59,6 @@ export function AssistantPanel({
       handleSend();
     }
   };
-
-  // Find the index of the last assistant message
-  const lastAssistantIndex = messages.reduceRight(
-    (found, msg, idx) => (found === -1 && msg.role === "assistant" ? idx : found),
-    -1,
-  );
 
   const hasMessages = messages.length > 0;
 
@@ -92,22 +75,8 @@ export function AssistantPanel({
           <h2 className="text-sm font-medium text-[var(--text-primary)]">
             Assistant
           </h2>
-          {contextUsage != null && (
-            <span className={`text-[10px] ${contextUsage > 0.8 ? "text-amber-400" : "text-[var(--text-muted)]"}`}>
-              Context: {Math.round(contextUsage * 100)}%
-            </span>
-          )}
         </div>
         <div className="flex items-center gap-1">
-          {hasMessages && (
-            <button
-              onClick={onClearConversation}
-              className="rounded px-2 py-1 text-[11px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]"
-              title="Clear conversation"
-            >
-              Clear
-            </button>
-          )}
           <button
             onClick={onClose}
             className="rounded px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
@@ -133,40 +102,26 @@ export function AssistantPanel({
 
         <div className="space-y-3">
           {messages.map((entry, idx) => {
-            if (entry.role === "tool_call") {
-              return (
-                <div key={`${entry.timestamp}-${idx}`} className="px-3 py-1 text-[10px] text-[var(--text-muted)] font-mono">
-                  &rarr; {entry.tool_name}
-                </div>
-              );
-            }
-            if (entry.role === "tool_result") {
-              return (
-                <div key={`${entry.timestamp}-${idx}`} className="px-3 py-1 text-[10px] text-[var(--text-muted)]">
-                  &larr; {entry.content.slice(0, 100)}{entry.content.length > 100 ? "..." : ""}
-                </div>
-              );
-            }
+            const isUser = entry.role === "user";
             return (
-              <ChatMessage
+              <div
                 key={`${entry.timestamp}-${idx}`}
-                entry={entry}
-                isLastAssistant={idx === lastAssistantIndex}
-              />
+                className={`group flex flex-col ${isUser ? "items-end" : "items-start"}`}
+              >
+                <div
+                  className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                    isUser
+                      ? "bg-[var(--accent-coral)]/15 text-[var(--text-primary)]"
+                      : "bg-[var(--bg-hover)] text-[var(--text-primary)]"
+                  }`}
+                >
+                  <div className="whitespace-pre-wrap break-words leading-relaxed select-text">
+                    {entry.content}
+                  </div>
+                </div>
+              </div>
             );
           })}
-
-          {/* Loading indicator */}
-          {loading && (
-            <div className="flex justify-start">
-              <div className="flex items-center gap-2 rounded-lg bg-[var(--bg-hover)] px-3 py-2">
-                <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--accent-coral)] border-t-transparent" />
-                <span className="text-xs text-[var(--text-secondary)]">
-                  {retrying ? "Improving..." : "Thinking..."}
-                </span>
-              </div>
-            </div>
-          )}
 
           <div ref={messagesEndRef} />
         </div>
@@ -245,26 +200,15 @@ export function AssistantPanel({
                 onKeyDown={handleKeyDown}
                 placeholder="Ask about your workflow..."
                 rows={2}
-                disabled={loading}
                 className="flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent-coral)]"
               />
-              {loading ? (
-                <button
-                  onClick={onCancel}
-                  className="self-end rounded-lg border border-[var(--text-muted)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:border-[var(--text-primary)] hover:text-[var(--text-primary)]"
-                  title="Stop request"
-                >
-                  Stop
-                </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  disabled={!input.trim()}
-                  className="self-end rounded-lg bg-[var(--accent-coral)] px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
-                >
-                  Send
-                </button>
-              )}
+              <button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                className="self-end rounded-lg bg-[var(--accent-coral)] px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+              >
+                Send
+              </button>
             </div>
             <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
               Enter to send, Shift+Enter for new line
@@ -278,9 +222,6 @@ export function AssistantPanel({
 
 function IntentBar() {
   const workflowIntent = useStore((s) => s.workflow.intent);
-  const pendingIntent = useStore((s) => s.pendingIntent);
-  const hasPendingPatch = false;
-  const hasPendingIntent = useStore((s) => s.hasPendingIntent);
   const setIntent = useStore((s) => s.setIntent);
   const isRunning = useStore((s) => s.executorState === "running");
   const [editing, setEditing] = useState(false);
@@ -291,8 +232,7 @@ function IntentBar() {
     if (isRunning && editing) setEditing(false);
   }, [isRunning, editing]);
 
-  // Show staged intent when explicitly set, otherwise fall back to committed.
-  const displayIntent = hasPendingPatch && hasPendingIntent ? pendingIntent : workflowIntent;
+  const displayIntent = workflowIntent;
 
   const startEdit = () => {
     if (isRunning) return;
@@ -302,12 +242,7 @@ function IntentBar() {
 
   const commit = () => {
     const value = draft.trim() || null;
-    if (hasPendingPatch) {
-      // Update the staged pendingIntent so it's applied with the patch
-      useStore.setState({ pendingIntent: value, hasPendingIntent: true });
-    } else {
-      setIntent(value);
-    }
+    setIntent(value);
     setEditing(false);
   };
 

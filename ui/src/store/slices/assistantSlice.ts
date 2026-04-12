@@ -1,47 +1,32 @@
 import type { StateCreator } from "zustand";
-import type { ChatEntry, WorkflowPatch } from "../../bindings";
 import { isWalkthroughActive } from "./walkthroughSlice";
 import type { StoreState } from "./types";
 
+/**
+ * Minimal message shape for the assistant panel. No producer currently
+ * populates this array; kept as a shell so the UI surface can be re-wired
+ * when an assistant backend returns.
+ */
+export interface AssistantMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+}
+
 export interface AssistantSlice {
-  /** Display-only message array, populated by assistant://message events. */
-  messages: ChatEntry[];
-  /** Session ID used to filter incoming assistant events. */
-  expectedSessionId: string | null;
+  messages: AssistantMessage[];
   assistantOpen: boolean;
-  assistantLoading: boolean;
-  assistantRetrying: boolean;
   assistantError: string | null;
-  pendingPatch: WorkflowPatch | null;
-  pendingPatchWarnings: string[];
-  pendingIntent: string | null;
-  hasPendingIntent: boolean;
-  contextUsage: number | null;
 
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
-  sendAssistantMessage: (message: string) => Promise<void>;
-  applyApprovedPatch: () => Promise<void>;
-  discardPendingPatch: () => void;
-  cancelAssistantChat: () => Promise<void>;
-  clearConversation: () => void;
-  appendAssistantMessage: (sessionId: string, entry: ChatEntry) => void;
-  setExpectedSessionId: (sessionId: string) => void;
-  setMessages: (messages: ChatEntry[]) => void;
+  setAssistantError: (error: string | null) => void;
 }
 
 export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSlice> = (set, get) => ({
   messages: [],
-  expectedSessionId: null,
   assistantOpen: false,
-  assistantLoading: false,
-  assistantRetrying: false,
   assistantError: null,
-  pendingPatch: null,
-  pendingPatchWarnings: [],
-  pendingIntent: null,
-  hasPendingIntent: false,
-  contextUsage: null,
 
   setAssistantOpen: (open) => {
     if (open && isWalkthroughActive(get().walkthroughStatus)) {
@@ -67,56 +52,5 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
     set({ assistantOpen: opening });
   },
 
-  sendAssistantMessage: async (_message) => {
-    set({ assistantLoading: true, assistantError: null, assistantRetrying: false });
-    // TODO: Assistant chat backend was removed — use agent mode instead.
-    get().pushLog("Assistant not available — use agent mode");
-    set({ assistantLoading: false });
-  },
-
-  applyApprovedPatch: async () => {
-    // No-op: assistant patch workflow was removed with the assistant backend.
-  },
-
-  discardPendingPatch: () => {
-    set({
-      pendingPatch: null,
-      pendingPatchWarnings: [],
-      pendingIntent: null,
-      hasPendingIntent: false,
-      assistantError: null,
-    });
-  },
-
-  cancelAssistantChat: async () => {
-    set({ assistantLoading: false, assistantError: null, assistantRetrying: false });
-  },
-
-  clearConversation: () => {
-    set({
-      messages: [],
-      expectedSessionId: null,
-      pendingPatch: null,
-      pendingPatchWarnings: [],
-      pendingIntent: null,
-      hasPendingIntent: false,
-      assistantError: null,
-      contextUsage: null,
-    });
-  },
-
-  appendAssistantMessage: (sessionId, entry) => {
-    if (get().expectedSessionId !== null && get().expectedSessionId !== sessionId) return;
-    set((s) => ({ messages: [...s.messages, entry] }));
-  },
-
-  setExpectedSessionId: (sessionId) => {
-    const current = get().expectedSessionId;
-    if (current === sessionId) return;
-    set({ expectedSessionId: sessionId, messages: current === null ? get().messages : [] });
-  },
-
-  setMessages: (messages) => {
-    set({ messages });
-  },
+  setAssistantError: (error) => set({ assistantError: error }),
 });

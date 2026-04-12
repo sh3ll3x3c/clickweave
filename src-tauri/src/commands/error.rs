@@ -12,10 +12,8 @@ pub struct CommandError {
 pub enum ErrorKind {
     Validation,
     Io,
-    Llm,
     Mcp,
     AlreadyRunning,
-    Cancelled,
     Internal,
 }
 
@@ -58,13 +56,6 @@ impl CommandError {
         }
     }
 
-    pub fn llm(msg: impl std::fmt::Display) -> Self {
-        Self {
-            kind: ErrorKind::Llm,
-            message: msg.to_string(),
-        }
-    }
-
     pub fn mcp(msg: impl std::fmt::Display) -> Self {
         Self {
             kind: ErrorKind::Mcp,
@@ -76,13 +67,6 @@ impl CommandError {
         Self {
             kind: ErrorKind::AlreadyRunning,
             message: "Already running".into(),
-        }
-    }
-
-    pub fn cancelled() -> Self {
-        Self {
-            kind: ErrorKind::Cancelled,
-            message: "cancelled".into(),
         }
     }
 

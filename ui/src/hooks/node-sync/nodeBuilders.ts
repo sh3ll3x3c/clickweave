@@ -4,9 +4,7 @@ import { usesCdp } from "../../utils/appKind";
 import { nodeMetadata, defaultNodeMetadata } from "../../constants/nodeMetadata";
 import { buildDag, type DagGraph, isAppAnchorNode } from "../../utils/appGroupComputation";
 
-// Layout constants for loop group positioning
-export const LOOP_HEADER_HEIGHT = 40;
-export const LOOP_PADDING = 20;
+// Layout constants shared across group renderings
 export const APPROX_NODE_WIDTH = 160;
 export const APPROX_NODE_HEIGHT = 50;
 export const MIN_GROUP_WIDTH = 300;
@@ -23,8 +21,7 @@ export const USER_GROUP_PADDING = 20;
 /** Return layout constants for a group node type. */
 export function groupConstants(parentType: string): { headerHeight: number; padding: number } {
   if (parentType === "appGroup") return { headerHeight: APP_GROUP_HEADER_HEIGHT, padding: APP_GROUP_PADDING };
-  if (parentType === "userGroup") return { headerHeight: USER_GROUP_HEADER_HEIGHT, padding: USER_GROUP_PADDING };
-  return { headerHeight: LOOP_HEADER_HEIGHT, padding: LOOP_PADDING };
+  return { headerHeight: USER_GROUP_HEADER_HEIGHT, padding: USER_GROUP_PADDING };
 }
 
 export function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | undefined {
@@ -124,13 +121,9 @@ export function toRFNode(
       isActive: node.id === activeNode,
       enabled: node.enabled,
       onDelete,
-      switchCases: [],
       role: node.role,
       autoId: node.auto_id,
       subtitle: nodeSubtitle(node.node_type, appKind),
-      outputFields: [],
-      wiredInputs: [],
-      availableInputs: [],
     },
   };
 }

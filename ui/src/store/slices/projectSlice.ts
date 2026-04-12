@@ -43,14 +43,8 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       workflow: projectResult.data.workflow,
       selectedNode: null,
       isNewWorkflow: false,
-      pendingPatch: null,
-      pendingPatchWarnings: [],
-      pendingIntent: null,
-      hasPendingIntent: false,
       assistantError: null,
-      contextUsage: null,
       messages: [],
-      expectedSessionId: null,
     });
     get().clearHistory();
 
@@ -87,13 +81,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       selectedNode: null,
       isNewWorkflow: true,
       messages: [],
-      expectedSessionId: null,
-      pendingPatch: null,
-      pendingPatchWarnings: [],
-      pendingIntent: null,
-      hasPendingIntent: false,
       assistantError: null,
-      contextUsage: null,
     });
     get().clearHistory();
     pushLog("New project created");

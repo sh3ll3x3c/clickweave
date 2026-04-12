@@ -46,35 +46,12 @@ export function isConnectedSubgraph(nodeIds: string[], workflow: Workflow): bool
 }
 
 /**
- * Check if the selection partially overlaps with any group in `memberGroups`.
- * Returns an error message if partial overlap is found, or null if OK.
- */
-function checkPartialOverlap(
-  selectedIds: string[],
-  selectedSet: Set<string>,
-  memberGroups: Iterable<[string, string[]]>,
-  label: string,
-): string | null {
-  for (const [, memberIds] of memberGroups) {
-    const memberSet = new Set(memberIds);
-    const overlappingCount = selectedIds.filter((id) => memberSet.has(id)).length;
-    if (overlappingCount === 0) continue;
-    const selectionFullyInside = selectedIds.every((id) => memberSet.has(id));
-    if (selectionFullyInside) continue;
-    const selectionFullyContains = overlappingCount === memberIds.length;
-    if (selectionFullyContains) continue;
-    return `Partial overlap with ${label} is not allowed. Include all or none of its nodes.`;
-  }
-  return null;
-}
-
-/**
  * Validate a proposed group creation.
  *
  * Rules:
  * - At least 2 nodes required.
  * - Selected nodes must form a connected induced subgraph.
- * - No partial overlap with any auto-group (loop or app) — all or nothing.
+ * - No partial overlap with any app auto-group — all or nothing.
  * - No partial overlap with any existing user group — all or nothing.
  * - Nesting depth is capped at 2: a subgroup (group with a parent) cannot
  *   itself become a parent.
@@ -87,7 +64,6 @@ export function validateGroupCreation(
   selectedIds: string[],
   workflow: Workflow,
   existingGroups: NodeGroup[],
-  loopMembers: Map<string, string[]>,
   appGroups: Map<string, string[]>,
 ): ValidationResult {
   if (selectedIds.length < 2) {
@@ -97,8 +73,6 @@ export function validateGroupCreation(
   if (!isConnectedSubgraph(selectedIds, workflow)) {
     return { valid: false, error: "Selected nodes must form a connected subgraph." };
   }
-
-  const selectedSet = new Set(selectedIds);
 
   // Determine the deepest existing user group that fully contains the selection.
   // This candidate becomes the parent of the new group (if any).
@@ -133,13 +107,20 @@ export function validateGroupCreation(
     }
   }
 
-  // Check partial overlap with loop auto-groups.
-  const loopOverlap = checkPartialOverlap(selectedIds, selectedSet, loopMembers, "a loop group");
-  if (loopOverlap) return { valid: false, error: loopOverlap };
-
   // Check partial overlap with app auto-groups.
-  const appOverlap = checkPartialOverlap(selectedIds, selectedSet, appGroups, "an app group");
-  if (appOverlap) return { valid: false, error: appOverlap };
+  for (const [, memberIds] of appGroups) {
+    const memberSet = new Set(memberIds);
+    const overlappingCount = selectedIds.filter((id) => memberSet.has(id)).length;
+    if (overlappingCount === 0) continue;
+    const selectionFullyInside = selectedIds.every((id) => memberSet.has(id));
+    if (selectionFullyInside) continue;
+    const selectionFullyContains = overlappingCount === memberIds.length;
+    if (selectionFullyContains) continue;
+    return {
+      valid: false,
+      error: "Partial overlap with an app group is not allowed. Include all or none of its nodes.",
+    };
+  }
 
   // Check partial overlap with existing user groups.
   const userGroupEntries: [string, string[]][] = existingGroups
@@ -218,15 +199,13 @@ export function topologicalSortMembers(nodeIds: string[], workflow: Workflow): s
 
 /**
  * Expand collapsed auto-group pills in a selection to their full member lists.
- * Collapsed app groups and collapsed loops are expanded; regular nodes pass through.
+ * Collapsed app groups are expanded; regular nodes pass through.
  */
 export function expandCollapsedSelection(
   rawSelectedIds: string[],
   collapsedApps: Set<string>,
   nodeToAppGroup: Map<string, string>,
   appGroups: Map<string, string[]>,
-  collapsedLoops: Set<string>,
-  loopMembers: Map<string, string[]>,
 ): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -236,11 +215,6 @@ export function expandCollapsedSelection(
     const appGroupId = nodeToAppGroup.get(id);
     if (appGroupId && collapsedApps.has(appGroupId)) {
       for (const m of appGroups.get(appGroupId) ?? []) add(m);
-      continue;
-    }
-    if (collapsedLoops.has(id)) {
-      add(id);
-      for (const m of loopMembers.get(id) ?? []) add(m);
       continue;
     }
     add(id);

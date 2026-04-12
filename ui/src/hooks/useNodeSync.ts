@@ -13,12 +13,6 @@ interface UseNodeSyncParams {
   workflow: Workflow;
   selectedNode: string | null;
   activeNode: string | null;
-  collapsedLoops: Set<string>;
-  loopMembers: Map<string, string[]>;
-  nodeToLoops: Map<string, string[]>;
-  endLoopIds: Set<string>;
-  endLoopForLoop: Map<string, string>;
-  toggleLoopCollapse: (loopId: string) => void;
   // App grouping params
   collapsedApps: Set<string>;
   appGroups: Map<string, string[]>;
@@ -43,12 +37,6 @@ export function useNodeSync({
   workflow,
   selectedNode,
   activeNode,
-  collapsedLoops,
-  loopMembers,
-  nodeToLoops,
-  endLoopIds,
-  endLoopForLoop,
-  toggleLoopCollapse,
   collapsedApps,
   appGroups,
   nodeToAppGroup,
@@ -75,12 +63,6 @@ export function useNodeSync({
     workflow,
     selectedNode,
     activeNode,
-    collapsedLoops,
-    loopMembers,
-    nodeToLoops,
-    endLoopIds,
-    endLoopForLoop,
-    toggleLoopCollapse,
     collapsedApps,
     appGroups,
     nodeToAppGroup,
@@ -121,7 +103,6 @@ export function useNodeSync({
     appGroups,
     nodeToAppGroup,
     appGroupMeta,
-    nodeToLoops,
     collapsedUserGroups,
     nodeToUserGroup,
     userGroupMeta,

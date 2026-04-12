@@ -30,11 +30,6 @@ export const nodeMetadata: Record<string, { color: string; icon: string }> = {
   CdpHandleDialog: { color: "#3b82f6", icon: "HD" },
   // AI
   AiStep:          { color: "#4c9ee8", icon: "AI" },
-  // Control Flow
-  If:              { color: "#10b981", icon: "IF" },
-  Switch:          { color: "#10b981", icon: "SW" },
-  Loop:            { color: "#10b981", icon: "LP" },
-  EndLoop:         { color: "#10b981", icon: "EL" },
   // Generic
   McpToolCall:     { color: "#666",    icon: "MC" },
   AppDebugKitOp:   { color: "#ef4444", icon: "DK" },
