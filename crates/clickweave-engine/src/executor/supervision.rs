@@ -2,7 +2,7 @@ use super::Mcp;
 use super::retry_context::RetryContext;
 use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::NodeType;
-use clickweave_llm::{ChatBackend, Message};
+use clickweave_llm::{ChatBackend, ChatOptions, Message};
 use clickweave_mcp::ToolContent;
 use serde_json::Value;
 use tracing::debug;
@@ -229,7 +229,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             vec![(prepared_b64, mime)],
         )];
 
-        match vlm.chat(&messages, None).await {
+        // Deterministic temperature so the VLM description is stable for
+        // the same screenshot — downstream judging depends on it.
+        match vlm
+            .chat_with_options(&messages, None, &ChatOptions::with_temperature(0.0))
+            .await
+        {
             Ok(response) => response
                 .choices
                 .first()
@@ -269,7 +274,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             history.clone()
         };
 
-        let result = match backend.chat(&messages, None).await {
+        // Deterministic verdicts: the supervisor's pass/fail output must not
+        // drift between retries of the same step for stable replay.
+        let result = match backend
+            .chat_with_options(&messages, None, &ChatOptions::with_temperature(0.0))
+            .await
+        {
             Ok(response) => {
                 let raw = response
                     .choices
