@@ -27,7 +27,7 @@ use clickweave_core::storage::RunStorage;
 use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -372,34 +372,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .as_ref()
             .or(self.fast.as_ref())
             .unwrap_or(&self.agent)
-    }
-
-    /// Roll back execution state to just after the given target node.
-    ///
-    /// Removes all completed nodes after `target` from `ctx.completed_node_ids`,
-    /// strips the corresponding variables from `self.context`, and removes
-    /// verdicts for invalidated nodes.
-    fn rollback_to(&mut self, target: Uuid, ctx: &mut retry_context::RetryContext) {
-        // Use rposition to find the LAST (most recent) occurrence of the target
-        // so that callers that re-enter the same node keep all prior state.
-        let rollback_from = ctx
-            .completed_node_ids
-            .iter()
-            .rposition(|(id, _)| *id == target)
-            .map(|pos| pos + 1)
-            .unwrap_or(ctx.completed_node_ids.len());
-
-        let invalidated: Vec<(Uuid, String)> =
-            ctx.completed_node_ids.drain(rollback_from..).collect();
-
-        for (_, prefix) in &invalidated {
-            self.context.remove_variables_with_prefix(prefix);
-        }
-
-        let inv_ids: HashSet<Uuid> = invalidated.iter().map(|(id, _)| *id).collect();
-
-        ctx.runtime_verdicts
-            .retain(|v| !inv_ids.contains(&v.node_id));
     }
 
     /// Return the best available LLM for vision tasks (image analysis,

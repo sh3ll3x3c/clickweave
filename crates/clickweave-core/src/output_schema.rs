@@ -22,14 +22,6 @@ pub struct OutputField {
     pub description: &'static str,
 }
 
-/// A declared input field that accepts variable references (compile-time schema metadata).
-#[derive(Debug, Clone)]
-pub struct InputField {
-    pub name: &'static str,
-    pub accepted_types: &'static [OutputFieldType],
-    pub description: &'static str,
-}
-
 /// Owned version of OutputField for TypeScript bindings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -44,25 +36,6 @@ impl From<&OutputField> for OutputFieldInfo {
         Self {
             name: f.name.to_string(),
             field_type: f.field_type,
-            description: f.description.to_string(),
-        }
-    }
-}
-
-/// Owned version of InputField for TypeScript bindings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct InputFieldInfo {
-    pub name: String,
-    pub accepted_types: Vec<OutputFieldType>,
-    pub description: String,
-}
-
-impl From<&InputField> for InputFieldInfo {
-    fn from(f: &InputField) -> Self {
-        Self {
-            name: f.name.to_string(),
-            accepted_types: f.accepted_types.to_vec(),
             description: f.description.to_string(),
         }
     }
@@ -84,7 +57,6 @@ pub enum OutputRole {
     Query,
     Action,
     Ai,
-    ControlFlow,
     Generic,
 }
 
