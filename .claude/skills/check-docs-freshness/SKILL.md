@@ -21,9 +21,8 @@ Verify that `docs/reference/` is still accurate by checking only what changed si
 
    | Reference doc | Trigger paths |
    |---|---|
-   | `docs/reference/architecture/overview.md` | `src-tauri/src/commands/`, `crates/clickweave-core/src/workflow.rs`, `node_types.rs`, `control_flow.rs`, `checks.rs`, `validation.rs`, `storage.rs` |
-   | `docs/reference/engine/execution.md` | `crates/clickweave-engine/src/executor/`, `crates/clickweave-core/src/context.rs` |
-   | `docs/reference/llm/planning-retries.md` | `crates/clickweave-llm/src/planner/`, `crates/clickweave-llm/src/client.rs`, `crates/clickweave-llm/src/types.rs` |
+   | `docs/reference/architecture/overview.md` | `src-tauri/src/commands/`, `crates/clickweave-core/src/workflow.rs`, `node_types.rs`, `checks.rs`, `storage.rs` |
+   | `docs/reference/engine/execution.md` | `crates/clickweave-engine/src/agent/`, `crates/clickweave-engine/src/executor/`, `crates/clickweave-core/src/context.rs` |
    | `docs/reference/mcp/integration.md` | `crates/clickweave-mcp/src/`, `crates/clickweave-core/src/tool_mapping.rs` |
    | `docs/reference/frontend/architecture.md` | `ui/src/store/`, `ui/src/components/`, `ui/src/App.tsx`, `ui/src/bindings.ts` |
 
