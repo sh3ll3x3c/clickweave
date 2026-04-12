@@ -14,6 +14,11 @@ const SUPERSEDED_PREFIX: &str = "[superseded ";
 /// planning and can be collapsed. `wait_for` is a legacy alias for
 /// `cdp_wait_for` that some tool manifests still surface alongside the
 /// prefixed form.
+///
+/// `take_screenshot` is deliberately excluded: its result body contains a
+/// `screenshot_id` that `find_image` and the deterministic click/coordinate
+/// flows can reference on a later turn. Collapsing an older screenshot
+/// would erase that id from the only transcript copy the planner has.
 pub(crate) const SNAPSHOT_PRODUCING_TOOLS: &[&str] = &[
     "cdp_take_ax_snapshot",
     "cdp_take_dom_snapshot",
@@ -21,7 +26,6 @@ pub(crate) const SNAPSHOT_PRODUCING_TOOLS: &[&str] = &[
     "cdp_find_elements",
     "cdp_wait_for",
     "take_ax_snapshot",
-    "take_screenshot",
     "wait_for",
 ];
 
@@ -538,6 +542,23 @@ mod tests {
             .filter_map(|m| m.tool_call_id.clone())
             .collect();
         assert_eq!(collapsed_ids, vec!["a0".to_string(), "b0".to_string()]);
+    }
+
+    #[test]
+    fn collapse_preserves_take_screenshot_results() {
+        // take_screenshot must NOT be collapsed: its result body carries a
+        // screenshot_id that find_image and coordinate-based tools can
+        // reference on a later turn. Dropping the body would erase the only
+        // transcript copy of that id.
+        let mut messages = vec![Message::system("System"), Message::user("Goal")];
+        for i in 0..3 {
+            let (asst, result) = snapshot_pair("take_screenshot", &format!("shot_{}", i), 2);
+            messages.push(asst);
+            messages.push(result);
+        }
+
+        // No collapse should occur — take_screenshot is excluded.
+        assert!(collapse_superseded_snapshots(&messages).is_none());
     }
 
     #[test]
