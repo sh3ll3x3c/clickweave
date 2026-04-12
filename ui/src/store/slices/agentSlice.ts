@@ -144,7 +144,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       await invoke("approve_agent_action", { approved: true });
       pushLog(`Approved: ${pendingApproval.toolName}`);
     } catch (err) {
-      pushLog(`Approval send failed: ${err}`);
+      pushLog(`Approval send failed: ${formatAgentError(err)}`);
     }
   },
 
@@ -156,7 +156,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       await invoke("approve_agent_action", { approved: false });
       pushLog(`Rejected: ${pendingApproval.toolName}`);
     } catch (err) {
-      pushLog(`Rejection send failed: ${err}`);
+      pushLog(`Rejection send failed: ${formatAgentError(err)}`);
     }
   },
 
