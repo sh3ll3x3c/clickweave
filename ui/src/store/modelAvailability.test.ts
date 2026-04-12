@@ -1,5 +1,17 @@
-import { describe, it, expect } from "vitest";
-import { buildModelChecks, formatModelStatus } from "./modelAvailability";
+import { describe, it, expect, vi } from "vitest";
+
+vi.mock("../bindings", () => ({
+    commands: {
+        checkEndpoint: vi.fn(),
+    },
+}));
+
+import { commands } from "../bindings";
+import {
+    buildModelChecks,
+    formatModelStatus,
+    verifyConfiguredModels,
+} from "./modelAvailability";
 import type { PersistedSettings } from "./settings";
 import type { EndpointConfig } from "./state";
 import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS } from "./state";
@@ -77,5 +89,30 @@ describe("formatModelStatus", () => {
         expect(msg).toContain("supervisor");
         expect(msg).toContain("unavailable");
         expect(msg).toContain("connection refused");
+    });
+});
+
+describe("verifyConfiguredModels", () => {
+    it("records a thrown invoke as unavailable without failing the batch", async () => {
+        const settings = makeSettings({
+            agentConfig: { baseUrl: "http://agent", apiKey: "", model: "m-a" },
+            supervisorConfig: { baseUrl: "http://supervisor", apiKey: "", model: "m-s" },
+        });
+        const mock = vi.mocked(commands.checkEndpoint);
+        mock.mockReset();
+        mock.mockImplementationOnce(async () => {
+            throw new Error("IPC transport exploded");
+        });
+        mock.mockImplementationOnce(async () => ({ status: "ok", data: null }));
+
+        const results = await verifyConfiguredModels(settings);
+
+        expect(results).toHaveLength(2);
+        expect(results[0]).toMatchObject({
+            role: "agent",
+            available: false,
+            error: "IPC transport exploded",
+        });
+        expect(results[1]).toMatchObject({ role: "supervisor", available: true });
     });
 });

@@ -45,11 +45,20 @@ export function formatModelStatus(status: ModelAvailabilityStatus): string {
 async function probe(check: ModelCheck): Promise<ModelAvailabilityStatus> {
     const { role, config } = check;
     const apiKey = config.apiKey === "" ? null : config.apiKey;
-    const result = await commands.checkEndpoint(config.baseUrl, apiKey, config.model);
-    if (result.status === "ok") {
-        return { role, config, available: true };
+    try {
+        const result = await commands.checkEndpoint(config.baseUrl, apiKey, config.model);
+        if (result.status === "ok") {
+            return { role, config, available: true };
+        }
+        return { role, config, available: false, error: result.error.message ?? "Unreachable" };
+    } catch (e) {
+        // The generated checkEndpoint wrapper rethrows Error instances from
+        // TAURI_INVOKE (transport failures, deserialization errors, etc.)
+        // instead of surfacing them as a Result::error. Catch here so one
+        // broken invoke does not take down the whole batch.
+        const error = e instanceof Error ? e.message : String(e);
+        return { role, config, available: false, error };
     }
-    return { role, config, available: false, error: result.error.message ?? "Unreachable" };
 }
 
 /**
