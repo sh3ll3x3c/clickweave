@@ -42,17 +42,13 @@ impl LlmConfig {
     }
 
     /// Enable or disable model thinking/reasoning via `chat_template_kwargs` (chainable).
-    /// When `false`, injects `{"chat_template_kwargs": {"enable_thinking": false}}`
-    /// into the request body. When `true`, removes the override (model default).
+    /// Always sends an explicit `{"chat_template_kwargs": {"enable_thinking": <bool>}}`
+    /// so the server/template default cannot silently override the caller's intent.
     pub fn with_thinking(mut self, enabled: bool) -> Self {
-        if enabled {
-            self.extra_body.remove("chat_template_kwargs");
-        } else {
-            self.extra_body.insert(
-                "chat_template_kwargs".to_string(),
-                serde_json::json!({"enable_thinking": false}),
-            );
-        }
+        self.extra_body.insert(
+            "chat_template_kwargs".to_string(),
+            serde_json::json!({"enable_thinking": enabled}),
+        );
         self
     }
 }
@@ -610,6 +606,78 @@ mod tests {
         let prompt = build_vlm_prompt("click the login button", "take_screenshot");
         assert!(prompt.contains("click the login button"));
         assert!(prompt.contains("take_screenshot"));
+    }
+
+    #[test]
+    fn with_thinking_true_sets_explicit_flag() {
+        let cfg = LlmConfig::default().with_thinking(true);
+        let kwargs = cfg
+            .extra_body
+            .get("chat_template_kwargs")
+            .expect("chat_template_kwargs must be present");
+        assert_eq!(kwargs["enable_thinking"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn with_thinking_false_sets_explicit_flag() {
+        let cfg = LlmConfig::default().with_thinking(false);
+        let kwargs = cfg
+            .extra_body
+            .get("chat_template_kwargs")
+            .expect("chat_template_kwargs must be present");
+        assert_eq!(kwargs["enable_thinking"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn with_thinking_overrides_previous_setting() {
+        let cfg = LlmConfig::default()
+            .with_thinking(false)
+            .with_thinking(true);
+        let kwargs = &cfg.extra_body["chat_template_kwargs"];
+        assert_eq!(kwargs["enable_thinking"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn message_captures_reasoning_content_from_response() {
+        let body = r#"{
+            "id": "x",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "I should call tool X because ..."
+                },
+                "finish_reason": "stop"
+            }]
+        }"#;
+        let response: ChatResponse = serde_json::from_str(body).unwrap();
+        let msg = &response.choices[0].message;
+        assert_eq!(
+            msg.reasoning_content.as_deref(),
+            Some("I should call tool X because ...")
+        );
+    }
+
+    #[test]
+    fn message_reasoning_content_round_trips_through_request() {
+        let mut msg = Message::assistant("");
+        msg.reasoning_content = Some("prior thought".to_string());
+        let serialized = serde_json::to_string(&msg).unwrap();
+        assert!(
+            serialized.contains("\"reasoning_content\":\"prior thought\""),
+            "reasoning_content must survive serialization for next-turn context"
+        );
+    }
+
+    #[test]
+    fn message_omits_reasoning_content_when_absent() {
+        let msg = Message::user("hello");
+        let serialized = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !serialized.contains("reasoning_content"),
+            "reasoning_content must be omitted when None to avoid polluting requests"
+        );
     }
 
     #[tokio::test]

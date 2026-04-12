@@ -527,20 +527,26 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 }
             }
 
-            // Add the assistant's response to the conversation.
+            // Add the assistant's response to the conversation. Preserve the
+            // model's reasoning_content so subsequent turns can build on prior
+            // thinking instead of re-deriving it from scratch each step.
             // Only the first tool call is included — we execute exactly one
             // tool per turn, so appending extras would create transcript
             // entries with no corresponding tool result.
+            let reasoning = choice.message.reasoning_content.clone();
             if let Some(tool_calls) = &choice.message.tool_calls {
                 if let Some(tc) = tool_calls.first() {
-                    self.messages
-                        .push(Message::assistant_tool_calls(vec![tc.clone()]));
+                    let mut assistant_msg = Message::assistant_tool_calls(vec![tc.clone()]);
+                    assistant_msg.reasoning_content = reasoning;
+                    self.messages.push(assistant_msg);
                     let result_text = previous_result.as_deref().unwrap_or("ok");
                     self.messages
                         .push(Message::tool_result(&tc.id, result_text));
                 }
             } else if let Some(text) = choice.message.content_text() {
-                self.messages.push(Message::assistant(text));
+                let mut assistant_msg = Message::assistant(text);
+                assistant_msg.reasoning_content = reasoning;
+                self.messages.push(assistant_msg);
             }
         }
 

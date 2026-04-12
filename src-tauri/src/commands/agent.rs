@@ -167,8 +167,10 @@ pub async fn run_agent(
             }
         };
 
-        // Create LLM client
-        let llm = clickweave_llm::LlmClient::new(agent_config);
+        // Thinking is explicitly enabled: small planner models need a
+        // reasoning pass to avoid pattern-matching salient literals from the
+        // goal text into tool arguments.
+        let llm = clickweave_llm::LlmClient::new(agent_config.with_thinking(true));
         let config = AgentConfig::default();
 
         // Begin storage execution and load cross-run state under a single lock.
