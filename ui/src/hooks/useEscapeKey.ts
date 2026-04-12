@@ -19,6 +19,7 @@ export function useEscapeKey() {
         closeVerdictModal,
         showSettings,
         selectedNode,
+        hasCanvasSelection,
         walkthroughStatus,
         walkthroughPanelOpen,
         cancelWalkthrough,
@@ -28,6 +29,7 @@ export function useEscapeKey() {
         logsDrawerOpen,
         setShowSettings,
         selectNode,
+        clearCanvasSelection,
         setAssistantOpen,
         toggleLogsDrawer,
       } = useStore.getState();
@@ -38,6 +40,11 @@ export function useEscapeKey() {
         closeVerdictModal();
       } else if (showSettings) {
         setShowSettings(false);
+      } else if (hasCanvasSelection) {
+        // Canvas-only selections (groups, or 2+ nodes) are not represented
+        // by `selectedNode`, so prefer this branch before the single-node
+        // one. `clearCanvasSelection` also resets `selectedNode` to null.
+        clearCanvasSelection();
       } else if (selectedNode !== null) {
         selectNode(null);
       } else if (assistantOpen) {

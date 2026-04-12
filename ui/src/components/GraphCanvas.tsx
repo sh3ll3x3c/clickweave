@@ -27,7 +27,9 @@ interface GraphCanvasProps {
   workflow: Workflow;
   selectedNode: string | null;
   activeNode: string | null;
+  canvasSelectionResetTick: number;
   onSelectNode: (id: string | null) => void;
+  onCanvasSelectionChange: (hasMulti: boolean) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onEdgesChange: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
@@ -47,7 +49,9 @@ export function GraphCanvas({
   workflow,
   selectedNode,
   activeNode,
+  canvasSelectionResetTick,
   onSelectNode,
+  onCanvasSelectionChange,
   onNodePositionsChange,
   onEdgesChange,
   onConnect,
@@ -94,6 +98,7 @@ export function GraphCanvas({
     workflow,
     selectedNode,
     activeNode,
+    canvasSelectionResetTick,
     collapsedApps: appState.collapsedApps,
     appGroups: appState.appGroups,
     nodeToAppGroup: appState.nodeToAppGroup,
@@ -107,6 +112,7 @@ export function GraphCanvas({
     onRenameConfirm: handleRenameConfirm,
     onRenameCancel: handleRenameCancel,
     onSelectNode,
+    onCanvasSelectionChange,
     onNodePositionsChange,
     onDeleteNodes,
     onBeforeNodeDrag,
@@ -135,9 +141,10 @@ export function GraphCanvas({
 
   const handlePaneClick = useCallback(() => {
     onSelectNode(null);
+    onCanvasSelectionChange(false);
     setContextMenu(null);
     setCreateGroupPopover(null);
-  }, [onSelectNode]);
+  }, [onSelectNode, onCanvasSelectionChange]);
 
   // ── Context menu + group creation popover state ──────────────────
   const [contextMenu, setContextMenu] = useState<{
@@ -415,7 +422,14 @@ export function GraphCanvas({
         onNodeDragStart={handleNodeDragStart}
         onPaneClick={handlePaneClick}
         onPaneContextMenu={(e) => handleContextMenu(e)}
-        onNodeClick={(_, rfNode) => { if (rfNode.type === "workflow") onSelectNode(rfNode.id); }}
+        onNodeClick={(event, rfNode) => {
+          if (rfNode.type !== "workflow") return;
+          // Shift/Ctrl/Meta-click is a multi-select gesture — leave selection
+          // resolution to onNodesChange so the detail modal doesn't open while
+          // the user is picking multiple nodes.
+          if (event.shiftKey || event.ctrlKey || event.metaKey) return;
+          onSelectNode(rfNode.id);
+        }}
         onNodeContextMenu={(e, rfNode) => handleContextMenu(e, rfNode)}
         deleteKeyCode={["Backspace", "Delete"]}
         selectionOnDrag

@@ -27,6 +27,7 @@ interface UseNodeChangeHandlerParams {
   selectionFromCanvasRef: MutableRefObject<boolean>;
   deletedNodeIdsRef: MutableRefObject<Set<string> | null>;
   onSelectNode: (id: string | null) => void;
+  onCanvasSelectionChange: (hasMulti: boolean) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
   setRfNodes: Dispatch<SetStateAction<RFNode[]>>;
@@ -49,6 +50,7 @@ export function useNodeChangeHandler({
   selectionFromCanvasRef,
   deletedNodeIdsRef,
   onSelectNode,
+  onCanvasSelectionChange,
   onNodePositionsChange,
   onDeleteNodes,
   setRfNodes,
@@ -113,6 +115,10 @@ export function useNodeChangeHandler({
         // node removal callbacks. The queueMicrotask clears it for nodes with no edges.
         deletedNodeIdsRef.current = new Set(removeIds);
         onDeleteNodes(removeIds);
+        // Deleting a selection removes those nodes from the workflow; any
+        // canvas-only selection state we were tracking is now stale, so
+        // drop it before the Escape handler can consume a phantom flag.
+        onCanvasSelectionChange(false);
         queueMicrotask(() => { deletedNodeIdsRef.current = null; });
         return;
       }
@@ -137,7 +143,7 @@ export function useNodeChangeHandler({
         const nodeMap = new Map(updatedNodes.map((n) => [n.id, n]));
         const posUpdates = new Map<string, { x: number; y: number }>();
         const affectedGroups = new Set<string>();
-        let selectId: string | null = null;
+        let hasSelectChange = false;
         for (const change of changes) {
           if (change.type === "position" && change.position) {
             const rfNode = nodeMap.get(change.id);
@@ -186,21 +192,48 @@ export function useNodeChangeHandler({
                 }
               }
             }
-          } else if (change.type === "select" && change.selected) {
-            selectId = change.id;
+          } else if (change.type === "select") {
+            hasSelectChange = true;
           } else if (change.type === "dimensions") {
             const rfNode = nodeMap.get(change.id);
             if (rfNode?.parentId) affectedGroups.add(rfNode.parentId);
           }
         }
+        // Resolve selection from the post-change RF node state. The detail
+        // modal opens only when a single workflow node is the sole selection;
+        // any extra selection (multiple nodes, or a group container) means
+        // the modal must stay closed and the Escape handler needs a
+        // non-`selectedNode` signal to clear the canvas.
+        //   hasOther = true when there is ANY selection on canvas that
+        //              `selectedNode` does not represent.
+        let nextSelectedId: string | null = null;
+        let hasOtherSelection = false;
+        if (hasSelectChange) {
+          let totalSelected = 0;
+          let soleWorkflowId: string | null = null;
+          for (const n of updatedNodes) {
+            if (!n.selected) continue;
+            totalSelected += 1;
+            if (totalSelected === 1 && n.type === "workflow") {
+              soleWorkflowId = n.id;
+            } else {
+              soleWorkflowId = null;
+            }
+            if (totalSelected > 1) break;
+          }
+          nextSelectedId = totalSelected === 1 ? soleWorkflowId : null;
+          hasOtherSelection = totalSelected > 0 && nextSelectedId === null;
+        }
+
         // Defer store updates to after the state updater returns to avoid
         // "Cannot update App while rendering GraphCanvas" (setState-during-render).
-        if (posUpdates.size > 0 || selectId) {
+        if (posUpdates.size > 0 || hasSelectChange) {
           queueMicrotask(() => {
             if (posUpdates.size > 0) onNodePositionsChange(posUpdates);
-            if (selectId) {
+            if (hasSelectChange) {
               selectionFromCanvasRef.current = true;
-              onSelectNode(selectId);
+              onSelectNode(nextSelectedId);
+              onCanvasSelectionChange(hasOtherSelection);
             }
           });
         }
@@ -234,6 +267,6 @@ export function useNodeChangeHandler({
         return updatedNodes;
       });
     },
-    [onNodePositionsChange, onSelectNode, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef],
+    [onNodePositionsChange, onSelectNode, onCanvasSelectionChange, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef],
   );
 }
