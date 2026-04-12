@@ -226,7 +226,10 @@ export function WalkthroughPanel() {
           <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
           <span className="truncate text-xs text-[var(--text-secondary)]">{actionLabel(action)}</span>
           <span
-            className="ml-auto shrink-0 rounded bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-300 cursor-help"
+            className="ml-auto shrink-0 rounded bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-300 cursor-help outline-none focus-visible:ring-1 focus-visible:ring-purple-400"
+            tabIndex={0}
+            role="note"
+            aria-label="Candidate: a possible action detected during the recording that the system isn't sure about (for example, a hover that may or may not have been intentional). Choose Keep to include it in the workflow, or Dismiss to skip it."
             title="Candidate: a possible action detected during the recording that the system isn't sure about (for example, a hover that may or may not have been intentional). Choose Keep to include it in the workflow, or Dismiss to skip it."
           >
             Candidate
