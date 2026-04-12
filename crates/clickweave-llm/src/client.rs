@@ -5,6 +5,28 @@ use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, error, info, trace};
 
+/// Per-call overrides for a single `chat` invocation. Any field left at `None`
+/// falls back to the backend's configured default.
+///
+/// Built so callers can request different temperatures for planning
+/// (creative, e.g. 0.3–0.5) vs element resolution or Run mode (deterministic,
+/// 0.0) without mutating shared config.
+#[derive(Debug, Clone, Default)]
+pub struct ChatOptions {
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+}
+
+impl ChatOptions {
+    /// Convenience: create options that only override temperature.
+    pub fn with_temperature(temperature: f32) -> Self {
+        Self {
+            temperature: Some(temperature),
+            max_tokens: None,
+        }
+    }
+}
+
 /// Seam for LLM interaction, allowing mock backends in tests.
 pub trait ChatBackend: Send + Sync {
     fn chat(
@@ -12,6 +34,19 @@ pub trait ChatBackend: Send + Sync {
         messages: &[Message],
         tools: Option<&[Value]>,
     ) -> impl Future<Output = Result<ChatResponse>> + Send;
+
+    /// Call `chat` with per-invocation option overrides. The default impl
+    /// ignores the options and delegates to `chat`, which is fine for mocks
+    /// where temperature is irrelevant. `LlmClient` overrides this to apply
+    /// the overrides to the outgoing request body.
+    fn chat_with_options(
+        &self,
+        messages: &[Message],
+        tools: Option<&[Value]>,
+        _options: &ChatOptions,
+    ) -> impl Future<Output = Result<ChatResponse>> + Send {
+        self.chat(messages, tools)
+    }
 
     fn model_name(&self) -> &str;
 
@@ -161,6 +196,16 @@ impl ChatBackend for LlmClient {
     }
 
     async fn chat(&self, messages: &[Message], tools: Option<&[Value]>) -> Result<ChatResponse> {
+        self.chat_with_options(messages, tools, &ChatOptions::default())
+            .await
+    }
+
+    async fn chat_with_options(
+        &self,
+        messages: &[Message],
+        tools: Option<&[Value]>,
+        options: &ChatOptions,
+    ) -> Result<ChatResponse> {
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
@@ -171,8 +216,8 @@ impl ChatBackend for LlmClient {
             messages,
             tools,
             tool_choice: None,
-            temperature: self.config.temperature,
-            max_tokens: self.config.max_tokens,
+            temperature: options.temperature.or(self.config.temperature),
+            max_tokens: options.max_tokens.or(self.config.max_tokens),
             extra_body: &self.config.extra_body,
         };
 
@@ -556,6 +601,36 @@ mod tests {
                 usage: None,
             })
         }
+    }
+
+    #[test]
+    fn chat_options_default_is_empty() {
+        let opts = ChatOptions::default();
+        assert_eq!(opts.temperature, None);
+        assert_eq!(opts.max_tokens, None);
+    }
+
+    #[test]
+    fn chat_options_with_temperature_sets_only_temperature() {
+        let opts = ChatOptions::with_temperature(0.0);
+        assert_eq!(opts.temperature, Some(0.0));
+        assert_eq!(opts.max_tokens, None);
+    }
+
+    #[tokio::test]
+    async fn chat_with_options_default_delegates_to_chat() {
+        let backend = MockBackend::new("ok");
+        backend
+            .chat_with_options(
+                &[Message::user("hi")],
+                None,
+                &ChatOptions::with_temperature(0.3),
+            )
+            .await
+            .unwrap();
+        // MockBackend doesn't override chat_with_options, so it falls through
+        // to chat and still records the call.
+        assert_eq!(backend.call_count(), 1);
     }
 
     #[test]
