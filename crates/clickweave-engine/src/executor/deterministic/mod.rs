@@ -902,14 +902,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        // McpToolCall generic dispatch: update focused_app/cdp state for
-        // focus_window and quit_app so executor state stays consistent when
-        // these tools are called via a generic tool-call node.
         // McpToolCall generic dispatch: update focused_app for focus_window so
         // executor state stays consistent when called via a generic tool-call node.
-        // PID is not available for generic McpToolCall focus_window; use 0 as placeholder.
+        // PID is not resolvable inline here; mark focus_dirty so the supervision
+        // wrapper refreshes kind+PID via list_apps once the node completes.
         if let Some(ref app_name) = mcp_focus_window_app {
             *self.write_focused_app() = Some((app_name.clone(), AppKind::Native, 0));
+            retry_ctx.focus_dirty = true;
         }
 
         // quit_app clears focused_app and cdp_connected_app when the app being quit

@@ -273,6 +273,55 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         )))
     }
 
+    /// Refresh the PID and AppKind on `focused_app` (and `cdp_connected_app`
+    /// if it matches the focused app name) after a focus-changing tool call
+    /// wrote a placeholder PID=0.
+    ///
+    /// Without this, `cdp_connected_to_focused_app()` falls back to name-only
+    /// comparison when PID=0 — two same-name app instances would be
+    /// indistinguishable and the CDP connection could silently target the
+    /// wrong one.
+    ///
+    /// Best-effort: a failed lookup is logged and the placeholder state is
+    /// left in place (better than discarding focus tracking entirely).
+    pub(crate) async fn refresh_focused_pid(&mut self, mcp: &(impl Mcp + ?Sized)) {
+        use clickweave_core::app_detection::classify_app_by_pid;
+
+        let snapshot = self.read_focused_app().clone();
+        let Some((name, _kind, current_pid)) = snapshot else {
+            return;
+        };
+        if current_pid != 0 {
+            return;
+        }
+
+        let real_pid = match self.lookup_app_pid(&name, mcp).await {
+            Ok(pid) => pid,
+            Err(e) => {
+                tracing::debug!(
+                    app_name = %name,
+                    error = %e,
+                    "refresh_focused_pid: lookup_app_pid failed, leaving placeholder",
+                );
+                return;
+            }
+        };
+        let real_kind = classify_app_by_pid(real_pid);
+        *self.write_focused_app() = Some((name.clone(), real_kind, real_pid));
+
+        if let Some((cdp_name, cdp_pid)) = self.cdp_connected_app.as_mut()
+            && cdp_name == &name
+            && *cdp_pid == 0
+        {
+            *cdp_pid = real_pid;
+        }
+
+        self.log(format!(
+            "Refreshed focused app: \"{}\" kind={:?} pid={}",
+            name, real_kind, real_pid
+        ));
+    }
+
     /// Remove a cached app resolution so the next attempt re-resolves via LLM.
     pub(crate) fn evict_app_cache(&self, user_input: &str) {
         if self.write_app_cache().remove(user_input).is_some() {
