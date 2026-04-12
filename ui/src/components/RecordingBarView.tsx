@@ -14,23 +14,36 @@ export function RecordingBarView() {
   const [currentApp, setCurrentApp] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsubs = Promise.all([
-      listen<{ status: string }>("walkthrough://state", (e) => {
-        const s = e.payload.status;
-        if (s === "Recording" || s === "Paused" || s === "Processing") {
-          setStatus(s);
-        }
-      }),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      listen<{ event: any }>("walkthrough://event", (e) => {
-        setEventCount((c) => c + 1);
-        const kind = e.payload.event?.kind;
-        if (kind?.type === "AppFocused" && kind.app_name) {
-          setCurrentApp(kind.app_name);
-        }
-      }),
-    ]);
-    return () => { unsubs.then((fns) => fns.forEach((f) => f())); };
+    const unlisteners: (() => void)[] = [];
+    let cancelled = false;
+
+    const sub = (p: Promise<() => void>) =>
+      p.then((u) => {
+        if (cancelled) { u(); return; }
+        unlisteners.push(u);
+      }).catch((err) => {
+        console.error("Failed to subscribe to recording bar event:", err);
+      });
+
+    sub(listen<{ status: string }>("walkthrough://state", (e) => {
+      const s = e.payload.status;
+      if (s === "Recording" || s === "Paused" || s === "Processing") {
+        setStatus(s);
+      }
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    sub(listen<{ event: any }>("walkthrough://event", (e) => {
+      setEventCount((c) => c + 1);
+      const kind = e.payload.event?.kind;
+      if (kind?.type === "AppFocused" && kind.app_name) {
+        setCurrentApp(kind.app_name);
+      }
+    }));
+
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((u) => u());
+    };
   }, []);
 
   const onPause = () => emit("recording-bar://action", { action: "pause" });
