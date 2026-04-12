@@ -258,7 +258,12 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
   startWalkthrough: async (cdpApps: CdpAppConfig[] = []) => {
     const { workflow, projectPath, pushLog, supervisorConfig } = get();
+    // Flip to Recording optimistically so the pushWalkthroughEvent guard
+    // accepts events from the backend — the capture processing task is
+    // spawned before the backend's emit_state(Recording), so the first
+    // captured events can land before the state transition arrives.
     set({
+      walkthroughStatus: "Recording",
       walkthroughError: null,
       walkthroughEvents: [],
       walkthroughAnnotations: { ...emptyAnnotations },
@@ -276,7 +281,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     const result = await commands.startWalkthrough(workflow.id, projectPath ?? null, supervisor, cdpApps, hoverDwellThreshold);
     if (result.status === "error") {
       const msg = errorMessage(result.error);
-      set({ walkthroughError: msg, walkthroughCdpModalOpen: false });
+      set({ walkthroughStatus: "Idle", walkthroughError: msg, walkthroughCdpModalOpen: false });
       pushLog(`Walkthrough start failed: ${msg}`);
     } else {
       openRecordingBarWindow();
@@ -313,7 +318,11 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   cancelWalkthrough: async () => {
     const { pushLog } = get();
     closeRecordingBarWindow();
+    // Flip off capture locally so drain-phase walkthrough://event entries
+    // emitted by the backend while cancel_walkthrough awaits the processing
+    // task don't repopulate the freshly cleared walkthroughEvents array.
     set({
+      walkthroughStatus: "Processing",
       walkthroughEvents: [],
       walkthroughActions: [],
       walkthroughDraft: null,
