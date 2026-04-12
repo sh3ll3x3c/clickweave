@@ -21,6 +21,13 @@ was submitted, not that the action failed.
 IMPORTANT: Step labels are user-editable and can be stale after workflow edits; \
 use the EXECUTED ACTION as the source of truth for intent, not the label text.
 
+For typing/fill steps (cdp_type_text, cdp_fill, type_text), verify that the text \
+appeared in the field focused by the PRECEDING click or target, not in a search bar \
+or other unrelated input. If the preceding step targeted a specific field (e.g. \
+\"Click message input — PASSED\"), the text must land there; text appearing on \
+screen in a different input means the typing step FAILED spatially even though the \
+characters were entered.
+
 Return ONLY a JSON object: {\"passed\": true/false, \"reasoning\": \"brief explanation\"}";
 
 /// Result of LLM step verification.
