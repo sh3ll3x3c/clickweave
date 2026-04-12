@@ -9,6 +9,20 @@ interface RunScoped {
   run_id: string;
 }
 
+/**
+ * Reject events from a stale run or during the null gap before
+ * `agent://started` installs the active run ID.
+ *
+ * Exported as a pure helper so unit tests can verify the null-gap
+ * guard without spinning up a Tauri event listener.
+ */
+export function isStaleRunId(
+  activeRunId: string | null,
+  incomingRunId: string,
+): boolean {
+  return activeRunId === null || incomingRunId !== activeRunId;
+}
+
 interface AgentStartedPayload extends RunScoped {}
 
 interface AgentStepPayload extends RunScoped {
@@ -87,10 +101,8 @@ export function useAgentEvents() {
         });
 
     /** Reject events from a stale run or during the null gap before agent://started. */
-    const isStale = (runId: string): boolean => {
-      const activeRunId = useStore.getState().agentRunId;
-      return activeRunId === null || runId !== activeRunId;
-    };
+    const isStale = (runId: string): boolean =>
+      isStaleRunId(useStore.getState().agentRunId, runId);
 
     // ── Run lifecycle ──────────────────────────────────────────
 
