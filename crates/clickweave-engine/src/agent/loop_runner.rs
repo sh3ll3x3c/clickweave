@@ -363,7 +363,23 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             );
             self.messages.push(Message::user(step_msg));
 
-            // 4. Context compaction if needed
+            // 4a. Supersede older snapshot payloads. CDP/native snapshot
+            //     tools each embed a full page view; retaining more than one
+            //     in history makes prompt tokens grow linearly with tool-call
+            //     count and quickly exhausts the LLM's context window. This
+            //     pass is cheap and runs every step so older snapshots never
+            //     accumulate, regardless of the coarser compaction threshold.
+            if let Some(collapsed) = context::collapse_superseded_snapshots(&self.messages) {
+                debug!(
+                    before_tokens = context::estimate_messages_tokens(&self.messages),
+                    after_tokens = context::estimate_messages_tokens(&collapsed),
+                    "Superseded snapshot tool-results"
+                );
+                self.messages = collapsed;
+            }
+
+            // 4b. Coarse context compaction (drop old step messages into a summary)
+            //     if the remaining history is still over budget.
             let token_budget = 8000; // Conservative default
             if let Some(compacted) =
                 context::compact_step_summaries(&self.messages, &self.state.steps, token_budget, 3)

@@ -1116,3 +1116,159 @@ async fn malformed_tool_call_json_returns_error() {
         state.steps[0].outcome,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Context bound: multi-step snapshot history stays below the model window
+// ---------------------------------------------------------------------------
+
+/// Simulates the real-world failure mode from the bug report: a multi-step
+/// agent run that issues several snapshot-producing tool calls back-to-back.
+/// Without the supersession pass, each full CDP snapshot accumulated in
+/// history would blow past the LLM's context limit after 4-5 steps. This
+/// test asserts that the retained message token count stays well under 40k
+/// (the smallest provider context we ship against) across 6 such calls,
+/// while the most recent snapshot is preserved at full fidelity.
+#[tokio::test]
+async fn retained_history_stays_bounded_across_snapshot_heavy_steps() {
+    use crate::agent::context::{collapse_superseded_snapshots, estimate_messages_tokens};
+
+    // Capture every message batch the LLM receives.
+    let captured: Arc<Mutex<Vec<Vec<Message>>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // LLM chooses cdp_wait_for six times then completes.
+    let mut responses: Vec<ChatResponse> = (0..6)
+        .map(|i| {
+            MockAgent::tool_call_response(
+                "cdp_wait_for",
+                r#"{"text": "ready"}"#,
+                &format!("call_wait_{}", i),
+            )
+        })
+        .collect();
+    responses.push(MockAgent::done_response("Multi-step workflow finished"));
+    let agent_llm = CapturingMockAgent::new(responses, captured.clone());
+
+    // Build fake snapshot blobs large enough that 6 of them would OOM the
+    // context if they were all retained at full fidelity. Each 32 KiB
+    // snapshot ≈ 8192 tokens, so 6 retained snapshots alone ≈ 49k tokens,
+    // comfortably above the 30k ceiling the assertion enforces below.
+    let snapshot_body_kb = 32;
+    let big_snapshot = "s".repeat(snapshot_body_kb * 1024);
+
+    // MCP result queue: alternating cdp_find_elements observation results
+    // (returned with a real CdpFindElementsResponse structure) and
+    // cdp_wait_for tool bodies containing the fat snapshot payload.
+    let mut mcp_results: Vec<ToolCallResult> = Vec::new();
+    for i in 0..7 {
+        // cdp_find_elements observation for step i
+        mcp_results.push(ToolCallResult {
+            content: vec![ToolContent::Text {
+                text: serde_json::json!({
+                    "page_url": format!("https://example.com/step/{}", i),
+                    "source": "cdp",
+                    "matches": [{
+                        "uid": format!("1_{}", i),
+                        "role": "button",
+                        "label": "Submit",
+                        "tag": "button"
+                    }]
+                })
+                .to_string(),
+            }],
+            is_error: None,
+        });
+        if i < 6 {
+            // cdp_wait_for tool call result with the big snapshot payload
+            mcp_results.push(ToolCallResult {
+                content: vec![ToolContent::Text {
+                    text: big_snapshot.clone(),
+                }],
+                is_error: None,
+            });
+        }
+    }
+
+    let tools = vec![serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "cdp_wait_for",
+            "description": "Wait for a condition on the page",
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"]
+            }
+        }
+    })];
+    let mcp = MockMcp::new(mcp_results, tools);
+
+    let config = AgentConfig {
+        max_steps: 10,
+        build_workflow: false,
+        use_cache: false,
+        ..Default::default()
+    };
+
+    let mut runner = AgentRunner::new(&agent_llm, config);
+    let workflow = clickweave_core::Workflow::new("Snapshot-heavy Test");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run(
+            "Wait for a bunch of events".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+        )
+        .await
+        .unwrap();
+    assert!(state.completed);
+
+    // Inspect the captured message batches: the last batch the LLM saw
+    // (before the agent_done call) is the one that would have been sent to
+    // the real provider at the peak.
+    let calls = captured.lock().unwrap();
+    assert!(calls.len() >= 6, "Expected at least 6 LLM calls");
+
+    let peak_messages = calls
+        .iter()
+        .max_by_key(|m| estimate_messages_tokens(m))
+        .unwrap();
+    let peak_tokens = estimate_messages_tokens(peak_messages);
+
+    // Retained history must stay well below the 40k production context
+    // ceiling — we want enough headroom for the system prompt, tool schema,
+    // and the model response. Without supersession, the coarse compaction
+    // alone keeps three 32 KiB snapshots in the recent-message window (~26k
+    // tokens), which still risks an OOM once the system prompt and tool
+    // schema are added. The assertion proves the supersession pass sheds
+    // those redundant payloads.
+    assert!(
+        peak_tokens < 15_000,
+        "retained history exceeded sane token budget: {} tokens",
+        peak_tokens
+    );
+
+    // Sanity: the most recent snapshot tool result must still carry its full
+    // payload. Re-run the pure collapse function on the peak transcript and
+    // locate the final cdp_wait_for result. It should not be placeholdered.
+    let latest =
+        collapse_superseded_snapshots(peak_messages).unwrap_or_else(|| peak_messages.clone());
+    let last_wait_for_result = latest
+        .iter()
+        .rev()
+        .find(|m| {
+            m.role == "tool"
+                && m.tool_call_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("call_wait_"))
+        })
+        .expect("a wait_for tool result should survive in the peak transcript");
+    let body = last_wait_for_result.content_text().unwrap_or_default();
+    assert!(
+        body.len() > 1024,
+        "most recent snapshot was incorrectly collapsed (len={})",
+        body.len()
+    );
+}
