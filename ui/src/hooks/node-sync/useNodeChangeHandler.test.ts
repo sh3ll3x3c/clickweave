@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { useRef, useState } from "react";
 import type { Node as RFNode, NodeChange } from "@xyflow/react";
 import { useNodeChangeHandler } from "./useNodeChangeHandler";
@@ -51,9 +51,14 @@ function renderHandler(initialRfNodes: RFNode[]) {
   return { hook, onSelectNode, onNodePositionsChange, onDeleteNodes };
 }
 
-// queueMicrotask schedules onSelectNode after the setState updater returns;
-// flushPromises forces microtasks to drain so assertions can run afterward.
-const flushMicrotasks = () => new Promise<void>((resolve) => queueMicrotask(resolve));
+// Dispatch changes through the handler inside act() so React state updates
+// settle, then drain the microtask queue where onSelectNode is scheduled.
+async function dispatch(handler: (c: NodeChange[]) => void, changes: NodeChange[]) {
+  await act(async () => {
+    handler(changes);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+  });
+}
 
 describe("useNodeChangeHandler — selection resolution", () => {
   it("selects the node when a single node becomes selected", async () => {
@@ -63,8 +68,7 @@ describe("useNodeChangeHandler — selection resolution", () => {
     ]);
 
     const changes: NodeChange[] = [{ type: "select", id: "a", selected: true }];
-    hook.result.current.handler(changes);
-    await flushMicrotasks();
+    await dispatch(hook.result.current.handler, changes);
 
     expect(onSelectNode).toHaveBeenCalledTimes(1);
     expect(onSelectNode).toHaveBeenCalledWith("a");
@@ -82,8 +86,7 @@ describe("useNodeChangeHandler — selection resolution", () => {
       { type: "select", id: "b", selected: true },
       { type: "select", id: "c", selected: true },
     ];
-    hook.result.current.handler(changes);
-    await flushMicrotasks();
+    await dispatch(hook.result.current.handler, changes);
 
     expect(onSelectNode).toHaveBeenCalledTimes(1);
     expect(onSelectNode).toHaveBeenCalledWith(null);
@@ -97,8 +100,7 @@ describe("useNodeChangeHandler — selection resolution", () => {
 
     // Shift-click on "b" adds it to the selection without deselecting "a".
     const changes: NodeChange[] = [{ type: "select", id: "b", selected: true }];
-    hook.result.current.handler(changes);
-    await flushMicrotasks();
+    await dispatch(hook.result.current.handler, changes);
 
     expect(onSelectNode).toHaveBeenCalledTimes(1);
     expect(onSelectNode).toHaveBeenCalledWith(null);
@@ -110,8 +112,7 @@ describe("useNodeChangeHandler — selection resolution", () => {
     ]);
 
     const changes: NodeChange[] = [{ type: "select", id: "a", selected: false }];
-    hook.result.current.handler(changes);
-    await flushMicrotasks();
+    await dispatch(hook.result.current.handler, changes);
 
     expect(onSelectNode).toHaveBeenCalledTimes(1);
     expect(onSelectNode).toHaveBeenCalledWith(null);
@@ -125,8 +126,7 @@ describe("useNodeChangeHandler — selection resolution", () => {
     const changes: NodeChange[] = [
       { type: "position", id: "a", position: { x: 100, y: 200 } },
     ];
-    hook.result.current.handler(changes);
-    await flushMicrotasks();
+    await dispatch(hook.result.current.handler, changes);
 
     expect(onSelectNode).not.toHaveBeenCalled();
     expect(onNodePositionsChange).toHaveBeenCalledTimes(1);
@@ -136,8 +136,7 @@ describe("useNodeChangeHandler — selection resolution", () => {
     const { hook } = renderHandler([workflowNode("a")]);
 
     const changes: NodeChange[] = [{ type: "select", id: "a", selected: true }];
-    hook.result.current.handler(changes);
-    await flushMicrotasks();
+    await dispatch(hook.result.current.handler, changes);
 
     expect(hook.result.current.selectionFromCanvasRef.current).toBe(true);
   });
