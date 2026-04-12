@@ -71,7 +71,6 @@ async fn refresh_focused_pid_leaves_placeholder_when_lookup_fails() {
     *exec.write_focused_app() = Some(("Ghost".to_string(), AppKind::Native, 0));
 
     let mcp = StubToolProvider::new();
-    // Return empty list so lookup_app_pid returns an error.
     mcp.push_text_response("[]");
 
     exec.refresh_focused_pid(&mcp).await;
@@ -80,4 +79,7 @@ async fn refresh_focused_pid_leaves_placeholder_when_lookup_fails() {
     let (name, _kind, pid) = exec.read_focused_app().clone().unwrap();
     assert_eq!(name, "Ghost");
     assert_eq!(pid, 0);
+    // Verify the lookup was attempted (so a future early-return refactor
+    // can't spuriously pass this test).
+    assert_eq!(mcp.take_calls().len(), 1);
 }

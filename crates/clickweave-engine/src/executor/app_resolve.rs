@@ -273,18 +273,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         )))
     }
 
-    /// Refresh the PID and AppKind on `focused_app` (and `cdp_connected_app`
-    /// if it matches the focused app name) after a focus-changing tool call
-    /// wrote a placeholder PID=0.
-    ///
-    /// Without this, `cdp_connected_to_focused_app()` falls back to name-only
-    /// comparison when PID=0 — two same-name app instances would be
-    /// indistinguishable and the CDP connection could silently target the
-    /// wrong one.
-    ///
-    /// Best-effort: a failed lookup is logged and the placeholder state is
-    /// left in place (better than discarding focus tracking entirely).
-    pub(crate) async fn refresh_focused_pid(&mut self, mcp: &(impl Mcp + ?Sized)) {
+    /// Upgrade a placeholder PID=0 on `focused_app` (and any matching
+    /// `cdp_connected_app` entry) to the real PID + AppKind via `list_apps`.
+    /// No-op if the focused app already has a real PID, is empty, or the
+    /// lookup fails.
+    pub(in crate::executor) async fn refresh_focused_pid(&mut self, mcp: &(impl Mcp + ?Sized)) {
         use clickweave_core::app_detection::classify_app_by_pid;
 
         let snapshot = self.read_focused_app().clone();
@@ -301,7 +294,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 tracing::debug!(
                     app_name = %name,
                     error = %e,
-                    "refresh_focused_pid: lookup_app_pid failed, leaving placeholder",
+                    "refresh_focused_pid: lookup failed, leaving placeholder",
                 );
                 return;
             }

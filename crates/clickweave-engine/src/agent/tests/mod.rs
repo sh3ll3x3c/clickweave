@@ -3,7 +3,7 @@ use crate::agent::types::*;
 use crate::executor::Mcp;
 use anyhow::Result;
 use clickweave_llm::{
-    ChatBackend, ChatResponse, Choice, FunctionCall, Message, ModelInfo, ToolCall,
+    ChatBackend, ChatOptions, ChatResponse, Choice, FunctionCall, Message, ModelInfo, ToolCall,
 };
 use clickweave_mcp::{ToolCallResult, ToolContent};
 use serde_json::Value;
@@ -59,7 +59,12 @@ impl ChatBackend for MockAgent {
         "mock-agent"
     }
 
-    async fn chat(&self, _messages: &[Message], _tools: Option<&[Value]>) -> Result<ChatResponse> {
+    async fn chat_with_options(
+        &self,
+        _messages: &[Message],
+        _tools: Option<&[Value]>,
+        _options: &ChatOptions,
+    ) -> Result<ChatResponse> {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             // Fallback: return agent_done so tests don't hang
@@ -664,7 +669,12 @@ impl ChatBackend for CapturingMockAgent {
         "capturing-mock-agent"
     }
 
-    async fn chat(&self, messages: &[Message], _tools: Option<&[Value]>) -> Result<ChatResponse> {
+    async fn chat_with_options(
+        &self,
+        messages: &[Message],
+        _tools: Option<&[Value]>,
+        _options: &ChatOptions,
+    ) -> Result<ChatResponse> {
         self.captured_messages
             .lock()
             .unwrap()

@@ -468,9 +468,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
-        // CDP Fill: resolve target → uid (refreshed against live DOM), then call cdp_fill.
-        // The planner can embed labels/intents instead of session-specific UIDs so a
-        // workflow launched afresh still targets the right input.
+        // CDP Fill: resolve target against the live snapshot so a UID baked in
+        // at planning time stays valid after relaunch.
         if let NodeType::CdpFill(p) = node_type {
             let uid = self.resolve_cdp_target_uid(&p.target, mcp).await?;
             let args = serde_json::json!({"uid": uid, "value": p.value});
@@ -923,10 +922,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        // McpToolCall generic dispatch: update focused_app for focus_window so
-        // executor state stays consistent when called via a generic tool-call node.
-        // PID is not resolvable inline here; mark focus_dirty so the supervision
-        // wrapper refreshes kind+PID via list_apps once the node completes.
+        // Generic McpToolCall focus_window: PID is not resolvable inline,
+        // mark focus_dirty so run_loop refreshes kind+PID post-step.
         if let Some(ref app_name) = mcp_focus_window_app {
             *self.write_focused_app() = Some((app_name.clone(), AppKind::Native, 0));
             retry_ctx.focus_dirty = true;

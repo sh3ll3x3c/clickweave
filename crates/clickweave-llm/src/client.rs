@@ -7,10 +7,6 @@ use tracing::{debug, error, info, trace};
 
 /// Per-call overrides for a single `chat` invocation. Any field left at `None`
 /// falls back to the backend's configured default.
-///
-/// Built so callers can request different temperatures for planning
-/// (creative, e.g. 0.3–0.5) vs element resolution or Run mode (deterministic,
-/// 0.0) without mutating shared config.
 #[derive(Debug, Clone, Default)]
 pub struct ChatOptions {
     pub temperature: Option<f32>,
@@ -18,7 +14,6 @@ pub struct ChatOptions {
 }
 
 impl ChatOptions {
-    /// Convenience: create options that only override temperature.
     pub fn with_temperature(temperature: f32) -> Self {
         Self {
             temperature: Some(temperature),
@@ -29,23 +24,25 @@ impl ChatOptions {
 
 /// Seam for LLM interaction, allowing mock backends in tests.
 pub trait ChatBackend: Send + Sync {
-    fn chat(
-        &self,
-        messages: &[Message],
-        tools: Option<&[Value]>,
-    ) -> impl Future<Output = Result<ChatResponse>> + Send;
-
-    /// Call `chat` with per-invocation option overrides. The default impl
-    /// ignores the options and delegates to `chat`, which is fine for mocks
-    /// where temperature is irrelevant. `LlmClient` overrides this to apply
-    /// the overrides to the outgoing request body.
+    /// Required. Real backends honor `options`; mocks that don't care can
+    /// ignore them. `chat()` is a thin default wrapper so the common case
+    /// stays concise.
     fn chat_with_options(
         &self,
         messages: &[Message],
         tools: Option<&[Value]>,
-        _options: &ChatOptions,
+        options: &ChatOptions,
+    ) -> impl Future<Output = Result<ChatResponse>> + Send;
+
+    fn chat(
+        &self,
+        messages: &[Message],
+        tools: Option<&[Value]>,
     ) -> impl Future<Output = Result<ChatResponse>> + Send {
-        self.chat(messages, tools)
+        async move {
+            self.chat_with_options(messages, tools, &ChatOptions::default())
+                .await
+        }
     }
 
     fn model_name(&self) -> &str;
@@ -193,11 +190,6 @@ impl LlmClient {
 impl ChatBackend for LlmClient {
     fn model_name(&self) -> &str {
         &self.config.model
-    }
-
-    async fn chat(&self, messages: &[Message], tools: Option<&[Value]>) -> Result<ChatResponse> {
-        self.chat_with_options(messages, tools, &ChatOptions::default())
-            .await
     }
 
     async fn chat_with_options(
@@ -585,10 +577,11 @@ mod tests {
             "mock-model"
         }
 
-        async fn chat(
+        async fn chat_with_options(
             &self,
             messages: &[Message],
             _tools: Option<&[Value]>,
+            _options: &ChatOptions,
         ) -> Result<ChatResponse> {
             self.calls.lock().unwrap().push(messages.to_vec());
             Ok(ChatResponse {

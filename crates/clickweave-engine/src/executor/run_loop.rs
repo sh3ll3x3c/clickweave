@@ -332,10 +332,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .await
             {
                 Ok(node_result) => {
-                    // AI step and McpToolCall focus-changing tools write PID=0
-                    // because they can't resolve it inline. Refresh once the
-                    // node completed so subsequent CDP/focus checks use a real
-                    // PID and AppKind.
                     if ctx.focus_dirty {
                         self.refresh_focused_pid(mcp).await;
                         ctx.focus_dirty = false;
