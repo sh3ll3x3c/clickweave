@@ -1,19 +1,19 @@
 use super::prompt::summarize_steps;
 use super::types::AgentStep;
 use clickweave_llm::{Content, Message};
-use std::collections::HashMap;
 
 /// Rough token estimate: ~4 characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
 
-/// Tools whose results embed a full page snapshot (accessibility tree, DOM
-/// snapshot, element listing, wait-for result, or OCR screenshot). Each
-/// successive call returns a fresh view of the same page, so retaining
-/// older payloads in message history wastes context for no planning benefit.
-///
-/// The legacy aliases (`wait_for`) are included because tool manifests exposed
-/// to the agent sometimes surface both the prefixed CDP form and the short
-/// alias for the same underlying behavior.
+/// Prefix marking a tool-result body that has already been collapsed by
+/// [`collapse_superseded_snapshots`]. Used to make the pass idempotent.
+const SUPERSEDED_PREFIX: &str = "[superseded ";
+
+/// Tools whose results embed a full page snapshot. Each successive call
+/// returns a fresh view of the same page, so older payloads rarely help
+/// planning and can be collapsed. `wait_for` is a legacy alias for
+/// `cdp_wait_for` that some tool manifests still surface alongside the
+/// prefixed form.
 pub(crate) const SNAPSHOT_PRODUCING_TOOLS: &[&str] = &[
     "cdp_take_ax_snapshot",
     "cdp_take_dom_snapshot",
@@ -25,16 +25,32 @@ pub(crate) const SNAPSHOT_PRODUCING_TOOLS: &[&str] = &[
     "wait_for",
 ];
 
-/// Replace the content of a tool-result `Message` with a one-line
-/// supersession placeholder. Preserves the `tool_call_id` so the OpenAI
-/// tool-call linkage stays intact — stripping it would produce an orphan
-/// `tool` message that some providers reject.
 fn make_superseded_placeholder(tool_name: &str) -> String {
     format!(
-        "[superseded {} result — a newer snapshot of the same page was captured; \
+        "{}{} result — a newer snapshot of the same page was captured; \
          only the most recent snapshot is retained at full fidelity]",
-        tool_name
+        SUPERSEDED_PREFIX, tool_name
     )
+}
+
+/// Resolve the tool name a tool-result message refers to by scanning the
+/// preceding assistant `tool_calls` for a matching id. Returns `None` if
+/// `msg` is not a tool-result or the id cannot be resolved.
+fn resolve_tool_name<'a>(messages: &'a [Message], msg: &Message) -> Option<&'a str> {
+    if msg.role != "tool" {
+        return None;
+    }
+    let call_id = msg.tool_call_id.as_deref()?;
+    for prior in messages {
+        if let Some(tool_calls) = &prior.tool_calls {
+            for tc in tool_calls {
+                if tc.id == call_id {
+                    return Some(tc.function.name.as_str());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Estimate the number of tokens in a string.
@@ -62,53 +78,40 @@ pub fn estimate_messages_tokens(messages: &[Message]) -> usize {
 /// Collapse snapshot-producing tool-result payloads that have been superseded
 /// by a more recent call to the same tool.
 ///
-/// Snapshot-producing tools (`cdp_take_ax_snapshot`, `cdp_take_dom_snapshot`,
-/// `cdp_find_elements`, `cdp_wait_for`, `take_ax_snapshot`, `take_screenshot`,
-/// and variants) each embed a full view of the current page in their result.
-/// When several such calls occur back-to-back, the older payloads rarely carry
-/// planning-relevant information — the newest snapshot reflects the current
-/// state of the page. Without supersession, every snapshot stays in history
-/// at full size and the prompt grows linearly with tool-call count.
+/// Each tool listed in [`SNAPSHOT_PRODUCING_TOOLS`] embeds a full page view
+/// in its result. When several such calls occur back-to-back, older payloads
+/// rarely carry planning-relevant information — the newest snapshot reflects
+/// the current state of the page. Without supersession, every snapshot stays
+/// in history at full size and the prompt grows linearly with tool-call
+/// count, quickly exhausting the LLM's context window.
 ///
-/// This function returns a new `Vec<Message>` where, for every
-/// snapshot-producing tool in [`SNAPSHOT_PRODUCING_TOOLS`], all but the most
-/// recent tool-result body is replaced with a short supersession placeholder.
-/// The `tool_call_id` is preserved so the OpenAI tool-call linkage remains
-/// valid. Tool-call arguments (on the assistant side) are untouched — they
-/// are tiny.
+/// All but the most recent result for each snapshot tool is rewritten to a
+/// short placeholder. The `tool_call_id` is preserved so the OpenAI
+/// tool-call linkage stays valid — stripping it would produce an orphan
+/// `tool` message that some providers reject. Tool-call arguments (on the
+/// assistant side) are untouched; they are tiny.
 ///
-/// Returns `None` when no messages would change, so callers can cheaply skip
+/// Returns `None` when no messages would change so callers can cheaply skip
 /// the log line and the copy in the common case.
 pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message>> {
-    // Map each tool_call_id to the tool name (from the preceding assistant
-    // message). Tool-result messages carry only the id, so we need this
-    // mapping to decide whether a result came from a snapshot tool.
-    let mut id_to_tool: HashMap<&str, &str> = HashMap::new();
-    for msg in messages {
-        if let Some(tool_calls) = &msg.tool_calls {
-            for tc in tool_calls {
-                id_to_tool.insert(tc.id.as_str(), tc.function.name.as_str());
-            }
-        }
-    }
-
-    // Find the index of the most recent tool-result for each snapshot tool.
-    // "Most recent" means highest message index whose linked tool name matches.
-    // We key by tool name (not call id) so that the latest snapshot of any
-    // flavor survives even if multiple snapshot tools were invoked.
-    let mut latest_index_by_tool: HashMap<&str, usize> = HashMap::new();
+    // Find the latest tool-result index for each snapshot tool. Keyed by
+    // tool name (not call id) so the newest snapshot of every flavor
+    // survives even when multiple snapshot tools were used in the run.
+    let mut latest_index_by_tool: Vec<(&str, usize)> = Vec::new();
     for (idx, msg) in messages.iter().enumerate() {
-        if msg.role != "tool" {
+        let Some(tool_name) = resolve_tool_name(messages, msg) else {
+            continue;
+        };
+        if !SNAPSHOT_PRODUCING_TOOLS.contains(&tool_name) {
             continue;
         }
-        let Some(call_id) = msg.tool_call_id.as_deref() else {
-            continue;
-        };
-        let Some(tool_name) = id_to_tool.get(call_id).copied() else {
-            continue;
-        };
-        if SNAPSHOT_PRODUCING_TOOLS.contains(&tool_name) {
-            latest_index_by_tool.insert(tool_name, idx);
+        if let Some(slot) = latest_index_by_tool
+            .iter_mut()
+            .find(|(name, _)| *name == tool_name)
+        {
+            slot.1 = idx;
+        } else {
+            latest_index_by_tool.push((tool_name, idx));
         }
     }
 
@@ -116,49 +119,32 @@ pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message
         return None;
     }
 
-    // Walk the messages; rewrite any snapshot tool-result that is not the
-    // latest for its tool name.
+    // Clone once and rewrite in place. Pre-computing the set of
+    // to-collapse indices would save allocations in the no-op case, but
+    // the early return above already covers the cheap path.
+    let mut out = messages.to_vec();
     let mut changed = false;
-    let mut out: Vec<Message> = Vec::with_capacity(messages.len());
-    for (idx, msg) in messages.iter().enumerate() {
-        if msg.role != "tool" {
-            out.push(msg.clone());
-            continue;
-        }
-        let Some(call_id) = msg.tool_call_id.as_deref() else {
-            out.push(msg.clone());
-            continue;
-        };
-        let Some(tool_name) = id_to_tool.get(call_id).copied() else {
-            out.push(msg.clone());
+    for (idx, msg) in out.iter_mut().enumerate() {
+        let Some(tool_name) = resolve_tool_name(messages, msg) else {
             continue;
         };
         if !SNAPSHOT_PRODUCING_TOOLS.contains(&tool_name) {
-            out.push(msg.clone());
             continue;
         }
         let is_latest = latest_index_by_tool
-            .get(tool_name)
-            .copied()
-            .is_some_and(|latest| latest == idx);
+            .iter()
+            .any(|(name, latest)| *name == tool_name && *latest == idx);
         if is_latest {
-            out.push(msg.clone());
             continue;
         }
-
-        // Supersede: skip if the body is already a placeholder (idempotence),
-        // otherwise rewrite the content and mark the transcript as changed.
-        let already_collapsed = msg
+        // Idempotence: skip if already collapsed.
+        if msg
             .content_text()
-            .is_some_and(|t| t.starts_with("[superseded "));
-        if already_collapsed {
-            out.push(msg.clone());
+            .is_some_and(|t| t.starts_with(SUPERSEDED_PREFIX))
+        {
             continue;
         }
-
-        let mut replaced = msg.clone();
-        replaced.content = Some(Content::Text(make_superseded_placeholder(tool_name)));
-        out.push(replaced);
+        msg.content = Some(Content::Text(make_superseded_placeholder(tool_name)));
         changed = true;
     }
 
@@ -480,14 +466,10 @@ mod tests {
         assert_eq!(collapsed.len(), messages.len());
 
         // Locate tool-result messages; all but the last should be placeholders.
-        let tool_results: Vec<(usize, &Message)> = collapsed
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.role == "tool")
-            .collect();
+        let tool_results: Vec<&Message> = collapsed.iter().filter(|m| m.role == "tool").collect();
         assert_eq!(tool_results.len(), 4);
 
-        for (_, m) in &tool_results[..3] {
+        for m in &tool_results[..3] {
             let text = m.content_text().expect("placeholder has text");
             assert!(
                 text.starts_with("[superseded cdp_find_elements"),
@@ -499,7 +481,7 @@ mod tests {
         }
 
         // The newest snapshot must still have its full body.
-        let latest = tool_results.last().unwrap().1;
+        let latest = tool_results.last().unwrap();
         let latest_text = latest.content_text().unwrap();
         assert!(
             latest_text.len() > 1024,
