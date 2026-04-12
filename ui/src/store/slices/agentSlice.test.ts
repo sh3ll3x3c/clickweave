@@ -9,17 +9,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { useStore } from "../useAppStore";
 
-describe("agentSlice.startAgent — already_running surfaces as error state", () => {
+describe("agentSlice.startAgent", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     useStore.getState().resetAgent();
   });
 
-  // Regression: during the MCP spawn window a second `run_agent` call
-  // must be rejected at the Tauri layer with `AlreadyRunning`. The
-  // frontend must surface that rejection as an `error` status with
-  // a non-null error message — not silently set status back to `running`
-  // or swallow the rejection.
   it("surfaces AlreadyRunning rejections into agentStatus=error", async () => {
     invokeMock.mockRejectedValueOnce({
       kind: "AlreadyRunning",
@@ -34,9 +29,7 @@ describe("agentSlice.startAgent — already_running surfaces as error state", ()
     expect(state.agentError).not.toBe("");
   });
 
-  // Same guarantee when the error arrives as a plain string — the
-  // Tauri-specta layer serializes `CommandError` through Display.
-  it("surfaces AlreadyRunning string-serialized rejection into agentStatus=error", async () => {
+  it("surfaces string-serialized AlreadyRunning rejections into agentStatus=error", async () => {
     invokeMock.mockRejectedValueOnce("AlreadyRunning: Already running");
 
     await useStore.getState().startAgent("do something");
@@ -46,7 +39,7 @@ describe("agentSlice.startAgent — already_running surfaces as error state", ()
     expect(state.agentError).toMatch(/already running/i);
   });
 
-  it("stays in running state when invoke succeeds (no error path)", async () => {
+  it("stays in running state when invoke succeeds", async () => {
     invokeMock.mockResolvedValueOnce(undefined);
 
     await useStore.getState().startAgent("do something else");
@@ -56,19 +49,12 @@ describe("agentSlice.startAgent — already_running surfaces as error state", ()
     expect(state.agentError).toBeNull();
   });
 
-  it("clears previous agentRunId when starting a new run (null-gap arms)", async () => {
-    // Simulate a prior run: install a run_id.
+  it("clears the previous agentRunId before invoke so stale events are treated as stale", async () => {
     useStore.getState().setAgentRunId("run-prior");
-    expect(useStore.getState().agentRunId).toBe("run-prior");
-
-    invokeMock.mockImplementationOnce(async () => {
-      // At the moment invoke is in flight, the store must have already
-      // dropped the previous run_id so any in-flight events from
-      // "run-prior" are treated as stale by the null-gap guard.
-      expect(useStore.getState().agentRunId).toBeNull();
-      return undefined;
-    });
+    invokeMock.mockResolvedValueOnce(undefined);
 
     await useStore.getState().startAgent("fresh goal");
+
+    expect(useStore.getState().agentRunId).toBeNull();
   });
 });

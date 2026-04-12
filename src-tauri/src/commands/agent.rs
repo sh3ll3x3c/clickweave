@@ -571,7 +571,7 @@ mod tests {
     /// Tauri command can return a validation error instead of silently
     /// succeeding.
     #[test]
-    fn force_stop_reports_no_run_active() {
+    fn force_stop_returns_false_when_no_run_active() {
         let mut handle = AgentHandle::default();
         let had_task = handle.force_stop();
         assert!(
