@@ -56,6 +56,10 @@ pub struct Message {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Content>,
+    /// Thinking-model scratchpad. Captured from assistant responses and echoed
+    /// back in subsequent requests so the model can build on prior reasoning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +73,7 @@ impl Message {
         Self {
             role: role.to_string(),
             content: None,
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
             name: None,
