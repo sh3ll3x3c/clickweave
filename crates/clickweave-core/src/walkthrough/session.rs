@@ -20,9 +20,9 @@ use super::types::{
 /// and click queue remain accessible regardless of which world runs the
 /// injection or retrieval.
 ///
-/// The body is assembled at compile time from [`cdp_scripts/common.js`]
+/// The body is assembled at compile time from `cdp_scripts/common.js`
 /// (shared `TAG_ROLES` / `INTERACTIVE` / `accessibleText` helpers) and
-/// [`cdp_scripts/click_listener.js`] (the listener-specific logic).
+/// `cdp_scripts/click_listener.js` (the listener-specific logic).
 pub const CDP_CLICK_LISTENER_JS: &str = concat!(
     "() => {\n",
     include_str!("cdp_scripts/common.js"),
@@ -36,8 +36,8 @@ pub const CDP_RETRIEVE_CLICK_JS: &str = include_str!("cdp_scripts/retrieve_click
 /// JavaScript to check if the click listener is still alive; re-inject if lost.
 /// Returns `"reinjected"` if it was re-injected, `"alive"` otherwise.
 ///
-/// Body assembled from [`cdp_scripts/common.js`] and
-/// [`cdp_scripts/check_and_reinject.js`].
+/// Body assembled from `cdp_scripts/common.js` and
+/// `cdp_scripts/check_and_reinject.js`.
 pub const CDP_CHECK_AND_REINJECT_JS: &str = concat!(
     "() => {\n",
     include_str!("cdp_scripts/common.js"),
@@ -60,8 +60,8 @@ pub const CDP_CHECK_AND_REINJECT_JS: &str = concat!(
 /// Contains a `__CW_MIN_DWELL__` placeholder that must be replaced with
 /// the actual minimum dwell threshold (in milliseconds) before injection.
 ///
-/// Body assembled from [`cdp_scripts/common.js`] and
-/// [`cdp_scripts/hover_listener.js`].
+/// Body assembled from `cdp_scripts/common.js` and
+/// `cdp_scripts/hover_listener.js`.
 pub const CDP_HOVER_LISTENER_JS: &str = concat!(
     "() => {\n",
     include_str!("cdp_scripts/common.js"),
