@@ -488,7 +488,6 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
     get().pushHistory("Apply Walkthrough");
     get().setWorkflow(modifiedDraft);
-    set({ pendingPatch: null, pendingPatchWarnings: [], pendingIntent: null, hasPendingIntent: false });
 
     // Seed decision cache.
     seedCache(modifiedDraft, get);

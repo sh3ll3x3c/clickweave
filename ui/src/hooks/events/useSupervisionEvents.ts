@@ -1,10 +1,8 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { WorkflowPatch } from "../../bindings";
-import type { ResolutionProposal } from "../../store/slices/executionSlice";
 import { useStore } from "../../store/useAppStore";
 
-/** Subscribe to executor supervision and resolution events. */
+/** Subscribe to executor supervision events. */
 export function useSupervisionEvents() {
   useEffect(() => {
     const unlisteners: (() => void)[] = [];
@@ -36,16 +34,6 @@ export function useSupervisionEvents() {
         });
       },
     ));
-    sub(listen<ResolutionProposal>("executor://resolution_proposed", (e) => {
-      useStore.setState({ resolutionProposal: e.payload });
-    }));
-    sub(listen("executor://resolution_dismissed", () => {
-      useStore.setState({ resolutionProposal: null });
-    }));
-    sub(listen<{ patch: WorkflowPatch }>("executor://patch_applied", (e) => {
-      useStore.getState().applyRuntimePatch(e.payload.patch);
-      useStore.setState({ resolutionProposal: null });
-    }));
 
     return () => {
       cancelled = true;
