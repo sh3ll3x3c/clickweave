@@ -2,7 +2,7 @@ use super::Mcp;
 use super::retry_context::RetryContext;
 use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::NodeType;
-use clickweave_llm::{ChatBackend, Message};
+use clickweave_llm::{ChatBackend, ChatOptions, Message};
 use clickweave_mcp::ToolContent;
 use serde_json::Value;
 use tracing::debug;
@@ -20,6 +20,12 @@ was submitted, not that the action failed.
 
 IMPORTANT: Step labels are user-editable and can be stale after workflow edits; \
 use the EXECUTED ACTION as the source of truth for intent, not the label text.
+
+When a typing or fill step follows an explicit field-targeting step (e.g. a click \
+on a specific input), verify the typed text appeared in THAT field, not merely \
+that the characters appeared somewhere on screen. Text landing in an unrelated \
+input (such as a search bar) means the typing step failed spatially even though \
+the characters were entered.
 
 Return ONLY a JSON object: {\"passed\": true/false, \"reasoning\": \"brief explanation\"}";
 
@@ -223,7 +229,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             vec![(prepared_b64, mime)],
         )];
 
-        match vlm.chat(&messages, None).await {
+        // Deterministic temperature so the VLM description is stable for
+        // the same screenshot — downstream judging depends on it.
+        match vlm
+            .chat_with_options(&messages, None, &ChatOptions::with_temperature(0.0))
+            .await
+        {
             Ok(response) => response
                 .choices
                 .first()
@@ -263,7 +274,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             history.clone()
         };
 
-        let result = match backend.chat(&messages, None).await {
+        // Deterministic verdicts: the supervisor's pass/fail output must not
+        // drift between retries of the same step for stable replay.
+        let result = match backend
+            .chat_with_options(&messages, None, &ChatOptions::with_temperature(0.0))
+            .await
+        {
             Ok(response) => {
                 let raw = response
                     .choices

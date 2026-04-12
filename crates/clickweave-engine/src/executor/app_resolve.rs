@@ -273,6 +273,48 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         )))
     }
 
+    /// Upgrade a placeholder PID=0 on `focused_app` (and any matching
+    /// `cdp_connected_app` entry) to the real PID + AppKind via `list_apps`.
+    /// No-op if the focused app already has a real PID, is empty, or the
+    /// lookup fails.
+    pub(in crate::executor) async fn refresh_focused_pid(&mut self, mcp: &(impl Mcp + ?Sized)) {
+        use clickweave_core::app_detection::classify_app_by_pid;
+
+        let snapshot = self.read_focused_app().clone();
+        let Some((name, _kind, current_pid)) = snapshot else {
+            return;
+        };
+        if current_pid != 0 {
+            return;
+        }
+
+        let real_pid = match self.lookup_app_pid(&name, mcp).await {
+            Ok(pid) => pid,
+            Err(e) => {
+                tracing::debug!(
+                    app_name = %name,
+                    error = %e,
+                    "refresh_focused_pid: lookup failed, leaving placeholder",
+                );
+                return;
+            }
+        };
+        let real_kind = classify_app_by_pid(real_pid);
+        *self.write_focused_app() = Some((name.clone(), real_kind, real_pid));
+
+        if let Some((cdp_name, cdp_pid)) = self.cdp_connected_app.as_mut()
+            && cdp_name == &name
+            && *cdp_pid == 0
+        {
+            *cdp_pid = real_pid;
+        }
+
+        self.log(format!(
+            "Refreshed focused app: \"{}\" kind={:?} pid={}",
+            name, real_kind, real_pid
+        ));
+    }
+
     /// Remove a cached app resolution so the next attempt re-resolves via LLM.
     pub(crate) fn evict_app_cache(&self, user_input: &str) {
         if self.write_app_cache().remove(user_input).is_some() {

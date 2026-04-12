@@ -2,7 +2,9 @@ use super::super::*;
 use crate::executor::Mcp;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_llm::{ChatBackend, ChatResponse, Choice, Content, ContentPart, Message};
+use clickweave_llm::{
+    ChatBackend, ChatOptions, ChatResponse, Choice, Content, ContentPart, Message,
+};
 use clickweave_mcp::{ToolCallResult, ToolContent};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -18,10 +20,11 @@ impl ChatBackend for StubBackend {
         "stub"
     }
 
-    async fn chat(
+    async fn chat_with_options(
         &self,
         _messages: &[Message],
         _tools: Option<&[Value]>,
+        _options: &ChatOptions,
     ) -> anyhow::Result<ChatResponse> {
         panic!("StubBackend::chat should not be called in this test");
     }
@@ -68,10 +71,11 @@ impl ChatBackend for ScriptedBackend {
         "scripted"
     }
 
-    async fn chat(
+    async fn chat_with_options(
         &self,
         _messages: &[Message],
         _tools: Option<&[Value]>,
+        _options: &ChatOptions,
     ) -> anyhow::Result<ChatResponse> {
         let text = self
             .responses

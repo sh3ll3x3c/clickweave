@@ -468,6 +468,36 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
+        // CDP Fill: resolve target against the live snapshot so a UID baked in
+        // at planning time stays valid after relaunch.
+        if let NodeType::CdpFill(p) = node_type {
+            let uid = self.resolve_cdp_target_uid(&p.target, mcp).await?;
+            let args = serde_json::json!({"uid": uid, "value": p.value});
+            self.record_event(
+                node_run.as_deref(),
+                "tool_call",
+                serde_json::json!({"name": "cdp_fill", "args": &args}),
+            );
+            let result = mcp.call_tool("cdp_fill", Some(args)).await.map_err(|e| {
+                ExecutorError::ToolCall {
+                    tool: "cdp_fill".to_string(),
+                    message: e.to_string(),
+                }
+            })?;
+            Self::check_tool_error(&result, "cdp_fill")?;
+            let result_text = Self::extract_result_text(&result);
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({
+                    "name": "cdp_fill",
+                    "text": Self::truncate_for_trace(&result_text, 8192),
+                    "text_len": result_text.len(),
+                }),
+            );
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+        }
+
         // CDP Type: call cdp_type_text directly
         if let NodeType::CdpType(p) = node_type {
             let args = serde_json::json!({"text": p.text});
@@ -484,7 +514,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     message: e.to_string(),
                 })?;
             Self::check_tool_error(&result, "cdp_type_text")?;
-            return Self::set_tool_result_and_parse(retry_ctx, &Self::extract_result_text(&result));
+            let result_text = Self::extract_result_text(&result);
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({
+                    "name": "cdp_type_text",
+                    "text": Self::truncate_for_trace(&result_text, 8192),
+                    "text_len": result_text.len(),
+                }),
+            );
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         // CDP Press Key: call cdp_press_key directly
@@ -506,7 +546,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     message: e.to_string(),
                 })?;
             Self::check_tool_error(&result, "cdp_press_key")?;
-            return Self::set_tool_result_and_parse(retry_ctx, &Self::extract_result_text(&result));
+            let result_text = Self::extract_result_text(&result);
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({
+                    "name": "cdp_press_key",
+                    "text": Self::truncate_for_trace(&result_text, 8192),
+                    "text_len": result_text.len(),
+                }),
+            );
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         if let NodeType::AppDebugKitOp(p) = node_type {
@@ -902,14 +952,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        // McpToolCall generic dispatch: update focused_app/cdp state for
-        // focus_window and quit_app so executor state stays consistent when
-        // these tools are called via a generic tool-call node.
-        // McpToolCall generic dispatch: update focused_app for focus_window so
-        // executor state stays consistent when called via a generic tool-call node.
-        // PID is not available for generic McpToolCall focus_window; use 0 as placeholder.
+        // Generic McpToolCall focus_window: PID is not resolvable inline,
+        // mark focus_dirty so run_loop refreshes kind+PID post-step.
         if let Some(ref app_name) = mcp_focus_window_app {
             *self.write_focused_app() = Some((app_name.clone(), AppKind::Native, 0));
+            retry_ctx.focus_dirty = true;
         }
 
         // quit_app clears focused_app and cdp_connected_app when the app being quit

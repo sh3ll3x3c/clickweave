@@ -332,6 +332,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .await
             {
                 Ok(node_result) => {
+                    if ctx.focus_dirty {
+                        self.refresh_focused_pid(mcp).await;
+                        ctx.focus_dirty = false;
+                    }
+
                     self.extract_and_store_variables(
                         node_auto_id,
                         &node_result,
