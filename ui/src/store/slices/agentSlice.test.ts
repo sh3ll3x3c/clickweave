@@ -25,8 +25,7 @@ describe("agentSlice.startAgent", () => {
 
     const state = useStore.getState();
     expect(state.agentStatus).toBe("error");
-    expect(state.agentError).not.toBeNull();
-    expect(state.agentError).not.toBe("");
+    expect(state.agentError).toBe("Already running");
   });
 
   it("surfaces string-serialized AlreadyRunning rejections into agentStatus=error", async () => {

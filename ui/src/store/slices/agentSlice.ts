@@ -21,6 +21,21 @@ export interface PendingApproval {
   description: string;
 }
 
+/**
+ * Tauri rejects with a structured `CommandError { kind, message }` for
+ * typed failures (e.g. `AlreadyRunning`), but tauri-specta can also
+ * surface plain strings when an error is serialized through `Display`.
+ * Prefer the structured `message`, fall back to string coercion.
+ */
+function formatAgentError(err: unknown): string {
+  if (err && typeof err === "object" && "message" in err) {
+    const m = (err as { message?: unknown }).message;
+    if (typeof m === "string" && m.length > 0) return m;
+  }
+  if (typeof err === "string") return err;
+  return String(err);
+}
+
 export interface AgentSlice {
   agentStatus: AgentStatus;
   agentGoal: string;
@@ -79,7 +94,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         },
       });
     } catch (err) {
-      const msg = `${err}`;
+      const msg = formatAgentError(err);
       set({ agentStatus: "error", agentError: msg });
       pushLog(`Agent failed: ${msg}`);
     }
