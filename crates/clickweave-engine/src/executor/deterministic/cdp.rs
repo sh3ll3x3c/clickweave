@@ -131,13 +131,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "hover" => "move_mouse",
                 _ => "click",
             };
-            // Surface the fallback to the user: the canvas still shows a CDP
-            // node but we're running a native action at screen coordinates,
-            // which moves the physical mouse and is less reliable. A warning
-            // event drives the log panel; a structured trace event lands in
-            // `events.jsonl` so repeat fallbacks are auditable after the run.
-            // TODO: offer a resolution to convert the node to a native Click
-            // when the fallback keeps happening for the same target.
+            // The warning drives the live UI log; the structured trace event
+            // lands in `events.jsonl` so repeat fallbacks are auditable after
+            // the run even when the log panel wasn't open.
             self.emit_warning(format!(
                 "CDP {action} for '{target}' fell back to native {native_tool} at ({x}, {y}) — \
                  element is visible on screen but missing from the CDP accessibility tree. \

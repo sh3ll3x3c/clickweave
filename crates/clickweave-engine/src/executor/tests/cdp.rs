@@ -82,11 +82,9 @@ async fn resolve_cdp_target_uid_resolves_intent_via_snapshot() {
 
 #[tokio::test]
 async fn execute_cdp_action_emits_warning_on_native_fallback() {
-    // When the CDP resolver returns a `__native_at__:X:Y` sentinel UID, the
-    // executor silently swapped the CDP tool for a native click/move_mouse.
-    // That made CDP nodes secretly run as native actions with no user-visible
-    // signal. Verify the fallback now emits an `ExecutorEvent::Warning` and
-    // forwards the native tool call.
+    // A `__native_at__:X:Y` sentinel UID triggers the native click/move_mouse
+    // fallback. The fallback must emit `ExecutorEvent::Warning` so the user
+    // knows a CDP node actually ran as a native action.
     let (exec, mut rx) = make_test_executor_with_events();
     let mcp = StubToolProvider::new();
 
