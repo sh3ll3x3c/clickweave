@@ -104,6 +104,23 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         crate::agent::truncate_summary(text, max_bytes)
     }
 
+    /// Build a single-line preview of `text` for user-facing log messages.
+    ///
+    /// Caps at `max_chars` bytes (snapped to a char boundary). If the input
+    /// exceeds that, appends `… (N total chars)` where N is the full length.
+    /// Newlines in the preview are escaped to the literal sequence `\n` so the
+    /// log entry stays on one line.
+    pub(crate) fn preview_for_log(text: &str, max_chars: usize) -> String {
+        let full_len = text.len();
+        let body = if full_len > max_chars {
+            let end = text.floor_char_boundary(max_chars);
+            format!("{}… ({} total chars)", &text[..end], full_len)
+        } else {
+            text.to_string()
+        };
+        body.replace('\n', "\\n")
+    }
+
     pub(crate) fn save_result_images(
         &self,
         result: &ToolCallResult,

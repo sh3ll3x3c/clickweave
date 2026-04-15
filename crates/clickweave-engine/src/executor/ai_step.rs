@@ -171,9 +171,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         let result_text = Self::extract_result_text(&result);
 
                         self.log(format!(
-                            "Tool result: {} chars, {} images",
+                            "Tool result ({} chars, {} images): {}",
                             result_text.len(),
-                            pending_images.len()
+                            pending_images.len(),
+                            Self::preview_for_log(&result_text, 300)
                         ));
                         debug!(
                             tool = %tool_call.function.name,
