@@ -49,6 +49,14 @@ pub(crate) trait Mcp: Send + Sync {
 
     /// Convert available tools to the OpenAI-compatible function-call format.
     fn tools_as_openai(&self) -> Vec<serde_json::Value>;
+
+    /// Re-fetch the server's tool list into the client's internal cache.
+    /// This refreshes what `has_tool` reports (e.g. so `cdp_find_elements`
+    /// becomes visible after `cdp_connect`) but does **not** change the
+    /// agent's LLM-visible tool list — the latter is seeded once per run
+    /// in `agent/mod.rs` and kept stable for prompt-cache stability. See
+    /// the "Tool Exposure" policy in `docs/reference/engine/execution.md`.
+    fn refresh_tools(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl Mcp for clickweave_mcp::McpClient {
@@ -66,6 +74,10 @@ impl Mcp for clickweave_mcp::McpClient {
 
     fn tools_as_openai(&self) -> Vec<serde_json::Value> {
         clickweave_mcp::McpClient::tools_as_openai(self)
+    }
+
+    fn refresh_tools(&self) -> impl Future<Output = anyhow::Result<()>> + Send {
+        clickweave_mcp::McpClient::refresh_tools(self)
     }
 }
 

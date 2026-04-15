@@ -806,11 +806,15 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
     /// Run post-tool hooks for launch/focus actions: auto-connect CDP.
     ///
-    /// Intentionally does **not** refresh or mutate the agent's tool list.
-    /// The tool list is seeded once at run start (see `agent/mod.rs`) and
-    /// kept stable across steps so prompt-cache prefixes stay valid. Tools
-    /// that require a connection return a clean "not connected" error when
-    /// called pre-connection; the agent recovers on the next step.
+    /// Refreshes the MCP client's internal tool cache after a successful
+    /// connect so subsequent `has_tool(...)` checks (notably the one in
+    /// `fetch_elements` that gates `cdp_find_elements`) see the tools the
+    /// server exposes post-connect. This does **not** mutate the agent's
+    /// LLM-visible tool list — that is seeded once at run start (see
+    /// `agent/mod.rs`) and kept stable across steps so prompt-cache
+    /// prefixes stay valid. Tools that the LLM picks but that require a
+    /// live connection return a clean "not connected" error when called
+    /// pre-connection; the agent recovers on the next step.
     async fn maybe_cdp_connect(
         &self,
         tool_name: &str,
@@ -829,6 +833,12 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 port: cdp_port,
             })
             .await;
+            // Refresh the client-side cache (not the agent's LLM tools
+            // vec) so observation gates like `has_tool("cdp_find_elements")`
+            // see tools surfaced by the server post-connect.
+            if let Err(e) = mcp.refresh_tools().await {
+                warn!(error = %e, "Post-CDP-connect client tool-cache refresh failed");
+            }
         }
     }
 

@@ -195,6 +195,10 @@ impl Mcp for MockMcp {
     fn tools_as_openai(&self) -> Vec<Value> {
         self.tools.clone()
     }
+
+    async fn refresh_tools(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1319,23 +1323,44 @@ impl ChatBackend for ToolCapturingAgent {
     }
 }
 
-/// Mock MCP whose `tools_as_openai` return value flips after `cdp_connect`
-/// is called — mirroring the real server behavior the old `refresh_tools`
-/// path would have picked up and baked into the agent's tool list.
+/// Mock MCP that models the real `McpClient` cache semantics: a single
+/// tool snapshot backs both `has_tool` and `tools_as_openai`, and it only
+/// updates when `refresh_tools` is called. The server's "true" tool set
+/// grows after `cdp_connect` (the extras become available), but the mock
+/// will keep returning the stale snapshot until refreshed — matching what
+/// the production client does.
 struct ShiftingToolsMcp {
     results: Mutex<Vec<ToolCallResult>>,
     base_tools: Vec<Value>,
     extra_tools: Vec<Value>,
+    /// Server-side visibility: flips to true on `cdp_connect`.
     cdp_connected: std::sync::atomic::AtomicBool,
+    /// Client-side cached snapshot of tools; only updated by `refresh_tools`.
+    cached_tools: Mutex<Vec<Value>>,
 }
 
 impl ShiftingToolsMcp {
     fn new(results: Vec<ToolCallResult>, base_tools: Vec<Value>, extra_tools: Vec<Value>) -> Self {
         Self {
             results: Mutex::new(results),
+            cached_tools: Mutex::new(base_tools.clone()),
             base_tools,
             extra_tools,
             cdp_connected: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// What the server reports in `tools/list` right now. Grows after
+    /// `cdp_connect` succeeds.
+    fn server_visible_tools(&self) -> Vec<Value> {
+        if self.cdp_connected.load(std::sync::atomic::Ordering::SeqCst) {
+            self.base_tools
+                .iter()
+                .chain(self.extra_tools.iter())
+                .cloned()
+                .collect()
+        } else {
+            self.base_tools.clone()
         }
     }
 }
@@ -1364,30 +1389,20 @@ impl Mcp for ShiftingToolsMcp {
     }
 
     fn has_tool(&self, name: &str) -> bool {
-        if name == "cdp_find_elements" {
-            return true;
-        }
-        // Simulates the real MCP server exposing CDP tools only after
-        // cdp_connect succeeds.
-        self.visible_tools()
+        self.cached_tools
+            .lock()
+            .unwrap()
+            .iter()
             .any(|t| t["function"]["name"].as_str() == Some(name))
     }
 
     fn tools_as_openai(&self) -> Vec<Value> {
-        self.visible_tools().cloned().collect()
+        self.cached_tools.lock().unwrap().clone()
     }
-}
 
-impl ShiftingToolsMcp {
-    fn visible_tools(&self) -> impl Iterator<Item = &Value> {
-        let extras_len = if self.cdp_connected.load(std::sync::atomic::Ordering::SeqCst) {
-            self.extra_tools.len()
-        } else {
-            0
-        };
-        self.base_tools
-            .iter()
-            .chain(self.extra_tools.iter().take(extras_len))
+    async fn refresh_tools(&self) -> anyhow::Result<()> {
+        *self.cached_tools.lock().unwrap() = self.server_visible_tools();
+        Ok(())
     }
 }
 
@@ -1409,14 +1424,16 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
         captured.clone(),
     );
 
-    // MCP results queue matches the expected call sequence:
-    //   step 0 observe  -> cdp_find_elements
+    // MCP results queue matches the expected call sequence. Pre-connect,
+    // `cdp_find_elements` is not in the client's tool cache, so step 0's
+    // observation is a no-op (empty elements) and consumes no result.
     //   step 0 act      -> launch_app
     //   post-hook probe -> probe_app (must say ElectronApp to trigger CDP)
     //   post-hook quit  -> quit_app
     //   post-hook list  -> list_apps (empty so quit is considered done)
     //   post-hook relaunch -> launch_app
-    //   post-hook connect  -> cdp_connect (flips the MCP tool set)
+    //   post-hook connect  -> cdp_connect (flips the server's tool set)
+    //   (refresh_tools reloads the client cache after connect)
     //   step 1 observe  -> cdp_find_elements
     //   step 1 act      -> click
     //   step 2 observe  -> cdp_find_elements
@@ -1443,7 +1460,6 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
         is_error: None,
     };
     let results = vec![
-        cdp_page("https://example.com"),
         text("Launched"),         // launch_app
         text("ElectronApp"),      // probe_app
         text("ok"),               // quit_app
@@ -1505,18 +1521,41 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
             }
         }),
     ];
-    let extra_tools = vec![serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": "cdp_click",
-            "description": "Click via CDP",
-            "parameters": {
-                "type": "object",
-                "properties": {"uid": {"type": "string"}},
-                "required": ["uid"]
+    // Extras model CDP tools the server only surfaces after `cdp_connect`:
+    //   - `cdp_find_elements` is what the agent's observation gate checks
+    //     (`has_tool(...)` in `fetch_elements`), so it must become visible
+    //     on the *client-side cache* after the post-hook runs, or every
+    //     later observation will return empty.
+    //   - `cdp_click` stands in for any CDP tool that must NOT silently
+    //     show up in the agent's LLM-visible tool list mid-run.
+    let extra_tools = vec![
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "cdp_find_elements",
+                "description": "Find elements via CDP",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "max_results": {"type": "number"}
+                    }
+                }
             }
-        }
-    })];
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "cdp_click",
+                "description": "Click via CDP",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"uid": {"type": "string"}},
+                    "required": ["uid"]
+                }
+            }
+        }),
+    ];
 
     let mcp = ShiftingToolsMcp::new(results, base_tools, extra_tools);
 
@@ -1551,6 +1590,30 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
     assert!(
         mcp.tools_as_openai().len() > tool_count_at_start,
         "Test setup broken: ShiftingToolsMcp should expose more tools post-connect"
+    );
+
+    // The client-side tool cache must have been refreshed after cdp_connect
+    // — otherwise later observation steps would see `has_tool("cdp_find_elements")`
+    // return false and degrade to empty-element native paths.
+    assert!(
+        mcp.has_tool("cdp_find_elements"),
+        "Post-CDP-connect refresh did not run: cdp_find_elements is still \
+         absent from the client tool cache, so fetch_elements would return \
+         empty on every later observation."
+    );
+
+    // And the agent's recorded step for the post-connect click should carry
+    // a CDP-sourced page_url, which only happens if fetch_elements actually
+    // dispatched `cdp_find_elements` — i.e. the gate in fetch_elements saw
+    // the refreshed cache.
+    let click_step = state
+        .steps
+        .iter()
+        .find(|s| matches!(&s.command, AgentCommand::ToolCall { tool_name, .. } if tool_name == "click"))
+        .expect("click step should be present");
+    assert_eq!(
+        click_step.page_url, "https://example.com/after",
+        "Expected the click step to observe via CDP after the connect boundary"
     );
 
     let calls = captured.lock().unwrap();
