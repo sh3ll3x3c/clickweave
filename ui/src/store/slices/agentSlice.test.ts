@@ -81,13 +81,17 @@ describe("agentSlice.startAgent", () => {
     expect(state.pendingApproval).toBeNull();
   });
 
-  it("clears the previous agentRunId after a successful invoke so agent://started can install a fresh one", async () => {
-    useStore.getState().setAgentRunId("run-prior");
-    invokeMock.mockResolvedValueOnce(undefined);
+  it("does not overwrite an agentRunId installed by agent://started during invoke", async () => {
+    // Simulate the backend emitting agent://started (which calls
+    // setAgentRunId) *before* the invoke promise resolves — the listener
+    // races the continuation in useAgentEvents.
+    invokeMock.mockImplementationOnce(async () => {
+      useStore.getState().setAgentRunId("run-new");
+    });
 
     await useStore.getState().startAgent("fresh goal");
 
-    expect(useStore.getState().agentRunId).toBeNull();
+    expect(useStore.getState().agentRunId).toBe("run-new");
   });
 });
 

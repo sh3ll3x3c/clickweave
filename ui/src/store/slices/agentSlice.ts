@@ -88,6 +88,13 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       // run-scoped state untouched keeps the still-live original run's
       // events routing through useAgentEvents instead of being dropped
       // as stale.
+      //
+      // Do NOT clobber `agentRunId` here. The backend emits
+      // `agent://started` synchronously *before* `run_agent` returns, so
+      // the listener may have already installed the new run's ID by the
+      // time this continuation runs. Overwriting it with null would race
+      // with that listener and leave every subsequent event looking
+      // stale under `isStaleRunId`.
       set({
         agentStatus: "running",
         agentGoal: goal,
@@ -95,7 +102,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         agentError: null,
         currentAgentStep: 0,
         pendingApproval: null,
-        agentRunId: null,
       });
       pushLog(`Agent started with goal: ${goal}`);
     } catch (err) {
