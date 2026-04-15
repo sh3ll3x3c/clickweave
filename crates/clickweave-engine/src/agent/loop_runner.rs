@@ -859,12 +859,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     ) -> Option<(String, String)> {
         let vision = self.vision?;
 
-        // 1. Capture a screenshot. The agent may not have a known focused
-        //    app (e.g. web-only runs on CDP), so use the MCP tool's default
-        //    capture path without specifying `app_name`.
-        let screenshot_args = serde_json::json!({"include_ocr": false});
+        // The agent may not have a known focused app (e.g. web-only runs on
+        // CDP) — rely on the MCP tool's default capture path.
         let result = match mcp
-            .call_tool("take_screenshot", Some(screenshot_args))
+            .call_tool(
+                "take_screenshot",
+                Some(serde_json::json!({"include_ocr": false})),
+            )
             .await
         {
             Ok(r) if r.is_error != Some(true) => r,
@@ -881,37 +882,26 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             }
         };
 
-        let raw_b64 = result.content.iter().find_map(|c| match c {
+        let Some(raw_b64) = result.content.iter().find_map(|c| match c {
             clickweave_mcp::ToolContent::Image { data, .. } => Some(data.clone()),
             _ => None,
-        });
-        let raw_b64 = match raw_b64 {
-            Some(b) => b,
-            None => {
-                warn!(
-                    "Completion verification: no image in take_screenshot result, skipping VLM check"
-                );
-                return None;
-            }
+        }) else {
+            warn!(
+                "Completion verification: no image in take_screenshot result, skipping VLM check"
+            );
+            return None;
         };
 
-        let (prepared_b64, mime) = match clickweave_llm::prepare_base64_image_for_vlm(
+        let Some((prepared_b64, mime)) = clickweave_llm::prepare_base64_image_for_vlm(
             &raw_b64,
             clickweave_llm::DEFAULT_MAX_DIMENSION,
-        ) {
-            Some(pair) => pair,
-            None => {
-                warn!(
-                    "Completion verification: failed to prepare screenshot for VLM, skipping check"
-                );
-                return None;
-            }
+        ) else {
+            warn!("Completion verification: failed to prepare screenshot for VLM, skipping check");
+            return None;
         };
 
-        // 2. Ask the VLM whether the screenshot confirms the goal.
-        let prompt_text = build_completion_prompt(goal, summary);
         let messages = vec![Message::user_with_images(
-            prompt_text,
+            build_completion_prompt(goal, summary),
             vec![(prepared_b64.clone(), mime)],
         )];
         let reply = match vision.chat(&messages, None).await {
