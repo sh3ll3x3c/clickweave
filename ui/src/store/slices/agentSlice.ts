@@ -2,6 +2,7 @@ import type { StateCreator } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { Node, Edge } from "../../bindings";
 import { toEndpoint } from "../settings";
+import type { PermissionRule, ToolPermissions } from "../state";
 import type { StoreState } from "./types";
 
 export interface AgentStep {
@@ -72,6 +73,34 @@ export interface CompletionDisagreement {
 }
 
 /**
+ * Payload from `agent://consecutive_destructive_cap_hit`. The run halts
+ * server-side when the agent chains N destructive tool calls in a row,
+ * and the UI shows a short notice in the assistant panel.
+ */
+export interface ConsecutiveDestructiveCapHit {
+  recentToolNames: string[];
+  cap: number;
+}
+
+/**
+ * Map the UI's `ToolPermissions` shape into the wire form the Rust
+ * backend expects. Rules and the per-tool map are both forwarded; the
+ * engine merges them into one rule list before evaluating.
+ */
+export function toPermissionPolicyWire(perms: ToolPermissions) {
+  return {
+    allow_all: perms.allowAll,
+    require_confirm_destructive: perms.requireConfirmDestructive,
+    rules: perms.patternRules.map((r: PermissionRule) => ({
+      tool_pattern: r.toolPattern,
+      args_pattern: r.argsPattern ?? null,
+      action: r.action,
+    })),
+    per_tool: perms.tools,
+  };
+}
+
+/**
  * Tauri rejects with a structured `CommandError { kind, message }` for
  * typed failures (e.g. `AlreadyRunning`), but tauri-specta can also
  * surface plain strings when an error is serialized through `Display`.
@@ -110,6 +139,8 @@ export interface AgentSlice {
   pendingApproval: PendingApproval | null;
   /** Set when the backend emits `agent://completion_disagreement`. */
   completionDisagreement: CompletionDisagreement | null;
+  /** Set when the backend emits `agent://consecutive_destructive_cap_hit`. */
+  consecutiveDestructiveCapHit: ConsecutiveDestructiveCapHit | null;
   /** Generation ID for the active run — used to reject stale events. */
   agentRunId: string | null;
   /** Ambiguity resolution records, newest first. Persists across agent
@@ -127,6 +158,9 @@ export interface AgentSlice {
   approveAction: () => Promise<void>;
   rejectAction: () => Promise<void>;
   setCompletionDisagreement: (d: CompletionDisagreement | null) => void;
+  setConsecutiveDestructiveCapHit: (
+    d: ConsecutiveDestructiveCapHit | null,
+  ) => void;
   /**
    * User acknowledged a VLM disagreement and asserted the run completed
    * anyway. This is a front-end-only marker right now — a follow-up can
@@ -154,14 +188,21 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   currentAgentStep: 0,
   pendingApproval: null,
   completionDisagreement: null,
+  consecutiveDestructiveCapHit: null,
   agentRunId: null,
   ambiguityResolutions: [],
   activeAmbiguityId: null,
 
   startAgent: async (goal) => {
     const priorState = get();
-    const { pushLog, agentConfig, projectPath, workflow, agentStatus } =
-      priorState;
+    const {
+      pushLog,
+      agentConfig,
+      projectPath,
+      workflow,
+      agentStatus,
+      toolPermissions,
+    } = priorState;
     // If a run is already active, do not touch run-scoped state: the
     // backend will reject with AlreadyRunning and the live run's events
     // must keep routing through useAgentEvents. Otherwise optimistically
@@ -183,6 +224,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       currentAgentStep: priorState.currentAgentStep,
       pendingApproval: priorState.pendingApproval,
       completionDisagreement: priorState.completionDisagreement,
+      consecutiveDestructiveCapHit: priorState.consecutiveDestructiveCapHit,
       agentRunId: priorState.agentRunId,
     };
     if (!wasActive) {
@@ -194,6 +236,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         currentAgentStep: 0,
         pendingApproval: null,
         completionDisagreement: null,
+        consecutiveDestructiveCapHit: null,
         // Clear the prior run's ID so any late in-flight events from it
         // fail `isStaleRunId` (which drops events when active is null).
         // `agent://started` from the new run will install the fresh ID;
@@ -211,6 +254,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           project_path: projectPath,
           workflow_name: workflow.name,
           workflow_id: workflow.id,
+          permissions: toPermissionPolicyWire(toolPermissions),
+          consecutive_destructive_cap:
+            toolPermissions.consecutiveDestructiveCap,
         },
       });
     } catch (err) {
@@ -241,6 +287,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentStatus: "stopped",
       pendingApproval: null,
       completionDisagreement: null,
+      consecutiveDestructiveCapHit: null,
     });
     try {
       await invoke("stop_agent");
@@ -302,6 +349,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   setCompletionDisagreement: (disagreement) =>
     set({ completionDisagreement: disagreement }),
 
+  setConsecutiveDestructiveCapHit: (hit) =>
+    set({ consecutiveDestructiveCapHit: hit }),
+
   /**
    * STUB: front-end-only acknowledgement. Marks the run locally as complete
    * when the user decides the VLM was wrong. A follow-up should plumb this
@@ -334,6 +384,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       currentAgentStep: 0,
       pendingApproval: null,
       completionDisagreement: null,
+      consecutiveDestructiveCapHit: null,
       agentRunId: null,
       // Ambiguity records are intentionally NOT cleared — they persist across
       // runs so the user can still inspect past resolutions until they

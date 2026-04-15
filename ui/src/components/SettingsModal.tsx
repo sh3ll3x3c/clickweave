@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChromeProfile } from "../bindings";
 import { commands } from "../bindings";
 import type { EndpointConfig } from "../store/useAppStore";
-import type { ToolPermissions } from "../store/state";
+import type { PermissionLevel, ToolPermissions } from "../store/state";
 import { Modal } from "./Modal";
 import { ExecutionTab } from "./ExecutionTab";
 import { PermissionsTab } from "./PermissionsTab";
@@ -74,7 +74,7 @@ interface SettingsModalProps {
   onHoverDwellThresholdChange: (ms: number) => void;
   onSupervisionDelayMsChange: (ms: number) => void;
   onToolPermissionsChange: (perms: ToolPermissions) => void;
-  onToolPermissionChange: (toolName: string, level: "ask" | "allow") => void;
+  onToolPermissionChange: (toolName: string, level: PermissionLevel) => void;
 }
 
 const inputClass =

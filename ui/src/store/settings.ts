@@ -1,6 +1,31 @@
 import { load } from "@tauri-apps/plugin-store";
 import type { EndpointConfig, ToolPermissions } from "./state";
-import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_FAST_ENABLED } from "./state";
+import {
+  DEFAULT_ENDPOINT,
+  DEFAULT_FAST_ENABLED,
+  DEFAULT_TOOL_PERMISSIONS,
+} from "./state";
+
+/**
+ * Fill in missing fields from an older 2-tier permissions blob. Older
+ * versions only had `allowAll` + `tools`; the new fields default to
+ * the project defaults so an upgrade is silent.
+ */
+export function normalizeToolPermissions(
+  raw: Partial<ToolPermissions>,
+): ToolPermissions {
+  return {
+    allowAll: raw.allowAll ?? DEFAULT_TOOL_PERMISSIONS.allowAll,
+    tools: raw.tools ?? {},
+    patternRules: raw.patternRules ?? [],
+    requireConfirmDestructive:
+      raw.requireConfirmDestructive ??
+      DEFAULT_TOOL_PERMISSIONS.requireConfirmDestructive,
+    consecutiveDestructiveCap:
+      raw.consecutiveDestructiveCap ??
+      DEFAULT_TOOL_PERMISSIONS.consecutiveDestructiveCap,
+  };
+}
 
 export interface PersistedSettings {
   supervisorConfig: EndpointConfig;
@@ -48,7 +73,13 @@ export async function loadSettings(): Promise<PersistedSettings> {
   const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
   const hoverDwellThreshold = await store.get<number>("hoverDwellThreshold");
   const supervisionDelayMs = await store.get<number>("supervisionDelayMs");
-  const toolPermissions = await store.get<ToolPermissions>("toolPermissions");
+  // Pull the raw blob first so an older 2-tier shape still loads — we
+  // fill in the new fields with defaults for back-compat.
+  const rawToolPermissions =
+    await store.get<Partial<ToolPermissions>>("toolPermissions");
+  const toolPermissions = rawToolPermissions
+    ? normalizeToolPermissions(rawToolPermissions)
+    : undefined;
 
   // Migration: vlmConfig → fastConfig
   const legacyVlmConfig = await store.get<EndpointConfig>("vlmConfig");

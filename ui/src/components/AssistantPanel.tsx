@@ -28,6 +28,12 @@ export function AssistantPanel({
   const agentStatus = useStore((s) => s.agentStatus);
   const pendingApproval = useStore((s) => s.pendingApproval);
   const completionDisagreement = useStore((s) => s.completionDisagreement);
+  const consecutiveDestructiveCapHit = useStore(
+    (s) => s.consecutiveDestructiveCapHit,
+  );
+  const setConsecutiveDestructiveCapHit = useStore(
+    (s) => s.setConsecutiveDestructiveCapHit,
+  );
   const confirmDisagreementAsComplete = useStore(
     (s) => s.confirmDisagreementAsComplete,
   );
@@ -192,6 +198,25 @@ export function AssistantPanel({
               Cancel run
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Consecutive-destructive cap hit notice */}
+      {consecutiveDestructiveCapHit && (
+        <div className="mx-3 mb-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2.5">
+          <p className="text-[11px] font-medium text-red-300 mb-1">
+            Run halted: reached {consecutiveDestructiveCapHit.cap} consecutive
+            destructive actions
+          </p>
+          <p className="text-[11px] text-[var(--text-secondary)] font-mono break-words mb-2">
+            {consecutiveDestructiveCapHit.recentToolNames.join(", ")}
+          </p>
+          <button
+            onClick={() => setConsecutiveDestructiveCapHit(null)}
+            className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 

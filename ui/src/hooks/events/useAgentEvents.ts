@@ -73,6 +73,11 @@ interface CompletionDisagreementPayload extends RunScoped {
   agent_summary: string;
 }
 
+interface ConsecutiveDestructiveCapHitPayload extends RunScoped {
+  recent_tool_names: string[];
+  cap: number;
+}
+
 /**
  * Subscribe to agent backend events:
  * agent://started, agent://step, agent://complete,
@@ -251,6 +256,28 @@ export function useAgentEvents() {
             .getState()
             .pushLog(
               "Agent completion check disagreed — awaiting user decision",
+            );
+        },
+      ),
+    );
+
+    sub(
+      listen<ConsecutiveDestructiveCapHitPayload>(
+        "agent://consecutive_destructive_cap_hit",
+        (e) => {
+          if (isStale(e.payload.run_id)) return;
+          setStatusIfActive("stopped");
+          useStore
+            .getState()
+            .setConsecutiveDestructiveCapHit({
+              recentToolNames: e.payload.recent_tool_names,
+              cap: e.payload.cap,
+            });
+          const toolList = e.payload.recent_tool_names.join(", ");
+          useStore
+            .getState()
+            .pushLog(
+              `Run halted: reached ${e.payload.cap} consecutive destructive actions (${toolList})`,
             );
         },
       ),

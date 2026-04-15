@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { EndpointConfig, ToolPermissions } from "../state";
+import type { EndpointConfig, PermissionLevel, ToolPermissions } from "../state";
 import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_FAST_ENABLED } from "../state";
 import { formatModelStatus, verifyConfiguredModels } from "../modelAvailability";
 import { loadSettings, saveSetting } from "../settings";
@@ -26,7 +26,7 @@ export interface SettingsSlice {
   setHoverDwellThreshold: (ms: number) => void;
   setSupervisionDelayMs: (ms: number) => void;
   setToolPermissions: (perms: ToolPermissions) => void;
-  setToolPermission: (toolName: string, level: "ask" | "allow") => Promise<void>;
+  setToolPermission: (toolName: string, level: PermissionLevel) => Promise<void>;
 }
 
 function persistSetting<K extends keyof PersistedSettings>(

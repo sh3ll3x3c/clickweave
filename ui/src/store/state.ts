@@ -16,14 +16,41 @@ export const DEFAULT_ENDPOINT: EndpointConfig = {
 
 export const DEFAULT_FAST_ENABLED = false;
 
+export type PermissionLevel = "ask" | "allow" | "deny";
+
+/** A single pattern-based permission rule. */
+export interface PermissionRule {
+  /** Glob pattern matched against the tool name (`*`, `?`). */
+  toolPattern: string;
+  /** Optional substring matched against the JSON-serialized arguments. */
+  argsPattern?: string;
+  action: PermissionLevel;
+}
+
 export interface ToolPermissions {
   allowAll: boolean;
-  tools: Record<string, "ask" | "allow">;
+  /** Per-tool 3-tier overrides. `ask` is the implicit default. */
+  tools: Record<string, PermissionLevel>;
+  /** Pattern rules evaluated alongside per-tool overrides. */
+  patternRules: PermissionRule[];
+  /**
+   * When true, destructive tools prompt even if they (or the global
+   * override) are set to `allow`. Default true.
+   */
+  requireConfirmDestructive: boolean;
+  /**
+   * Halt the run after this many consecutive destructive tool calls.
+   * `0` disables the cap. Default 3.
+   */
+  consecutiveDestructiveCap: number;
 }
 
 export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = {
   allowAll: false,
   tools: {},
+  patternRules: [],
+  requireConfirmDestructive: true,
+  consecutiveDestructiveCap: 3,
 };
 
 export function makeDefaultWorkflow(): Workflow {
