@@ -29,7 +29,7 @@ A single Zustand store composed from several slices keeps cross-feature coordina
 
 - project/workflow editing (ProjectSlice),
 - execution state -- run status, current mode, supervision pause (ExecutionSlice),
-- agent loop state -- status, current goal, streamed steps, pending approval, per-run generation id (AgentSlice),
+- agent loop state -- status, current goal, streamed steps, pending approval, VLM completion-disagreement card, per-run generation id (AgentSlice),
 - undo/redo history -- up to 50 snapshots in each direction via `structuredClone` (HistorySlice),
 - settings -- persisted to disk via `tauri-plugin-store` (SettingsSlice),
 - logs and verdicts (LogSlice, VerdictSlice),

@@ -75,9 +75,11 @@ interface CompletionDisagreementPayload extends RunScoped {
 
 /**
  * Subscribe to agent backend events:
- * agent://started, agent://step, agent://complete, agent://stopped,
- * agent://error, agent://warning, agent://node_added, agent://edge_added,
- * agent://approval_required, agent://cdp_connected, agent://step_failed.
+ * agent://started, agent://step, agent://complete,
+ * agent://completion_disagreement, agent://stopped, agent://error,
+ * agent://warning, agent://node_added, agent://edge_added,
+ * agent://approval_required, agent://cdp_connected, agent://step_failed,
+ * agent://sub_action.
  *
  * All run-scoped events carry a `run_id` generation ID. Events whose
  * run_id does not match the active run are silently dropped to prevent
