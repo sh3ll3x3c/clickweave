@@ -146,8 +146,9 @@ The agent slice owns the live state of the observe-act agent loop. The loop emit
 - `agentStatus: "idle" | "running" | "complete" | "stopped" | "error"`
 - `agentGoal: string`, `agentSteps: AgentStep[]`, `agentError: string | null`, `currentAgentStep: number`
 - `pendingApproval: PendingApproval | null` — populated when the agent asks the user to approve the next tool invocation
+- `completionDisagreement: CompletionDisagreement | null` — populated when the backend emits `agent://completion_disagreement`; holds the screenshot, VLM reasoning, and agent summary surfaced by the assistant panel's disagreement card
 - `agentRunId: string | null` — per-run generation ID used to drop stale events from a prior run
-- actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `addAgentNode`, `addAgentEdge`, `setPendingApproval`, `approveAction`, `rejectAction`, `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
+- actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `addAgentNode`, `addAgentEdge`, `setPendingApproval`, `approveAction`, `rejectAction`, `setCompletionDisagreement`, `confirmDisagreementAsComplete` (front-end-only acknowledge — no backend decision is recorded yet), `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
 
 **AssistantSlice** (`assistantSlice.ts`)
 
@@ -291,7 +292,7 @@ Do not edit manually.
 | `ui/src/store/useAppStore.ts` | composed Zustand store hook |
 | `ui/src/store/useWorkflowMutations.ts` | node/edge mutation helpers with history push (`removeEdgesOnly` for silent edge removal) |
 | `ui/src/store/slices/types.ts` | `StoreState` composition |
-| `ui/src/store/slices/agentSlice.ts` | agent loop live state (status, steps, pending approval, run id) |
+| `ui/src/store/slices/agentSlice.ts` | agent loop live state (status, steps, pending approval, completion-disagreement card, run id) |
 | `ui/src/store/slices/walkthroughSlice.ts` | walkthrough lifecycle state and CDP modal |
 | `ui/src/hooks/useWalkthrough.ts` | focused walkthrough selector hook for WalkthroughPanel |
 | `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
