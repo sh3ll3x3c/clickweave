@@ -44,6 +44,20 @@ pub enum AgentEvent {
         tool_name: String,
         summary: String,
     },
+    /// VLM completion verification disagreed with the agent's self-reported
+    /// `agent_done`. The run is halted and the user is shown the screenshot
+    /// plus the VLM reasoning so they can decide whether the agent really
+    /// completed the goal.
+    CompletionDisagreement {
+        /// Base64-encoded JPEG produced by the `take_screenshot` MCP tool,
+        /// already prepared for VLM consumption (resized + re-encoded).
+        screenshot_b64: String,
+        /// The full VLM response text, including any explanation after the
+        /// YES/NO token.
+        vlm_reasoning: String,
+        /// The summary the agent provided when it called `agent_done`.
+        agent_summary: String,
+    },
 }
 
 /// Approval request sent to the UI before executing an action.
@@ -179,6 +193,13 @@ pub enum TerminalReason {
     MaxErrorsReached { consecutive_errors: usize },
     /// The approval channel is permanently unavailable (receiver dropped).
     ApprovalUnavailable,
+    /// The agent called `agent_done`, but the VLM completion check disagreed
+    /// based on the post-run screenshot. The run halts and the UI surfaces
+    /// the disagreement for user adjudication instead of re-planning.
+    CompletionDisagreement {
+        agent_summary: String,
+        vlm_reasoning: String,
+    },
 }
 
 impl TerminalReason {
@@ -196,6 +217,9 @@ impl TerminalReason {
                 format!("Aborted after {} consecutive errors", consecutive_errors)
             }
             Self::ApprovalUnavailable => "Aborted: approval system unavailable".to_string(),
+            Self::CompletionDisagreement { vlm_reasoning, .. } => {
+                format!("Completion verification disagreed: {}", vlm_reasoning)
+            }
         }
     }
 }

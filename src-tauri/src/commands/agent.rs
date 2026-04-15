@@ -385,6 +385,21 @@ pub async fn run_agent(
                                         }),
                                     );
                                 }
+                                AgentEvent::CompletionDisagreement {
+                                    screenshot_b64,
+                                    vlm_reasoning,
+                                    agent_summary,
+                                } => {
+                                    let _ = event_emit_handle.emit(
+                                        "agent://completion_disagreement",
+                                        serde_json::json!({
+                                            "run_id": event_run_id,
+                                            "screenshot_b64": screenshot_b64,
+                                            "vlm_reasoning": vlm_reasoning,
+                                            "agent_summary": agent_summary,
+                                        }),
+                                    );
+                                }
                             }
                         }
                         None => break,
