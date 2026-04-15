@@ -155,6 +155,34 @@ pub struct NodeErrorPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct CandidateRectPayload {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CandidateViewPayload {
+    pub uid: String,
+    pub snippet: String,
+    pub rect: Option<CandidateRectPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AmbiguityResolvedPayload {
+    pub node_id: String,
+    pub target: String,
+    pub candidates: Vec<CandidateViewPayload>,
+    pub chosen_uid: String,
+    pub reasoning: String,
+    /// Screenshot filename relative to the node's `artifacts/` directory.
+    pub screenshot_path: String,
+    /// Base64-encoded PNG of the screenshot taken when the agent decided.
+    pub screenshot_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SupervisionPassedPayload {
     pub node_id: String,
     pub node_name: String,
