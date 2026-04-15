@@ -1367,33 +1367,27 @@ impl Mcp for ShiftingToolsMcp {
         if name == "cdp_find_elements" {
             return true;
         }
-        // Tools visible depends on connection state — simulates the real
-        // MCP server exposing CDP tools only after cdp_connect succeeds.
-        let include_extras = self.cdp_connected.load(std::sync::atomic::Ordering::SeqCst);
-        let tools: Vec<&Value> = if include_extras {
-            self.base_tools
-                .iter()
-                .chain(self.extra_tools.iter())
-                .collect()
-        } else {
-            self.base_tools.iter().collect()
-        };
-        tools
-            .iter()
+        // Simulates the real MCP server exposing CDP tools only after
+        // cdp_connect succeeds.
+        self.visible_tools()
             .any(|t| t["function"]["name"].as_str() == Some(name))
     }
 
     fn tools_as_openai(&self) -> Vec<Value> {
-        let include_extras = self.cdp_connected.load(std::sync::atomic::Ordering::SeqCst);
-        if include_extras {
-            self.base_tools
-                .iter()
-                .chain(self.extra_tools.iter())
-                .cloned()
-                .collect()
+        self.visible_tools().cloned().collect()
+    }
+}
+
+impl ShiftingToolsMcp {
+    fn visible_tools(&self) -> impl Iterator<Item = &Value> {
+        let extras_len = if self.cdp_connected.load(std::sync::atomic::Ordering::SeqCst) {
+            self.extra_tools.len()
         } else {
-            self.base_tools.clone()
-        }
+            0
+        };
+        self.base_tools
+            .iter()
+            .chain(self.extra_tools.iter().take(extras_len))
     }
 }
 
@@ -1538,7 +1532,7 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
     // Seed the tools vec from the MCP client once at run start — mirrors
     // how `run_agent_workflow` wires it up.
     let mcp_tools = mcp.tools_as_openai();
-    let tools_at_start = mcp_tools.clone();
+    let tool_count_at_start = mcp_tools.len();
 
     let state = runner
         .run(
@@ -1555,7 +1549,7 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
 
     // Sanity: the MCP server's view of its own tools did grow after cdp_connect.
     assert!(
-        mcp.tools_as_openai().len() > tools_at_start.len(),
+        mcp.tools_as_openai().len() > tool_count_at_start,
         "Test setup broken: ShiftingToolsMcp should expose more tools post-connect"
     );
 

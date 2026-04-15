@@ -170,10 +170,11 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         // changes to the tool surface invalidate every prior prompt-cache
         // prefix. See the "Tool Exposure" policy in
         // `docs/reference/engine/execution.md`.
-        let mut tools = mcp_tools.clone();
-        tools.push(prompt::agent_done_tool());
-        tools.push(prompt::agent_replan_tool());
-        let tools = tools;
+        let tools: Vec<Value> = mcp_tools
+            .iter()
+            .cloned()
+            .chain([prompt::agent_done_tool(), prompt::agent_replan_tool()])
+            .collect();
 
         info!(goal = %goal, max_steps = self.config.max_steps, "Agent starting");
 
