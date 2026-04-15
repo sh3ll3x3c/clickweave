@@ -165,10 +165,15 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             Message::user(prompt::goal_message(&goal)),
         ];
 
-        // Build the tool list: MCP tools + agent_done + agent_replan
+        // Build the tool list: MCP tools + agent_done + agent_replan.
+        // Seeded once at run start and never mutated thereafter — mid-run
+        // changes to the tool surface invalidate every prior prompt-cache
+        // prefix. See the "Tool Exposure" policy in
+        // `docs/reference/engine/execution.md`.
         let mut tools = mcp_tools.clone();
         tools.push(prompt::agent_done_tool());
         tools.push(prompt::agent_replan_tool());
+        let tools = tools;
 
         info!(goal = %goal, max_steps = self.config.max_steps, "Agent starting");
 
@@ -313,7 +318,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 })
                                 .await;
 
-                                self.maybe_cdp_connect(&cached_tool, &cached_args, mcp, &mut tools)
+                                self.maybe_cdp_connect(&cached_tool, &cached_args, mcp)
                                     .await;
 
                                 let step = AgentStep {
@@ -425,8 +430,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             } = &command
                 && matches!(&outcome, StepOutcome::Success(_))
             {
-                self.maybe_cdp_connect(tool_name, arguments, mcp, &mut tools)
-                    .await;
+                self.maybe_cdp_connect(tool_name, arguments, mcp).await;
             }
 
             // Update state
@@ -799,14 +803,18 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         }
     }
 
-    /// Run post-tool hooks for launch/focus actions: auto-connect CDP
-    /// and refresh the MCP tool list so CDP tools become available.
+    /// Run post-tool hooks for launch/focus actions: auto-connect CDP.
+    ///
+    /// Intentionally does **not** refresh or mutate the agent's tool list.
+    /// The tool list is seeded once at run start (see `agent/mod.rs`) and
+    /// kept stable across steps so prompt-cache prefixes stay valid. Tools
+    /// that require a connection return a clean "not connected" error when
+    /// called pre-connection; the agent recovers on the next step.
     async fn maybe_cdp_connect(
         &self,
         tool_name: &str,
         arguments: &Value,
         mcp: &(impl Mcp + ?Sized),
-        tools: &mut Vec<Value>,
     ) {
         if tool_name != "launch_app" && tool_name != "focus_window" {
             return;
@@ -820,12 +828,6 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 port: cdp_port,
             })
             .await;
-            if let Ok(()) = mcp.refresh_tools().await {
-                *tools = mcp.tools_as_openai();
-                tools.push(prompt::agent_done_tool());
-                tools.push(prompt::agent_replan_tool());
-                info!("Rebuilt tool list after CDP connect: {} tools", tools.len());
-            }
         }
     }
 
