@@ -141,6 +141,49 @@ describe("agentSlice.startAgent", () => {
     const lastLog = useStore.getState().logs.at(-1);
     expect(lastLog).toContain("Agent start rejected");
   });
+
+  it("restores the prior run's terminal state when AlreadyRunning fires during backend cleanup", async () => {
+    // Backend cleanup is async: after a terminal event the handle can
+    // still be populated for a brief window, during which run_agent
+    // rejects with AlreadyRunning even though the UI has already left
+    // the "running" state.
+    useStore.getState().setAgentRunId("run-prior");
+    useStore.getState().setAgentStatus("complete");
+    useStore.getState().addAgentStep({
+      summary: "prior step",
+      toolName: "click",
+      toolArgs: null,
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    invokeMock.mockRejectedValueOnce({
+      kind: "AlreadyRunning",
+      message: "Already running",
+    });
+
+    await useStore.getState().startAgent("retry goal");
+
+    const state = useStore.getState();
+    // Terminal run's history must be preserved — not converted to "error".
+    expect(state.agentStatus).toBe("complete");
+    expect(state.agentRunId).toBe("run-prior");
+    expect(state.agentSteps).toHaveLength(1);
+    expect(state.agentError).toBeNull();
+  });
+
+  it("restores the prior run's terminal state on string-serialized AlreadyRunning during cleanup", async () => {
+    useStore.getState().setAgentRunId("run-prior");
+    useStore.getState().setAgentStatus("stopped");
+
+    invokeMock.mockRejectedValueOnce("AlreadyRunning: Already running");
+
+    await useStore.getState().startAgent("retry goal");
+
+    const state = useStore.getState();
+    expect(state.agentStatus).toBe("stopped");
+    expect(state.agentRunId).toBe("run-prior");
+  });
 });
 
 describe("agentSlice approval actions", () => {
