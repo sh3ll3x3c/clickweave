@@ -58,8 +58,11 @@ pub struct PermissionPolicy {
     /// rules. See `evaluate` for precedence details.
     pub rules: Vec<PermissionRule>,
     /// Global "allow all" override from the existing UI toggle. When
-    /// true, short-circuits rule evaluation to `Allow`, except when
-    /// `require_confirm_destructive` is set and the tool is destructive.
+    /// true, rule evaluation short-circuits to `Allow` for every tool
+    /// — matching the UI promise that per-tool settings are ignored.
+    /// The destructive guardrail is the one exception: if
+    /// `require_confirm_destructive` is also on and the tool is
+    /// destructive, the resolved action is still `Ask`.
     pub allow_all: bool,
     /// When true, destructive tools (`destructive_hint == Some(true)`)
     /// always require confirmation — their resolved action is upgraded
@@ -192,10 +195,13 @@ fn combine_actions(
 /// 4. Apply the destructive guardrail: if
 ///    `require_confirm_destructive && destructive_hint == Some(true)`,
 ///    upgrade an `Allow` action to `Ask`. `Deny` and `Ask` are untouched.
-/// 5. Apply `allow_all`: if set, the action becomes `Allow` unless the
-///    destructive guardrail already upgraded (or will upgrade) to `Ask`.
-///    This means: the global override cannot be used to silently skip
-///    destructive confirmations — operators must turn both toggles off.
+/// 5. Apply `allow_all`: if set, the action becomes `Allow` — this is
+///    an unconditional short-circuit, matching the UI promise that the
+///    toggle skips confirmation for every tool. The one exception is
+///    the destructive guardrail: when it fires, `allow_all` still
+///    downgrades to `Ask` instead of `Allow`, so operators cannot
+///    bypass destructive confirmations by flipping the global switch
+///    while the guardrail is on.
 ///
 /// The function is pure; it performs no I/O.
 pub fn evaluate(
@@ -235,13 +241,17 @@ pub fn evaluate(
         (other, _) => other,
     };
 
-    // allow_all short-circuits Ask → Allow, but respects the destructive
-    // guardrail (never downgrades an Ask to Allow when guardrail fires).
+    // allow_all short-circuits everything to Allow, including any
+    // matching Deny rules. The destructive guardrail is the one
+    // exception: if the guardrail triggered above, it still forces an
+    // Ask. The UI surfaces this contract: turning the global override
+    // on makes per-tool and pattern rules inert, matching user
+    // expectation that "Allow all" means "allow all".
     if policy.allow_all {
-        match after_guardrail {
-            PermissionAction::Deny => PermissionAction::Deny,
-            PermissionAction::Ask if guardrail_triggers => PermissionAction::Ask,
-            _ => PermissionAction::Allow,
+        if guardrail_triggers {
+            PermissionAction::Ask
+        } else {
+            PermissionAction::Allow
         }
     } else {
         after_guardrail
@@ -483,15 +493,18 @@ mod tests {
     }
 
     #[test]
-    fn allow_all_still_honors_deny_rule() {
-        // If the user explicitly denied a tool, allow_all shouldn't override.
+    fn allow_all_overrides_deny_rule() {
+        // allow_all is an unconditional short-circuit — per-tool and
+        // pattern rules (including Deny) are ignored. The UI disables
+        // the per-tool controls when the toggle is on, so surfacing
+        // anything but Allow here would violate the promise.
         let policy = PermissionPolicy {
             allow_all: true,
             rules: vec![rule("shutdown", PermissionAction::Deny)],
             ..Default::default()
         };
         let action = evaluate(&policy, "shutdown", &json!({}), &ToolAnnotations::default());
-        assert_eq!(action, PermissionAction::Deny);
+        assert_eq!(action, PermissionAction::Allow);
     }
 
     // ── Destructive guardrail ───────────────────────────────────────
