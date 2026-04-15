@@ -179,6 +179,38 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                         screenshot,
                     },
                 ),
+                ExecutorEvent::AmbiguityResolved {
+                    node_id,
+                    target,
+                    candidates,
+                    chosen_uid,
+                    reasoning,
+                    screenshot_path,
+                    screenshot_base64,
+                } => emit_handle.emit(
+                    "executor://ambiguity_resolved",
+                    AmbiguityResolvedPayload {
+                        node_id: node_id.to_string(),
+                        target,
+                        candidates: candidates
+                            .into_iter()
+                            .map(|c| CandidateViewPayload {
+                                uid: c.uid,
+                                snippet: c.snippet,
+                                rect: c.rect.map(|r| CandidateRectPayload {
+                                    x: r.x,
+                                    y: r.y,
+                                    width: r.width,
+                                    height: r.height,
+                                }),
+                            })
+                            .collect(),
+                        chosen_uid,
+                        reasoning,
+                        screenshot_path,
+                        screenshot_base64,
+                    },
+                ),
                 ExecutorEvent::NodeCancelled(id) => emit_handle.emit(
                     "executor://node_cancelled",
                     NodePayload {
