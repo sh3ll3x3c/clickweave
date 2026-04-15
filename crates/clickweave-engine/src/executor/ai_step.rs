@@ -163,6 +163,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     Ok(result) => {
                         let prefix = format!("toolcall_{}", tool_call_count - 1);
                         let images = self.save_result_images(&result, &prefix, &mut node_run);
+                        let tool_image_count = images.len();
                         if !images.is_empty() {
                             last_image_tool = tool_call.function.name.clone();
                         }
@@ -172,8 +173,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                         self.log(format!(
                             "Tool result ({} chars, {} images): {}",
-                            result_text.len(),
-                            pending_images.len(),
+                            result_text.chars().count(),
+                            tool_image_count,
                             Self::preview_for_log(&result_text, 300)
                         ));
                         debug!(

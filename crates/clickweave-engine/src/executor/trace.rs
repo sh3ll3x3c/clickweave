@@ -106,19 +106,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Build a single-line preview of `text` for user-facing log messages.
     ///
-    /// Caps at `max_chars` bytes (snapped to a char boundary). If the input
-    /// exceeds that, appends `… (N total chars)` where N is the full length.
-    /// Newlines in the preview are escaped to the literal sequence `\n` so the
-    /// log entry stays on one line.
+    /// Caps at `max_chars` Unicode scalar values. If the input exceeds that,
+    /// appends `… (N total chars)` where N is the full character count.
+    /// `\n` and `\r` in the preview are escaped to the literal sequences `\n`
+    /// and `\r` so the log entry stays on one line (including CRLF).
     pub(crate) fn preview_for_log(text: &str, max_chars: usize) -> String {
-        let full_len = text.len();
-        let body = if full_len > max_chars {
-            let end = text.floor_char_boundary(max_chars);
-            format!("{}… ({} total chars)", &text[..end], full_len)
+        let full_chars = text.chars().count();
+        let body = if full_chars > max_chars {
+            let truncated: String = text.chars().take(max_chars).collect();
+            format!("{truncated}… ({full_chars} total chars)")
         } else {
             text.to_string()
         };
-        body.replace('\n', "\\n")
+        body.replace('\n', "\\n").replace('\r', "\\r")
     }
 
     pub(crate) fn save_result_images(
