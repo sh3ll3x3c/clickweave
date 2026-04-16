@@ -58,12 +58,18 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         .filter(|s| !s.is_empty())
         .map(|s| s.into_llm_config(None));
 
-    let storage = resolve_storage(
+    let mut storage = resolve_storage(
         &app,
         &request.project_path,
         &request.workflow.name,
         request.workflow.id,
     );
+    // Privacy kill switch: an explicit `false` from the UI makes the
+    // workflow run in-memory — no files are created under
+    // `.clickweave/runs/`. Default is persist-on for existing UIs that
+    // do not yet send the field.
+    let persist_traces = request.store_traces.unwrap_or(true);
+    storage.set_persistent(persist_traces);
     let project_path = request.project_path.map(|p| project_dir(&p));
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(256);

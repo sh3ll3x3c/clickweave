@@ -714,8 +714,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.emit(ExecutorEvent::ChecksCompleted(verdicts));
         }
 
-        // Save decision cache after Test mode runs
-        if self.execution_mode == ExecutionMode::Test {
+        // Save decision cache after Test mode runs.
+        // Skipped when the privacy kill switch is off so no cache
+        // file is written to the workflow-level dir.
+        if self.execution_mode == ExecutionMode::Test && self.storage.is_persistent() {
             let save_result = self.read_decision_cache().save(&self.storage.cache_path());
             match save_result {
                 Ok(()) => self.log("Decision cache saved"),

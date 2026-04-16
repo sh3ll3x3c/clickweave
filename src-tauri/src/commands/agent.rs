@@ -107,6 +107,12 @@ pub struct AgentRunRequest {
     /// `0` disables the cap. `None` uses the engine default (3).
     #[serde(default)]
     pub consecutive_destructive_cap: Option<usize>,
+    /// Privacy kill switch: when false, the run is entirely in-memory.
+    /// No `.clickweave/runs/` directory is created and no trace files
+    /// or cache files are written. When `None`, persistence is on —
+    /// matches the UI default (`storeTraces: true`).
+    #[serde(default)]
+    pub store_traces: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -283,12 +289,17 @@ pub async fn run_agent(
         .parse()
         .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
 
-    let storage = resolve_storage(
+    let mut storage = resolve_storage(
         &app,
         &request.project_path,
         &request.workflow_name,
         workflow_id,
     );
+    // Privacy kill switch: an explicit `false` from the UI disables
+    // all on-disk writes for this run. The default is persist-on to
+    // preserve existing behaviour when the UI does not send the flag.
+    let persist_traces = request.store_traces.unwrap_or(true);
+    storage.set_persistent(persist_traces);
     let storage = Arc::new(Mutex::new(storage));
 
     // Generate a per-run generation ID so event consumers can reject
@@ -442,8 +453,12 @@ pub async fn run_agent(
 
         match result {
             Ok((state, updated_cache)) => {
-                // Persist the updated cache
-                let _ = updated_cache.save_to_path(&storage.lock().unwrap().agent_cache_path());
+                // Persist the updated cache — skipped when the privacy
+                // kill switch is off so the workflow-level cache file
+                // stays as it was before the run.
+                if persist_traces {
+                    let _ = updated_cache.save_to_path(&storage.lock().unwrap().agent_cache_path());
+                }
 
                 // If the engine halted on a pending VLM disagreement, block
                 // here until the operator resolves it (confirm / cancel) via
@@ -483,21 +498,27 @@ pub async fn run_agent(
                 // `await_disagreement_resolution` call has already
                 // collapsed that state into a concrete terminal reason
                 // (or a cancellation below).
-                let variant_entry = VariantEntry {
-                    execution_dir: storage
-                        .lock()
-                        .unwrap()
-                        .execution_dir_name()
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    diverged_at_step: None,
-                    divergence_summary,
-                    success,
-                };
-                let _ = VariantIndex::append(
-                    &storage.lock().unwrap().variant_index_path(),
-                    &variant_entry,
-                );
+                //
+                // Skip the write when the privacy kill switch is off so
+                // no per-run metadata is appended to the workflow-level
+                // variant index file.
+                if persist_traces {
+                    let variant_entry = VariantEntry {
+                        execution_dir: storage
+                            .lock()
+                            .unwrap()
+                            .execution_dir_name()
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        diverged_at_step: None,
+                        divergence_summary,
+                        success,
+                    };
+                    let _ = VariantIndex::append(
+                        &storage.lock().unwrap().variant_index_path(),
+                        &variant_entry,
+                    );
+                }
 
                 // Emit the truthful terminal event. If no resolved
                 // terminal is available (force_stop fired during the

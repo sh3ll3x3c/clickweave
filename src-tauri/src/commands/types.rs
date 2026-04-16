@@ -103,6 +103,11 @@ pub struct RunRequest {
     pub execution_mode: ExecutionMode,
     #[serde(default = "default_supervision_delay_ms")]
     pub supervision_delay_ms: u64,
+    /// Privacy kill switch: when false, the run is entirely in-memory
+    /// and no files are written under `.clickweave/runs/`. When missing,
+    /// persistence is on — matches the UI default (`storeTraces: true`).
+    #[serde(default)]
+    pub store_traces: Option<bool>,
 }
 
 fn default_supervision_delay_ms() -> u64 {

@@ -21,14 +21,15 @@ pub const DEFAULT_TRACE_RETENTION_DAYS: u64 = 30;
 /// Mirrors the subset of `PersistedSettings` declared in the UI.
 ///
 /// Field names are camelCase to match how the UI's Tauri plugin-store
-/// serialises them in `settings.json`.
+/// serialises them in `settings.json`. Only fields the Rust side reads
+/// at startup are modelled here — the `storeTraces` kill switch is
+/// shipped per-run through `RunRequest` / `AgentRunRequest`, so it
+/// lives with the IPC payloads rather than here.
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedPrivacy {
     #[serde(default)]
     pub trace_retention_days: Option<u64>,
-    #[serde(default)]
-    pub store_traces: Option<bool>,
 }
 
 /// Location of the plugin-store's `settings.json` on disk.
@@ -114,7 +115,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = load_privacy_settings(&dir);
         assert!(p.trace_retention_days.is_none());
-        assert!(p.store_traces.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -125,23 +125,20 @@ mod tests {
         std::fs::write(dir.join("settings.json"), b"not json").unwrap();
         let p = load_privacy_settings(&dir);
         assert!(p.trace_retention_days.is_none());
-        assert!(p.store_traces.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn load_privacy_settings_reads_camel_case_fields() {
+    fn load_privacy_settings_reads_retention_camel_case_field() {
         let dir = tmp();
         std::fs::create_dir_all(&dir).unwrap();
         let payload = serde_json::json!({
             "traceRetentionDays": 7,
-            "storeTraces": false,
             "somethingElse": "ignored",
         });
         std::fs::write(dir.join("settings.json"), payload.to_string()).unwrap();
         let p = load_privacy_settings(&dir);
         assert_eq!(p.trace_retention_days, Some(7));
-        assert_eq!(p.store_traces, Some(false));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

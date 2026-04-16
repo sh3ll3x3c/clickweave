@@ -203,6 +203,12 @@ pub struct RunStorage {
     base_path: PathBuf,
     /// The current execution directory name (set by `begin_execution`).
     execution_dir: Option<String>,
+    /// When false, every write operation is a no-op that returns a
+    /// synthesised result. Used by the `Store run traces` privacy kill
+    /// switch — the agent and executor code paths still behave as if
+    /// storage is available (caches still function in-memory for the
+    /// session), but nothing touches the disk.
+    persistent: bool,
 }
 
 impl RunStorage {
@@ -212,6 +218,21 @@ impl RunStorage {
 
     pub fn base_path(&self) -> &Path {
         &self.base_path
+    }
+
+    /// Whether this storage persists to disk. When `false`, every write
+    /// becomes a no-op.
+    pub fn is_persistent(&self) -> bool {
+        self.persistent
+    }
+
+    /// Disable disk persistence for this storage instance. Used by the
+    /// privacy kill switch to make a run entirely in-memory.
+    ///
+    /// Must be called before `begin_execution()` — toggling persistence
+    /// mid-run would leak a partial trace onto disk.
+    pub fn set_persistent(&mut self, persistent: bool) {
+        self.persistent = persistent;
     }
 
     /// Path for the workflow's decision cache file.
@@ -233,11 +254,18 @@ impl RunStorage {
     }
 
     /// Append a serializable agent event to the execution-level events.jsonl.
+    ///
+    /// No-op when persistence is disabled — the agent run still requires
+    /// `begin_execution()` to have been called so the execution dir name
+    /// can be reported, but nothing is written to disk.
     pub fn append_agent_event(&self, event: &impl Serialize) -> Result<()> {
         let execution_dir = self
             .execution_dir
             .as_ref()
             .context("begin_execution() must be called before append_agent_event()")?;
+        if !self.persistent {
+            return Ok(());
+        }
         let events_path = self.base_path.join(execution_dir).join("events.jsonl");
         append_jsonl(&events_path, event)
     }
@@ -252,6 +280,7 @@ impl RunStorage {
                 .join("runs")
                 .join(sanitize_name(workflow_name)),
             execution_dir: None,
+            persistent: true,
         }
     }
 
@@ -264,6 +293,7 @@ impl RunStorage {
         Self {
             base_path: app_data_dir.join("runs").join(dir_name),
             execution_dir: None,
+            persistent: true,
         }
     }
 
@@ -271,12 +301,18 @@ impl RunStorage {
     /// under the workflow dir and stores it for subsequent `create_run` calls.
     ///
     /// Returns the execution directory name.
+    ///
+    /// When persistence is disabled, the directory name is still
+    /// computed and stored so downstream code sees a valid
+    /// `execution_dir`, but no filesystem entry is created.
     pub fn begin_execution(&mut self) -> Result<String> {
         let exec_id = Uuid::new_v4();
         let started_at = Self::now_millis();
         let dirname = format_execution_dirname(started_at, exec_id);
-        std::fs::create_dir_all(self.base_path.join(&dirname))
-            .context("Failed to create execution directory")?;
+        if self.persistent {
+            std::fs::create_dir_all(self.base_path.join(&dirname))
+                .context("Failed to create execution directory")?;
+        }
         self.execution_dir = Some(dirname.clone());
         Ok(dirname)
     }
@@ -351,6 +387,11 @@ impl RunStorage {
     /// Create a new run for a node within the current execution.
     ///
     /// Requires `begin_execution()` to have been called first.
+    ///
+    /// When persistence is disabled, returns a synthesised `NodeRun`
+    /// without touching disk. Downstream code (executor, run_loop)
+    /// treats it the same as a persisted run — event/artifact writes
+    /// short-circuit on the same `persistent` flag.
     pub fn create_run(
         &self,
         node_id: Uuid,
@@ -366,25 +407,29 @@ impl RunStorage {
         let run_id = Uuid::new_v4();
         let started_at = Self::now_millis();
         let sanitized = sanitize_name(node_name);
-        let dir = self.base_path.join(&execution_dir).join(&sanitized);
 
-        // Guard against node name collisions within the same execution.
-        // Allow re-creation for the same node_id (loop re-execution) but
-        // reject collisions from different nodes whose names sanitize identically.
-        let run_json_path = dir.join("run.json");
-        if run_json_path.exists() {
-            let existing: NodeRun = Self::read_run_json(&run_json_path)?;
-            if existing.node_id != node_id {
-                anyhow::bail!(
-                    "Node directory '{}' already exists in execution '{}' — \
-                     two nodes may have names that sanitize identically",
-                    sanitized,
-                    execution_dir
-                );
+        if self.persistent {
+            let dir = self.base_path.join(&execution_dir).join(&sanitized);
+
+            // Guard against node name collisions within the same execution.
+            // Allow re-creation for the same node_id (loop re-execution) but
+            // reject collisions from different nodes whose names sanitize identically.
+            let run_json_path = dir.join("run.json");
+            if run_json_path.exists() {
+                let existing: NodeRun = Self::read_run_json(&run_json_path)?;
+                if existing.node_id != node_id {
+                    anyhow::bail!(
+                        "Node directory '{}' already exists in execution '{}' — \
+                         two nodes may have names that sanitize identically",
+                        sanitized,
+                        execution_dir
+                    );
+                }
             }
-        }
 
-        std::fs::create_dir_all(dir.join("artifacts")).context("Failed to create run directory")?;
+            std::fs::create_dir_all(dir.join("artifacts"))
+                .context("Failed to create run directory")?;
+        }
 
         let run = NodeRun {
             run_id,
@@ -405,6 +450,9 @@ impl RunStorage {
     }
 
     pub fn save_run(&self, run: &NodeRun) -> Result<()> {
+        if !self.persistent {
+            return Ok(());
+        }
         let dir = self.run_dir(run);
         std::fs::create_dir_all(&dir).context("Failed to create run directory")?;
 
@@ -414,6 +462,9 @@ impl RunStorage {
     }
 
     pub fn append_event(&self, run: &NodeRun, event: &TraceEvent) -> Result<()> {
+        if !self.persistent {
+            return Ok(());
+        }
         let events_path = self.run_dir(run).join("events.jsonl");
         Self::write_event_line(&events_path, event)
     }
@@ -427,6 +478,9 @@ impl RunStorage {
             .execution_dir
             .as_ref()
             .context("begin_execution() must be called before append_execution_event()")?;
+        if !self.persistent {
+            return Ok(());
+        }
         let events_path = self.base_path.join(execution_dir).join("events.jsonl");
         Self::write_event_line(&events_path, event)
     }
@@ -445,7 +499,9 @@ impl RunStorage {
     ) -> Result<Artifact> {
         let artifact_path = self.run_dir(run).join("artifacts").join(filename);
 
-        std::fs::write(&artifact_path, data).context("Failed to write artifact")?;
+        if self.persistent {
+            std::fs::write(&artifact_path, data).context("Failed to write artifact")?;
+        }
 
         let artifact = Artifact {
             artifact_id: Uuid::new_v4(),
@@ -464,6 +520,9 @@ impl RunStorage {
             .execution_dir
             .as_ref()
             .context("begin_execution() must be called before save_node_verdict()")?;
+        if !self.persistent {
+            return Ok(());
+        }
 
         let sanitized = sanitize_name(&verdict.node_name);
         let path = self
@@ -897,5 +956,82 @@ mod tests {
         assert!(runs.join("wf/2026-03-17_00-00-00_aaaaaaaaaaaa").exists());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── persistence kill switch ─────────────────────────────────
+
+    #[test]
+    fn non_persistent_storage_writes_nothing_to_disk() {
+        let base = std::env::temp_dir()
+            .join("clickweave_nonpersist_test")
+            .join(Uuid::new_v4().to_string());
+        let mut storage = RunStorage::new(&base, "Test Workflow");
+        storage.set_persistent(false);
+
+        let exec_dir = storage.begin_execution().expect("begin execution");
+        assert!(
+            !storage.base_path.exists(),
+            "base_path must not be created when persistence is disabled"
+        );
+
+        let node_id = Uuid::new_v4();
+        let run = storage
+            .create_run(node_id, "Launch Calculator", crate::TraceLevel::Minimal)
+            .expect("create run");
+        assert_eq!(run.node_id, node_id);
+        assert_eq!(run.execution_dir, exec_dir);
+        assert!(
+            !storage.run_dir(&run).exists(),
+            "create_run must not create on-disk directories when disabled"
+        );
+
+        let event = TraceEvent {
+            timestamp: RunStorage::now_millis(),
+            event_type: "test_event".to_string(),
+            payload: serde_json::json!({"key": "value"}),
+        };
+        storage.append_event(&run, &event).expect("append event");
+        storage
+            .append_execution_event(&event)
+            .expect("append exec event");
+        storage
+            .append_agent_event(&serde_json::json!({"k": "v"}))
+            .expect("append agent event");
+
+        storage
+            .save_artifact(
+                &run,
+                ArtifactKind::Screenshot,
+                "shot.png",
+                b"bytes",
+                Value::Null,
+            )
+            .expect("save artifact");
+
+        assert!(
+            !base.exists(),
+            "nothing under the base path may be written when persistence is disabled — found {}",
+            base.display(),
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn set_persistent_true_restores_disk_writes() {
+        let base = std::env::temp_dir()
+            .join("clickweave_persist_toggle_test")
+            .join(Uuid::new_v4().to_string());
+        let mut storage = RunStorage::new(&base, "Toggle");
+        storage.set_persistent(false);
+        storage.set_persistent(true);
+
+        storage.begin_execution().expect("begin execution");
+        assert!(
+            storage.base_path.exists(),
+            "re-enabling persistence should resume on-disk writes"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
