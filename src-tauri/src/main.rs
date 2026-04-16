@@ -155,10 +155,11 @@ fn main() {
             let app_data_dir = app_data_dir();
             std::fs::create_dir_all(&app_data_dir).ok();
 
-            // Best-effort run-trace housekeeping. Silent per the privacy
-            // spec — failures log through tracing and never surface to
-            // the user or block app startup.
-            privacy::sweep_expired_app_data_runs(&app_data_dir);
+            // Best-effort run-trace housekeeping. Runs on a detached
+            // thread so startup isn't blocked by the directory walk.
+            // Silent per the privacy spec — failures log through
+            // tracing and never surface to the user.
+            privacy::spawn_expired_app_data_runs_sweep(app_data_dir.clone());
 
             app.manage(AppDataDir(app_data_dir));
             builder.mount_events(app);

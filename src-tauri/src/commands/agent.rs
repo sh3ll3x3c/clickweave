@@ -414,7 +414,14 @@ pub async fn run_agent(
                     return;
                 }
             }
-            let variant_index = VariantIndex::load(&guard.variant_index_path());
+            // Load via `load_existing` so entries whose execution dir
+            // is gone (retention sweep, crash, manual cleanup) never
+            // leak back into agent context — even if the on-disk
+            // JSONL still carries them. This enforces the privacy
+            // contract at read time so it is robust to races, partial
+            // failures, and hand-cleanup.
+            let variant_index =
+                VariantIndex::load_existing(&guard.variant_index_path(), guard.base_path());
             let cache = AgentCache::load_from_path(&guard.agent_cache_path());
             (variant_index.as_context_text(), cache)
         };

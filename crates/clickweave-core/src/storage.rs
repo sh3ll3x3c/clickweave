@@ -112,6 +112,16 @@ pub fn cleanup_expired_runs(
         return Ok(Vec::new());
     }
 
+    // Clamp to a safe ceiling before the i64 cast so a hand-edited
+    // `settings.json` with a huge `traceRetentionDays` cannot wrap into
+    // a negative duration and push the cutoff into the future, which
+    // would flag every existing run as expired and delete them all.
+    // 10 years is well past any legitimate retention window — the UI
+    // clamp is also 3650 days — so saturating here is indistinguishable
+    // from "retain forever" in practice.
+    const MAX_RETENTION_DAYS: u64 = 3650;
+    let retention_days = retention_days.min(MAX_RETENTION_DAYS);
+
     let cutoff = now - chrono::Duration::days(retention_days as i64);
     let mut removed = Vec::new();
 
@@ -146,6 +156,7 @@ pub fn cleanup_expired_runs(
             }
         };
 
+        let mut removed_exec_names: Vec<String> = Vec::new();
         for exec_entry in exec_entries {
             let exec_entry = match exec_entry {
                 Ok(e) => e,
@@ -164,17 +175,21 @@ pub fn cleanup_expired_runs(
             let Some(name) = exec_path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            let Some(ts) = parse_execution_dir_timestamp(name) else {
-                // Not an execution dir — leave it alone. This preserves
-                // sibling files like `decisions.json` and future layout
-                // additions we do not yet know about.
+            let name = name.to_string();
+            let Some(ts) = parse_execution_dir_timestamp(&name) else {
+                // Not an execution dir — leave it alone. Preserves
+                // sibling files like `decisions.json`, `agent_cache.json`,
+                // and future layout additions we do not yet know about.
                 continue;
             };
             if ts >= cutoff {
                 continue;
             }
             match std::fs::remove_dir_all(&exec_path) {
-                Ok(()) => removed.push(exec_path),
+                Ok(()) => {
+                    removed_exec_names.push(name);
+                    removed.push(exec_path);
+                }
                 Err(e) => warn!(
                     path = %exec_path.display(),
                     error = %e,
@@ -182,9 +197,100 @@ pub fn cleanup_expired_runs(
                 ),
             }
         }
+
+        // Tombstone the workflow-level variant index for the exec dirs
+        // we just removed. Scoping to `removed_exec_names` (instead of
+        // filtering all entries against what exists on disk) keeps the
+        // rewrite deterministic and safe even when the read-time
+        // filter in `VariantIndex::load_existing` is also active:
+        // fresh entries appended by a run starting during the sweep
+        // reference current exec dirs, which cannot appear in
+        // `removed_exec_names`, so the rewrite is a pure minus
+        // operation on known-stale lines.
+        //
+        // This fills the gap for workflows the user may never reopen
+        // — without this, expired `divergence_summary` text would
+        // linger on disk indefinitely. The read-time filter in
+        // `VariantIndex::load_existing` remains as the belt-and-braces
+        // safety net for entries we did not see here (manual
+        // cleanup, partial failures, etc.).
+        if !removed_exec_names.is_empty() {
+            let variant_path = workflow_dir.join("variant_index.jsonl");
+            if let Err(e) = prune_variant_index_entries(&variant_path, &removed_exec_names) {
+                warn!(
+                    path = %variant_path.display(),
+                    error = %e,
+                    "Failed to tombstone variant index entries after cleanup sweep",
+                );
+            }
+        }
     }
 
     Ok(removed)
+}
+
+/// Rewrite `variant_index.jsonl` with every line whose `execution_dir`
+/// is **not** in `removed_names`. Preserves unparseable lines so a
+/// schema mismatch cannot corrupt history. Uses a temp file + rename
+/// so a crash mid-prune leaves either the old or the new content,
+/// never a partial write. No-op when the file does not exist.
+///
+/// Only called from `cleanup_expired_runs` with exec dir names the
+/// sweep just removed — the read-time filter in
+/// `VariantIndex::load_existing` handles everything else.
+fn prune_variant_index_entries(path: &Path, removed_names: &[String]) -> Result<()> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(
+                anyhow::Error::from(e).context(format!("Failed to read {}", path.display()))
+            );
+        }
+    };
+
+    let removed_set: std::collections::HashSet<&str> =
+        removed_names.iter().map(String::as_str).collect();
+
+    let mut kept = String::with_capacity(content.len());
+    let mut pruned_any = false;
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let exec_dir_opt = serde_json::from_str::<Value>(line).ok().and_then(|v| {
+            v.get("execution_dir")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+        match exec_dir_opt {
+            Some(name) if removed_set.contains(name.as_str()) => {
+                pruned_any = true;
+            }
+            _ => {
+                kept.push_str(line);
+                kept.push('\n');
+            }
+        }
+    }
+
+    if !pruned_any {
+        return Ok(());
+    }
+
+    if kept.is_empty() {
+        std::fs::remove_file(path).with_context(|| {
+            format!("Failed to remove emptied variant index {}", path.display())
+        })?;
+        return Ok(());
+    }
+
+    let tmp_path = path.with_extension("jsonl.tmp");
+    std::fs::write(&tmp_path, &kept)
+        .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, path)
+        .with_context(|| format!("Failed to rename over {}", path.display()))?;
+    Ok(())
 }
 
 /// Manages on-disk storage for node run artifacts and trace data.
@@ -1033,5 +1139,139 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ── variant index isolation ─────────────────────────────────
+
+    #[test]
+    fn cleanup_expired_runs_tombstones_variant_index_entries_for_removed_dirs() {
+        // The cleanup sweep tombstones variant index entries matching
+        // the dirs it removed so the retention promise actually ages
+        // that privacy-sensitive text off disk at startup — not just
+        // on the next `run_agent`. Entries referencing dirs outside
+        // the removed set (e.g. fresh runs, legacy orphans) are
+        // preserved so the startup sweep cannot race a live append.
+        let root = std::env::temp_dir()
+            .join("clickweave_cleanup_variant_tombstone_test")
+            .join(Uuid::new_v4().to_string());
+        let runs = root.join("runs");
+        let wf = runs.join("workflow-a");
+
+        let old_exec = "2026-01-01_00-00-00_aaaaaaaaaaaa";
+        let fresh_exec = "2026-04-15_12-00-00_bbbbbbbbbbbb";
+        let legacy_orphan = "2020-01-01_00-00-00_legacyxxxxxx";
+        make_runs_tree(
+            &runs,
+            &[("workflow-a", old_exec), ("workflow-a", fresh_exec)],
+        );
+
+        let vp = wf.join("variant_index.jsonl");
+        let original = format!(
+            "{{\"execution_dir\":\"{old_exec}\",\"diverged_at_step\":null,\"divergence_summary\":\"old\",\"success\":false}}\n\
+             {{\"execution_dir\":\"{fresh_exec}\",\"diverged_at_step\":null,\"divergence_summary\":\"new\",\"success\":true}}\n\
+             {{\"execution_dir\":\"{legacy_orphan}\",\"diverged_at_step\":null,\"divergence_summary\":\"legacy\",\"success\":true}}\n",
+        );
+        std::fs::write(&vp, &original).expect("seed variant index");
+
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 0, 0, 0).unwrap();
+        let removed = cleanup_expired_runs(&runs, 30, now).expect("cleanup");
+        assert_eq!(removed.len(), 1);
+        assert!(
+            !wf.join(old_exec).exists(),
+            "expired exec dir must be removed"
+        );
+
+        let after = std::fs::read_to_string(&vp).expect("read variant index");
+        assert!(
+            !after.contains(old_exec),
+            "entry referencing the removed exec dir must be dropped from disk",
+        );
+        assert!(after.contains(fresh_exec), "fresh entry must survive",);
+        assert!(
+            after.contains(legacy_orphan),
+            "entry whose dir was not in the current sweep must be left for the read-time filter",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_expired_runs_deletes_variant_index_when_every_line_matches_removed_dirs() {
+        let root = std::env::temp_dir()
+            .join("clickweave_cleanup_variant_delete_test")
+            .join(Uuid::new_v4().to_string());
+        let runs = root.join("runs");
+        let wf = runs.join("wf");
+        let old_exec = "2026-01-01_00-00-00_aaaaaaaaaaaa";
+        make_runs_tree(&runs, &[("wf", old_exec)]);
+        let vp = wf.join("variant_index.jsonl");
+        std::fs::write(
+            &vp,
+            format!(
+                "{{\"execution_dir\":\"{old_exec}\",\"diverged_at_step\":null,\"divergence_summary\":\"\",\"success\":false}}\n",
+            ),
+        )
+        .unwrap();
+
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 0, 0, 0).unwrap();
+        cleanup_expired_runs(&runs, 30, now).expect("cleanup");
+
+        assert!(
+            !vp.exists(),
+            "variant_index.jsonl should be removed when every remaining line would be empty",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_expired_runs_leaves_variant_index_untouched_when_nothing_removed() {
+        let root = std::env::temp_dir()
+            .join("clickweave_cleanup_variant_untouched_test")
+            .join(Uuid::new_v4().to_string());
+        let runs = root.join("runs");
+        let wf = runs.join("wf");
+        let fresh_exec = "2026-04-15_12-00-00_bbbbbbbbbbbb";
+        make_runs_tree(&runs, &[("wf", fresh_exec)]);
+        let vp = wf.join("variant_index.jsonl");
+        let original = format!(
+            "{{\"execution_dir\":\"{fresh_exec}\",\"diverged_at_step\":null,\"divergence_summary\":\"fresh\",\"success\":true}}\n",
+        );
+        std::fs::write(&vp, &original).unwrap();
+
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 0, 0, 0).unwrap();
+        cleanup_expired_runs(&runs, 30, now).expect("cleanup");
+
+        let after = std::fs::read_to_string(&vp).expect("read variant index");
+        assert_eq!(
+            after, original,
+            "variant_index.jsonl must be byte-identical when no exec dirs were removed",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_expired_runs_clamps_absurd_retention_values() {
+        // `u64::MAX` is the worst-case hand-edited settings.json
+        // value. Before the clamp this wrapped to a negative i64 when
+        // chrono built the `Duration`, pushing the cutoff into the
+        // future and flagging every fresh dir as expired.
+        let root = std::env::temp_dir()
+            .join("clickweave_cleanup_clamp_test")
+            .join(Uuid::new_v4().to_string());
+        let runs = root.join("runs");
+        let fresh_exec = "2026-04-15_12-00-00_bbbbbbbbbbbb";
+        make_runs_tree(&runs, &[("wf", fresh_exec)]);
+
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 0, 0, 0).unwrap();
+        let removed = cleanup_expired_runs(&runs, u64::MAX, now).expect("cleanup");
+        assert!(
+            removed.is_empty(),
+            "absurd retention window must not delete fresh dirs after the clamp",
+        );
+        assert!(runs.join("wf").join(fresh_exec).exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

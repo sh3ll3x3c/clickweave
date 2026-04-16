@@ -58,11 +58,10 @@ pub fn load_privacy_settings(app_data_dir: &Path) -> PersistedPrivacy {
     })
 }
 
-/// Invoke `cleanup_expired_runs` for the app-data runs directory with
-/// the persisted retention window. Silent best-effort — any I/O error
-/// is logged and swallowed so app startup is never blocked by trace
-/// housekeeping.
-pub fn sweep_expired_app_data_runs(app_data_dir: &Path) {
+/// Synchronous sweep helper. Exposed for tests and callers that need
+/// a deterministic wait; production code should invoke the spawned
+/// version so app startup is not blocked on filesystem I/O.
+fn sweep_expired_runs_sync(app_data_dir: &Path) {
     let privacy = load_privacy_settings(app_data_dir);
     let retention_days = privacy
         .trace_retention_days
@@ -96,6 +95,20 @@ pub fn sweep_expired_app_data_runs(app_data_dir: &Path) {
                 "Trace cleanup sweep failed",
             );
         }
+    }
+}
+
+/// Kick off the expired-trace sweep on a detached OS thread so app
+/// startup is not blocked while the directory walk runs. Silent
+/// best-effort — any I/O error is logged through tracing and swallowed
+/// inside the worker. Thread spawn failure itself is also non-fatal;
+/// the sweep simply doesn't run this session.
+pub fn spawn_expired_app_data_runs_sweep(app_data_dir: PathBuf) {
+    let spawn_result = std::thread::Builder::new()
+        .name("clickweave-trace-cleanup".into())
+        .spawn(move || sweep_expired_runs_sync(&app_data_dir));
+    if let Err(e) = spawn_result {
+        tracing::warn!(error = %e, "Failed to spawn trace cleanup thread; skipping sweep");
     }
 }
 
@@ -139,6 +152,27 @@ mod tests {
         std::fs::write(dir.join("settings.json"), payload.to_string()).unwrap();
         let p = load_privacy_settings(&dir);
         assert_eq!(p.trace_retention_days, Some(7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sweep_expired_runs_sync_retention_zero_leaves_everything_in_place() {
+        // End-to-end check of the privacy plumbing: settings.json with
+        // `traceRetentionDays: 0` should skip the cleanup even when
+        // there are ancient run dirs on disk.
+        let dir = tmp();
+        std::fs::create_dir_all(dir.join("runs/workflow-a/2020-01-01_00-00-00_aaaaaaaaaaaa"))
+            .unwrap();
+        let payload = serde_json::json!({ "traceRetentionDays": 0 });
+        std::fs::write(dir.join("settings.json"), payload.to_string()).unwrap();
+
+        sweep_expired_runs_sync(&dir);
+
+        assert!(
+            dir.join("runs/workflow-a/2020-01-01_00-00-00_aaaaaaaaaaaa")
+                .exists(),
+            "retention=0 must leave all traces alone",
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

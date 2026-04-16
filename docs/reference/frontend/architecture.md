@@ -160,10 +160,12 @@ Shell for the assistant panel surface. No producer currently populates `messages
 
 **SettingsSlice** (`settingsSlice.ts`)
 
-- `supervisorConfig`, `agentConfig`, `fastConfig`, `fastEnabled`, `maxRepairAttempts`, `hoverDwellThreshold`, `supervisionDelayMs`, `toolPermissions`
+- `supervisorConfig`, `agentConfig`, `fastConfig`, `fastEnabled`, `maxRepairAttempts`, `hoverDwellThreshold`, `supervisionDelayMs`, `toolPermissions`, `traceRetentionDays`, `storeTraces`
 - persistence via `store/settings.ts` (`settings.json` through Tauri plugin-store)
 
 `supervisorConfig` is the supervisor LLM endpoint used for Test-mode step verdicts and walkthrough-enrichment VLM fallback. `agentConfig` drives the agent loop. `fastConfig` (enabled by `fastEnabled`) is the fast-VLM used for screenshot description before the supervisor runs its judge pass.
+
+`traceRetentionDays` (default 30, `0` disables cleanup) drives the run-trace retention sweep at app startup; `storeTraces` (default on) is the privacy kill switch threaded into each run request — when off, agent and workflow runs execute entirely in memory and nothing is written under `.clickweave/runs/`.
 
 **UiSlice** (`uiSlice.ts`)
 
