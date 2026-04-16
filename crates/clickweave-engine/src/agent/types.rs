@@ -67,6 +67,29 @@ pub enum AgentEvent {
         /// The cap value the run was configured with.
         cap: usize,
     },
+    /// The operator resolved a pending `CompletionDisagreement`. Emitted
+    /// by the Tauri layer after the user chooses Confirm or Cancel in the
+    /// assistant panel. Persisted to `events.jsonl` so the durable run
+    /// trace records the operator's final decision.
+    CompletionDisagreementResolved {
+        /// Operator decision — `"confirm"` (override VLM, mark complete)
+        /// or `"cancel"` (agree with VLM, halt the run).
+        action: DisagreementResolutionAction,
+        /// The summary the agent provided with `agent_done`.
+        agent_summary: String,
+        /// The VLM reasoning the operator saw before deciding.
+        vlm_reasoning: String,
+    },
+}
+
+/// Operator decision for a pending `CompletionDisagreement`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DisagreementResolutionAction {
+    /// Override the VLM — the agent's self-reported completion stands.
+    Confirm,
+    /// Agree with the VLM — cancel the run.
+    Cancel,
 }
 
 /// Approval request sent to the UI before executing an action.
@@ -218,6 +241,19 @@ pub enum TerminalReason {
         agent_summary: String,
         vlm_reasoning: String,
     },
+    /// The operator resolved a prior `CompletionDisagreement` by confirming
+    /// that the agent really did complete the goal (VLM was wrong). This
+    /// reason is synthesized by the Tauri layer after the user's decision,
+    /// not by the engine's loop runner — but it lives here so the persisted
+    /// terminal state in `events.jsonl` + variant-index stays a single
+    /// match-on-one-enum shape.
+    DisagreementConfirmed { agent_summary: String },
+    /// The operator resolved a prior `CompletionDisagreement` by cancelling
+    /// the run (they agreed with the VLM). Synthesized by the Tauri layer.
+    DisagreementCancelled {
+        agent_summary: String,
+        vlm_reasoning: String,
+    },
     /// The consecutive-destructive-call cap was reached. The run halts so
     /// the operator can review what the agent did instead of barrelling
     /// through more destructive actions unchecked.
@@ -231,7 +267,10 @@ pub enum TerminalReason {
 
 impl TerminalReason {
     pub fn is_completed(&self) -> bool {
-        matches!(self, Self::Completed { .. })
+        matches!(
+            self,
+            Self::Completed { .. } | Self::DisagreementConfirmed { .. }
+        )
     }
 
     pub fn divergence_summary(&self) -> String {
@@ -247,6 +286,14 @@ impl TerminalReason {
             Self::CompletionDisagreement { vlm_reasoning, .. } => {
                 format!("Completion verification disagreed: {}", vlm_reasoning)
             }
+            Self::DisagreementConfirmed { agent_summary } => format!(
+                "Completed (user override after VLM disagreement): {}",
+                agent_summary
+            ),
+            Self::DisagreementCancelled { vlm_reasoning, .. } => format!(
+                "Cancelled by user after VLM disagreement: {}",
+                vlm_reasoning
+            ),
             Self::ConsecutiveDestructiveCap {
                 recent_tool_names,
                 cap,
@@ -316,5 +363,71 @@ mod tests {
         let result = truncate_summary(text, 4);
         assert!(result.ends_with("..."));
         // Should not panic or split a multibyte char
+    }
+
+    #[test]
+    fn disagreement_confirmed_is_completed() {
+        let reason = TerminalReason::DisagreementConfirmed {
+            agent_summary: "clicked Submit".to_string(),
+        };
+        assert!(
+            reason.is_completed(),
+            "DisagreementConfirmed must be treated as a successful completion \
+             so the variant index records success=true"
+        );
+    }
+
+    #[test]
+    fn disagreement_cancelled_is_not_completed() {
+        let reason = TerminalReason::DisagreementCancelled {
+            agent_summary: "clicked Submit".to_string(),
+            vlm_reasoning: "modal still visible".to_string(),
+        };
+        assert!(
+            !reason.is_completed(),
+            "DisagreementCancelled must record success=false so future runs \
+             know the operator cancelled after VLM disagreement"
+        );
+    }
+
+    #[test]
+    fn disagreement_confirmed_summary_embeds_agent_summary() {
+        let reason = TerminalReason::DisagreementConfirmed {
+            agent_summary: "calculator shows 42".to_string(),
+        };
+        let summary = reason.divergence_summary();
+        assert!(summary.contains("user override"));
+        assert!(summary.contains("calculator shows 42"));
+    }
+
+    #[test]
+    fn disagreement_cancelled_summary_embeds_vlm_reasoning() {
+        let reason = TerminalReason::DisagreementCancelled {
+            agent_summary: "clicked Submit".to_string(),
+            vlm_reasoning: "form still showing errors".to_string(),
+        };
+        let summary = reason.divergence_summary();
+        assert!(summary.contains("Cancelled"));
+        assert!(summary.contains("form still showing errors"));
+    }
+
+    #[test]
+    fn disagreement_resolution_action_serializes_lowercase() {
+        let confirm = serde_json::to_string(&DisagreementResolutionAction::Confirm).unwrap();
+        assert_eq!(confirm, "\"confirm\"");
+        let cancel = serde_json::to_string(&DisagreementResolutionAction::Cancel).unwrap();
+        assert_eq!(cancel, "\"cancel\"");
+    }
+
+    #[test]
+    fn disagreement_resolution_action_round_trips() {
+        for expected in [
+            DisagreementResolutionAction::Confirm,
+            DisagreementResolutionAction::Cancel,
+        ] {
+            let s = serde_json::to_string(&expected).unwrap();
+            let parsed: DisagreementResolutionAction = serde_json::from_str(&s).unwrap();
+            assert_eq!(parsed, expected);
+        }
     }
 }
