@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex};
 
 use clickweave_core::AppKind;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app, classify_app_by_pid};
-use clickweave_core::cdp::{parse_cdp_page_list, pick_page_index_for_url};
+use clickweave_core::cdp::{
+    current_selected_page_url as pick_current_selected_url, parse_cdp_page_list,
+    pick_page_index_for_url,
+};
 use clickweave_core::walkthrough::enrichment::parse_cdp_click_data;
 use clickweave_core::walkthrough::session::{
     self as session_lib, CDP_CHECK_AND_REINJECT_JS, CDP_CLICK_LISTENER_JS, CDP_HOVER_LISTENER_JS,
@@ -1167,13 +1170,7 @@ async fn current_selected_page_url(mcp: &McpClient) -> Option<String> {
         return None;
     }
     let text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
-    let pages = parse_cdp_page_list(&text);
-    pages
-        .iter()
-        .find(|p| p.selected)
-        .or_else(|| pages.first())
-        .map(|p| p.url.clone())
-        .filter(|u| !u.is_empty())
+    pick_current_selected_url(&parse_cdp_page_list(&text))
 }
 
 /// Restore the previously-selected CDP page by matching URL. If no page

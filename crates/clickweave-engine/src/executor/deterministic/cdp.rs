@@ -354,7 +354,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         app_name: &str,
         mcp: &(impl Mcp + ?Sized),
     ) {
-        use clickweave_core::cdp::{parse_cdp_page_list, pick_page_index_for_url};
+        use clickweave_core::cdp::{
+            current_selected_page_url, parse_cdp_page_list, pick_page_index_for_url,
+        };
 
         let list_result = match mcp
             .call_tool("cdp_list_pages", Some(serde_json::json!({})))
@@ -440,15 +442,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // No prior record (first connect) or restore failed — snapshot the
         // currently-selected page so future reconnects have something to aim
-        // at. Falls back to the first page if none is marked selected.
-        let observed = pages
-            .iter()
-            .find(|p| p.selected)
-            .or_else(|| pages.first())
-            .map(|p| p.url.clone());
-        if let Some(url) = observed
-            && !url.is_empty()
-        {
+        // at.
+        if let Some(url) = current_selected_page_url(&pages) {
             self.cdp_selected_pages.insert(app_name.to_string(), url);
         }
     }
@@ -465,7 +460,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         app_name: &str,
         mcp: &(impl Mcp + ?Sized),
     ) {
-        use clickweave_core::cdp::parse_cdp_page_list;
+        use clickweave_core::cdp::{current_selected_page_url, parse_cdp_page_list};
 
         let result = match mcp
             .call_tool("cdp_list_pages", Some(serde_json::json!({})))
@@ -476,12 +471,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         };
         let text = Self::extract_result_text(&result);
         let pages = parse_cdp_page_list(&text);
-        if let Some(url) = pages
-            .iter()
-            .find(|p| p.selected)
-            .map(|p| p.url.clone())
-            .filter(|u| !u.is_empty())
-        {
+        if let Some(url) = current_selected_page_url(&pages) {
             self.cdp_selected_pages.insert(app_name.to_string(), url);
         }
     }

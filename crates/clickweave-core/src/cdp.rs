@@ -87,6 +87,20 @@ pub fn parse_cdp_page_list(text: &str) -> Vec<CdpPageEntry> {
     out
 }
 
+/// Return the URL we should remember as the "currently-selected tab" for a
+/// future reconnect. Prefers the page marked `selected = true`; falls back
+/// to the first entry so that a restored session still has an anchor URL
+/// when the list lacks an explicit selection marker. Empty URLs are
+/// discarded.
+pub fn current_selected_page_url(pages: &[CdpPageEntry]) -> Option<String> {
+    pages
+        .iter()
+        .find(|p| p.selected)
+        .or_else(|| pages.first())
+        .map(|p| p.url.clone())
+        .filter(|u| !u.is_empty())
+}
+
 /// Pick the best page index to restore, given a list of currently-available
 /// pages and a URL we remembered from the prior session with this app.
 ///
@@ -301,6 +315,61 @@ mod page_selection_tests {
         // index must come from the entry itself.
         let pages = vec![page(5, "https://a.com/"), page(2, "https://b.com/")];
         assert_eq!(pick_page_index_for_url(&pages, "https://b.com/"), Some(2));
+    }
+
+    #[test]
+    fn current_selected_url_prefers_selected_marker() {
+        let pages = vec![
+            CdpPageEntry {
+                index: 0,
+                url: "https://a.com/".to_string(),
+                selected: false,
+            },
+            CdpPageEntry {
+                index: 1,
+                url: "https://b.com/".to_string(),
+                selected: true,
+            },
+        ];
+        assert_eq!(
+            current_selected_page_url(&pages),
+            Some("https://b.com/".to_string())
+        );
+    }
+
+    #[test]
+    fn current_selected_url_falls_back_to_first_when_none_marked() {
+        let pages = vec![
+            CdpPageEntry {
+                index: 0,
+                url: "https://a.com/".to_string(),
+                selected: false,
+            },
+            CdpPageEntry {
+                index: 1,
+                url: "https://b.com/".to_string(),
+                selected: false,
+            },
+        ];
+        assert_eq!(
+            current_selected_page_url(&pages),
+            Some("https://a.com/".to_string())
+        );
+    }
+
+    #[test]
+    fn current_selected_url_returns_none_for_empty_list() {
+        assert_eq!(current_selected_page_url(&[]), None);
+    }
+
+    #[test]
+    fn current_selected_url_skips_empty_url() {
+        let pages = vec![CdpPageEntry {
+            index: 0,
+            url: String::new(),
+            selected: true,
+        }];
+        assert_eq!(current_selected_page_url(&pages), None);
     }
 
     #[test]
