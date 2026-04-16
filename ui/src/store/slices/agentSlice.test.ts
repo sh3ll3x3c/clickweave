@@ -315,12 +315,16 @@ describe("agentSlice.confirmDisagreementAsComplete", () => {
     expect(state.agentStatus).toBe("complete");
   });
 
-  it("keeps the optimistic UI state when invoke rejects (stale run tore down)", async () => {
+  it("rolls status back to the pre-click state when the backend rejects the confirm", async () => {
     useStore.getState().setCompletionDisagreement({
       screenshotBase64: "abc",
       vlmReasoning: "button still visible",
       agentSummary: "clicked submit",
     });
+    // The disagreement card is rendered while status is `stopped`
+    // (see useAgentEvents: `agent://completion_disagreement` calls
+    // `setStatusIfActive("stopped")`).
+    useStore.getState().setAgentStatus("stopped");
     invokeMock.mockRejectedValueOnce({
       kind: "Validation",
       message: "No pending completion disagreement",
@@ -329,10 +333,11 @@ describe("agentSlice.confirmDisagreementAsComplete", () => {
     await useStore.getState().confirmDisagreementAsComplete();
 
     const state = useStore.getState();
-    // Card is still dismissed and status still `complete` — the local
-    // record of the user's choice outlives a lost race with cleanup.
+    // Card stays dismissed so the user isn't re-prompted, but status
+    // reverts to `stopped` so the UI does not falsely show a run as
+    // complete when the backend actually recorded it differently.
     expect(state.completionDisagreement).toBeNull();
-    expect(state.agentStatus).toBe("complete");
+    expect(state.agentStatus).toBe("stopped");
     const lastLog = useStore.getState().logs.at(-1);
     expect(lastLog).toContain("No pending completion disagreement");
   });

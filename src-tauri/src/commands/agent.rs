@@ -197,7 +197,17 @@ async fn await_disagreement_resolution(
 
     // Wait for the operator's decision, racing the run's cancellation
     // token so `stop_agent` during the adjudication window unblocks.
+    //
+    // `biased;` is load-bearing: without it, `tokio::select!` can pick
+    // the cancel branch even when the resolver oneshot already carries
+    // the operator's `Confirm`, which would silently overwrite the
+    // user's decision with a `DisagreementCancelled` terminal record.
+    // The resolver branch must always win when its channel is ready;
+    // the cancel branch is the pure fallback for the adjudication-
+    // window stop case (force_stop has no sender to consume because
+    // `resolve_completion_disagreement` was never called).
     let action = tokio::select! {
+        biased;
         res = rx => res.ok(),
         _ = cancel_token.cancelled() => {
             // Clear any stale sender the force_stop path did not consume
@@ -816,6 +826,18 @@ impl From<CompletionDisagreementActionWire> for DisagreementResolutionAction {
 /// `cancel` (agree with the VLM, halt the run). The backend records the
 /// decision to `events.jsonl` + `variant_index.jsonl` and emits the
 /// appropriate terminal Tauri event.
+///
+/// Concurrency note: the AgentHandle lock is held across the oneshot
+/// send on purpose. `force_stop` (the Stop button) also locks the
+/// AgentHandle, cancels the run's CancellationToken, and takes the
+/// disagreement sender from the same slot. If this command released
+/// the lock after `.take()` but before `.send()`, a concurrent
+/// `force_stop` could trip the cancel token in the gap and the
+/// `tokio::select!` in `await_disagreement_resolution` would pick the
+/// cancel branch before the confirm ever arrived — silently losing
+/// the operator's decision. `oneshot::Sender::send` is synchronous
+/// and infallible except for a dropped receiver, so holding the
+/// `std::sync::Mutex` across it is cheap and race-closing.
 #[tauri::command]
 #[specta::specta]
 pub async fn resolve_completion_disagreement(
@@ -830,8 +852,6 @@ pub async fn resolve_completion_disagreement(
         .ok_or(CommandError::validation(
             "No pending completion disagreement",
         ))?;
-    drop(guard);
-
     tx.send(action.into()).map_err(|_| {
         CommandError::validation("Disagreement channel closed — agent task may have ended")
     })
@@ -939,6 +959,93 @@ mod tests {
             Ok(DisagreementResolutionAction::Cancel),
             "force_stop must send explicit Cancel through the disagreement channel, \
              not drop the oneshot (drops cause ambiguous `unknown` terminal records)"
+        );
+    }
+
+    /// Regression: even though `resolve_completion_disagreement` now
+    /// holds the AgentHandle lock across `tx.send(...)`, both branches
+    /// of the `await_disagreement_resolution` select can still be ready
+    /// at the same time — the loop's own cancellation path (e.g., a
+    /// workflow-level cancel or shutdown) can cancel the token
+    /// independently of `force_stop`, so a Confirm already sitting in
+    /// the oneshot can race a tripped token. Without `biased;`,
+    /// `tokio::select!` may pick the cancel branch and silently
+    /// overwrite the confirm with a DisagreementCancelled terminal
+    /// record. This test asserts the biased-select policy preserves
+    /// the operator's decision.
+    #[tokio::test]
+    async fn biased_select_preserves_confirm_when_token_also_cancelled() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<DisagreementResolutionAction>();
+        let token = CancellationToken::new();
+
+        // Arrange: both branches are ready simultaneously — the confirm
+        // has been sent and the cancel-token has been tripped.
+        tx.send(DisagreementResolutionAction::Confirm).unwrap();
+        token.cancel();
+
+        let action = tokio::select! {
+            biased;
+            res = rx => res.ok(),
+            _ = token.cancelled() => Some(DisagreementResolutionAction::Cancel),
+        };
+
+        assert_eq!(
+            action,
+            Some(DisagreementResolutionAction::Confirm),
+            "biased select must prefer the resolver oneshot over a \
+             cancelled token so the operator's Confirm is never overwritten"
+        );
+    }
+
+    /// Regression: `resolve_completion_disagreement` must hold the
+    /// `AgentHandle` lock across `tx.send(...)`. If the lock were
+    /// released after `.take()` but before `.send()`, a concurrent
+    /// `force_stop` could cancel the run's CancellationToken in the
+    /// gap — and then the select race in `await_disagreement_resolution`
+    /// would take the cancel branch before the confirm ever arrived,
+    /// silently overwriting the operator's decision. This test
+    /// simulates the interleaving: after the resolver's critical
+    /// section completes (ordered by the AgentHandle mutex), a
+    /// subsequent `force_stop` must find no pending sender and the
+    /// receiver must already hold the Confirm. Asserting this
+    /// invariant documents that the lock-hold-across-send policy is
+    /// load-bearing, not incidental.
+    #[test]
+    fn resolver_critical_section_closes_confirm_vs_force_stop_window() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<DisagreementResolutionAction>();
+        let token = CancellationToken::new();
+        let handle_mutex = Mutex::new(AgentHandle {
+            cancel_token: Some(token.clone()),
+            pending_disagreement_tx: Some(tx),
+            ..Default::default()
+        });
+
+        // Simulate the resolver's critical section — `.take()` the sender
+        // and send on it while still holding the lock. This mirrors the
+        // real command.
+        {
+            let mut guard = handle_mutex.lock().unwrap();
+            let tx = guard
+                .pending_disagreement_tx
+                .take()
+                .expect("pending_disagreement_tx should be installed");
+            tx.send(DisagreementResolutionAction::Confirm).unwrap();
+        }
+
+        // A later `force_stop` then observes no sender to consume (so
+        // it cannot overwrite the confirm) and only cancels the token.
+        let had_task = {
+            let mut guard = handle_mutex.lock().unwrap();
+            guard.force_stop()
+        };
+
+        assert!(had_task, "force_stop should report true on active run");
+        assert!(token.is_cancelled(), "force_stop must cancel the token");
+        assert_eq!(
+            rx.blocking_recv(),
+            Ok(DisagreementResolutionAction::Confirm),
+            "receiver must still see the operator's Confirm — force_stop \
+             had no pending sender to overwrite it with Cancel"
         );
     }
 }

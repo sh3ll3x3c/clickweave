@@ -59,9 +59,12 @@ export interface AmbiguityResolution {
 /**
  * VLM completion verification disagreement. Raised when the agent emitted
  * `agent_done` but a post-run screenshot + VLM check rejected the
- * completion. The run halts on the backend; the UI surfaces this to the
- * user so they can confirm (treating it as complete locally) or cancel
- * (invoking the backend stop path).
+ * completion. The engine halts on the backend; the Tauri task holds the
+ * run open on a per-run oneshot until the operator resolves via
+ * `resolve_completion_disagreement` ({@link confirmDisagreementAsComplete}
+ * / {@link cancelDisagreement}), which then writes the durable record
+ * and emits the final terminal `agent://complete` or
+ * `agent://stopped { reason: "user_cancelled_disagreement" }` event.
  */
 export interface CompletionDisagreement {
   /** Base64 JPEG payload ready to drop into a data-URL. */
@@ -291,10 +294,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
 
   stopAgent: async () => {
     const { pushLog } = get();
-    // Clear the disagreement card as well. The engine has already halted
-    // when a CompletionDisagreement was raised, so the backend stop_agent
-    // call will often return "no agent is running"; we still clear the
-    // UI state locally so the Cancel button always dismisses the card.
+    // Clear the disagreement card as well. When a CompletionDisagreement
+    // is raised the backend holds the run open on a pending-disagreement
+    // oneshot, and `stop_agent` → `force_stop` resolves that oneshot as
+    // Cancel so the run still gets a truthful `DisagreementCancelled`
+    // terminal record. We also clear the UI card locally so the Stop
+    // button always dismisses it without waiting for the terminal event.
     set({
       agentStatus: "stopped",
       pendingApproval: null,
@@ -370,13 +375,16 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
    * the buttons feel responsive; the backend then writes the durable
    * record and emits the truthful `agent://complete` terminal event.
    *
-   * If the invoke rejects — typically because a stale run was already
-   * torn down — we still leave the UI in its optimistic state so the
-   * card doesn't resurrect itself. The backend-side record won't exist
-   * for that run, which matches every other "we lost the race" outcome.
+   * If the invoke rejects — typically because a concurrent stop already
+   * consumed the disagreement sender — we roll status back to the
+   * pre-click state (`stopped`, the state the disagreement card is
+   * rendered against) so the UI is not stuck falsely showing
+   * `complete` after the backend actually recorded the run as cancelled.
+   * The card stays dismissed so the user isn't re-prompted.
    */
   confirmDisagreementAsComplete: async () => {
-    const { pushLog } = get();
+    const { pushLog, agentStatus } = get();
+    const priorStatus = agentStatus;
     set({
       completionDisagreement: null,
       agentStatus: "complete",
@@ -387,6 +395,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         "Agent completion confirmed by user (VLM disagreed but user overrode)",
       );
     } catch (err) {
+      set({ agentStatus: priorStatus });
       pushLog(
         `Completion confirm invoke rejected: ${formatAgentError(err)}`,
       );
