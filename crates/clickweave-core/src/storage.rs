@@ -2,9 +2,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use serde::Serialize;
 use serde_json::Value;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::{Artifact, ArtifactKind, NodeRun, NodeVerdict, RunStatus, TraceEvent, TraceLevel};
@@ -58,6 +59,132 @@ pub fn sanitize_name(name: &str) -> String {
 /// Formats an execution directory name as `YYYY-MM-DD_HH-MM-SS_<short_uuid>`.
 fn format_execution_dirname(started_at_ms: u64, run_id: Uuid) -> String {
     format_timestamped_dirname(started_at_ms, run_id)
+}
+
+/// Parses the `YYYY-MM-DD_HH-MM-SS` prefix of an execution directory name
+/// back into a UTC datetime. Returns `None` when the prefix does not match
+/// the expected format (e.g. unrelated directories under the runs root).
+///
+/// Pure function — no filesystem access — so it is covered by unit tests
+/// without touching disk.
+pub fn parse_execution_dir_timestamp(dir_name: &str) -> Option<DateTime<Utc>> {
+    // The prefix is exactly `YYYY-MM-DD_HH-MM-SS` (19 chars) followed by an
+    // underscore and the short uuid. Reject anything shorter.
+    if dir_name.len() < 19 {
+        return None;
+    }
+    let (prefix, rest) = dir_name.split_at(19);
+    // Require the separator so unrelated dirnames whose first 19 chars
+    // happen to parse as a timestamp (unlikely but cheap to guard) are
+    // rejected.
+    if !rest.starts_with('_') {
+        return None;
+    }
+    let naive = NaiveDateTime::parse_from_str(prefix, "%Y-%m-%d_%H-%M-%S").ok()?;
+    Some(Utc.from_utc_datetime(&naive))
+}
+
+/// Remove execution directories whose timestamp prefix is older than the
+/// retention window. Only walks the two-level layout produced by
+/// `RunStorage::new_app_data` — `runs/<workflow_dir>/<execution_dir>/` —
+/// so sibling files (e.g. `decisions.json`, `agent_cache.json`) and any
+/// dir that doesn't look like an execution dir are left alone.
+///
+/// * `runs_root` — the top-level `runs/` directory (e.g. under the app
+///   data dir, or a saved project's `.clickweave/` dir).
+/// * `retention_days` — maximum age in days. `0` disables cleanup and
+///   returns immediately with an empty vec.
+/// * `now` — current time, injected for deterministic testing.
+///
+/// Returns the list of execution directories that were successfully
+/// removed. Individual failures are logged via `tracing::warn!` and do
+/// not abort the sweep — per the privacy spec, cleanup is best-effort
+/// and silent to the user.
+pub fn cleanup_expired_runs(
+    runs_root: &Path,
+    retention_days: u64,
+    now: DateTime<Utc>,
+) -> Result<Vec<PathBuf>> {
+    if retention_days == 0 {
+        return Ok(Vec::new());
+    }
+    if !runs_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let cutoff = now - chrono::Duration::days(retention_days as i64);
+    let mut removed = Vec::new();
+
+    let workflow_entries = std::fs::read_dir(runs_root)
+        .with_context(|| format!("Failed to read runs root {}", runs_root.display()))?;
+
+    for workflow_entry in workflow_entries {
+        let workflow_entry = match workflow_entry {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(error = %e, "Skipping unreadable entry under runs root");
+                continue;
+            }
+        };
+        let Ok(file_type) = workflow_entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let workflow_dir = workflow_entry.path();
+
+        let exec_entries = match std::fs::read_dir(&workflow_dir) {
+            Ok(it) => it,
+            Err(e) => {
+                warn!(
+                    path = %workflow_dir.display(),
+                    error = %e,
+                    "Skipping workflow dir whose contents could not be read",
+                );
+                continue;
+            }
+        };
+
+        for exec_entry in exec_entries {
+            let exec_entry = match exec_entry {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(error = %e, "Skipping unreadable entry under workflow dir");
+                    continue;
+                }
+            };
+            let Ok(file_type) = exec_entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let exec_path = exec_entry.path();
+            let Some(name) = exec_path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(ts) = parse_execution_dir_timestamp(name) else {
+                // Not an execution dir — leave it alone. This preserves
+                // sibling files like `decisions.json` and future layout
+                // additions we do not yet know about.
+                continue;
+            };
+            if ts >= cutoff {
+                continue;
+            }
+            match std::fs::remove_dir_all(&exec_path) {
+                Ok(()) => removed.push(exec_path),
+                Err(e) => warn!(
+                    path = %exec_path.display(),
+                    error = %e,
+                    "Failed to remove expired execution dir",
+                ),
+            }
+        }
+    }
+
+    Ok(removed)
 }
 
 /// Manages on-disk storage for node run artifacts and trace data.
@@ -645,5 +772,130 @@ mod tests {
         assert!(expected_path.join("artifacts").exists());
 
         cleanup(&dir);
+    }
+
+    // ── cleanup_expired_runs ─────────────────────────────────────
+
+    fn make_runs_tree(root: &Path, layout: &[(&str, &str)]) {
+        for (workflow, exec_dir) in layout {
+            let full = root.join(workflow).join(exec_dir);
+            std::fs::create_dir_all(&full).expect("create tree");
+            std::fs::write(full.join("run.json"), b"{}").expect("write sentinel");
+        }
+    }
+
+    #[test]
+    fn parse_execution_dir_timestamp_round_trips_with_formatter() {
+        let ts_ms = 1_771_000_200_000u64;
+        let run_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let dirname = format_execution_dirname(ts_ms, run_id);
+
+        let parsed = parse_execution_dir_timestamp(&dirname).expect("parse timestamp");
+        let expected = DateTime::<Utc>::from_timestamp_millis(ts_ms as i64).unwrap();
+        // Formatter drops sub-second precision; compare at second granularity.
+        assert_eq!(parsed.timestamp(), expected.timestamp());
+    }
+
+    #[test]
+    fn parse_execution_dir_timestamp_rejects_short_and_malformed_names() {
+        assert!(parse_execution_dir_timestamp("").is_none());
+        assert!(parse_execution_dir_timestamp("too-short").is_none());
+        // 19 chars but no underscore separator → reject
+        assert!(parse_execution_dir_timestamp("2026-04-16_10-00-00").is_none());
+        // Bad month
+        assert!(parse_execution_dir_timestamp("2026-13-16_10-00-00_abc").is_none());
+        // Unrelated prefix
+        assert!(parse_execution_dir_timestamp("decisions.json_abc").is_none());
+    }
+
+    #[test]
+    fn cleanup_expired_runs_removes_only_expired_dirs() {
+        let root = std::env::temp_dir()
+            .join("clickweave_cleanup_test")
+            .join(Uuid::new_v4().to_string());
+        let runs = root.join("runs");
+
+        make_runs_tree(
+            &runs,
+            &[
+                ("workflow-a", "2026-01-01_00-00-00_aaaaaaaaaaaa"), // old
+                ("workflow-a", "2026-04-15_12-00-00_bbbbbbbbbbbb"), // fresh
+                ("workflow-b", "2026-02-01_00-00-00_cccccccccccc"), // old
+            ],
+        );
+
+        // Sibling files and unrelated dirs should be preserved.
+        std::fs::write(runs.join("workflow-a").join("decisions.json"), b"{}").unwrap();
+        std::fs::create_dir_all(runs.join("workflow-a").join("unrelated-dir")).unwrap();
+
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 0, 0, 0).unwrap();
+        let removed = cleanup_expired_runs(&runs, 30, now).expect("cleanup");
+
+        // Two dirs are older than 30 days → both removed.
+        assert_eq!(removed.len(), 2, "removed {:?}", removed);
+        assert!(
+            !runs
+                .join("workflow-a/2026-01-01_00-00-00_aaaaaaaaaaaa")
+                .exists()
+        );
+        assert!(
+            runs.join("workflow-a/2026-04-15_12-00-00_bbbbbbbbbbbb")
+                .exists()
+        );
+        assert!(
+            !runs
+                .join("workflow-b/2026-02-01_00-00-00_cccccccccccc")
+                .exists()
+        );
+        // Non-execution siblings left alone.
+        assert!(runs.join("workflow-a/decisions.json").exists());
+        assert!(runs.join("workflow-a/unrelated-dir").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_expired_runs_retention_zero_is_noop() {
+        let root = std::env::temp_dir()
+            .join("clickweave_cleanup_test")
+            .join(Uuid::new_v4().to_string());
+        let runs = root.join("runs");
+        make_runs_tree(&runs, &[("wf", "2020-01-01_00-00-00_aaaaaaaaaaaa")]);
+
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 0, 0, 0).unwrap();
+        let removed = cleanup_expired_runs(&runs, 0, now).expect("cleanup");
+        assert!(removed.is_empty());
+        assert!(runs.join("wf/2020-01-01_00-00-00_aaaaaaaaaaaa").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_expired_runs_missing_root_is_noop() {
+        let root = std::env::temp_dir()
+            .join("clickweave_cleanup_test")
+            .join(Uuid::new_v4().to_string())
+            .join("does-not-exist");
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 0, 0, 0).unwrap();
+        let removed = cleanup_expired_runs(&root, 30, now).expect("cleanup");
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn cleanup_expired_runs_preserves_recent_edge_of_window() {
+        let root = std::env::temp_dir()
+            .join("clickweave_cleanup_test")
+            .join(Uuid::new_v4().to_string());
+        let runs = root.join("runs");
+        // Exactly 30 days old → still within retention (cutoff is
+        // inclusive of "now - 30d", so >= cutoff stays).
+        make_runs_tree(&runs, &[("wf", "2026-03-17_00-00-00_aaaaaaaaaaaa")]);
+
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 0, 0, 0).unwrap();
+        let removed = cleanup_expired_runs(&runs, 30, now).expect("cleanup");
+        assert!(removed.is_empty(), "edge of window should be preserved");
+        assert!(runs.join("wf/2026-03-17_00-00-00_aaaaaaaaaaaa").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
