@@ -5,6 +5,7 @@ mod commands;
 mod mcp_resolve;
 mod menu;
 mod platform;
+mod privacy;
 
 use commands::*;
 use std::sync::Mutex;
@@ -153,6 +154,12 @@ fn main() {
         .setup(move |app| {
             let app_data_dir = app_data_dir();
             std::fs::create_dir_all(&app_data_dir).ok();
+
+            // Best-effort run-trace housekeeping. Silent per the privacy
+            // spec — failures log through tracing and never surface to
+            // the user or block app startup.
+            privacy::sweep_expired_app_data_runs(&app_data_dir);
+
             app.manage(AppDataDir(app_data_dir));
             builder.mount_events(app);
 
