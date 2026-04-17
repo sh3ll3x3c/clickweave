@@ -2,6 +2,7 @@ import type { StateCreator } from "zustand";
 import { isWalkthroughActive } from "./walkthroughSlice";
 import type { StoreState } from "./types";
 import { commands } from "../../bindings";
+import { saveAgentChat } from "../agentChatPersistence";
 
 // Flag consumed by `saveAgentChat` in `agentChatPersistence.ts` to
 // short-circuit writes after Clear begins but before the file is
@@ -68,7 +69,25 @@ export const createAssistantSlice: StateCreator<
   [],
   [],
   AssistantSlice
-> = (set, get) => ({
+> = (set, get) => {
+  // Helper: persist the current transcript to `agent_chat.json` via
+  // the Tauri command. Fire-and-forget; the command short-circuits
+  // on `storeTraces === false` (D1.M4). Only invoked by mutations
+  // that changed the messages array.
+  const persist = () => {
+    const s = get();
+    void saveAgentChat(
+      {
+        projectPath: s.projectPath,
+        workflowName: s.workflow.name,
+        workflowId: s.workflow.id,
+        storeTraces: s.storeTraces,
+      },
+      s.messages,
+    );
+  };
+
+  return {
   messages: [],
   assistantOpen: false,
   assistantError: null,
@@ -113,6 +132,7 @@ export const createAssistantSlice: StateCreator<
         },
       ],
     }));
+    persist();
   },
 
   pushSystemAnnotation: (content) => {
@@ -128,25 +148,33 @@ export const createAssistantSlice: StateCreator<
         },
       ],
     }));
+    persist();
   },
 
-  clearConversation: () => set({ messages: [] }),
+  clearConversation: () => {
+    set({ messages: [] });
+    persist();
+  },
 
   setMessages: (messages) => set({ messages }),
 
-  mapMessagesByRunIds: (runIds, fn) =>
+  mapMessagesByRunIds: (runIds, fn) => {
     set((s) => ({
       messages: s.messages.map((m) =>
         m.role !== "system" && m.runId && runIds.has(m.runId) ? fn(m) : m,
       ),
-    })),
+    }));
+    persist();
+  },
 
-  dropTurnsByRunIds: (runIds) =>
+  dropTurnsByRunIds: (runIds) => {
     set((s) => ({
       messages: s.messages.filter(
         (m) => m.role === "system" || !m.runId || !runIds.has(m.runId),
       ),
-    })),
+    }));
+    persist();
+  },
 
   clearConversationFlow: async () => {
     const state = get();
@@ -196,4 +224,5 @@ export const createAssistantSlice: StateCreator<
       conversationWipeInProgress = false;
     }
   },
-});
+  };
+};

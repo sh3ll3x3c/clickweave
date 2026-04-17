@@ -7,20 +7,27 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 // Partial-mock the generated bindings: proxy so unrelated slices get
 // their passthrough commands while we observe the ones we care about.
+// The proxy caches per-prop fns so repeat reads return the SAME mock —
+// required for `expect(commands.foo).toHaveBeenCalled()` to observe
+// calls made through separately-imported references.
 vi.mock("../../bindings", async () => {
   const clearAgentConversation = vi.fn(async () => undefined);
   const saveAgentChat = vi.fn(async () => undefined);
-  const noop = () => vi.fn(async () => undefined);
+  const loadAgentChat = vi.fn(async () => ({ status: "ok", data: { messages: [] } }));
+  const explicit: Record<string, unknown> = {
+    clearAgentConversation,
+    saveAgentChat,
+    loadAgentChat,
+  };
+  const cache = new Map<string | symbol, unknown>();
   return {
-    commands: new Proxy(
-      { clearAgentConversation, saveAgentChat },
-      {
-        get(target, prop, receiver) {
-          if (prop in target) return Reflect.get(target, prop, receiver);
-          return noop();
-        },
+    commands: new Proxy(explicit, {
+      get(target, prop) {
+        if (prop in target) return target[prop as string];
+        if (!cache.has(prop)) cache.set(prop, vi.fn(async () => undefined));
+        return cache.get(prop);
       },
-    ),
+    }),
   };
 });
 
@@ -128,6 +135,29 @@ describe("AssistantMessage extensions", () => {
     expect(msgs.some((m) => m.runId === "r1")).toBe(false);
     expect(msgs.some((m) => m.role === "system")).toBe(true);
     expect(msgs.some((m) => m.runId === "r2")).toBe(true);
+  });
+});
+
+describe("agent chat persistence", () => {
+  beforeEach(() => {
+    (commands.saveAgentChat as ReturnType<typeof vi.fn>).mockClear();
+    useStore.setState({ messages: [] });
+  });
+
+  it("calls saveAgentChat after pushAssistantMessage", async () => {
+    useStore.getState().pushAssistantMessage("user", "hello");
+    // Let fire-and-forget save microtasks + the dynamic import in
+    // agentChatPersistence settle.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(commands.saveAgentChat).toHaveBeenCalled();
+  });
+
+  it("calls saveAgentChat after pushSystemAnnotation", async () => {
+    useStore.getState().pushSystemAnnotation("deleted a thing");
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(commands.saveAgentChat).toHaveBeenCalled();
   });
 });
 

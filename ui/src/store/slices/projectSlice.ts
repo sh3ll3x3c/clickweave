@@ -4,6 +4,7 @@ import { commands } from "../../bindings";
 import { makeDefaultWorkflow } from "../state";
 import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
+import { loadAgentChat } from "../agentChatPersistence";
 
 export interface ProjectSlice {
   workflow: Workflow;
@@ -29,6 +30,15 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       console.warn("Cannot open project during execution");
       return;
     }
+    // Cross-project corruption guard (D1.C1 review): a live agent run
+    // against workflow A would keep emitting events into workflow B's
+    // graph/messages if we swapped the project out from under it.
+    if (get().agentStatus === "running") {
+      get().setAssistantError(
+        "Stop the agent before opening another project.",
+      );
+      return;
+    }
     const { pushLog } = get();
     const result = await commands.pickWorkflowFile();
     if (result.status !== "ok" || !result.data) return;
@@ -49,6 +59,17 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     get().clearHistory();
     // Ambiguity resolutions are specific to the prior workflow's nodes.
     get().clearAmbiguityResolutions();
+
+    // Hydrate the per-workflow chat transcript from disk. Best-effort
+    // — missing or malformed files return an empty array.
+    const rehydrated = await loadAgentChat({
+      projectPath: projectResult.data.path,
+      workflowName: projectResult.data.workflow.name,
+      workflowId: projectResult.data.workflow.id,
+    });
+    if (rehydrated.length > 0) {
+      get().setMessages(rehydrated);
+    }
 
     pushLog(`Opened: ${filePath}`);
   },
@@ -74,6 +95,12 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
   newProject: () => {
     if (get().executorState === "running") {
       console.warn("Cannot create new project during execution");
+      return;
+    }
+    if (get().agentStatus === "running") {
+      get().setAssistantError(
+        "Stop the agent before creating a new project.",
+      );
       return;
     }
     const { pushLog } = get();
