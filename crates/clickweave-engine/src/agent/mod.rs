@@ -3,6 +3,7 @@ mod completion_check;
 mod context;
 mod loop_runner;
 pub mod permissions;
+pub mod prior_turns;
 mod prompt;
 mod recovery;
 mod transition;
@@ -10,6 +11,7 @@ mod types;
 
 pub use loop_runner::{AgentRunner, ApprovalGate};
 pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, ToolAnnotations};
+pub use prior_turns::PriorTurn;
 pub use types::*;
 
 use clickweave_llm::ChatBackend;
