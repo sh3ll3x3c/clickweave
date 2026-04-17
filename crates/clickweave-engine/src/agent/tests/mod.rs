@@ -437,10 +437,16 @@ async fn agent_state_reports_max_steps_reason() {
 
 #[tokio::test]
 async fn agent_state_reports_max_errors_reason() {
-    // LLM always chooses click, but MCP always returns errors
+    // LLM always chooses click, but MCP always returns errors.
+    // Each call uses different args so loop detection doesn't fire —
+    // this test exercises the max-consecutive-errors path specifically.
     let responses: Vec<ChatResponse> = (0..10)
         .map(|i| {
-            MockAgent::tool_call_response("click", r#"{"x": 10, "y": 20}"#, &format!("call_{}", i))
+            MockAgent::tool_call_response(
+                "click",
+                &format!(r#"{{"x": {}, "y": 20}}"#, i * 10),
+                &format!("call_{}", i),
+            )
         })
         .collect();
 
@@ -509,6 +515,94 @@ async fn agent_state_reports_max_errors_reason() {
         ),
         "Expected MaxErrorsReached, got {:?}",
         state.terminal_reason,
+    );
+}
+
+/// When the LLM issues the identical (tool, args) call twice in a row and
+/// gets the identical error both times, the loop halts with `LoopDetected`
+/// without burning through the `max_consecutive_errors` budget.
+#[tokio::test]
+async fn agent_state_reports_loop_detected_on_identical_repeat_failure() {
+    let responses: Vec<ChatResponse> = (0..10)
+        .map(|i| {
+            MockAgent::tool_call_response(
+                "click",
+                r#"{}"#, // identical empty args every turn
+                &format!("call_{}", i),
+            )
+        })
+        .collect();
+
+    let agent_llm = MockAgent::new(responses);
+
+    let error_results: Vec<ToolCallResult> = (0..30)
+        .map(|i| {
+            if i % 2 == 0 {
+                ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: serde_json::json!({
+                            "page_url": "https://example.com",
+                            "source": "cdp",
+                            "matches": []
+                        })
+                        .to_string(),
+                    }],
+                    is_error: None,
+                }
+            } else {
+                ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: "click requires exactly one complete coordinate variant".to_string(),
+                    }],
+                    is_error: Some(true),
+                }
+            }
+        })
+        .collect();
+
+    let tools = vec![serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "click",
+            "description": "Click",
+            "parameters": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}, "required": ["x", "y"]}
+        }
+    })];
+    let mcp = MockMcp::new(error_results, tools);
+
+    let config = AgentConfig {
+        max_steps: 30,
+        max_consecutive_errors: 10, // high enough that MaxErrorsReached can't be what fires
+        build_workflow: false,
+        use_cache: false,
+        consecutive_destructive_cap: 0,
+    };
+
+    let mut runner = AgentRunner::new(&agent_llm, config);
+    let workflow = clickweave_core::Workflow::new("Test");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .await
+        .unwrap();
+
+    assert!(!state.completed);
+    assert!(
+        matches!(
+            state.terminal_reason,
+            Some(TerminalReason::LoopDetected { .. })
+        ),
+        "Expected LoopDetected, got {:?}",
+        state.terminal_reason,
+    );
+    // Loop detection fires on the *second* identical failure, so we
+    // should have exactly 2 failing steps — proof that we aborted
+    // early rather than burning through max_consecutive_errors.
+    assert_eq!(
+        state.consecutive_errors, 2,
+        "Expected abort after 2 identical failures, got {}",
+        state.consecutive_errors,
     );
 }
 

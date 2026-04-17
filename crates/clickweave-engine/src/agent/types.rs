@@ -263,6 +263,11 @@ pub enum TerminalReason {
         /// The cap the run was configured with.
         cap: usize,
     },
+    /// The agent invoked the identical (tool, args) pair twice in a row and
+    /// got the identical error back both times. Treated as a deterministic
+    /// loop and halted immediately rather than burning through the
+    /// `max_consecutive_errors` budget on the same failing call.
+    LoopDetected { tool_name: String, error: String },
 }
 
 impl TerminalReason {
@@ -301,6 +306,10 @@ impl TerminalReason {
                 "Halted: reached {} consecutive destructive actions ({})",
                 cap,
                 recent_tool_names.join(", ")
+            ),
+            Self::LoopDetected { tool_name, error } => format!(
+                "Loop detected: `{}` kept returning the same error — {}",
+                tool_name, error
             ),
         }
     }

@@ -38,10 +38,14 @@ Example: to click a button labeled "Submit" with uid [2_3]:
   → call cdp_click with uid="2_3"
 
 If CDP tools are NOT available, use `find_text` to locate the element by label,
-then `click` at the returned coordinates.
+then `click` with the `x` and `y` it returned.
 
-NEVER call `click` with guessed coordinates. NEVER use `take_screenshot` when
-elements are listed in the observation.
+Example: find_text returns `{"x": 553, "y": 1082, ...}` for "Message".
+  → call click with {"x": 553, "y": 1082}  (the `screen` coordinate variant)
+
+NEVER call `click` with empty arguments or guessed coordinates. If find_text
+returned coordinates, pass those exact numbers through to `click`. NEVER use
+`take_screenshot` when elements are listed in the observation.
 
 When NO elements are listed, use `take_screenshot` to see the screen, then
 `find_text` to locate elements by name."#

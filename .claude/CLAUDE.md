@@ -1,15 +1,29 @@
 ## Run Trace Logs
-- **Saved projects:** `<project>/.clickweave/runs/<workflow_name>/<execution_dir>/<node_name>/`
-- **Unsaved projects (macOS):** `~/Library/Application Support/com.clickweave.app/runs/<workflow_name>_<short_uuid>/<execution_dir>/<node_name>/`
-- **Unsaved projects (Windows):** `%APPDATA%\Clickweave\runs\<workflow_name>_<short_uuid>\<execution_dir>\<node_name>\`
-- **Unsaved projects (Linux):** `$XDG_DATA_HOME/clickweave/runs/<workflow_name>_<short_uuid>/<execution_dir>/<node_name>/`
-- `<workflow_name>` — sanitized workflow name (lowercase, dashes)
-- `<execution_dir>` — `YYYY-MM-DD_HH-MM-SS_<short_uuid>` per workflow execution
-- `<node_name>` — sanitized node name (e.g., `launch-calculator/`)
-- `events.jsonl` — newline-delimited trace events (node_started, tool_call, tool_result)
-- `run.json` — run metadata (status, timestamps, trace_level)
-- `artifacts/` — output artifacts from the run
-- **When debugging runtime issues**, always check the most recent run logs first — read `events.jsonl` for each node to understand the actual execution flow before proposing fixes
+
+Workflow dir roots (sanitized workflow name, lowercase with dashes):
+- **Saved projects:** `<project>/.clickweave/runs/<workflow_name>/`
+- **Unsaved projects (macOS):** `~/Library/Application Support/com.clickweave.app/runs/<workflow_name>_<short_uuid>/`
+- **Unsaved projects (Windows):** `%APPDATA%\Clickweave\runs\<workflow_name>_<short_uuid>\`
+- **Unsaved projects (Linux):** `$XDG_DATA_HOME/clickweave/runs/<workflow_name>_<short_uuid>/`
+
+Layout under the workflow dir:
+```
+<workflow_dir>/
+  decisions.json            ← workflow-level decision cache
+  agent_cache.json          ← workflow-level agent decision cache (persists across runs)
+  variant_index.jsonl       ← workflow-level variant index (one line per execution)
+  <execution_dir>/          ← YYYY-MM-DD_HH-MM-SS_<short_uuid>, one per workflow execution
+    events.jsonl            ← execution-level events: agent step events (step_completed, step_failed) + control-flow (branch_evaluated, loop_iteration)
+    <node_name>/            ← sanitized node name (e.g. launch-calculator/)
+      run.json              ← run metadata (status, timestamps, trace_level)
+      events.jsonl          ← node-level trace events (node_started, tool_call, tool_result)
+      verdict.json          ← optional, written by save_node_verdict (check outcome)
+      artifacts/             ← output artifacts from this node run
+```
+
+- Authoritative source: `crates/clickweave-core/src/storage.rs` (`RunStorage`)
+- **When debugging runtime issues**, always check the most recent run logs first. Start with the execution-level `events.jsonl` for the agent/step-level narrative, then drop into each `<node_name>/events.jsonl` for tool-level detail.
+- If an execution dir has no `<node_name>/` subdir, the agent failed before any node run was created — the exec-level `events.jsonl` is the only trace.
 
 ## Walkthrough Session Logs
 - **Saved projects:** `<project>/.clickweave/walkthroughs/<session_dir>/`

@@ -315,6 +315,11 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
         let mut previous_result: Option<String> = None;
         let mut last_cache_key: Option<String> = None;
+        // Tracks the most recent failing (tool_name, args, error) so we can
+        // detect the LLM looping on the identical failing call. The cache
+        // replay path can also populate this; anything that clears the
+        // failure streak (success, replan, completion) resets it to None.
+        let mut last_failure: Option<(String, Value, String)> = None;
 
         for step_index in 0..self.config.max_steps {
             if self.state.completed {
@@ -521,6 +526,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 };
                                 self.state.steps.push(step);
                                 self.state.consecutive_errors = 0;
+                                last_failure = None;
                                 previous_result = Some(result_text);
                                 last_cache_key = Some(current_key);
 
@@ -650,6 +656,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             match &outcome {
                 StepOutcome::Success(result_text) => {
                     self.state.consecutive_errors = 0;
+                    last_failure = None;
                     previous_result = Some(result_text.clone());
 
                     self.emit_event(AgentEvent::StepCompleted {
@@ -702,6 +709,44 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         error: err.clone(),
                     })
                     .await;
+
+                    // Loop detection: if the LLM just issued the identical
+                    // (tool, args) call and got the identical error back,
+                    // halt with LoopDetected instead of letting it chew
+                    // through the max-consecutive-errors budget on the
+                    // same broken call. The MCP tool error already tells
+                    // the LLM what's missing — another round won't help.
+                    if let AgentCommand::ToolCall {
+                        tool_name,
+                        arguments,
+                        ..
+                    } = &command
+                    {
+                        let looped = matches!(
+                            &last_failure,
+                            Some((prev_tool, prev_args, prev_err))
+                                if prev_tool == tool_name
+                                    && prev_args == arguments
+                                    && prev_err == err
+                        );
+                        if looped {
+                            warn!(
+                                tool = %tool_name,
+                                error = %err,
+                                "Identical failing tool call repeated — aborting"
+                            );
+                            self.state.terminal_reason = Some(TerminalReason::LoopDetected {
+                                tool_name: tool_name.clone(),
+                                error: err.clone(),
+                            });
+                            break;
+                        }
+                        last_failure = Some((tool_name.clone(), arguments.clone(), err.clone()));
+                    } else {
+                        // Non-tool-call error (e.g. text-only response);
+                        // don't count that toward identical-loop detection.
+                        last_failure = None;
+                    }
 
                     let action = recovery::recovery_strategy(
                         self.state.consecutive_errors,
