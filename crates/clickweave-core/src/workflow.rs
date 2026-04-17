@@ -59,6 +59,13 @@ pub struct Node {
     #[serde(default)]
     pub role: NodeRole,
     pub expected_outcome: Option<String>,
+    /// Provenance stamp: the agent generation ID that produced this node.
+    /// `None` for nodes added by the user, by deterministic walkthrough
+    /// synthesis, or loaded from a pre-upgrade workflow file. Used by
+    /// Clear-conversation and selective-delete to scope operations to
+    /// agent-built nodes only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -107,7 +114,14 @@ impl Node {
             trace_level: TraceLevel::Minimal,
             role: NodeRole::Default,
             expected_outcome: None,
+            source_run_id: None,
         }
+    }
+
+    /// Stamp a run-id provenance onto this node, consuming self.
+    pub fn with_run_id(mut self, run_id: Uuid) -> Self {
+        self.source_run_id = Some(run_id);
+        self
     }
 }
 
@@ -875,5 +889,56 @@ mod tests {
         let node_b = wf.find_node(b).unwrap();
         assert_eq!(node_a.auto_id, "find_text_1");
         assert_eq!(node_b.auto_id, "find_text_2");
+    }
+}
+
+#[cfg(test)]
+mod node_provenance_tests {
+    use super::*;
+    use crate::node_params::CdpWaitParams;
+
+    #[test]
+    fn node_new_source_run_id_is_none() {
+        let node = Node::new(
+            NodeType::CdpWait(CdpWaitParams::default()),
+            Position { x: 0.0, y: 0.0 },
+            "test",
+            "",
+        );
+        assert!(node.source_run_id.is_none());
+    }
+
+    #[test]
+    fn node_missing_source_run_id_deserializes_as_none() {
+        // Legacy workflows on disk have no `source_run_id` field.
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "node_type": { "type": "CdpWait", "text": "", "timeout_ms": 1000 },
+            "position": { "x": 0.0, "y": 0.0 },
+            "name": "legacy",
+            "enabled": true,
+            "timeout_ms": null,
+            "settle_ms": null,
+            "retries": 0,
+            "trace_level": "Minimal"
+        }"#;
+        let node: Node = serde_json::from_str(json).expect("parse");
+        assert!(
+            node.source_run_id.is_none(),
+            "legacy nodes must deserialize with source_run_id = None"
+        );
+    }
+
+    #[test]
+    fn with_run_id_sets_field() {
+        let node = Node::new(
+            NodeType::CdpWait(CdpWaitParams::default()),
+            Position { x: 0.0, y: 0.0 },
+            "t",
+            "",
+        );
+        let run_id = Uuid::new_v4();
+        let stamped = node.with_run_id(run_id);
+        assert_eq!(stamped.source_run_id, Some(run_id));
     }
 }
