@@ -19,11 +19,20 @@ function workflowNode(id: string, selected = false): RFNode {
   return rfNode(id, "workflow", selected);
 }
 
-function renderHandler(initialRfNodes: RFNode[]) {
+interface RenderOverrides {
+  agentStatus?: "idle" | "running" | "complete" | "stopped" | "error";
+  onRejectDuringRun?: () => void;
+}
+
+function renderHandler(
+  initialRfNodes: RFNode[],
+  overrides: RenderOverrides = {},
+) {
   const onSelectNode = vi.fn<(id: string | null) => void>();
   const onCanvasSelectionChange = vi.fn<(has: boolean) => void>();
   const onNodePositionsChange = vi.fn();
   const onDeleteNodes = vi.fn();
+  const onRejectDuringRun = overrides.onRejectDuringRun ?? vi.fn();
 
   const wf = makeWorkflow(
     initialRfNodes
@@ -52,11 +61,20 @@ function renderHandler(initialRfNodes: RFNode[]) {
       onNodePositionsChange,
       onDeleteNodes,
       setRfNodes,
+      agentStatus: overrides.agentStatus ?? "idle",
+      onRejectDuringRun,
     });
     return { handler, rfNodes, selectionFromCanvasRef };
   });
 
-  return { hook, onSelectNode, onCanvasSelectionChange, onNodePositionsChange, onDeleteNodes };
+  return {
+    hook,
+    onSelectNode,
+    onCanvasSelectionChange,
+    onNodePositionsChange,
+    onDeleteNodes,
+    onRejectDuringRun,
+  };
 }
 
 // Dispatch changes through the handler inside act() so React state updates
@@ -202,5 +220,63 @@ describe("useNodeChangeHandler — selection resolution", () => {
     await dispatch(hook.result.current.handler, changes);
 
     expect(hook.result.current.selectionFromCanvasRef.current).toBe(true);
+  });
+});
+
+describe("useNodeChangeHandler — mid-run delete gate", () => {
+  it("rejects remove changes while agentStatus is running", async () => {
+    const { hook, onDeleteNodes, onRejectDuringRun } = renderHandler(
+      [workflowNode("a")],
+      { agentStatus: "running" },
+    );
+
+    const changes: NodeChange[] = [{ type: "remove", id: "a" }];
+    await dispatch(hook.result.current.handler, changes);
+
+    expect(onDeleteNodes).not.toHaveBeenCalled();
+    expect(onRejectDuringRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows remove changes when agentStatus is idle", async () => {
+    const { hook, onDeleteNodes, onRejectDuringRun } = renderHandler(
+      [workflowNode("a")],
+      { agentStatus: "idle" },
+    );
+
+    const changes: NodeChange[] = [{ type: "remove", id: "a" }];
+    await dispatch(hook.result.current.handler, changes);
+
+    expect(onDeleteNodes).toHaveBeenCalledWith(["a"]);
+    expect(onRejectDuringRun).not.toHaveBeenCalled();
+  });
+
+  it("allows remove changes when agentStatus is complete", async () => {
+    const { hook, onDeleteNodes, onRejectDuringRun } = renderHandler(
+      [workflowNode("a")],
+      { agentStatus: "complete" },
+    );
+
+    const changes: NodeChange[] = [{ type: "remove", id: "a" }];
+    await dispatch(hook.result.current.handler, changes);
+
+    expect(onDeleteNodes).toHaveBeenCalledWith(["a"]);
+    expect(onRejectDuringRun).not.toHaveBeenCalled();
+  });
+
+  it("allows non-remove changes while agentStatus is running", async () => {
+    const { hook, onNodePositionsChange, onRejectDuringRun } = renderHandler(
+      [workflowNode("a")],
+      { agentStatus: "running" },
+    );
+
+    // Position changes should still flow through — the gate only
+    // blocks graph-shape mutations that would fight with the engine.
+    const changes: NodeChange[] = [
+      { type: "position", id: "a", position: { x: 10, y: 20 } },
+    ];
+    await dispatch(hook.result.current.handler, changes);
+
+    expect(onNodePositionsChange).toHaveBeenCalledTimes(1);
+    expect(onRejectDuringRun).not.toHaveBeenCalled();
   });
 });

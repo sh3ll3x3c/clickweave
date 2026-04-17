@@ -31,6 +31,15 @@ interface UseNodeChangeHandlerParams {
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
   setRfNodes: Dispatch<SetStateAction<RFNode[]>>;
+  /**
+   * Live agent status. When `"running"`, the mid-run delete gate
+   * rejects any `remove` changes and invokes `onRejectDuringRun`
+   * instead of mutating the workflow. Any other status allows deletion
+   * normally.
+   */
+  agentStatus: "idle" | "running" | "complete" | "stopped" | "error";
+  /** Called when a delete request is rejected because the agent is running. */
+  onRejectDuringRun: () => void;
 }
 
 /**
@@ -54,9 +63,22 @@ export function useNodeChangeHandler({
   onNodePositionsChange,
   onDeleteNodes,
   setRfNodes,
+  agentStatus,
+  onRejectDuringRun,
 }: UseNodeChangeHandlerParams): OnNodesChange {
   return useCallback(
     (changes) => {
+      // Mid-run delete gate (D1.H3): block graph mutations while the
+      // agent is running so the engine's in-memory state and the
+      // about-to-be-persisted cache aren't contradicted by a
+      // concurrent user delete. The gate only fires for `remove`
+      // changes — position/selection/dimension edits stay live.
+      const hasRemove = changes.some((c) => c.type === "remove");
+      if (hasRemove && agentStatus === "running") {
+        onRejectDuringRun();
+        return;
+      }
+
       let removeIds: string[] = [];
       for (const change of changes) {
         if (change.type === "remove") removeIds.push(change.id);
@@ -267,6 +289,6 @@ export function useNodeChangeHandler({
         return updatedNodes;
       });
     },
-    [onNodePositionsChange, onSelectNode, onCanvasSelectionChange, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef],
+    [onNodePositionsChange, onSelectNode, onCanvasSelectionChange, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef, agentStatus, onRejectDuringRun],
   );
 }

@@ -22,6 +22,7 @@ import { GroupContextMenu, type GroupContextMenuItem } from "./GroupContextMenu"
 import { CreateGroupPopover } from "./CreateGroupPopover";
 import { validateGroupCreation, topologicalSortMembers, expandCollapsedSelection } from "../utils/groupValidation";
 import { isTextInput } from "../hooks/useUndoRedoKeyboard";
+import { useStore } from "../store/useAppStore";
 
 interface GraphCanvasProps {
   workflow: Workflow;
@@ -79,6 +80,19 @@ export function GraphCanvas({
   const appState = useAppGrouping(workflow);
   const userGroupState = useUserGrouping(workflow);
 
+  // Mid-run delete gate: read `agentStatus` + expose an inline reject
+  // callback so the useNodeSync hook can reject user deletions while
+  // the agent is still mutating the graph.
+  const agentStatus = useStore((s) => s.agentStatus);
+  const setAssistantError = useStore((s) => s.setAssistantError);
+  const handleRejectDeleteDuringRun = useCallback(() => {
+    setAssistantError(
+      "Cannot modify the graph while the agent is running — stop it first.",
+    );
+    // Clear after 4s so the banner doesn't sit on screen permanently.
+    window.setTimeout(() => setAssistantError(null), 4000);
+  }, [setAssistantError]);
+
   // Inline rename state — declared before useNodeSync so it can be passed in
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
 
@@ -116,6 +130,8 @@ export function GraphCanvas({
     onNodePositionsChange,
     onDeleteNodes,
     onBeforeNodeDrag,
+    agentStatus,
+    onRejectDeleteDuringRun: handleRejectDeleteDuringRun,
   });
 
   // Ref for rfNodes so callbacks/effects can read current value without re-subscribing

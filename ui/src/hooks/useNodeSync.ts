@@ -33,6 +33,9 @@ interface UseNodeSyncParams {
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
   onBeforeNodeDrag?: () => void;
+  /** Mid-run delete gate (D1.H3). Passed through to the change handler. */
+  agentStatus: "idle" | "running" | "complete" | "stopped" | "error";
+  onRejectDeleteDuringRun: () => void;
 }
 
 export function useNodeSync({
@@ -57,6 +60,8 @@ export function useNodeSync({
   onNodePositionsChange,
   onDeleteNodes,
   onBeforeNodeDrag,
+  agentStatus,
+  onRejectDeleteDuringRun,
 }: UseNodeSyncParams) {
   const [rfNodes, setRfNodes] = useState<RFNode[]>([]);
   const selectionFromCanvasRef = useRef(false);
@@ -135,6 +140,8 @@ export function useNodeSync({
     onNodePositionsChange,
     onDeleteNodes,
     setRfNodes,
+    agentStatus,
+    onRejectDuringRun: onRejectDeleteDuringRun,
   });
 
   const handleNodeDragStart = useCallback(() => {
