@@ -408,6 +408,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compaction_preserves_prior_turn_log_embedded_in_goal() {
+        // Goal message carries a prior-turn log inlined above the current
+        // goal (as produced by `prior_turns::build_goal_with_prior_turns`).
+        // Compaction must preserve messages[1] verbatim so the log survives.
+        let goal_body = "Previous conversation:\n- Turn 1: \"A\" -> completed.\nCurrent goal: do X";
+        let mut messages = vec![Message::system("System prompt"), Message::user(goal_body)];
+        let mut steps = Vec::new();
+        for i in 0..20 {
+            messages.push(Message::user(format!(
+                "observation {}: {}",
+                i,
+                "x".repeat(400)
+            )));
+            messages.push(Message::assistant(format!("step {} thinking", i)));
+            messages.push(Message::tool_result(format!("call_{}", i), "ok"));
+            steps.push(make_step(i));
+        }
+
+        let compacted =
+            compact_step_summaries(&messages, &steps, 100, 2).expect("compaction should fire");
+
+        let goal_msg = &compacted[1];
+        let text = goal_msg.content_text().expect("goal message must be text");
+        assert!(
+            text.contains("Previous conversation"),
+            "prior-turn log must stay inside the preserved goal message"
+        );
+        assert!(text.contains("Current goal"));
+    }
+
     // -----------------------------------------------------------------
     // Supersession tests
     // -----------------------------------------------------------------
