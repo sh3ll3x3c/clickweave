@@ -391,6 +391,102 @@ describe("agentSlice.cancelDisagreement", () => {
 });
 
 
+describe("confirmDisagreementAsComplete — active-gate preservation", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+  });
+
+  it("keeps completionDisagreement non-null while the resolver is in flight", async () => {
+    useStore.getState().setCompletionDisagreement({
+      screenshotBase64: "abc",
+      vlmReasoning: "r",
+      agentSummary: "s",
+    });
+    useStore.getState().setAgentStatus("stopped");
+
+    let disagreementDuringInvoke: unknown = "NOT-CHECKED";
+    invokeMock.mockImplementationOnce(async () => {
+      // The backend is still writing cache/variant-index entries —
+      // the UI MUST still advertise the agent as active so project
+      // switches, deletes, and Clear-conversation don't race the
+      // final writes. Clearing the card before the await resolves
+      // would reopen those gates too early.
+      disagreementDuringInvoke =
+        useStore.getState().completionDisagreement;
+    });
+
+    await useStore.getState().confirmDisagreementAsComplete();
+
+    expect(disagreementDuringInvoke).not.toBeNull();
+    // Card is dismissed after the resolver returns.
+    expect(useStore.getState().completionDisagreement).toBeNull();
+  });
+});
+
+describe("cancelDisagreement — active-gate preservation", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+  });
+
+  it("keeps completionDisagreement non-null while the resolver is in flight", async () => {
+    useStore.getState().setCompletionDisagreement({
+      screenshotBase64: "abc",
+      vlmReasoning: "r",
+      agentSummary: "s",
+    });
+    useStore.getState().setAgentStatus("stopped");
+
+    let disagreementDuringInvoke: unknown = "NOT-CHECKED";
+    invokeMock.mockImplementationOnce(async () => {
+      disagreementDuringInvoke =
+        useStore.getState().completionDisagreement;
+    });
+
+    await useStore.getState().cancelDisagreement();
+
+    expect(disagreementDuringInvoke).not.toBeNull();
+    expect(useStore.getState().completionDisagreement).toBeNull();
+  });
+});
+
+describe("startAgent — blocked during pending completion-disagreement", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+    useStore.setState({ messages: [] });
+  });
+
+  it("does not optimistically reset state when a disagreement resolver is pending", async () => {
+    // Simulate: agent emitted disagreement, UI flipped status to
+    // "stopped" per useAgentEvents. The backend task is still alive
+    // waiting on `resolve_completion_disagreement`. A user now tries
+    // to send a new prompt — `startAgent` must treat this as "wasActive"
+    // to avoid wiping the live run's state and leaving a stray user
+    // bubble behind.
+    useStore.getState().setAgentRunId("run-prior");
+    useStore.getState().setAgentStatus("stopped");
+    useStore.getState().setCompletionDisagreement({
+      screenshotBase64: "",
+      vlmReasoning: "",
+      agentSummary: "",
+    });
+    invokeMock.mockRejectedValueOnce({
+      kind: "AlreadyRunning",
+      message: "Already running",
+    });
+
+    await useStore.getState().startAgent("follow-up prompt");
+
+    const state = useStore.getState();
+    expect(state.agentRunId).toBe("run-prior");
+    expect(state.completionDisagreement).not.toBeNull();
+    // Most importantly: no stray user bubble was pushed.
+    expect(state.messages).toEqual([]);
+  });
+});
+
 describe("isAgentActive", () => {
   it("is true when status is running", async () => {
     const { isAgentActive } = await import("./agentSlice");

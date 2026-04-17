@@ -291,14 +291,22 @@ export function AssistantPanel({
         </div>
       )}
 
-      {/* Input */}
+      {/* Input — hidden while the agent is running OR while a VLM
+          completion-disagreement resolver is pending. In the
+          disagreement window the backend task is still alive and
+          owns the workflow's cache/variant-index writes, so a new
+          `startAgent` would race its final writes. The resolver's
+          Confirm/Cancel buttons live in the disagreement card
+          above. */}
       <div className="border-t border-[var(--border)] px-3 py-3">
-        {agentRunning ? (
+        {agentActive ? (
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent-coral)] border-t-transparent" />
               <span className="text-xs text-[var(--text-secondary)]">
-                Agent running...
+                {agentRunning
+                  ? "Agent running..."
+                  : "Awaiting completion decision..."}
               </span>
             </div>
             <button
