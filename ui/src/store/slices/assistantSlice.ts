@@ -1,6 +1,16 @@
 import type { StateCreator } from "zustand";
 import { isWalkthroughActive } from "./walkthroughSlice";
 import type { StoreState } from "./types";
+import { commands } from "../../bindings";
+
+// Flag consumed by `saveAgentChat` in `agentChatPersistence.ts` to
+// short-circuit writes after Clear begins but before the file is
+// removed. Module-scoped so fire-and-forget `void saveAgentChat(...)`
+// callers see the latest value when their promise runs.
+let conversationWipeInProgress = false;
+export function isConversationWipeInProgress(): boolean {
+  return conversationWipeInProgress;
+}
 
 export interface AssistantMessage {
   role: "user" | "assistant" | "system";
@@ -45,6 +55,12 @@ export interface AssistantSlice {
   ) => void;
   /** Drop user/assistant messages whose runId is in `runIds`. System annotations survive. */
   dropTurnsByRunIds: (runIds: Set<string>) => void;
+  /**
+   * Full Clear-conversation flow (D1.C1): delete every agent-built
+   * node, wipe the cache + variant-index + transcript files via the
+   * Tauri command, and empty the local messages array. Not undoable.
+   */
+  clearConversationFlow: () => Promise<void>;
 }
 
 export const createAssistantSlice: StateCreator<
@@ -131,4 +147,53 @@ export const createAssistantSlice: StateCreator<
         (m) => m.role === "system" || !m.runId || !runIds.has(m.runId),
       ),
     })),
+
+  clearConversationFlow: async () => {
+    const state = get();
+    const agentNodeIds = state.workflow.nodes
+      .filter(
+        (n) =>
+          (n as { source_run_id?: string | null }).source_run_id != null,
+      )
+      .map((n) => n.id);
+
+    // (1) Remove agent nodes from the workflow WITHOUT a history push
+    //     (D1.C1 — Clear is not undoable; writing a history entry here
+    //     would resurrect deleted nodes via Cmd+Z while the cache/
+    //     variant/transcript files stay wiped).
+    if (agentNodeIds.length > 0) {
+      const idSet = new Set(agentNodeIds);
+      state.setWorkflow({
+        ...state.workflow,
+        nodes: state.workflow.nodes.filter((n) => !idSet.has(n.id)),
+        edges: state.workflow.edges.filter(
+          (e) => !idSet.has(e.from) && !idSet.has(e.to),
+        ),
+      });
+      // Also clear history stacks so Cmd+Z cannot partial-undo the
+      // graph mutation we just performed.
+      state.clearHistory();
+    }
+
+    // (2) Wipe messages in memory before the file wipe so any
+    //     concurrent saveAgentChat has nothing to replay. The flag
+    //     short-circuits any in-flight save that races this call.
+    conversationWipeInProgress = true;
+    set({ messages: [] });
+
+    // (3) Wipe files on disk. Respects `store_traces` privacy flag
+    //     inside the command body (D1.M4).
+    try {
+      await commands.clearAgentConversation({
+        project_path: state.projectPath,
+        workflow_name: state.workflow.name,
+        workflow_id: state.workflow.id,
+        store_traces: state.storeTraces,
+      });
+    } catch (e) {
+      state.setAssistantError(`Failed to clear conversation: ${String(e)}`);
+    } finally {
+      conversationWipeInProgress = false;
+    }
+  },
 });

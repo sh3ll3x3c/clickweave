@@ -5,7 +5,27 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+// Partial-mock the generated bindings: proxy so unrelated slices get
+// their passthrough commands while we observe the ones we care about.
+vi.mock("../../bindings", async () => {
+  const clearAgentConversation = vi.fn(async () => undefined);
+  const saveAgentChat = vi.fn(async () => undefined);
+  const noop = () => vi.fn(async () => undefined);
+  return {
+    commands: new Proxy(
+      { clearAgentConversation, saveAgentChat },
+      {
+        get(target, prop, receiver) {
+          if (prop in target) return Reflect.get(target, prop, receiver);
+          return noop();
+        },
+      },
+    ),
+  };
+});
+
 import { useStore } from "../useAppStore";
+import { commands } from "../../bindings";
 
 describe("assistantSlice.pushAssistantMessage", () => {
   beforeEach(() => {
@@ -108,5 +128,69 @@ describe("AssistantMessage extensions", () => {
     expect(msgs.some((m) => m.runId === "r1")).toBe(false);
     expect(msgs.some((m) => m.role === "system")).toBe(true);
     expect(msgs.some((m) => m.runId === "r2")).toBe(true);
+  });
+});
+
+describe("clearConversationFlow", () => {
+  beforeEach(() => {
+    (commands.clearAgentConversation as ReturnType<typeof vi.fn>).mockClear();
+    useStore.setState({
+      messages: [],
+      workflow: {
+        id: "00000000-0000-0000-0000-000000000001",
+        name: "wf",
+        nodes: [
+          {
+            id: "n1",
+            name: "cdp_click",
+            node_type: { type: "CdpWait", text: "", timeout_ms: 1000 },
+            position: { x: 0, y: 0 },
+            enabled: true,
+            timeout_ms: null,
+            settle_ms: null,
+            retries: 0,
+            trace_level: "Minimal",
+            role: "Default",
+            expected_outcome: null,
+            auto_id: "",
+            source_run_id: "r1",
+          },
+          {
+            id: "n2",
+            name: "user_added",
+            node_type: { type: "CdpWait", text: "", timeout_ms: 1000 },
+            position: { x: 0, y: 0 },
+            enabled: true,
+            timeout_ms: null,
+            settle_ms: null,
+            retries: 0,
+            trace_level: "Minimal",
+            role: "Default",
+            expected_outcome: null,
+            auto_id: "",
+          },
+        ],
+        edges: [],
+        groups: [],
+        next_id_counters: {},
+        intent: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      projectPath: null,
+      storeTraces: true,
+    });
+  });
+
+  it("wipes messages, removes agent-built nodes, and calls clearAgentConversation", async () => {
+    useStore.getState().pushAssistantMessage("user", "goal", "r1");
+    useStore.getState().pushAssistantMessage("assistant", "summary", "r1");
+
+    await useStore.getState().clearConversationFlow();
+
+    expect(useStore.getState().messages).toEqual([]);
+    const remainingNodes = useStore.getState().workflow.nodes;
+    expect(remainingNodes).toHaveLength(1);
+    expect(remainingNodes[0].id).toBe("n2");
+    expect(commands.clearAgentConversation).toHaveBeenCalled();
   });
 });

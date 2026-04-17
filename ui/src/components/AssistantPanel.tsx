@@ -4,6 +4,7 @@ import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import { useStore } from "../store/useAppStore";
 import { AmbiguityResolutionCard } from "./AmbiguityResolutionCard";
 import { AmbiguityResolutionModal } from "./AmbiguityResolutionModal";
+import { ConfirmClearConversationModal } from "./ConfirmClearConversationModal";
 
 interface AssistantPanelProps {
   open: boolean;
@@ -45,9 +46,18 @@ export function AssistantPanel({
   const activeAmbiguityId = useStore((s) => s.activeAmbiguityId);
   const openAmbiguityModal = useStore((s) => s.openAmbiguityModal);
   const closeAmbiguityModal = useStore((s) => s.closeAmbiguityModal);
+  const clearConversationFlow = useStore((s) => s.clearConversationFlow);
+  const agentNodeCount = useStore(
+    (s) =>
+      s.workflow.nodes.filter(
+        (n) =>
+          (n as { source_run_id?: string | null }).source_run_id != null,
+      ).length,
+  );
   const activeAmbiguity =
     ambiguityResolutions.find((r) => r.id === activeAmbiguityId) ?? null;
   const agentRunning = agentStatus === "running";
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -97,6 +107,15 @@ export function AssistantPanel({
           </h2>
         </div>
         <div className="flex items-center gap-1">
+          {(messages.length > 0 || agentNodeCount > 0) && !agentRunning && (
+            <button
+              onClick={() => setConfirmClearOpen(true)}
+              className="rounded px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+              title="Clear the conversation and remove agent-built nodes"
+            >
+              Clear
+            </button>
+          )}
           <button
             onClick={onClose}
             className="rounded px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
@@ -122,6 +141,18 @@ export function AssistantPanel({
 
         <div className="space-y-3">
           {messages.map((entry, idx) => {
+            if (entry.role === "system") {
+              return (
+                <div
+                  key={`${entry.timestamp}-${idx}`}
+                  className="flex justify-center"
+                >
+                  <div className="max-w-[70%] rounded border border-[var(--accent-blue)]/60 bg-[var(--accent-blue)]/10 px-2 py-1 text-center text-[11px] text-[var(--text-secondary)]">
+                    {entry.content}
+                  </div>
+                </div>
+              );
+            }
             const isUser = entry.role === "user";
             return (
               <div
@@ -311,6 +342,15 @@ export function AssistantPanel({
         onClose={closeAmbiguityModal}
       />
     )}
+    <ConfirmClearConversationModal
+      open={confirmClearOpen}
+      agentNodeCount={agentNodeCount}
+      onConfirm={async () => {
+        setConfirmClearOpen(false);
+        await clearConversationFlow();
+      }}
+      onCancel={() => setConfirmClearOpen(false)}
+    />
     </>
   );
 }
