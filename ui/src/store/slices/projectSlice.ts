@@ -5,6 +5,7 @@ import { makeDefaultWorkflow } from "../state";
 import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 import { loadAgentChat } from "../agentChatPersistence";
+import { isAgentActive } from "./agentSlice";
 
 export interface ProjectSlice {
   workflow: Workflow;
@@ -33,7 +34,10 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     // Cross-project corruption guard (D1.C1 review): a live agent run
     // against workflow A would keep emitting events into workflow B's
     // graph/messages if we swapped the project out from under it.
-    if (get().agentStatus === "running") {
+    // Also block while a VLM completion-disagreement resolver is
+    // pending — the backend task still owns this workflow's cache +
+    // variant-index writes until the operator resolves.
+    if (isAgentActive(get().agentStatus, get().completionDisagreement)) {
       get().setAssistantError(
         "Stop the agent before opening another project.",
       );
@@ -97,7 +101,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       console.warn("Cannot create new project during execution");
       return;
     }
-    if (get().agentStatus === "running") {
+    if (isAgentActive(get().agentStatus, get().completionDisagreement)) {
       get().setAssistantError(
         "Stop the agent before creating a new project.",
       );

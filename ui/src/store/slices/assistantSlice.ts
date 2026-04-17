@@ -3,6 +3,7 @@ import { isWalkthroughActive } from "./walkthroughSlice";
 import type { StoreState } from "./types";
 import { commands } from "../../bindings";
 import { saveAgentChat } from "../agentChatPersistence";
+import { autoDissolveGroups } from "../useWorkflowMutations";
 
 // Flag consumed by `saveAgentChat` in `agentChatPersistence.ts` to
 // short-circuit writes after Clear begins but before the file is
@@ -185,15 +186,24 @@ export const createAssistantSlice: StateCreator<
     // (1) Remove agent nodes from the workflow WITHOUT a history push
     //     (D1.C1 — Clear is not undoable; writing a history entry here
     //     would resurrect deleted nodes via Cmd+Z while the cache/
-    //     variant/transcript files stay wiped).
+    //     variant/transcript files stay wiped). Also strip deleted
+    //     ids from any user groups and auto-dissolve groups that
+    //     drop below their minimum membership — otherwise user-group
+    //     metadata keeps referencing nodes that no longer exist and
+    //     the canvas renders ghost/empty group containers.
     if (agentNodeIds.length > 0) {
       const idSet = new Set(agentNodeIds);
+      const updatedGroups = (state.workflow.groups ?? []).map((g) => ({
+        ...g,
+        node_ids: g.node_ids.filter((id) => !idSet.has(id)),
+      }));
       state.setWorkflow({
         ...state.workflow,
         nodes: state.workflow.nodes.filter((n) => !idSet.has(n.id)),
         edges: state.workflow.edges.filter(
           (e) => !idSet.has(e.from) && !idSet.has(e.to),
         ),
+        groups: autoDissolveGroups(updatedGroups),
       });
       // Also clear history stacks so Cmd+Z cannot partial-undo the
       // graph mutation we just performed.

@@ -91,6 +91,23 @@ export interface ConsecutiveDestructiveCapHit {
  * backend expects. Rules and the per-tool map are both forwarded; the
  * engine merges them into one rule list before evaluating.
  */
+/**
+ * True when the backend agent task is still alive — either the loop
+ * is actively running, or it has halted on a `CompletionDisagreement`
+ * and is waiting on `resolve_completion_disagreement`. During the
+ * disagreement window the Tauri task still owns the cache /
+ * variant-index / events writes for the current workflow, so gates
+ * that prevent cross-project corruption (D1.C1), concurrent graph
+ * mutation (D1.H3), and clear-conversation file races must honor
+ * this broader signal — not just `agentStatus === "running"`.
+ */
+export function isAgentActive(
+  agentStatus: AgentStatus,
+  completionDisagreement: CompletionDisagreement | null,
+): boolean {
+  return agentStatus === "running" || completionDisagreement != null;
+}
+
 export function toPermissionPolicyWire(perms: ToolPermissions) {
   return {
     allow_all: perms.allowAll,

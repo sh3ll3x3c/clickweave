@@ -5,6 +5,7 @@ import { useStore } from "../store/useAppStore";
 import { AmbiguityResolutionCard } from "./AmbiguityResolutionCard";
 import { AmbiguityResolutionModal } from "./AmbiguityResolutionModal";
 import { ConfirmClearConversationModal } from "./ConfirmClearConversationModal";
+import { isAgentActive } from "../store/slices/agentSlice";
 
 interface AssistantPanelProps {
   open: boolean;
@@ -53,6 +54,9 @@ export function AssistantPanel({
   const activeAmbiguity =
     ambiguityResolutions.find((r) => r.id === activeAmbiguityId) ?? null;
   const agentRunning = agentStatus === "running";
+  // Broader "active" check for features that must not race the
+  // backend task — includes the VLM-disagreement resolver window.
+  const agentActive = isAgentActive(agentStatus, completionDisagreement);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   // Auto-scroll to bottom when messages change
@@ -103,7 +107,7 @@ export function AssistantPanel({
           </h2>
         </div>
         <div className="flex items-center gap-1">
-          {(messages.length > 0 || agentNodeCount > 0) && !agentRunning && (
+          {(messages.length > 0 || agentNodeCount > 0) && !agentActive && (
             <button
               onClick={() => setConfirmClearOpen(true)}
               className="rounded px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"

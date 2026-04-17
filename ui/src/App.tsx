@@ -20,7 +20,10 @@ import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 import { useWorkflowActions } from "./hooks/useWorkflowActions";
 import { useExecutorEvents } from "./hooks/useExecutorEvents";
 import { buildAppKindMap } from "./hooks/useNodeSync";
-import { useHandleDeleteNodes } from "./hooks/useHandleDeleteNodes";
+import {
+  useHandleDeleteGroupWithContents,
+  useHandleDeleteNodes,
+} from "./hooks/useHandleDeleteNodes";
 import { isWalkthroughBusy } from "./store/slices/walkthroughSlice";
 
 function App() {
@@ -142,7 +145,12 @@ function App() {
 
   // Conversational side-effects: prune cache, annotate, redact on
   // agent-node deletion. User-owned nodes fall through untouched.
+  // Both paths (plain delete + group+contents delete) wrap the raw
+  // mutator so grouped deletions can't escape the contract.
   const handleDeleteNodes = useHandleDeleteNodes(removeNodes);
+  const handleDeleteGroupWithContents = useHandleDeleteGroupWithContents(
+    deleteGroupWithContents,
+  );
 
   // ── Derived state ────────────────────────────────────────────────
   const selectedNodeData = useMemo(
@@ -237,7 +245,7 @@ function App() {
                   onBeforeNodeDrag={() => pushHistory("Move Nodes")}
                   onCreateGroup={createGroup}
                   onRemoveGroup={removeGroup}
-                  onDeleteGroupWithContents={deleteGroupWithContents}
+                  onDeleteGroupWithContents={handleDeleteGroupWithContents}
                   onRenameGroup={renameGroup}
                   onRecolorGroup={recolorGroup}
                   onAddNodesToGroup={addNodesToGroup}

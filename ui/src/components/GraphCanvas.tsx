@@ -23,6 +23,7 @@ import { CreateGroupPopover } from "./CreateGroupPopover";
 import { validateGroupCreation, topologicalSortMembers, expandCollapsedSelection } from "../utils/groupValidation";
 import { isTextInput } from "../hooks/useUndoRedoKeyboard";
 import { useStore } from "../store/useAppStore";
+import { isAgentActive } from "../store/slices/agentSlice";
 
 interface GraphCanvasProps {
   workflow: Workflow;
@@ -80,10 +81,17 @@ export function GraphCanvas({
   const appState = useAppGrouping(workflow);
   const userGroupState = useUserGrouping(workflow);
 
-  // Mid-run delete gate: read `agentStatus` + expose an inline reject
-  // callback so the useNodeSync hook can reject user deletions while
-  // the agent is still mutating the graph.
-  const agentStatus = useStore((s) => s.agentStatus);
+  // Mid-run delete gate: expose an inline reject callback so the
+  // useNodeSync hook can reject user deletions while the agent is
+  // still mutating the graph. We collapse `agentStatus` plus a pending
+  // completion-disagreement into a single "running" signal so the
+  // gate also trips during the disagreement window when the backend
+  // task still owns the cache + variant-index writes.
+  const rawAgentStatus = useStore((s) => s.agentStatus);
+  const completionDisagreement = useStore((s) => s.completionDisagreement);
+  const agentStatus = isAgentActive(rawAgentStatus, completionDisagreement)
+    ? "running"
+    : rawAgentStatus;
   const setAssistantError = useStore((s) => s.setAssistantError);
   const handleRejectDeleteDuringRun = useCallback(() => {
     setAssistantError(

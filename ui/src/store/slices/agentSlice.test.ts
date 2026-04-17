@@ -389,3 +389,30 @@ describe("agentSlice.cancelDisagreement", () => {
     expect(state.agentStatus).toBe("stopped");
   });
 });
+
+
+describe("isAgentActive", () => {
+  it("is true when status is running", async () => {
+    const { isAgentActive } = await import("./agentSlice");
+    expect(isAgentActive("running", null)).toBe(true);
+  });
+
+  it("is true when a completion-disagreement resolver is pending, even if status is stopped", async () => {
+    const { isAgentActive } = await import("./agentSlice");
+    expect(
+      isAgentActive("stopped", {
+        screenshotBase64: "",
+        vlmReasoning: "",
+        agentSummary: "",
+      }),
+    ).toBe(true);
+  });
+
+  it("is false when idle with no pending disagreement", async () => {
+    const { isAgentActive } = await import("./agentSlice");
+    expect(isAgentActive("idle", null)).toBe(false);
+    expect(isAgentActive("complete", null)).toBe(false);
+    expect(isAgentActive("stopped", null)).toBe(false);
+    expect(isAgentActive("error", null)).toBe(false);
+  });
+});

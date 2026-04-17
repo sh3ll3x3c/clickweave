@@ -25,7 +25,10 @@ vi.mock("../bindings", async () => {
 });
 
 import { useStore } from "../store/useAppStore";
-import { useHandleDeleteNodes } from "./useHandleDeleteNodes";
+import {
+  useHandleDeleteNodes,
+  useHandleDeleteGroupWithContents,
+} from "./useHandleDeleteNodes";
 import { commands, type Node } from "../bindings";
 
 function makeNode(
@@ -221,5 +224,150 @@ describe("useHandleDeleteNodes", () => {
       .getState()
       .messages.find((m) => m.role === "system");
     expect(sys).toBeUndefined();
+  });
+});
+
+describe("useHandleDeleteGroupWithContents", () => {
+  beforeEach(() => {
+    (commands.pruneAgentCacheForNodes as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it("prunes cache + annotates when the group contains agent-built nodes", async () => {
+    const n1 = makeNode("n1", "cdp_click", "r1");
+    const n2 = makeNode("n2", "cdp_fill", "r1");
+    const deleteGroupWithContents = vi.fn((_groupId: string) => {
+      useStore.setState((s) => ({
+        workflow: {
+          ...s.workflow,
+          nodes: s.workflow.nodes.filter((n) => n.id !== "n1" && n.id !== "n2"),
+          groups: [],
+        },
+      }));
+    });
+    useStore.setState({
+      workflow: {
+        id: "00000000-0000-0000-0000-000000000001",
+        name: "wf",
+        nodes: [n1, n2],
+        edges: [],
+        groups: [
+          {
+            id: "g1",
+            name: "My group",
+            color: "#aaa",
+            node_ids: ["n1", "n2"],
+            parent_group_id: null,
+          },
+        ],
+        next_id_counters: {},
+        intent: null,
+      },
+      messages: [
+        { role: "user", content: "goal", timestamp: "t", runId: "r1" },
+        { role: "assistant", content: "done", timestamp: "t", runId: "r1" },
+      ],
+      projectPath: null,
+      storeTraces: true,
+      agentStatus: "idle",
+      completionDisagreement: null,
+    });
+
+    const { result } = renderHook(() =>
+      useHandleDeleteGroupWithContents(deleteGroupWithContents),
+    );
+    await act(async () => {
+      result.current("g1");
+    });
+
+    expect(deleteGroupWithContents).toHaveBeenCalledWith("g1");
+    expect(commands.pruneAgentCacheForNodes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        node_ids: expect.arrayContaining(["n1", "n2"]),
+      }),
+    );
+    const sys = useStore
+      .getState()
+      .messages.find((m) => m.role === "system");
+    expect(sys).toBeDefined();
+    expect(sys!.content).toMatch(/Deleted/);
+  });
+
+  it("rejects group delete while the agent is running", async () => {
+    const deleteGroupWithContents = vi.fn();
+    useStore.setState({
+      workflow: {
+        id: "00000000-0000-0000-0000-000000000001",
+        name: "wf",
+        nodes: [makeNode("n1", "cdp_click", "r1")],
+        edges: [],
+        groups: [
+          {
+            id: "g1",
+            name: "My group",
+            color: "#aaa",
+            node_ids: ["n1"],
+            parent_group_id: null,
+          },
+        ],
+        next_id_counters: {},
+        intent: null,
+      },
+      messages: [],
+      projectPath: null,
+      storeTraces: true,
+      agentStatus: "running",
+      completionDisagreement: null,
+    });
+
+    const { result } = renderHook(() =>
+      useHandleDeleteGroupWithContents(deleteGroupWithContents),
+    );
+    await act(async () => {
+      result.current("g1");
+    });
+
+    expect(deleteGroupWithContents).not.toHaveBeenCalled();
+    expect(commands.pruneAgentCacheForNodes).not.toHaveBeenCalled();
+  });
+
+  it("rejects group delete while a completion-disagreement resolver is pending", async () => {
+    const deleteGroupWithContents = vi.fn();
+    useStore.setState({
+      workflow: {
+        id: "00000000-0000-0000-0000-000000000001",
+        name: "wf",
+        nodes: [makeNode("n1", "cdp_click", "r1")],
+        edges: [],
+        groups: [
+          {
+            id: "g1",
+            name: "My group",
+            color: "#aaa",
+            node_ids: ["n1"],
+            parent_group_id: null,
+          },
+        ],
+        next_id_counters: {},
+        intent: null,
+      },
+      messages: [],
+      projectPath: null,
+      storeTraces: true,
+      agentStatus: "stopped",
+      completionDisagreement: {
+        screenshotBase64: "",
+        vlmReasoning: "",
+        agentSummary: "",
+      },
+    });
+
+    const { result } = renderHook(() =>
+      useHandleDeleteGroupWithContents(deleteGroupWithContents),
+    );
+    await act(async () => {
+      result.current("g1");
+    });
+
+    expect(deleteGroupWithContents).not.toHaveBeenCalled();
   });
 });

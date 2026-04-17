@@ -223,4 +223,71 @@ describe("clearConversationFlow", () => {
     expect(remainingNodes[0].id).toBe("n2");
     expect(commands.clearAgentConversation).toHaveBeenCalled();
   });
+
+  it("strips deleted agent nodes from user groups and auto-dissolves underfilled groups", async () => {
+    // Seed a user group that contains the agent-built node (n1) plus
+    // the user-owned node (n2). After Clear, n1 is gone, n2 survives,
+    // and the group's effective membership drops to 1 → auto-dissolve.
+    useStore.setState((s) => ({
+      workflow: {
+        ...s.workflow,
+        groups: [
+          {
+            id: "g1",
+            name: "Mixed group",
+            color: "#aaa",
+            node_ids: ["n1", "n2"],
+            parent_group_id: null,
+          },
+        ],
+      },
+    }));
+
+    await useStore.getState().clearConversationFlow();
+
+    const groups = useStore.getState().workflow.groups ?? [];
+    // Group auto-dissolved because it fell below 2 members.
+    expect(groups).toHaveLength(0);
+  });
+
+  it("keeps a group with >=2 surviving members but strips the deleted agent node from it", async () => {
+    useStore.setState((s) => ({
+      workflow: {
+        ...s.workflow,
+        nodes: [
+          ...s.workflow.nodes,
+          {
+            id: "n3",
+            name: "another_user_node",
+            node_type: { type: "CdpWait", text: "", timeout_ms: 1000 },
+            position: { x: 0, y: 0 },
+            enabled: true,
+            timeout_ms: null,
+            settle_ms: null,
+            retries: 0,
+            trace_level: "Minimal",
+            role: "Default",
+            expected_outcome: null,
+            auto_id: "",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        ],
+        groups: [
+          {
+            id: "g1",
+            name: "Mixed group",
+            color: "#aaa",
+            node_ids: ["n1", "n2", "n3"],
+            parent_group_id: null,
+          },
+        ],
+      },
+    }));
+
+    await useStore.getState().clearConversationFlow();
+
+    const groups = useStore.getState().workflow.groups ?? [];
+    expect(groups).toHaveLength(1);
+    expect(groups[0].node_ids).toEqual(["n2", "n3"]);
+  });
 });
