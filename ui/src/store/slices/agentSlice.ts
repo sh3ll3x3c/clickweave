@@ -256,12 +256,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     // connects from the prior chain into the new run's first node.
     let anchor: string | null = null;
     for (let i = workflow.nodes.length - 1; i >= 0; i -= 1) {
-      const n = workflow.nodes[i] as {
-        id: string;
-        source_run_id?: string | null;
-      };
-      if (n.source_run_id) {
-        anchor = n.id;
+      if (workflow.nodes[i].source_run_id) {
+        anchor = workflow.nodes[i].id;
         break;
       }
     }

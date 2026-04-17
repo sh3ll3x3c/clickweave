@@ -27,9 +27,8 @@ export function buildDeletionAnnotation(
   );
 
   if (byRun.size === 1) {
-    const firstEntry = byRun.entries().next().value;
-    if (!firstEntry) return `Deleted ${totalNodes} node(s)`;
-    const [runId, nodes] = firstEntry;
+    // size===1 guarantees the iterator has an entry, so `!` is safe.
+    const [runId, nodes] = [...byRun.entries()][0]!;
     const label = runLabels.get(runId) ?? "previous run";
     if (nodes.length === 1) {
       return `Deleted "${nodes[0].name}" from "${label}"`;

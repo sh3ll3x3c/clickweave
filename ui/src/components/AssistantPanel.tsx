@@ -48,11 +48,7 @@ export function AssistantPanel({
   const closeAmbiguityModal = useStore((s) => s.closeAmbiguityModal);
   const clearConversationFlow = useStore((s) => s.clearConversationFlow);
   const agentNodeCount = useStore(
-    (s) =>
-      s.workflow.nodes.filter(
-        (n) =>
-          (n as { source_run_id?: string | null }).source_run_id != null,
-      ).length,
+    (s) => s.workflow.nodes.filter((n) => n.source_run_id != null).length,
   );
   const activeAmbiguity =
     ambiguityResolutions.find((r) => r.id === activeAmbiguityId) ?? null;

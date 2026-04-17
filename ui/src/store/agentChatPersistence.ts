@@ -22,12 +22,8 @@ export async function loadAgentChat(
       workflow_name: ctx.workflowName,
       workflow_id: ctx.workflowId,
     });
-    // tauri-specta wraps Result<T, E> in a tagged shape.
-    const chat =
-      res && typeof res === "object" && "status" in res
-        ? (res as { status: "ok"; data: { messages?: AssistantChatMessageWire[] } }).data
-        : (res as { messages?: AssistantChatMessageWire[] });
-    return (chat?.messages ?? []).map((m) => ({
+    if (res.status !== "ok") return [];
+    return res.data.messages.map((m) => ({
       role: m.role,
       content: m.content,
       timestamp: m.timestamp,
@@ -36,13 +32,6 @@ export async function loadAgentChat(
   } catch {
     return [];
   }
-}
-
-interface AssistantChatMessageWire {
-  role: "user" | "assistant" | "system";
-  content: string;
-  timestamp: string;
-  run_id?: string | null;
 }
 
 /**

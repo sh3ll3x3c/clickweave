@@ -179,10 +179,7 @@ export const createAssistantSlice: StateCreator<
   clearConversationFlow: async () => {
     const state = get();
     const agentNodeIds = state.workflow.nodes
-      .filter(
-        (n) =>
-          (n as { source_run_id?: string | null }).source_run_id != null,
-      )
+      .filter((n) => n.source_run_id != null)
       .map((n) => n.id);
 
     // (1) Remove agent nodes from the workflow WITHOUT a history push

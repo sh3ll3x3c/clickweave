@@ -26,17 +26,13 @@ export function useHandleDeleteNodes(removeNodes: RemoveNodes) {
   return useCallback(
     (ids: string[]) => {
       const pre = useStore.getState();
-      const deletedAgentNodes = ids
-        .map((id) => pre.workflow.nodes.find((n) => n.id === id))
-        .filter((n): n is NonNullable<typeof n> => n != null)
-        .filter(
-          (n): n is typeof n & { source_run_id: string } =>
-            (n as { source_run_id?: string | null }).source_run_id != null,
-        )
+      const idSet = new Set(ids);
+      const deletedAgentNodes = pre.workflow.nodes
+        .filter((n) => idSet.has(n.id) && n.source_run_id != null)
         .map((n) => ({
           id: n.id,
           name: n.name,
-          source_run_id: (n as { source_run_id: string }).source_run_id,
+          source_run_id: n.source_run_id as string,
         }));
 
       // (a) Mutate the workflow first (history + auto-dissolve happen here).
@@ -80,8 +76,7 @@ export function useHandleDeleteNodes(removeNodes: RemoveNodes) {
       const postWorkflow = useStore.getState().workflow;
       const survivingRunIds = new Set<string>();
       for (const n of postWorkflow.nodes) {
-        const rid = (n as { source_run_id?: string | null }).source_run_id;
-        if (rid) survivingRunIds.add(rid);
+        if (n.source_run_id) survivingRunIds.add(n.source_run_id);
       }
       const partialRuns = new Set<string>();
       const fullyGoneRuns = new Set<string>();

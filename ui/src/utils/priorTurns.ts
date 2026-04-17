@@ -30,8 +30,7 @@ export function buildPriorTurns(
 ): PriorTurn[] {
   const liveRunIds = new Set<string>();
   for (const node of workflow.nodes ?? []) {
-    const runId = (node as { source_run_id?: string | null }).source_run_id;
-    if (runId) liveRunIds.add(runId);
+    if (node.source_run_id) liveRunIds.add(node.source_run_id);
   }
 
   const turns: PriorTurn[] = [];
