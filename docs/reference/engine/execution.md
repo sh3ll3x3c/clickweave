@@ -75,6 +75,12 @@ Implemented in `crates/clickweave-engine/src/agent/loop_runner.rs`:
 
 Decisions are cached in an `AgentCache` keyed by goal + observed element signature. Entries are persisted at `RunStorage::agent_cache_path()` — `agent_cache.json` at the **workflow** level (sibling to per-execution directories, not inside one), so the cache is shared across every run of that workflow and survives individual executions. Future runs against the same app state replay the decision without an LLM round-trip. Approval-gated tools are re-approved on replay. Observation-only tools (e.g., `take_screenshot`, `take_ax_snapshot`) are never cached.
 
+`CachedDecision` carries a `produced_node_ids: Vec<Uuid>` lineage list so the UI can evict cache entries when the user deletes their workflow nodes. `AgentCache::evict_for_node(node_id)` removes the given node id from every entry's list and drops the entry entirely when the list becomes empty. Legacy entries on disk with no `produced_node_ids` field deserialize as an empty vec and are dropped on the next `evict_for_node` call; Clear-conversation wipes the whole file regardless.
+
+### Conversational continuation
+
+Each `run_agent` call carries an optional `anchor_node_id` and a `prior_turns` log. The runner seeds `AgentState::last_node_id` from the anchor so the first emitted edge links into the existing workflow chain (Extend mode), and inlines the prior-turn log **inside the goal message string** (`messages[1]`) so `compact_step_summaries` — which treats `messages[1]` as the goal — preserves it across context compaction. Every node the runner produces is stamped with `source_run_id` so selective-delete and Clear-conversation can scope operations to agent-built nodes only.
+
 ### Tool Exposure
 
 The tool list passed to the LLM is stable across the lifetime of a run. All tools — including CDP tools (`cdp_click`, `cdp_find_elements`, `cdp_type_text`, etc.) — are exposed up-front regardless of whether a CDP connection has been established yet. Tools that require a connection return a clean "not connected" error when called pre-connection, and the agent recovers by picking a different action on the next step.

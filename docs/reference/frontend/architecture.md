@@ -152,10 +152,12 @@ The agent slice owns the live state of the observe-act agent loop. The loop emit
 
 **AssistantSlice** (`assistantSlice.ts`)
 
-Shell for the assistant panel surface. No producer currently populates `messages` — the slice exists so `AssistantPanel` can be re-wired when an assistant backend returns.
+Owns the conversational surface. `messages` is the source of truth for continuation: each `user` + `assistant` pair shares a `runId` so the backend can build `prior_turns` for the next turn. `system` messages are deletion annotations (center-aligned, muted blue) with no `runId`.
 
-- `messages: AssistantMessage[]`, `assistantOpen: boolean`, `assistantError: string | null`
-- actions: `setAssistantOpen`, `toggleAssistant`, `setAssistantError`
+- `messages: AssistantMessage[]` where `AssistantMessage.role` is `"user" | "assistant" | "system"` and `runId?: string` is present for user/assistant pairs
+- `assistantOpen: boolean`, `assistantError: string | null`
+- actions: `setAssistantOpen`, `toggleAssistant`, `setAssistantError`, `pushAssistantMessage(role, content, runId?)`, `pushSystemAnnotation`, `clearConversation`, `clearConversationFlow`, `setMessages`, `mapMessagesByRunIds`, `dropTurnsByRunIds`
+- persisted per-workflow to `agent_chat.json` (sibling to `agent_cache.json`), hydrated on project open; saves are best-effort and gated on `storeTraces`
 - opening the panel while a walkthrough is `Recording` or `Paused` cancels it; `Review`/`Processing` state is kept and just hidden behind the assistant
 
 **SettingsSlice** (`settingsSlice.ts`)
