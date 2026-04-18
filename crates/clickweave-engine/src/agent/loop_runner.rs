@@ -555,8 +555,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 })
                                 .await;
 
-                                self.maybe_cdp_connect(&cached_tool, &cached_args, mcp)
-                                    .await;
+                                self.maybe_cdp_connect(
+                                    &cached_tool,
+                                    &cached_args,
+                                    &result_text,
+                                    mcp,
+                                )
+                                .await;
 
                                 let step = AgentStep {
                                     index: step_index,
@@ -672,15 +677,18 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
             // Auto-connect CDP for Electron/Chrome apps after the app becomes
             // the foreground target. Covers both fresh launches and cases where
-            // the app was already running (focus_window).
+            // the app was already running (focus_window). The tool's response
+            // text (structured JSON on modern MCP servers) is threaded in so
+            // CDP probing can short-circuit on the server-supplied `kind`.
             if let AgentCommand::ToolCall {
                 tool_name,
                 arguments,
                 ..
             } = &command
-                && matches!(&outcome, StepOutcome::Success(_))
+                && let StepOutcome::Success(result_text) = &outcome
             {
-                self.maybe_cdp_connect(tool_name, arguments, mcp).await;
+                self.maybe_cdp_connect(tool_name, arguments, result_text, mcp)
+                    .await;
             }
 
             // Update state
@@ -960,29 +968,49 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// This method performs several hidden sub-actions (probe, quit, relaunch,
     /// connect) that are not individually approved. Each sub-action is logged
     /// via `StepCompleted` events so the UI can surface the full chain.
-    async fn auto_connect_cdp(&self, app_name: &str, mcp: &(impl Mcp + ?Sized)) -> Option<u16> {
-        if !mcp.has_tool("probe_app") || !mcp.has_tool("cdp_connect") {
+    async fn auto_connect_cdp(
+        &self,
+        app_name: &str,
+        kind_hint: Option<&str>,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<u16> {
+        if !mcp.has_tool("cdp_connect") {
             return None;
         }
 
-        // 1. Probe app type
-        let probe_args = serde_json::json!({"app_name": app_name});
-        self.emit_event(AgentEvent::SubAction {
-            tool_name: "probe_app".to_string(),
-            summary: format!("Auto: probing {} for CDP support", app_name),
-        })
-        .await;
-        let probe_text = match mcp.call_tool("probe_app", Some(probe_args)).await {
-            Ok(r) => extract_result_text(&r),
-            Err(e) => {
-                debug!(app = app_name, error = %e, "probe_app failed, skipping CDP");
+        // If the caller already classified the app (modern `focus_window`
+        // now includes `kind` in its JSON response), trust it and skip
+        // the `probe_app` round-trip. Only fall back to probing when the
+        // hint is absent or ambiguous.
+        let cdp_capable_from_hint = matches!(kind_hint, Some("ElectronApp" | "ChromeBrowser"));
+        if !cdp_capable_from_hint {
+            if matches!(kind_hint, Some("Native")) {
+                debug!(app = app_name, "Kind hint says Native, skipping CDP");
                 return None;
             }
-        };
+            if !mcp.has_tool("probe_app") {
+                return None;
+            }
 
-        if !probe_text.contains("ElectronApp") && !probe_text.contains("ChromeBrowser") {
-            debug!(app = app_name, "Not an Electron/Chrome app, skipping CDP");
-            return None;
+            // 1. Probe app type
+            let probe_args = serde_json::json!({"app_name": app_name});
+            self.emit_event(AgentEvent::SubAction {
+                tool_name: "probe_app".to_string(),
+                summary: format!("Auto: probing {} for CDP support", app_name),
+            })
+            .await;
+            let probe_text = match mcp.call_tool("probe_app", Some(probe_args)).await {
+                Ok(r) => extract_result_text(&r),
+                Err(e) => {
+                    debug!(app = app_name, error = %e, "probe_app failed, skipping CDP");
+                    return None;
+                }
+            };
+
+            if !probe_text.contains("ElectronApp") && !probe_text.contains("ChromeBrowser") {
+                debug!(app = app_name, "Not an Electron/Chrome app, skipping CDP");
+                return None;
+            }
         }
 
         info!(
@@ -1254,17 +1282,23 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         &self,
         tool_name: &str,
         arguments: &Value,
+        result_text: &str,
         mcp: &(impl Mcp + ?Sized),
     ) {
         if tool_name != "launch_app" && tool_name != "focus_window" {
             return;
         }
-        let Some(app_name) = arguments["app_name"].as_str() else {
+        let Some((app_name, kind_hint)) =
+            Self::resolve_cdp_target(arguments, result_text, mcp).await
+        else {
             return;
         };
-        if let Some(cdp_port) = self.auto_connect_cdp(app_name, mcp).await {
+        if let Some(cdp_port) = self
+            .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
+            .await
+        {
             self.emit_event(AgentEvent::CdpConnected {
-                app_name: app_name.to_string(),
+                app_name: app_name.clone(),
                 port: cdp_port,
             })
             .await;
@@ -1275,6 +1309,126 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 warn!(error = %e, "Post-CDP-connect client tool-cache refresh failed");
             }
         }
+    }
+
+    /// Resolve the app identity for CDP probing from a successful
+    /// `focus_window` / `launch_app` call. Returns `(app_name, kind)`
+    /// where `kind` is a pre-classified `AppKind` string
+    /// (`"ElectronApp"`, `"ChromeBrowser"`, `"Native"`) when the MCP
+    /// server already told us, and `None` when we'll need `probe_app`
+    /// to classify.
+    ///
+    /// Resolution order (fastest first):
+    /// 1. **Structured response from MCP.** Modern `focus_window` returns
+    ///    `{"app_name", "pid", "kind", ...}` JSON — one parse, no extra
+    ///    MCP calls, and the `kind` lets `auto_connect_cdp` skip the
+    ///    `probe_app` round-trip entirely.
+    /// 2. **`arguments["app_name"]`** — fast path for the
+    ///    `{"app_name": "..."}` variant. No `kind` hint.
+    /// 3. **`pid` → `list_apps`** — fallback for older MCP versions
+    ///    that still return the plain "Window focused successfully"
+    ///    text for `focus_window`.
+    /// 4. **`window_id` → `list_windows`** — same fallback.
+    ///
+    /// Returns `None` when no variant matches or lookups fail. All
+    /// failures are logged at `debug!` — best-effort; the agent loop
+    /// continues without CDP when we can't resolve.
+    async fn resolve_cdp_target(
+        arguments: &Value,
+        result_text: &str,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<(String, Option<String>)> {
+        // 1. Structured MCP response (modern focus_window / launch_app).
+        if let Ok(parsed) = serde_json::from_str::<Value>(result_text)
+            && let Some(name) = parsed.get("app_name").and_then(Value::as_str)
+            && !name.is_empty()
+        {
+            let kind = parsed
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            return Some((name.to_string(), kind));
+        }
+        // 2. Direct argument (fast, backwards-compatible).
+        if let Some(name) = arguments["app_name"].as_str() {
+            return Some((name.to_string(), None));
+        }
+        if let Some(pid) = arguments["pid"].as_u64()
+            && mcp.has_tool("list_apps")
+        {
+            match mcp
+                .call_tool("list_apps", Some(serde_json::json!({})))
+                .await
+            {
+                Ok(r) if r.is_error != Some(true) => {
+                    let text = extract_result_text(&r);
+                    if let Ok(entries) = serde_json::from_str::<Vec<Value>>(&text)
+                        && let Some(name) = entries.iter().find_map(|entry| {
+                            if entry["pid"].as_u64() == Some(pid) {
+                                entry["name"].as_str().map(str::to_owned)
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        return Some((name, None));
+                    }
+                    debug!(
+                        pid,
+                        "list_apps returned no entry matching pid for CDP resolution"
+                    );
+                }
+                Ok(r) => {
+                    debug!(
+                        error = %extract_result_text(&r),
+                        "list_apps returned error during CDP app-name resolution",
+                    );
+                }
+                Err(e) => {
+                    debug!(error = %e, "list_apps call failed during CDP app-name resolution");
+                }
+            }
+        }
+        if let Some(window_id) = arguments["window_id"].as_u64()
+            && mcp.has_tool("list_windows")
+        {
+            match mcp
+                .call_tool("list_windows", Some(serde_json::json!({})))
+                .await
+            {
+                Ok(r) if r.is_error != Some(true) => {
+                    let text = extract_result_text(&r);
+                    if let Ok(entries) = serde_json::from_str::<Vec<Value>>(&text)
+                        && let Some(name) = entries.iter().find_map(|entry| {
+                            if entry["id"].as_u64() == Some(window_id) {
+                                entry["owner_name"]
+                                    .as_str()
+                                    .or_else(|| entry["name"].as_str())
+                                    .map(str::to_owned)
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        return Some((name, None));
+                    }
+                    debug!(
+                        window_id,
+                        "list_windows returned no entry matching window_id for CDP resolution",
+                    );
+                }
+                Ok(r) => {
+                    debug!(
+                        error = %extract_result_text(&r),
+                        "list_windows returned error during CDP app-name resolution",
+                    );
+                }
+                Err(e) => {
+                    debug!(error = %e, "list_windows call failed during CDP app-name resolution");
+                }
+            }
+        }
+        None
     }
 
     /// Parse the LLM response and execute the chosen action.
@@ -1541,5 +1695,98 @@ mod run_anchor_tests {
     fn no_anchor_leaves_last_node_id_none() {
         let state = AgentState::new(Workflow::default());
         assert!(state.last_node_id.is_none());
+    }
+}
+
+#[cfg(test)]
+mod resolve_cdp_target_tests {
+    use super::*;
+    use crate::executor::Mcp;
+    use clickweave_llm::{ChatOptions, ChatResponse};
+    use clickweave_mcp::ToolCallResult;
+
+    /// Minimal `ChatBackend` used only to satisfy the type parameter on
+    /// `AgentRunner<'_, B>` when calling `resolve_cdp_target`, which
+    /// itself doesn't touch the backend. All methods panic — the tests
+    /// don't instantiate a runner, they call the associated fn
+    /// directly, so these are never actually invoked.
+    struct UnusedBackend;
+
+    impl ChatBackend for UnusedBackend {
+        async fn chat_with_options(
+            &self,
+            _messages: &[Message],
+            _tools: Option<&[Value]>,
+            _options: &ChatOptions,
+        ) -> anyhow::Result<ChatResponse> {
+            unreachable!("resolve_cdp_target does not call the LLM backend")
+        }
+        fn model_name(&self) -> &str {
+            "unused"
+        }
+    }
+
+    /// MCP stub that panics on any call. Every test in this module
+    /// exercises paths (structured response, arguments-only) that must
+    /// not reach MCP — the panic proves those paths don't regress to
+    /// making extra round-trips.
+    struct UnusedMcp;
+
+    impl Mcp for UnusedMcp {
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<Value>,
+        ) -> anyhow::Result<ToolCallResult> {
+            panic!("resolve_cdp_target reached MCP on a fast-path case");
+        }
+        fn has_tool(&self, _name: &str) -> bool {
+            false
+        }
+        fn tools_as_openai(&self) -> Vec<Value> {
+            Vec::new()
+        }
+        async fn refresh_tools(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    async fn resolve(arguments: Value, result_text: &str) -> Option<(String, Option<String>)> {
+        // `resolve_cdp_target` doesn't depend on `self` or on the
+        // backend parameter; pick any concrete backend to satisfy the
+        // impl block's type parameter.
+        AgentRunner::<UnusedBackend>::resolve_cdp_target(&arguments, result_text, &UnusedMcp).await
+    }
+
+    #[tokio::test]
+    async fn structured_response_wins_over_pid_argument() {
+        let arguments = serde_json::json!({ "pid": 16024 });
+        let result_text = serde_json::json!({
+            "app_name": "Signal",
+            "pid": 16024,
+            "bundle_id": "org.whispersystems.signal-desktop",
+            "kind": "ElectronApp",
+        })
+        .to_string();
+        let resolved = resolve(arguments, &result_text).await;
+        assert_eq!(
+            resolved,
+            Some(("Signal".to_string(), Some("ElectronApp".to_string())))
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_text_response_falls_back_to_arguments_app_name() {
+        let arguments = serde_json::json!({ "app_name": "Signal" });
+        let resolved = resolve(arguments, "Window focused successfully").await;
+        assert_eq!(resolved, Some(("Signal".to_string(), None)));
+    }
+
+    #[tokio::test]
+    async fn empty_app_name_in_structured_response_is_ignored() {
+        let arguments = serde_json::json!({ "app_name": "Chrome" });
+        let result_text = serde_json::json!({ "app_name": "", "pid": 0 }).to_string();
+        let resolved = resolve(arguments, &result_text).await;
+        assert_eq!(resolved, Some(("Chrome".to_string(), None)));
     }
 }
