@@ -52,6 +52,29 @@ pub enum ExecutorError {
     #[error("CDP error: {0}")]
     Cdp(String),
 
+    /// Taking a CDP snapshot (`cdp_take_snapshot`) itself failed or returned an
+    /// MCP-level error. Treat this as transient: the resolver retries the
+    /// snapshot a handful of times before surfacing the failure.
+    #[error("CDP snapshot failed: {0}")]
+    CdpSnapshotFailed(String),
+
+    /// The CDP snapshot was collected successfully but no accessibility-tree
+    /// line matched the resolver target after the retry budget was exhausted.
+    /// Permanent failure for this attempt — the page does not contain the
+    /// target, or the label does not match; no amount of additional retrying
+    /// will change the snapshot.
+    #[error("No matching CDP element for target '{target}'")]
+    CdpNotFound { target: String },
+
+    /// An ambiguous CDP target was routed through the agent-driven
+    /// disambiguation round-trip and the round-trip itself failed (bad VLM
+    /// reply, unknown chosen uid, missing screenshot, etc.). Distinct from
+    /// [`Self::CdpAmbiguousTarget`], which is the initial signal that
+    /// disambiguation is needed; this variant is the terminal failure of
+    /// that resolution attempt.
+    #[error("CDP disambiguation failed: {0}")]
+    CdpDisambiguationFailed(String),
+
     /// Quitting/killing/relaunching the CDP-capable app failed.
     #[error("CDP relaunch failed for '{app_name}': {message}")]
     CdpRelaunchFailed { app_name: String, message: String },

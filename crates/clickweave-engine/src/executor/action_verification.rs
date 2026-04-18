@@ -1,8 +1,8 @@
+use super::screenshot::{ScreenshotScope, capture_screenshot_for_vlm};
 use super::{ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::output_schema::VerificationMethod;
 use clickweave_core::{NodeRun, NodeType};
 use clickweave_llm::{ChatBackend, Message};
-use clickweave_mcp::ToolContent;
 use serde_json::Value;
 
 /// Extract verification config from any action node type.
@@ -88,47 +88,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Wait for UI to settle after action
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // Capture screenshot and extract base64 image data.
         // Prefer the focused app window; fall back to full-screen only when no
         // app is known, so unrelated windows don't dominate the VLM observation.
-        let mut screenshot_args = serde_json::json!({"include_ocr": false});
-        if let Some(app_name) = self.focused_app_name() {
-            screenshot_args["app_name"] = serde_json::Value::String(app_name);
-        } else {
-            screenshot_args["mode"] = serde_json::Value::String("screen".to_string());
-        }
-        let screenshot_result = mcp
-            .call_tool("take_screenshot", Some(screenshot_args))
-            .await;
-
-        let image_b64 = match screenshot_result {
-            Ok(result) => {
-                let mut found = None;
-                for content in &result.content {
-                    if let ToolContent::Image { data, .. } = content {
-                        found = Some(data.clone());
-                        break;
-                    }
-                }
-                match found {
-                    Some(img) => img,
-                    None => {
-                        return (false, "Screenshot returned no image data".to_string());
-                    }
-                }
-            }
-            Err(e) => return (false, format!("Screenshot failed: {}", e)),
+        let scope = match self.focused_app_name() {
+            Some(app_name) => ScreenshotScope::Window(app_name),
+            None => ScreenshotScope::Screen,
         };
-
-        // Prepare the image for VLM (resize/compress)
-        let (prepared_b64, mime) = match clickweave_llm::prepare_base64_image_for_vlm(
-            &image_b64,
-            clickweave_llm::DEFAULT_MAX_DIMENSION,
-        ) {
+        let (prepared_b64, mime) = match capture_screenshot_for_vlm(mcp, scope).await {
             Some(pair) => pair,
             None => {
-                self.log("Action verification: failed to prepare screenshot for VLM".to_string());
-                return (false, "Failed to prepare screenshot for VLM".to_string());
+                self.log(
+                    "Action verification: screenshot capture or preparation failed".to_string(),
+                );
+                return (
+                    false,
+                    "Failed to capture or prepare screenshot for VLM".to_string(),
+                );
             }
         };
 

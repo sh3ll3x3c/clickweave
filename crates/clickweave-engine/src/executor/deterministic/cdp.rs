@@ -60,7 +60,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         if let Some(ctx) = overrides
-            && let Some(uid) = ctx.read_cdp_ambiguity_overrides().get(target).cloned()
+            && let Some(uid) = ctx.cdp_ambiguity_overrides.get(target).cloned()
         {
             self.log(format!(
                 "CDP: using agent-picked uid='{}' for '{}' (ambiguity override)",
@@ -91,11 +91,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let snapshot_result = mcp
                 .call_tool("cdp_take_snapshot", Some(serde_json::json!({})))
                 .await
-                .map_err(|e| ExecutorError::Cdp(format!("take_snapshot failed: {e}")))?;
+                .map_err(|e| {
+                    ExecutorError::CdpSnapshotFailed(format!("take_snapshot failed: {e}"))
+                })?;
 
             if snapshot_result.is_error == Some(true) {
                 let error_text = Self::extract_result_text(&snapshot_result);
-                return Err(ExecutorError::Cdp(format!(
+                return Err(ExecutorError::CdpSnapshotFailed(format!(
                     "take_snapshot error: {}",
                     error_text
                 )));
@@ -123,16 +125,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             });
         }
 
-        Err(ExecutorError::Cdp(format!(
-            "No matching element for '{}' in CDP snapshot",
-            target
-        )))
+        Err(ExecutorError::CdpNotFound {
+            target: target.to_string(),
+        })
     }
 
     /// Resolve a CDP element and perform an action (click or hover) on it.
     /// Returns the action result text.
     pub(in crate::executor) async fn execute_cdp_action(
-        &self,
+        &mut self,
         action: &str,
         _node_id: Uuid,
         target: &str,
@@ -180,7 +181,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Resolve a CDP element and click it. Returns the click result text.
     pub(in crate::executor) async fn resolve_and_click_cdp(
-        &self,
+        &mut self,
         node_id: Uuid,
         target: &str,
         mcp: &(impl Mcp + ?Sized),
@@ -229,7 +230,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Resolve a CDP element and hover it. Returns the hover result text.
     pub(in crate::executor) async fn resolve_and_hover_cdp(
-        &self,
+        &mut self,
         node_id: Uuid,
         target: &str,
         mcp: &(impl Mcp + ?Sized),

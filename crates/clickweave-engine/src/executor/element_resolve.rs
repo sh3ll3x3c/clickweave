@@ -48,7 +48,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Results are cached so repeated references to the same target only
     /// incur one LLM call.
     pub(crate) async fn resolve_element_name(
-        &self,
+        &mut self,
         node_id: Uuid,
         target: &str,
         available_elements: &[String],
@@ -61,7 +61,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Check in-memory cache first (populated during this execution).
         // Validate against available_elements so a stale entry (element renamed
         // or screen changed) doesn't silently replay the wrong resolution.
-        if let Some(cached) = self.read_element_cache().get(&cache_key).cloned() {
+        if let Some(cached) = self.element_cache.get(&cache_key).cloned() {
             if available_elements.iter().any(|e| e == &cached) {
                 debug!(target = target, resolved_name = %cached, "element_cache hit");
                 self.log(format!(
@@ -76,18 +76,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 cached_name = %cached,
                 "element_cache hit but name not in available elements, evicting"
             );
-            self.write_element_cache().remove(&cache_key);
+            self.element_cache.remove(&cache_key);
         }
 
         // Check persistent decision cache (replays Test-mode decisions in Run mode).
         // Skip in Bypass mode so a retry after eviction re-resolves via LLM.
         let ck = decision_cache::cache_key(node_id, target, app_name);
         if !cache_mode.is_bypass()
-            && let Some(cached) = self
-                .read_decision_cache()
-                .element_resolution
-                .get(&ck)
-                .cloned()
+            && let Some(cached) = self.decision_cache.element_resolution.get(&ck).cloned()
         {
             if available_elements
                 .iter()
@@ -98,7 +94,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "Element resolved (decision cache): \"{}\" -> \"{}\"",
                     target, cached.resolved_name
                 ));
-                self.write_element_cache()
+                self.element_cache
                     .insert(cache_key, cached.resolved_name.clone());
                 return Ok(cached.resolved_name);
             }
@@ -197,13 +193,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log(format!("Element resolved: \"{}\" -> \"{}\"", target, name));
 
-        self.write_element_cache()
-            .insert(cache_key, name.to_string());
+        self.element_cache.insert(cache_key, name.to_string());
 
         // Record in decision cache for replay in Run mode
         if self.execution_mode == ExecutionMode::Test {
             let ck = decision_cache::cache_key(node_id, target, app_name);
-            self.write_decision_cache().element_resolution.insert(
+            self.decision_cache.element_resolution.insert(
                 ck,
                 ElementResolution {
                     target: target.to_string(),
@@ -218,13 +213,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// When find_text returns multiple matches for a click target, ask the LLM
     /// to pick the most appropriate one based on text, role, and position.
     pub(crate) async fn disambiguate_click_matches(
-        &self,
+        &mut self,
         node_id: Uuid,
         target: &str,
         matches: &[Value],
         app_name: Option<&str>,
         node_run: Option<&NodeRun>,
-        retry_ctx: &RetryContext,
+        retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<usize> {
         let app_context = match app_name {
             Some(name) => format!(" in app \"{}\"", name),
@@ -258,10 +253,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             &format!("A previous attempt to click '{}' failed. ", target),
         );
 
-        let tried_context = {
-            let tried = retry_ctx.read_tried_click_indices();
-            Self::format_tried_context(&tried, "indices")
-        };
+        let tried_context = Self::format_tried_context(&retry_ctx.tried_click_indices, "indices");
 
         let json_only = super::prompts::JSON_ONLY_INSTRUCTION;
         let prompt = format!(
@@ -333,7 +325,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )));
         }
 
-        retry_ctx.write_tried_click_indices().push(index);
+        retry_ctx.tried_click_indices.push(index);
 
         let chosen = &matches[index];
         let chosen_text = chosen["text"].as_str().unwrap_or("?");
@@ -363,7 +355,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Record decision in cache for replay in Run mode
         if self.execution_mode == ExecutionMode::Test {
             let ck = decision_cache::cache_key(node_id, target, app_name);
-            self.write_decision_cache().click_disambiguation.insert(
+            self.decision_cache.click_disambiguation.insert(
                 ck,
                 ClickDisambiguation {
                     target: target.to_string(),
@@ -380,9 +372,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Remove a cached element resolution so the next attempt re-resolves via LLM.
-    pub(crate) fn evict_element_cache(&self, target: &str, app_name: Option<&str>) {
+    pub(crate) fn evict_element_cache(&mut self, target: &str, app_name: Option<&str>) {
         let cache_key = (target.to_string(), app_name.map(|s| s.to_string()));
-        if self.write_element_cache().remove(&cache_key).is_some() {
+        if self.element_cache.remove(&cache_key).is_some() {
             debug!(target = target, app_name = ?app_name, "evicted element_cache entry");
             self.log(format!("Element cache evicted for \"{}\"", target));
         }

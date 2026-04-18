@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn resolve_element_name_successful_match() {
-    let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
     let available = strs(&["Calculator", "Multiply", "Divide"]);
     assert_eq!(
         exec.resolve_element_name(
@@ -30,7 +30,7 @@ async fn resolve_element_name_successful_match() {
 #[tokio::test]
 async fn resolve_element_name_caches_result() {
     // Only one scripted response — second call must hit cache.
-    let exec = make_scripted_executor(vec![r#"{"name": "Subtract"}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"name": "Subtract"}"#]);
     let available = strs(&["Subtract", "Add"]);
     let node_id = Uuid::new_v4();
     let first = exec
@@ -47,7 +47,7 @@ async fn resolve_element_name_caches_result() {
 
 #[tokio::test]
 async fn resolve_element_name_null_match_returns_error() {
-    let exec = make_scripted_executor(vec![r#"{"name": null}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"name": null}"#]);
     let err = exec
         .resolve_element_name(
             Uuid::new_v4(),
@@ -64,7 +64,7 @@ async fn resolve_element_name_null_match_returns_error() {
 
 #[tokio::test]
 async fn resolve_element_name_rejects_hallucinated_name() {
-    let exec = make_scripted_executor(vec![r#"{"name": "Hallucinated"}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"name": "Hallucinated"}"#]);
     let err = exec
         .resolve_element_name(
             Uuid::new_v4(),
@@ -81,7 +81,7 @@ async fn resolve_element_name_rejects_hallucinated_name() {
 
 #[tokio::test]
 async fn resolve_element_name_handles_code_block_wrapped_response() {
-    let exec = make_scripted_executor(vec!["```json\n{\"name\": \"All Clear\"}\n```"]);
+    let mut exec = make_scripted_executor(vec!["```json\n{\"name\": \"All Clear\"}\n```"]);
     assert_eq!(
         exec.resolve_element_name(
             Uuid::new_v4(),
@@ -99,7 +99,7 @@ async fn resolve_element_name_handles_code_block_wrapped_response() {
 
 #[tokio::test]
 async fn resolve_element_name_handles_prose_wrapped_response() {
-    let exec = make_scripted_executor(vec![
+    let mut exec = make_scripted_executor(vec![
         "The matching element is:\n{\"name\": \"Divide\"}\nThis maps the ÷ symbol.",
     ]);
     assert_eq!(
@@ -126,7 +126,7 @@ const AVAILABLE_ELEMENTS_RESPONSE: &str =
 
 #[tokio::test]
 async fn prepare_find_text_retry_full_flow() {
-    let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
     let args = exec
         .prepare_find_text_retry(
             Uuid::new_v4(),
@@ -143,7 +143,7 @@ async fn prepare_find_text_retry_full_flow() {
 
 #[tokio::test]
 async fn prepare_find_text_retry_preserves_extra_fields() {
-    let exec = make_scripted_executor(vec![r#"{"name": "Subtract"}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"name": "Subtract"}"#]);
     let args = exec
         .prepare_find_text_retry(
             Uuid::new_v4(),
@@ -161,8 +161,8 @@ async fn prepare_find_text_retry_preserves_extra_fields() {
 
 #[tokio::test]
 async fn prepare_find_text_retry_falls_back_to_focused_app() {
-    let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
-    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native, 0));
+    let mut exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
+    exec.focused_app = Some(("Calculator".to_string(), AppKind::Native, 0));
 
     let args = exec
         .prepare_find_text_retry(
@@ -176,12 +176,12 @@ async fn prepare_find_text_retry_falls_back_to_focused_app() {
         .unwrap();
     assert_eq!(args["text"], "Multiply");
     let cache_key = ("×".to_string(), Some("Calculator".to_string()));
-    assert!(exec.element_cache.read().unwrap().contains_key(&cache_key));
+    assert!(exec.element_cache.contains_key(&cache_key));
 }
 
 #[tokio::test]
 async fn prepare_find_text_retry_none_when_no_available_elements() {
-    let exec = make_scripted_executor(vec![]);
+    let mut exec = make_scripted_executor(vec![]);
     assert!(
         exec.prepare_find_text_retry(
             Uuid::new_v4(),
@@ -197,7 +197,7 @@ async fn prepare_find_text_retry_none_when_no_available_elements() {
 
 #[tokio::test]
 async fn prepare_find_text_retry_none_when_llm_finds_no_match() {
-    let exec = make_scripted_executor(vec![r#"{"name": null}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"name": null}"#]);
     assert!(
         exec.prepare_find_text_retry(
             Uuid::new_v4(),
@@ -217,9 +217,9 @@ async fn prepare_find_text_retry_none_when_llm_finds_no_match() {
 
 #[tokio::test]
 async fn disambiguate_click_matches_picks_llm_choice() {
-    let exec = make_scripted_executor(vec![r#"{"index": 1}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"index": 1}"#]);
     let matches = make_find_text_matches(&[("2×", "AXStaticText"), ("2", "AXButton")]);
-    let ctx = RetryContext::new();
+    let mut ctx = RetryContext::new();
     let idx = exec
         .disambiguate_click_matches(
             Uuid::new_v4(),
@@ -227,7 +227,7 @@ async fn disambiguate_click_matches_picks_llm_choice() {
             &matches,
             Some("Calculator"),
             None,
-            &ctx,
+            &mut ctx,
         )
         .await
         .unwrap();
@@ -236,11 +236,11 @@ async fn disambiguate_click_matches_picks_llm_choice() {
 
 #[tokio::test]
 async fn disambiguate_click_matches_out_of_bounds() {
-    let exec = make_scripted_executor(vec![r#"{"index": 5}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"index": 5}"#]);
     let matches = make_find_text_matches(&[("2×", "AXStaticText"), ("2", "AXButton")]);
-    let ctx = RetryContext::new();
+    let mut ctx = RetryContext::new();
     let err = exec
-        .disambiguate_click_matches(Uuid::new_v4(), "2", &matches, None, None, &ctx)
+        .disambiguate_click_matches(Uuid::new_v4(), "2", &matches, None, None, &mut ctx)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("out-of-bounds"));
@@ -248,11 +248,11 @@ async fn disambiguate_click_matches_out_of_bounds() {
 
 #[tokio::test]
 async fn disambiguate_click_matches_missing_index_key() {
-    let exec = make_scripted_executor(vec![r#"{"choice": 0}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"choice": 0}"#]);
     let matches = make_find_text_matches(&[("Save", "AXButton"), ("Save as...", "AXMenuItem")]);
-    let ctx = RetryContext::new();
+    let mut ctx = RetryContext::new();
     let err = exec
-        .disambiguate_click_matches(Uuid::new_v4(), "Save", &matches, None, None, &ctx)
+        .disambiguate_click_matches(Uuid::new_v4(), "Save", &matches, None, None, &mut ctx)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("no valid index"));
@@ -260,11 +260,18 @@ async fn disambiguate_click_matches_missing_index_key() {
 
 #[tokio::test]
 async fn disambiguate_click_matches_code_block_wrapped() {
-    let exec = make_scripted_executor(vec!["```json\n{\"index\": 0}\n```"]);
+    let mut exec = make_scripted_executor(vec!["```json\n{\"index\": 0}\n```"]);
     let matches = make_find_text_matches(&[("OK", "AXButton"), ("OK", "AXStaticText")]);
-    let ctx = RetryContext::new();
+    let mut ctx = RetryContext::new();
     let idx = exec
-        .disambiguate_click_matches(Uuid::new_v4(), "OK", &matches, Some("MyApp"), None, &ctx)
+        .disambiguate_click_matches(
+            Uuid::new_v4(),
+            "OK",
+            &matches,
+            Some("MyApp"),
+            None,
+            &mut ctx,
+        )
         .await
         .unwrap();
     assert_eq!(idx, 0);
@@ -272,7 +279,7 @@ async fn disambiguate_click_matches_code_block_wrapped() {
 
 #[tokio::test]
 async fn disambiguate_click_matches_includes_supervision_hint() {
-    let exec = make_scripted_executor(vec![r#"{"index": 1}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"index": 1}"#]);
     let mut ctx = RetryContext::new();
     ctx.supervision_hint =
         Some("Previous click hit the wrong element. The Friends tab is still active.".to_string());
@@ -287,7 +294,7 @@ async fn disambiguate_click_matches_includes_supervision_hint() {
             &matches,
             Some("Discord"),
             None,
-            &ctx,
+            &mut ctx,
         )
         .await
         .unwrap();
@@ -297,26 +304,26 @@ async fn disambiguate_click_matches_includes_supervision_hint() {
 #[tokio::test]
 async fn disambiguate_click_matches_records_tried_indices() {
     // Two scripted responses: first picks 0, second picks 1
-    let exec = make_scripted_executor(vec![r#"{"index": 0}"#, r#"{"index": 1}"#]);
+    let mut exec = make_scripted_executor(vec![r#"{"index": 0}"#, r#"{"index": 1}"#]);
     let matches = make_find_text_matches(&[
         ("Save", "AXStaticText"),
         ("Save", "AXButton"),
         ("Save", "AXMenuItem"),
     ]);
     let node_id = Uuid::new_v4();
-    let ctx = RetryContext::new();
+    let mut ctx = RetryContext::new();
 
     let idx0 = exec
-        .disambiguate_click_matches(node_id, "Save", &matches, None, None, &ctx)
+        .disambiguate_click_matches(node_id, "Save", &matches, None, None, &mut ctx)
         .await
         .unwrap();
     assert_eq!(idx0, 0);
-    assert_eq!(*ctx.tried_click_indices.read().unwrap(), vec![0]);
+    assert_eq!(ctx.tried_click_indices, vec![0]);
 
     let idx1 = exec
-        .disambiguate_click_matches(node_id, "Save", &matches, None, None, &ctx)
+        .disambiguate_click_matches(node_id, "Save", &matches, None, None, &mut ctx)
         .await
         .unwrap();
     assert_eq!(idx1, 1);
-    assert_eq!(*ctx.tried_click_indices.read().unwrap(), vec![0, 1]);
+    assert_eq!(ctx.tried_click_indices, vec![0, 1]);
 }

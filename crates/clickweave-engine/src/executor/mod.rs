@@ -11,6 +11,7 @@ mod graph_nav;
 mod prompts;
 pub(crate) mod retry_context;
 mod run_loop;
+pub(crate) mod screenshot;
 mod supervision;
 mod trace;
 mod variables;
@@ -32,7 +33,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -157,6 +157,12 @@ pub(crate) struct ResolvedApp {
     pub pid: i32,
 }
 
+/// Number of consecutive trace-write failures tolerated before the executor
+/// emits a degraded-persistence error so the UI can warn the operator.
+/// Transient disk-full or permission blips recover on their own; sustained
+/// failures would otherwise silently produce gap-filled `events.jsonl` files.
+pub(crate) const TRACE_WRITE_FAILURE_THRESHOLD: u32 = 3;
+
 pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     workflow: Workflow,
     agent: C,
@@ -171,11 +177,11 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
     storage: RunStorage,
-    app_cache: RwLock<HashMap<String, ResolvedApp>>,
-    focused_app: RwLock<Option<(String, AppKind, i32)>>,
-    element_cache: RwLock<HashMap<(String, Option<String>), String>>,
+    app_cache: HashMap<String, ResolvedApp>,
+    focused_app: Option<(String, AppKind, i32)>,
+    element_cache: HashMap<(String, Option<String>), String>,
     context: RuntimeContext,
-    decision_cache: RwLock<DecisionCache>,
+    decision_cache: DecisionCache,
     /// The app name and PID for which a CDP connection is active (via cdp_connect).
     /// PID is used to distinguish same-name app instances within a single execution.
     cdp_connected_app: Option<(String, i32)>,
@@ -200,6 +206,14 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     chrome_profiles: Vec<ChromeProfile>,
     /// Delay (ms) before capturing the per-step supervision screenshot.
     supervision_delay_ms: u64,
+    /// Count of consecutive trace-write failures. Reset on success. When the
+    /// run crosses [`TRACE_WRITE_FAILURE_THRESHOLD`] a degraded-trace error is
+    /// emitted exactly once so the UI can warn the operator; later failures
+    /// no longer emit until a successful write clears the streak.
+    trace_write_failures: u32,
+    /// Whether we have already emitted a degraded-trace error for the current
+    /// failure streak. Cleared on the next successful trace write.
+    trace_failure_reported: bool,
 }
 
 impl WorkflowExecutor {
@@ -240,74 +254,53 @@ impl WorkflowExecutor {
             project_path,
             event_tx,
             storage,
-            app_cache: RwLock::new(HashMap::new()),
-            focused_app: RwLock::new(None),
-            element_cache: RwLock::new(HashMap::new()),
+            app_cache: HashMap::new(),
+            focused_app: None,
+            element_cache: HashMap::new(),
             context: RuntimeContext::new(),
-            decision_cache: RwLock::new(decision_cache),
+            decision_cache,
             cdp_connected_app: None,
             cdp_selected_pages: HashMap::new(),
             cancel_token,
             chrome_profile_store,
             chrome_profiles,
             supervision_delay_ms,
+            trace_write_failures: 0,
+            trace_failure_reported: false,
         }
     }
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
-    // ── RwLock helpers ───────────────────────────────────────────────────
-    // Centralize the `.unwrap_or_else(|e| e.into_inner())` poison-recovery
-    // pattern so call sites stay concise.
+    // ── Per-run state accessors ─────────────────────────────────────────
+    // Several of these wrap fields only to document intent; callers may
+    // freely mutate the underlying plain fields via `&mut self`. The
+    // executor runs single-threaded inside a dedicated
+    // `tauri::async_runtime::spawn` task, so shared-reference mutation is
+    // sufficient; no synchronisation primitives are needed.
 
-    pub(crate) fn read_app_cache(
-        &self,
-    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, ResolvedApp>> {
-        self.app_cache.read().unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn write_app_cache(&mut self) -> &mut HashMap<String, ResolvedApp> {
+        &mut self.app_cache
     }
 
-    pub(crate) fn write_app_cache(
-        &self,
-    ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, ResolvedApp>> {
-        self.app_cache.write().unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn read_focused_app(&self) -> &Option<(String, AppKind, i32)> {
+        &self.focused_app
     }
 
-    pub(crate) fn read_focused_app(
-        &self,
-    ) -> std::sync::RwLockReadGuard<'_, Option<(String, AppKind, i32)>> {
-        self.focused_app.read().unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn write_focused_app(&mut self) -> &mut Option<(String, AppKind, i32)> {
+        &mut self.focused_app
     }
 
-    pub(crate) fn write_focused_app(
-        &self,
-    ) -> std::sync::RwLockWriteGuard<'_, Option<(String, AppKind, i32)>> {
-        self.focused_app.write().unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn read_element_cache(&self) -> &HashMap<(String, Option<String>), String> {
+        &self.element_cache
     }
 
-    pub(crate) fn read_element_cache(
-        &self,
-    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, Option<String>), String>> {
-        self.element_cache.read().unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn read_decision_cache(&self) -> &DecisionCache {
+        &self.decision_cache
     }
 
-    pub(crate) fn write_element_cache(
-        &self,
-    ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, Option<String>), String>> {
-        self.element_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub(crate) fn read_decision_cache(&self) -> std::sync::RwLockReadGuard<'_, DecisionCache> {
-        self.decision_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub(crate) fn write_decision_cache(&self) -> std::sync::RwLockWriteGuard<'_, DecisionCache> {
-        self.decision_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn write_decision_cache(&mut self) -> &mut DecisionCache {
+        &mut self.decision_cache
     }
 
     // ── Chrome profile resolution ────────────────────────────────────────
@@ -373,13 +366,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     // ── Convenience accessors ────────────────────────────────────────────
 
     pub(crate) fn focused_app_name(&self) -> Option<String> {
-        self.read_focused_app()
-            .as_ref()
-            .map(|(name, _, _)| name.clone())
+        self.focused_app.as_ref().map(|(name, _, _)| name.clone())
     }
 
     pub(crate) fn focused_app_kind(&self) -> AppKind {
-        self.read_focused_app()
+        self.focused_app
             .as_ref()
             .map(|(_, kind, _)| *kind)
             .unwrap_or(AppKind::Native)
@@ -388,7 +379,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Check whether a CDP connection is active for the currently focused app.
     /// Uses PID to distinguish same-name instances within a single execution.
     pub(crate) fn cdp_connected_to_focused_app(&self) -> bool {
-        match (&self.cdp_connected_app, &*self.read_focused_app()) {
+        match (&self.cdp_connected_app, self.read_focused_app()) {
             (Some((cdp_name, cdp_pid)), Some((focus_name, _, focus_pid))) => {
                 if cdp_name != focus_name {
                     return false;

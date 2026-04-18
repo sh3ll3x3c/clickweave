@@ -1,4 +1,4 @@
-use super::{ExecutorEvent, WorkflowExecutor};
+use super::{ExecutorEvent, TRACE_WRITE_FAILURE_THRESHOLD, WorkflowExecutor};
 use base64::Engine;
 use clickweave_core::{ArtifactKind, NodeRun, RunStatus, TraceEvent, TraceEventKind, TraceLevel};
 use clickweave_llm::ChatBackend;
@@ -89,8 +89,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// (`"tool_call"` / `"cdp_click"` / etc.) — the latter keeps the
     /// existing thin-shim ergonomics while still going through the enum so
     /// unknown strings land in [`TraceEventKind::Unknown`].
+    ///
+    /// Disk-write failures are counted via
+    /// [`WorkflowExecutor::trace_write_failures`]. After
+    /// [`TRACE_WRITE_FAILURE_THRESHOLD`] consecutive failures the
+    /// executor emits exactly one [`ExecutorEvent::Error`] so the UI can
+    /// surface a degraded-persistence warning; later failures are
+    /// counted silently until a successful write clears the streak. This
+    /// avoids a disk-full / permission blip producing gap-filled
+    /// `events.jsonl` files indistinguishable from successful runs.
     pub(crate) fn record_event(
-        &self,
+        &mut self,
         run: Option<&NodeRun>,
         event_type: impl Into<TraceEventKind>,
         payload: Value,
@@ -104,21 +113,58 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             Some(run) => self.storage.append_event(run, &event),
             None => self.storage.append_execution_event(&event),
         };
-        if let Err(e) = result {
-            tracing::warn!("Failed to append trace event: {}", e);
+        match result {
+            Ok(_) => {
+                // A successful write resets the streak so a transient
+                // blip that has since recovered will trigger a fresh
+                // error the next time things go wrong.
+                if self.trace_write_failures > 0 {
+                    self.trace_write_failures = 0;
+                    self.trace_failure_reported = false;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to append trace event: {}", e);
+                self.trace_write_failures = self.trace_write_failures.saturating_add(1);
+                if self.trace_write_failures >= TRACE_WRITE_FAILURE_THRESHOLD
+                    && !self.trace_failure_reported
+                {
+                    self.trace_failure_reported = true;
+                    // Emit directly (not via `emit_error`) so the stored
+                    // executor error text is a single definitive line and
+                    // not re-tracing into the same broken stream.
+                    let msg = format!(
+                        "Trace persistence degraded after {} consecutive failures: {}",
+                        self.trace_write_failures, e
+                    );
+                    error!("{}", msg);
+                    self.emit(ExecutorEvent::Error(msg));
+                }
+            }
         }
     }
 
+    /// Extract the first text block from an MCP tool result.
+    ///
+    /// Returns the **first** `Text` block verbatim and ignores any trailing
+    /// blocks (additional text, images, or unknown content). The rest of
+    /// the executor feeds this string directly to JSON parsers
+    /// (`serde_json::from_str`), and concatenating additional text
+    /// blocks — e.g. a JSON payload followed by trailing prose — would
+    /// silently fail those parses. Callers that need visibility into all
+    /// blocks should iterate [`ToolCallResult::content`] directly.
+    ///
+    /// An empty string is returned when the result carries no text blocks
+    /// (image-only responses, unknown content, or an empty content list).
     pub(crate) fn extract_result_text(result: &ToolCallResult) -> String {
         result
             .content
             .iter()
-            .filter_map(|c| match c {
-                ToolContent::Text { text } => Some(text.as_str()),
+            .find_map(|c| match c {
+                ToolContent::Text { text } => Some(text.clone()),
                 _ => None,
             })
-            .collect::<Vec<_>>()
-            .join("\n")
+            .unwrap_or_default()
     }
 
     /// Truncate text to a max byte length, snapping to a char boundary.
@@ -222,5 +268,81 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         Some(args)
+    }
+}
+
+#[cfg(test)]
+mod extract_result_text_tests {
+    //! `WorkflowExecutor::extract_result_text` is an associated fn with no
+    //! `self` parameter so it's trivially callable via any concrete
+    //! instantiation.
+    use super::*;
+    use clickweave_llm::LlmClient;
+
+    #[test]
+    fn trace_write_failure_threshold_is_three() {
+        assert_eq!(super::super::TRACE_WRITE_FAILURE_THRESHOLD, 3);
+    }
+
+    /// Synthesize a `ToolCallResult` with the given content blocks.
+    fn result_with(content: Vec<ToolContent>) -> ToolCallResult {
+        ToolCallResult {
+            content,
+            is_error: None,
+        }
+    }
+
+    #[test]
+    fn returns_first_text_block_when_multiple_present() {
+        // "First text only" is the chosen contract — concatenating later
+        // blocks would break the many JSON parsers that feed on the
+        // returned string (find_text, find_image, cdp_find_elements,…).
+        let r = result_with(vec![
+            ToolContent::Text {
+                text: "[{\"x\": 1}]".to_string(),
+            },
+            ToolContent::Text {
+                text: "some trailing prose".to_string(),
+            },
+        ]);
+        assert_eq!(
+            WorkflowExecutor::<LlmClient>::extract_result_text(&r),
+            "[{\"x\": 1}]"
+        );
+    }
+
+    #[test]
+    fn skips_non_text_until_first_text() {
+        // When the first block is an image followed by text, we return
+        // the text verbatim — the VLM consumers already pick out images
+        // separately via `save_result_images`.
+        let r = result_with(vec![
+            ToolContent::Image {
+                data: "b64=".to_string(),
+                mime_type: "image/png".to_string(),
+            },
+            ToolContent::Text {
+                text: "the answer".to_string(),
+            },
+        ]);
+        assert_eq!(
+            WorkflowExecutor::<LlmClient>::extract_result_text(&r),
+            "the answer"
+        );
+    }
+
+    #[test]
+    fn empty_when_no_text_block_present() {
+        let r = result_with(vec![ToolContent::Image {
+            data: "b64=".to_string(),
+            mime_type: "image/png".to_string(),
+        }]);
+        assert_eq!(WorkflowExecutor::<LlmClient>::extract_result_text(&r), "");
+    }
+
+    #[test]
+    fn empty_when_content_empty() {
+        let r = result_with(vec![]);
+        assert_eq!(WorkflowExecutor::<LlmClient>::extract_result_text(&r), "");
     }
 }

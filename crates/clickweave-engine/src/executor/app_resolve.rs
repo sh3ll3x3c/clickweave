@@ -32,7 +32,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// live list of apps and windows.  Results are cached so repeated references
     /// to the same user string only incur one LLM call.
     pub(crate) async fn resolve_app_name(
-        &self,
+        &mut self,
         node_id: Uuid,
         user_input: &str,
         mcp: &(impl Mcp + ?Sized),
@@ -40,9 +40,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         cache_mode: CacheMode,
     ) -> ExecutorResult<ResolvedApp> {
         // Check in-memory cache first (populated during this execution).
-        // Clone the cached value out before any .await to avoid holding the
-        // RwLockReadGuard across an await point (which breaks Send).
-        let cached_app = self.read_app_cache().get(user_input).cloned();
+        let cached_app = self.app_cache.get(user_input).cloned();
         if let Some(cached) = cached_app {
             debug!(user_input, resolved_name = %cached.name, "app_cache hit");
             // Verify the cached PID is still valid — the app may have been quit and relaunched
@@ -65,7 +63,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     name: cached.name.clone(),
                     pid: fresh_pid,
                 };
-                self.write_app_cache()
+                self.app_cache
                     .insert(user_input.to_string(), updated.clone());
                 self.log(format!(
                     "App resolved (cached, refreshed PID): \"{}\" -> {} (pid {})",
@@ -78,18 +76,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 user_input,
                 "app_cache hit but app no longer running, evicting"
             );
-            self.write_app_cache().remove(user_input);
+            self.app_cache.remove(user_input);
         }
 
         // Check persistent decision cache (replays Test-mode app name decisions).
         // Skip in Bypass mode so a retry after eviction re-resolves via LLM.
-        // Clone the cached value out before any .await to avoid holding the
-        // RwLockReadGuard across an await point (which breaks Send).
         let ck = decision_cache::cache_key(node_id, user_input, None);
         let cached_app = if cache_mode.is_bypass() {
             None
         } else {
-            self.read_decision_cache().app_resolution.get(&ck).cloned()
+            self.decision_cache.app_resolution.get(&ck).cloned()
         };
         if let Some(cached) = cached_app {
             debug!(user_input, resolved_name = %cached.resolved_name, "decision_cache app hit");
@@ -104,7 +100,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         "App resolved (decision cache): \"{}\" -> {} (pid {})",
                         user_input, resolved.name, resolved.pid
                     ));
-                    self.write_app_cache()
+                    self.app_cache
                         .insert(user_input.to_string(), resolved.clone());
                     return Ok(resolved);
                 }
@@ -249,12 +245,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             user_input, resolved.name, resolved.pid
         ));
 
-        self.write_app_cache()
+        self.app_cache
             .insert(user_input.to_string(), resolved.clone());
 
         // Record in decision cache for replay in Run mode (name only, not PID)
         if self.execution_mode == ExecutionMode::Test {
-            self.write_decision_cache().app_resolution.insert(
+            self.decision_cache.app_resolution.insert(
                 ck,
                 AppResolution {
                     user_input: user_input.to_string(),
@@ -301,7 +297,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn refresh_focused_pid(&mut self, mcp: &(impl Mcp + ?Sized)) {
         use clickweave_core::app_detection::classify_app_by_pid;
 
-        let snapshot = self.read_focused_app().clone();
+        let snapshot = self.focused_app.clone();
         let Some((name, _kind, current_pid)) = snapshot else {
             return;
         };
@@ -321,7 +317,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         };
         let real_kind = classify_app_by_pid(real_pid);
-        *self.write_focused_app() = Some((name.clone(), real_kind, real_pid));
+        self.focused_app = Some((name.clone(), real_kind, real_pid));
 
         if let Some((cdp_name, cdp_pid)) = self.cdp_connected_app.as_mut()
             && cdp_name == &name
@@ -345,8 +341,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Remove a cached app resolution so the next attempt re-resolves via LLM.
-    pub(crate) fn evict_app_cache(&self, user_input: &str) {
-        if self.write_app_cache().remove(user_input).is_some() {
+    pub(crate) fn evict_app_cache(&mut self, user_input: &str) {
+        if self.app_cache.remove(user_input).is_some() {
             debug!(user_input, "evicted app_cache entry");
             self.log(format!("App cache evicted for \"{}\"", user_input));
         }
@@ -354,7 +350,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Evict any app-name and element-name cache entries associated with a
     /// node type, so that retries re-resolve via LLM.
-    pub(crate) fn evict_caches_for_node(&self, node_type: &NodeType) {
+    pub(crate) fn evict_caches_for_node(&mut self, node_type: &NodeType) {
         let key = match node_type {
             NodeType::FocusWindow(p) => {
                 if let FocusTarget::AppName(name) = &p.target {
@@ -393,7 +389,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         if matches!(node_type, NodeType::FocusWindow(_)) {
-            *self.write_focused_app() = None;
+            self.focused_app = None;
         }
     }
 }

@@ -49,7 +49,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_name: &str,
         node_type: &NodeType,
         mcp: &(impl Mcp + ?Sized),
-        retry_ctx: &RetryContext,
+        retry_ctx: &mut RetryContext,
     ) -> VerificationResult {
         // Skip verification for read-only nodes (find_text, find_image,
         // take_screenshot, list_windows). These produce their own definitive
@@ -180,7 +180,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         step_message: &str,
         log_label: &str,
-        retry_ctx: &RetryContext,
+        retry_ctx: &mut RetryContext,
     ) -> (bool, String) {
         let backend = self
             .supervision
@@ -188,16 +188,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .or(self.fast.as_ref())
             .unwrap_or(&self.agent);
 
-        let messages = {
-            let mut history = retry_ctx.write_supervision_history();
-
-            if history.is_empty() {
-                history.push(Message::system(supervision_system_prompt()));
-            }
-
-            history.push(Message::user(step_message));
-            history.clone()
-        };
+        if retry_ctx.supervision_history.is_empty() {
+            retry_ctx
+                .supervision_history
+                .push(Message::system(supervision_system_prompt()));
+        }
+        retry_ctx
+            .supervision_history
+            .push(Message::user(step_message));
+        let messages = retry_ctx.supervision_history.clone();
 
         // Deterministic verdicts: the supervisor's pass/fail output must not
         // drift between retries of the same step for stable replay.
@@ -210,24 +209,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .choices
                     .first()
                     .and_then(|c| c.message.content_text())
-                    .unwrap_or("");
+                    .unwrap_or("")
+                    .to_string();
 
-                {
-                    let mut history = retry_ctx.write_supervision_history();
-                    history.push(Message::assistant(raw));
-                }
+                retry_ctx.supervision_history.push(Message::assistant(&raw));
 
-                parse_verification_response(raw)
+                parse_verification_response(&raw)
             }
             Err(e) => {
                 self.log(format!("Supervision: verification failed: {}", e));
-                {
-                    let mut history = retry_ctx.write_supervision_history();
-                    history.push(Message::assistant(format!(
+                retry_ctx
+                    .supervision_history
+                    .push(Message::assistant(format!(
                         "{{\"passed\": false, \"reasoning\": \"verification error (defaulting to fail): {}\"}}",
                         e
                     )));
-                }
                 (
                     false,
                     format!("Verification error (defaulting to fail): {}", e),

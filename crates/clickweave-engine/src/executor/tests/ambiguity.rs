@@ -66,7 +66,7 @@ fn make_executor_with_vlm(
 
 #[tokio::test]
 async fn resolve_cdp_ambiguity_returns_chosen_uid_and_rects_from_vlm() {
-    let exec = make_executor_with_vlm(vec![
+    let mut exec = make_executor_with_vlm(vec![
         r#"{"chosen_uid": "a2", "reasoning": "second Save is the primary toolbar action"}"#,
     ]);
 
@@ -116,7 +116,7 @@ async fn resolve_cdp_ambiguity_returns_chosen_uid_and_rects_from_vlm() {
 
 #[tokio::test]
 async fn resolve_cdp_ambiguity_propagates_vlm_parse_failure() {
-    let exec = make_executor_with_vlm(vec!["I can't decide, they all look the same."]);
+    let mut exec = make_executor_with_vlm(vec!["I can't decide, they all look the same."]);
 
     let mcp = StubToolProvider::new();
     mcp.push_response(screenshot_response());
@@ -126,16 +126,21 @@ async fn resolve_cdp_ambiguity_propagates_vlm_parse_failure() {
         .resolve_cdp_ambiguity("Click Save", "Save", sample_candidates(), &mcp, None)
         .await
         .expect_err("unparsable VLM response must surface as an error");
+    assert!(
+        matches!(err, ExecutorError::CdpDisambiguationFailed(_)),
+        "expected CdpDisambiguationFailed, got {err:?}"
+    );
     let msg = err.to_string();
     assert!(
-        msg.contains("Disambiguation") && msg.contains("parse"),
-        "error should mention disambiguation+parse: {msg}"
+        msg.to_lowercase().contains("parse"),
+        "error should mention parse: {msg}"
     );
 }
 
 #[tokio::test]
 async fn resolve_cdp_ambiguity_rejects_unknown_uid_from_vlm() {
-    let exec = make_executor_with_vlm(vec![r#"{"chosen_uid": "zz", "reasoning": "fabricated"}"#]);
+    let mut exec =
+        make_executor_with_vlm(vec![r#"{"chosen_uid": "zz", "reasoning": "fabricated"}"#]);
 
     let mcp = StubToolProvider::new();
     mcp.push_response(screenshot_response());
@@ -145,13 +150,16 @@ async fn resolve_cdp_ambiguity_rejects_unknown_uid_from_vlm() {
         .resolve_cdp_ambiguity("Click Save", "Save", sample_candidates(), &mcp, None)
         .await
         .expect_err("unknown chosen_uid must fail");
-    assert!(matches!(err, ExecutorError::Cdp(_)));
+    assert!(
+        matches!(err, ExecutorError::CdpDisambiguationFailed(_)),
+        "expected CdpDisambiguationFailed, got {err:?}"
+    );
     assert!(err.to_string().contains("unknown uid"));
 }
 
 #[tokio::test]
 async fn resolve_cdp_ambiguity_surfaces_screenshot_failure() {
-    let exec = make_executor_with_vlm(vec![]);
+    let mut exec = make_executor_with_vlm(vec![]);
 
     let mcp = StubToolProvider::new();
     // take_screenshot returns is_error: Some(true) three times (retry loop).
@@ -183,8 +191,8 @@ async fn resolve_cdp_element_uid_short_circuits_on_override() {
     use crate::executor::retry_context::RetryContext;
 
     let exec = make_test_executor();
-    let ctx = RetryContext::new();
-    ctx.write_cdp_ambiguity_overrides()
+    let mut ctx = RetryContext::new();
+    ctx.cdp_ambiguity_overrides
         .insert("Save".to_string(), "a2".to_string());
 
     let mcp = StubToolProvider::new();
@@ -200,7 +208,7 @@ async fn resolve_cdp_element_uid_short_circuits_on_override() {
 
 #[tokio::test]
 async fn resolve_cdp_ambiguity_persists_artifacts_when_trace_enabled() {
-    let exec = make_executor_with_vlm(vec![
+    let mut exec = make_executor_with_vlm(vec![
         r#"{"chosen_uid": "a1", "reasoning": "first and only visible"}"#,
     ]);
 

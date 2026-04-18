@@ -107,8 +107,11 @@ async fn resolve_cdp_element_uid_reports_zero_matches() {
         .resolve_cdp_element_uid("Submit", &mcp)
         .await
         .expect_err("missing element must fail");
-    assert!(matches!(err, ExecutorError::Cdp(_)));
-    assert!(err.to_string().contains("No matching element"));
+    assert!(
+        matches!(err, ExecutorError::CdpNotFound { ref target } if target == "Submit"),
+        "expected CdpNotFound for 'Submit', got {err:?}"
+    );
+    assert!(err.to_string().contains("No matching CDP element"));
 }
 
 #[tokio::test]
@@ -426,7 +429,7 @@ async fn execute_cdp_action_returns_resolver_error_when_target_missing() {
     use crate::executor::retry_context::RetryContext;
     use uuid::Uuid;
 
-    let exec = make_test_executor();
+    let mut exec = make_test_executor();
     let mcp = StubToolProvider::new();
     // Health check + three snapshot attempts that never mention the target.
     mcp.push_text_response("1: https://example.com [selected]");
@@ -439,8 +442,11 @@ async fn execute_cdp_action_returns_resolver_error_when_target_missing() {
         .execute_cdp_action("click", Uuid::new_v4(), "Submit", &mcp, None, &ctx)
         .await
         .expect_err("missing element must propagate as an error");
-    assert!(matches!(err, ExecutorError::Cdp(_)));
-    assert!(err.to_string().contains("No matching element"));
+    assert!(
+        matches!(err, ExecutorError::CdpNotFound { ref target } if target == "Submit"),
+        "expected CdpNotFound for 'Submit', got {err:?}"
+    );
+    assert!(err.to_string().contains("No matching CDP element"));
 
     // No native click/move_mouse tool call should appear in the call log.
     let calls = mcp.take_calls();

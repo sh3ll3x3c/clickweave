@@ -17,6 +17,7 @@ use super::recovery::{self, RecoveryAction};
 use super::transition;
 use super::types::*;
 use crate::executor::Mcp;
+use crate::executor::screenshot::{ScreenshotScope, capture_screenshot_for_vlm};
 
 /// Internal error type for the agent loop.
 /// Distinguishes approval-system failure from other runtime errors.
@@ -32,23 +33,30 @@ impl From<anyhow::Error> for LoopError {
     }
 }
 
-/// Extract a text representation from an MCP tool call result.
+/// Extract the first text block from an MCP tool result.
 ///
-/// Text content is included verbatim. Non-text content (images, unknown types)
-/// is represented as a placeholder so the caller knows something was returned.
+/// Returns only the **first** `Text` block — additional text blocks are
+/// ignored. Executor-wide JSON parsing assumes single-text responses, and
+/// concatenating "JSON payload + trailing prose" would silently break
+/// those parses. When the result has no text blocks (image-only,
+/// unknown-only, or empty content), a single bracketed placeholder is
+/// returned so the agent-facing reply is never empty.
 fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
-    result
-        .content
-        .iter()
-        .map(|c| match c {
-            clickweave_mcp::ToolContent::Text { text } => text.clone(),
-            clickweave_mcp::ToolContent::Image { mime_type, .. } => {
-                format!("[image: {}]", mime_type)
-            }
-            clickweave_mcp::ToolContent::Unknown(_) => "[unknown content]".to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    for content in &result.content {
+        if let clickweave_mcp::ToolContent::Text { text } = content {
+            return text.clone();
+        }
+    }
+    // No text block — fall back to a compact placeholder that describes the
+    // first non-text block. Agents otherwise receive an empty reply after a
+    // successful image/unknown-only tool call.
+    match result.content.first() {
+        Some(clickweave_mcp::ToolContent::Image { mime_type, .. }) => {
+            format!("[image: {}]", mime_type)
+        }
+        Some(clickweave_mcp::ToolContent::Unknown(_)) => "[unknown content]".to_string(),
+        _ => String::new(),
+    }
 }
 
 /// Result of requesting user approval for a tool action.
@@ -402,7 +410,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 if !is_repeat && let Some(cached) = self.cache.lookup(&goal, &elements) {
                     // Skip observation tools that may exist in old cache files
                     // from before the write-side filter was added.
-                    if Self::OBSERVATION_TOOLS.contains(&cached.tool_name.as_str()) {
+                    if Self::is_observation_tool(&cached.tool_name, &annotations_by_tool) {
                         debug!(
                             tool = %cached.tool_name,
                             "Skipping cached observation tool (stale entry)"
@@ -420,7 +428,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         // The permission policy decides whether to skip the
                         // prompt (Allow), hard-reject (Deny), or prompt (Ask).
                         let needs_approval =
-                            !Self::OBSERVATION_TOOLS.contains(&cached_tool.as_str());
+                            !Self::is_observation_tool(&cached_tool, &annotations_by_tool);
                         if needs_approval {
                             let policy_action =
                                 self.policy_for(&cached_tool, &cached_args, &annotations_by_tool);
@@ -533,8 +541,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 // stores decisions across runs, so the current
                                 // workflow needs the replayed action as a node.
                                 let produced_node_id_on_replay = if self.config.build_workflow {
-                                    self.add_workflow_node(&cached_tool, &cached_args, &mcp_tools)
-                                        .await
+                                    self.add_workflow_node(
+                                        &cached_tool,
+                                        &cached_args,
+                                        &mcp_tools,
+                                        &annotations_by_tool,
+                                    )
+                                    .await
                                 } else {
                                     None
                                 };
@@ -744,8 +757,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         // Build the workflow node first so we know the node id
                         // to stamp onto the cache entry (for eviction-on-delete).
                         let produced_node_id = if self.config.build_workflow {
-                            self.add_workflow_node(tool_name, arguments, &mcp_tools)
-                                .await
+                            self.add_workflow_node(
+                                tool_name,
+                                arguments,
+                                &mcp_tools,
+                                &annotations_by_tool,
+                            )
+                            .await
                         } else {
                             None
                         };
@@ -753,7 +771,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         // Observation tools provide fresh environmental evidence
                         // that must not be replayed from stale cache entries.
                         if self.config.use_cache
-                            && !Self::OBSERVATION_TOOLS.contains(&tool_name.as_str())
+                            && !Self::is_observation_tool(tool_name, &annotations_by_tool)
                             && !elements.is_empty()
                         {
                             match produced_node_id {
@@ -1287,43 +1305,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         let vision = self.vision?;
 
         // The agent may not have a known focused app (e.g. web-only runs on
-        // CDP) — rely on the MCP tool's default capture path.
-        let result = match mcp
-            .call_tool(
-                "take_screenshot",
-                Some(serde_json::json!({"include_ocr": false})),
-            )
-            .await
-        {
-            Ok(r) if r.is_error != Some(true) => r,
-            Ok(r) => {
-                warn!(
-                    error = %extract_result_text(&r),
-                    "Completion verification: take_screenshot returned error, skipping VLM check",
-                );
-                return None;
-            }
-            Err(e) => {
-                warn!(error = %e, "Completion verification: take_screenshot failed, skipping VLM check");
-                return None;
-            }
-        };
-
-        let Some(raw_b64) = result.content.iter().find_map(|c| match c {
-            clickweave_mcp::ToolContent::Image { data, .. } => Some(data.clone()),
-            _ => None,
-        }) else {
-            warn!(
-                "Completion verification: no image in take_screenshot result, skipping VLM check"
-            );
-            return None;
-        };
-
-        let Some((prepared_b64, mime)) = clickweave_llm::prepare_base64_image_for_vlm(
-            &raw_b64,
-            clickweave_llm::DEFAULT_MAX_DIMENSION,
-        ) else {
-            warn!("Completion verification: failed to prepare screenshot for VLM, skipping check");
+        // CDP) — rely on the MCP tool's default capture path. Any capture
+        // failure falls through to the normal Completed path, per the
+        // fail-through contract documented on `verify_completion`.
+        let Some((prepared_b64, mime)) =
+            capture_screenshot_for_vlm(mcp, ScreenshotScope::Focused).await
+        else {
+            warn!("Completion verification: screenshot capture or prep failed, skipping VLM check",);
             return None;
         };
 
@@ -1604,7 +1592,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 // everything else, the permission policy decides whether
                 // to prompt (Ask), skip the prompt (Allow), or hard-reject
                 // (Deny).
-                let needs_approval = !Self::OBSERVATION_TOOLS.contains(&tc.function.name.as_str());
+                let needs_approval =
+                    !Self::is_observation_tool(&tc.function.name, annotations_by_tool);
                 if needs_approval {
                     let policy_action =
                         self.policy_for(&tc.function.name, &args, annotations_by_tool);
@@ -1694,8 +1683,15 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         }
     }
 
-    /// Tools that are observation-only — used by the agent to understand the
-    /// screen but should NOT become workflow nodes.
+    /// Hardcoded fallback list of observation-only tools.
+    ///
+    /// A tool classed as observation is exempt from approval prompts and is
+    /// neither cached nor turned into a workflow node. The list exists to
+    /// cover MCP manifests that predate `readOnlyHint` annotations — once
+    /// annotations flow in, the union with `read_only_hint == Some(true)`
+    /// supersedes this list. See [`Self::is_observation_tool`] for the
+    /// full precedence (hardcoded OR annotation, minus
+    /// `CONFIRMABLE_TOOLS`).
     const OBSERVATION_TOOLS: &'static [&'static str] = &[
         "take_screenshot",
         "list_apps",
@@ -1715,6 +1711,40 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         "android_list_devices",
     ];
 
+    /// Decide whether a tool should be treated as observation-only for the
+    /// purposes of approval gating, cache eligibility, and workflow-node
+    /// inclusion.
+    ///
+    /// Precedence:
+    /// 1. Any tool in [`clickweave_core::permissions::CONFIRMABLE_TOOLS`]
+    ///    (`launch_app`, `quit_app`, `cdp_connect`) is **never** observation
+    ///    — destructive side effects that always warrant user consent.
+    /// 2. Otherwise, observation if the tool appears in
+    ///    [`Self::OBSERVATION_TOOLS`] (hardcoded allowlist) **or** the MCP
+    ///    server advertises `readOnlyHint = true` for it.
+    ///
+    /// Callers hand in a reference to the per-run `annotations_by_tool`
+    /// index so the decision is consistent with the permission policy
+    /// evaluated elsewhere — both branches read the same `ToolAnnotations`.
+    fn is_observation_tool(
+        tool_name: &str,
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+    ) -> bool {
+        if clickweave_core::permissions::CONFIRMABLE_TOOLS
+            .iter()
+            .any(|(n, _)| *n == tool_name)
+        {
+            return false;
+        }
+        if Self::OBSERVATION_TOOLS.contains(&tool_name) {
+            return true;
+        }
+        annotations_by_tool
+            .get(tool_name)
+            .and_then(|a| a.read_only_hint)
+            .unwrap_or(false)
+    }
+
     /// Add a workflow node for the executed tool call. Returns the UUID
     /// of the produced node, or `None` if the tool was observation-only
     /// or the tool-to-node-type mapping failed.
@@ -1724,8 +1754,9 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         tool_name: &str,
         arguments: &Value,
         known_tools: &[Value],
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
     ) -> Option<uuid::Uuid> {
-        if Self::OBSERVATION_TOOLS.contains(&tool_name) {
+        if Self::is_observation_tool(tool_name, annotations_by_tool) {
             return None;
         }
         let node_type = match tool_invocation_to_node_type(tool_name, arguments, known_tools) {
@@ -1885,5 +1916,175 @@ mod resolve_cdp_target_tests {
         let result_text = serde_json::json!({ "app_name": "", "pid": 0 }).to_string();
         let resolved = resolve(arguments, &result_text).await;
         assert_eq!(resolved, Some(("Chrome".to_string(), None)));
+    }
+}
+
+#[cfg(test)]
+mod observation_union_tests {
+    //! Coverage for [`AgentRunner::is_observation_tool`], the
+    //! hardcoded-list ∪ readOnlyHint ∖ CONFIRMABLE_TOOLS predicate that
+    //! governs approval bypass, cache eligibility, and workflow-node
+    //! inclusion. Only the type parameter `B` of `AgentRunner` matters
+    //! for compile-time dispatch; the predicate never touches `&self`,
+    //! so the tests call it through a concrete instantiation.
+    use super::*;
+    use clickweave_llm::{ChatOptions, ChatResponse};
+
+    /// Zero-sized `ChatBackend` used only to instantiate
+    /// `AgentRunner::<Backend>::is_observation_tool` at the call site.
+    struct Backend;
+
+    impl ChatBackend for Backend {
+        async fn chat_with_options(
+            &self,
+            _messages: &[Message],
+            _tools: Option<&[Value]>,
+            _options: &ChatOptions,
+        ) -> anyhow::Result<ChatResponse> {
+            unimplemented!()
+        }
+
+        fn model_name(&self) -> &str {
+            "observation-test-backend"
+        }
+    }
+
+    fn is_observation(
+        tool_name: &str,
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+    ) -> bool {
+        AgentRunner::<Backend>::is_observation_tool(tool_name, annotations_by_tool)
+    }
+
+    #[test]
+    fn hardcoded_tool_is_observation_without_annotations() {
+        let annotations: HashMap<String, ToolAnnotations> = HashMap::new();
+        assert!(is_observation("take_screenshot", &annotations));
+        assert!(is_observation("cdp_find_elements", &annotations));
+    }
+
+    #[test]
+    fn readonly_hint_makes_novel_tool_observation() {
+        // Tool not in the hardcoded list becomes observation once the MCP
+        // manifest advertises `readOnlyHint = true`.
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "custom_inspect".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(is_observation("custom_inspect", &annotations));
+    }
+
+    #[test]
+    fn missing_readonly_hint_is_not_observation() {
+        // A tool with no annotations and not in the hardcoded list must
+        // fall through to approval — the default-to-Ask path in the
+        // permission policy depends on it.
+        let annotations: HashMap<String, ToolAnnotations> = HashMap::new();
+        assert!(!is_observation("click", &annotations));
+        assert!(!is_observation("type_text", &annotations));
+    }
+
+    #[test]
+    fn readonly_hint_false_is_not_observation() {
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "custom_click".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(false),
+                ..Default::default()
+            },
+        );
+        assert!(!is_observation("custom_click", &annotations));
+    }
+
+    #[test]
+    fn confirmable_tool_always_requires_approval_even_with_readonly_hint() {
+        // Guardrail: the MCP server could (mis)advertise `launch_app` as
+        // read-only, but it still has user-visible side effects. Our
+        // hardcoded destructive list wins regardless.
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "launch_app".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(!is_observation("launch_app", &annotations));
+        // Same for cdp_connect and quit_app:
+        annotations.insert(
+            "cdp_connect".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        annotations.insert(
+            "quit_app".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(!is_observation("cdp_connect", &annotations));
+        assert!(!is_observation("quit_app", &annotations));
+    }
+
+    #[test]
+    fn extract_result_text_returns_first_text_block_only() {
+        // Two text blocks: the helper must return the first verbatim and
+        // ignore the second. Joining with \n would silently break JSON
+        // parsers downstream when the second block is trailing prose.
+        let result = clickweave_mcp::ToolCallResult {
+            content: vec![
+                clickweave_mcp::ToolContent::Text {
+                    text: "[{\"x\": 1}]".to_string(),
+                },
+                clickweave_mcp::ToolContent::Text {
+                    text: "trailing commentary".to_string(),
+                },
+            ],
+            is_error: None,
+        };
+        assert_eq!(super::extract_result_text(&result), "[{\"x\": 1}]");
+    }
+
+    #[test]
+    fn extract_result_text_placeholder_for_image_only_result() {
+        let result = clickweave_mcp::ToolCallResult {
+            content: vec![clickweave_mcp::ToolContent::Image {
+                data: "b64data".to_string(),
+                mime_type: "image/png".to_string(),
+            }],
+            is_error: None,
+        };
+        let text = super::extract_result_text(&result);
+        assert!(text.contains("image"), "got {text:?}");
+        assert!(text.contains("image/png"), "got {text:?}");
+    }
+
+    #[test]
+    fn extract_result_text_empty_for_no_content() {
+        let result = clickweave_mcp::ToolCallResult {
+            content: vec![],
+            is_error: None,
+        };
+        assert_eq!(super::extract_result_text(&result), "");
+    }
+
+    #[test]
+    fn confirmable_tool_overrides_hardcoded_observation_list() {
+        // Belt-and-braces: even if someone adds a CONFIRMABLE tool to
+        // OBSERVATION_TOOLS by mistake, the guardrail still fires.
+        // (`launch_app` is not in `OBSERVATION_TOOLS` today, but this test
+        // pins the precedence rule independent of the specific list.)
+        let annotations: HashMap<String, ToolAnnotations> = HashMap::new();
+        assert!(!is_observation("launch_app", &annotations));
+        assert!(!is_observation("quit_app", &annotations));
+        assert!(!is_observation("cdp_connect", &annotations));
     }
 }

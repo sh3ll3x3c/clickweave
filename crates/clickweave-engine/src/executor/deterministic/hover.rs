@@ -7,12 +7,12 @@ use uuid::Uuid;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn resolve_hover_target(
-        &self,
+        &mut self,
         node_id: Uuid,
         mcp: &(impl Mcp + ?Sized),
         params: &HoverParams,
         node_run: &mut Option<&mut NodeRun>,
-        retry_ctx: &RetryContext,
+        retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<NodeType> {
         let target = params.target.as_ref().map(|t| t.text()).ok_or_else(|| {
             ExecutorError::ClickTarget("resolve_hover_target called with no target".to_string())

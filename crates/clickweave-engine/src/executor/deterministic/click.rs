@@ -11,12 +11,12 @@ use uuid::Uuid;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn resolve_click_target(
-        &self,
+        &mut self,
         node_id: Uuid,
         mcp: &(impl Mcp + ?Sized),
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
-        retry_ctx: &RetryContext,
+        retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<NodeType> {
         let target = params.target.as_ref().map(|t| t.text()).ok_or_else(|| {
             ExecutorError::ClickTarget("resolve_click_target called with no target".to_string())
@@ -36,12 +36,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ///
     /// Shared by click and hover target resolution. Returns `(x, y)` coordinates.
     pub(in crate::executor) async fn resolve_target_by_text(
-        &self,
+        &mut self,
         node_id: Uuid,
         target: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: &mut Option<&mut NodeRun>,
-        retry_ctx: &RetryContext,
+        retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<(f64, f64)> {
         let scoped_app = self.focused_app_name();
 
@@ -197,7 +197,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Preserves the original call arguments (e.g. `app_name`, `match_mode`)
     /// and only replaces the `text` field with the resolved name.
     pub(in crate::executor) async fn try_resolve_find_text(
-        &self,
+        &mut self,
         node_id: Uuid,
         original_args: &Value,
         original_result_text: &str,
@@ -228,7 +228,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// if resolution wasn't possible. This is the pure-logic core of the
     /// find_text fallback path, separated from the MCP I/O for testability.
     pub(crate) async fn prepare_find_text_retry(
-        &self,
+        &mut self,
         node_id: Uuid,
         original_args: &Value,
         original_result_text: &str,

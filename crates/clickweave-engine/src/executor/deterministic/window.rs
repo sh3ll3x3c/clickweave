@@ -28,7 +28,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// screen coordinates by querying the focused window's bounds and applying
     /// the standard macOS traffic-light button offset.
     pub(in crate::executor) async fn resolve_window_control_click(
-        &self,
+        &mut self,
         action: clickweave_core::WindowControlAction,
         mcp: &(impl Mcp + ?Sized),
         params: &ClickParams,

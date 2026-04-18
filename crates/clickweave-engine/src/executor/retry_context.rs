@@ -1,7 +1,6 @@
 use clickweave_core::NodeVerdict;
 use clickweave_llm::Message;
 use std::collections::HashMap;
-use std::sync::RwLock;
 use uuid::Uuid;
 
 /// Per-run transient state that is meaningful only during a single graph walk.
@@ -9,24 +8,32 @@ use uuid::Uuid;
 /// Created at the start of `run_with_mcp()` and threaded through methods that
 /// need supervision retry state and verdicts. This keeps `WorkflowExecutor`
 /// free of fields whose lifetimes are shorter than the executor itself.
+///
+/// Mutation goes through `&mut RetryContext`: the context is owned by the
+/// single-threaded run loop, so there is no concurrent access to guard against.
 pub(crate) struct RetryContext {
     /// Hint from a previous supervision failure, threaded into disambiguation
     /// prompts on retry so the LLM picks a different match.
     pub supervision_hint: Option<String>,
 
     /// Native click disambiguation indices already tried during supervision retries.
-    pub tried_click_indices: RwLock<Vec<usize>>,
+    pub tried_click_indices: Vec<usize>,
 
     /// CDP element UIDs already tried during supervision retries.
-    pub tried_cdp_uids: RwLock<Vec<String>>,
+    pub tried_cdp_uids: Vec<String>,
 
     /// Text from the most recent TypeText node on a Chrome/CDP app when it
     /// looks like a URL (e.g. `gmail.com`, `https://...`).
     /// Arms the following `press_key return` intercept.
     pub last_typed_url: Option<String>,
 
-    /// Persistent conversation history for supervision across the entire run.
-    pub supervision_history: RwLock<Vec<Message>>,
+    /// Supervision conversation history for the currently executing node.
+    /// Cleared at the start of each node (see `reset_for_next_node`) so a
+    /// long workflow does not accumulate unrelated prior visual
+    /// observations into later supervision verdicts. Each verdict is
+    /// self-contained: the supervisor looks at this step's screenshot and
+    /// decides whether this step worked.
+    pub supervision_history: Vec<Message>,
 
     /// Verdicts from Verification-role nodes, accumulated during execution.
     pub runtime_verdicts: Vec<NodeVerdict>,
@@ -55,67 +62,32 @@ pub(crate) struct RetryContext {
     /// Keyed by the resolver target string; the CDP resolver consults this map
     /// before taking a snapshot so the follow-up retry clicks the chosen
     /// element instead of re-raising the same ambiguity error.
-    pub cdp_ambiguity_overrides: RwLock<HashMap<String, String>>,
+    pub cdp_ambiguity_overrides: HashMap<String, String>,
 }
 
 impl RetryContext {
     pub fn new() -> Self {
         Self {
             supervision_hint: None,
-            tried_click_indices: RwLock::new(Vec::new()),
-            tried_cdp_uids: RwLock::new(Vec::new()),
+            tried_click_indices: Vec::new(),
+            tried_cdp_uids: Vec::new(),
             last_typed_url: None,
-            supervision_history: RwLock::new(Vec::new()),
+            supervision_history: Vec::new(),
             runtime_verdicts: Vec::new(),
             completed_node_ids: Vec::new(),
             cache_mode: super::app_resolve::CacheMode::UseCache,
             focus_dirty: false,
             last_tool_result: None,
-            cdp_ambiguity_overrides: RwLock::new(HashMap::new()),
+            cdp_ambiguity_overrides: HashMap::new(),
         }
     }
 
-    pub fn read_cdp_ambiguity_overrides(
-        &self,
-    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, String>> {
-        self.cdp_ambiguity_overrides
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub fn write_cdp_ambiguity_overrides(
-        &self,
-    ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, String>> {
-        self.cdp_ambiguity_overrides
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    // ── RwLock helpers ───────────────────────────────────────────────────
-    // Centralize the `.unwrap_or_else(|e| e.into_inner())` poison-recovery
-    // pattern so call sites stay concise.
-
-    pub fn read_tried_click_indices(&self) -> std::sync::RwLockReadGuard<'_, Vec<usize>> {
-        self.tried_click_indices
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub fn write_tried_click_indices(&self) -> std::sync::RwLockWriteGuard<'_, Vec<usize>> {
-        self.tried_click_indices
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub fn write_tried_cdp_uids(&self) -> std::sync::RwLockWriteGuard<'_, Vec<String>> {
-        self.tried_cdp_uids
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub fn write_supervision_history(&self) -> std::sync::RwLockWriteGuard<'_, Vec<Message>> {
-        self.supervision_history
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
+    /// Clear supervision history between workflow nodes. The supervisor
+    /// prompt stays self-contained per step — prior visual observations
+    /// from unrelated earlier steps inflate the prompt and confuse the
+    /// verdict. The system prompt is re-seeded lazily inside
+    /// `judge_with_history` when the next step runs.
+    pub fn reset_supervision_history(&mut self) {
+        self.supervision_history.clear();
     }
 }

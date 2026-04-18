@@ -13,47 +13,47 @@ use super::super::ResolvedApp;
 
 #[test]
 fn evict_app_cache_removes_entry() {
-    let exec = make_test_executor();
+    let mut exec = make_test_executor();
 
     // Insert a resolved app into the cache
-    exec.app_cache.write().unwrap().insert(
+    exec.app_cache.insert(
         "chrome".to_string(),
         ResolvedApp {
             name: "Google Chrome".to_string(),
             pid: 1234,
         },
     );
-    assert!(exec.app_cache.read().unwrap().contains_key("chrome"));
+    assert!(exec.app_cache.contains_key("chrome"));
 
     // Evict it
     exec.evict_app_cache("chrome");
     assert!(
-        !exec.app_cache.read().unwrap().contains_key("chrome"),
+        !exec.app_cache.contains_key("chrome"),
         "cache entry should be removed after eviction"
     );
 }
 
 #[test]
 fn evict_app_cache_noop_for_missing_key() {
-    let exec = make_test_executor();
+    let mut exec = make_test_executor();
 
     // Evicting a key that was never cached should not panic
     exec.evict_app_cache("nonexistent");
-    assert!(exec.app_cache.read().unwrap().is_empty());
+    assert!(exec.app_cache.is_empty());
 }
 
 #[test]
 fn evict_app_cache_leaves_other_entries() {
-    let exec = make_test_executor();
+    let mut exec = make_test_executor();
 
-    exec.app_cache.write().unwrap().insert(
+    exec.app_cache.insert(
         "chrome".to_string(),
         ResolvedApp {
             name: "Google Chrome".to_string(),
             pid: 1234,
         },
     );
-    exec.app_cache.write().unwrap().insert(
+    exec.app_cache.insert(
         "firefox".to_string(),
         ResolvedApp {
             name: "Firefox".to_string(),
@@ -64,19 +64,19 @@ fn evict_app_cache_leaves_other_entries() {
     exec.evict_app_cache("chrome");
 
     assert!(
-        !exec.app_cache.read().unwrap().contains_key("chrome"),
+        !exec.app_cache.contains_key("chrome"),
         "evicted entry should be gone"
     );
     assert!(
-        exec.app_cache.read().unwrap().contains_key("firefox"),
+        exec.app_cache.contains_key("firefox"),
         "other entries should remain"
     );
 }
 
 #[test]
 fn evict_app_cache_for_focus_window_node() {
-    let exec = make_test_executor();
-    exec.app_cache.write().unwrap().insert(
+    let mut exec = make_test_executor();
+    exec.app_cache.insert(
         "chrome".to_string(),
         ResolvedApp {
             name: "Google Chrome".to_string(),
@@ -92,13 +92,13 @@ fn evict_app_cache_for_focus_window_node() {
         ..Default::default()
     });
     exec.evict_caches_for_node(&node);
-    assert!(!exec.app_cache.read().unwrap().contains_key("chrome"));
+    assert!(!exec.app_cache.contains_key("chrome"));
 }
 
 #[test]
 fn evict_app_cache_for_screenshot_node() {
-    let exec = make_test_executor();
-    exec.app_cache.write().unwrap().insert(
+    let mut exec = make_test_executor();
+    exec.app_cache.insert(
         "safari".to_string(),
         ResolvedApp {
             name: "Safari".to_string(),
@@ -112,13 +112,13 @@ fn evict_app_cache_for_screenshot_node() {
         include_ocr: true,
     });
     exec.evict_caches_for_node(&node);
-    assert!(!exec.app_cache.read().unwrap().contains_key("safari"));
+    assert!(!exec.app_cache.contains_key("safari"));
 }
 
 #[test]
 fn evict_app_cache_for_unrelated_node_is_noop() {
-    let exec = make_test_executor();
-    exec.app_cache.write().unwrap().insert(
+    let mut exec = make_test_executor();
+    exec.app_cache.insert(
         "chrome".to_string(),
         ResolvedApp {
             name: "Google Chrome".to_string(),
@@ -128,7 +128,7 @@ fn evict_app_cache_for_unrelated_node_is_noop() {
 
     let node = NodeType::Click(clickweave_core::ClickParams::default());
     exec.evict_caches_for_node(&node);
-    assert!(exec.app_cache.read().unwrap().contains_key("chrome"));
+    assert!(exec.app_cache.contains_key("chrome"));
 }
 
 // ---------------------------------------------------------------------------
@@ -137,15 +137,13 @@ fn evict_app_cache_for_unrelated_node_is_noop() {
 
 #[test]
 fn evict_element_cache_for_click_node() {
-    let exec = make_test_executor();
+    let mut exec = make_test_executor();
     let cache_key = ("×".to_string(), Some("Calculator".to_string()));
     exec.element_cache
-        .write()
-        .unwrap()
         .insert(cache_key.clone(), "Multiply".to_string());
 
     // Set focused_app so eviction uses the right cache key
-    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native, 0));
+    exec.focused_app = Some(("Calculator".to_string(), AppKind::Native, 0));
 
     let node = NodeType::Click(ClickParams {
         target: Some(ClickTarget::Text {
@@ -155,18 +153,16 @@ fn evict_element_cache_for_click_node() {
     });
     exec.evict_caches_for_node(&node);
     assert!(
-        !exec.element_cache.read().unwrap().contains_key(&cache_key),
+        !exec.element_cache.contains_key(&cache_key),
         "element cache entry should be evicted for Click node"
     );
 }
 
 #[test]
 fn evict_element_cache_for_find_text_node() {
-    let exec = make_test_executor();
+    let mut exec = make_test_executor();
     let cache_key = ("÷".to_string(), None);
     exec.element_cache
-        .write()
-        .unwrap()
         .insert(cache_key.clone(), "Divide".to_string());
 
     let node = NodeType::FindText(FindTextParams {
@@ -175,18 +171,16 @@ fn evict_element_cache_for_find_text_node() {
     });
     exec.evict_caches_for_node(&node);
     assert!(
-        !exec.element_cache.read().unwrap().contains_key(&cache_key),
+        !exec.element_cache.contains_key(&cache_key),
         "element cache entry should be evicted for FindText node"
     );
 }
 
 #[test]
 fn evict_element_cache_noop_for_unrelated_node() {
-    let exec = make_test_executor();
+    let mut exec = make_test_executor();
     let cache_key = ("×".to_string(), Some("Calculator".to_string()));
     exec.element_cache
-        .write()
-        .unwrap()
         .insert(cache_key.clone(), "Multiply".to_string());
 
     let node = NodeType::TypeText(TypeTextParams {
@@ -195,21 +189,19 @@ fn evict_element_cache_noop_for_unrelated_node() {
     });
     exec.evict_caches_for_node(&node);
     assert!(
-        exec.element_cache.read().unwrap().contains_key(&cache_key),
+        exec.element_cache.contains_key(&cache_key),
         "element cache should not be evicted for unrelated node type"
     );
 }
 
 #[test]
 fn evict_element_cache_for_mcp_find_text_node() {
-    let exec = make_test_executor();
+    let mut exec = make_test_executor();
     let cache_key = ("×".to_string(), Some("Calculator".to_string()));
     exec.element_cache
-        .write()
-        .unwrap()
         .insert(cache_key.clone(), "Multiply".to_string());
 
-    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native, 0));
+    exec.focused_app = Some(("Calculator".to_string(), AppKind::Native, 0));
 
     let node = NodeType::McpToolCall(McpToolCallParams {
         tool_name: "find_text".to_string(),
@@ -217,22 +209,20 @@ fn evict_element_cache_for_mcp_find_text_node() {
     });
     exec.evict_caches_for_node(&node);
     assert!(
-        !exec.element_cache.read().unwrap().contains_key(&cache_key),
+        !exec.element_cache.contains_key(&cache_key),
         "element cache entry should be evicted for McpToolCall(find_text) node"
     );
 }
 
 #[test]
 fn evict_element_cache_for_mcp_find_text_with_explicit_app_name() {
-    let exec = make_test_executor();
+    let mut exec = make_test_executor();
     // Cache keyed to explicit app_name "Safari", not focused_app "Calculator"
     let cache_key = ("link".to_string(), Some("Safari".to_string()));
     exec.element_cache
-        .write()
-        .unwrap()
         .insert(cache_key.clone(), "AXLink".to_string());
 
-    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native, 0));
+    exec.focused_app = Some(("Calculator".to_string(), AppKind::Native, 0));
 
     let node = NodeType::McpToolCall(McpToolCallParams {
         tool_name: "find_text".to_string(),
@@ -240,7 +230,7 @@ fn evict_element_cache_for_mcp_find_text_with_explicit_app_name() {
     });
     exec.evict_caches_for_node(&node);
     assert!(
-        !exec.element_cache.read().unwrap().contains_key(&cache_key),
+        !exec.element_cache.contains_key(&cache_key),
         "element cache should use explicit app_name from arguments, not focused_app"
     );
 }

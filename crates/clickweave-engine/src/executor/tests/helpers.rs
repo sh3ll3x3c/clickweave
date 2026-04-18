@@ -33,6 +33,15 @@ impl ChatBackend for StubBackend {
 /// Helper to create a `WorkflowExecutor<StubBackend>` with minimal setup.
 pub(super) fn make_test_executor() -> WorkflowExecutor<StubBackend> {
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    make_test_executor_with_event_tx(tx)
+}
+
+/// Variant that keeps the event channel open so tests can assert emitted
+/// events. The executor holds the `Sender`; the caller keeps the
+/// `Receiver` alive for the lifetime of the test.
+pub(super) fn make_test_executor_with_event_tx(
+    tx: tokio::sync::mpsc::Sender<crate::executor::ExecutorEvent>,
+) -> WorkflowExecutor<StubBackend> {
     let workflow = Workflow::default();
     let temp_dir = std::env::temp_dir().join("clickweave_test_executor");
     let storage = RunStorage::new_app_data(&temp_dir, &workflow.name, workflow.id);
@@ -267,11 +276,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             project_path,
             event_tx,
             storage,
-            app_cache: RwLock::new(HashMap::new()),
-            focused_app: RwLock::new(None),
-            element_cache: RwLock::new(HashMap::new()),
+            app_cache: HashMap::new(),
+            focused_app: None,
+            element_cache: HashMap::new(),
             context: RuntimeContext::new(),
-            decision_cache: RwLock::new(decision_cache),
+            decision_cache,
             cdp_connected_app: None,
             cdp_selected_pages: HashMap::new(),
             cancel_token,
@@ -280,6 +289,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ),
             chrome_profiles: Vec::new(),
             supervision_delay_ms: 500,
+            trace_write_failures: 0,
+            trace_failure_reported: false,
         }
     }
 }

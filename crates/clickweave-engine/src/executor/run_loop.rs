@@ -97,7 +97,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Evict click disambiguation entries for the predecessor so the
         // re-executed click doesn't replay the same (wrong) cached choice.
         let prefix = format!("{}\0", pred_id);
-        self.write_decision_cache()
+        self.decision_cache
             .click_disambiguation
             .retain(|k, _| !k.starts_with(&prefix));
         match self
@@ -171,9 +171,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     // Plain retries should not inherit supervision-driven
                     // candidate exclusions — clear disambiguation state for a
                     // fresh start on each plain retry.
-                    retry_ctx.write_tried_click_indices().clear();
-                    retry_ctx.write_tried_cdp_uids().clear();
-                    retry_ctx.write_cdp_ambiguity_overrides().clear();
+                    //
+                    // CDP failure taxonomy: `CdpSnapshotFailed` is transient
+                    // (DOM may still be settling), so retrying is
+                    // appropriate. `CdpNotFound` is borderline — the page
+                    // may finish rendering between attempts and expose the
+                    // missing element, so we keep retrying it rather than
+                    // short-circuiting. `CdpDisambiguationFailed` can only
+                    // be produced from the `CdpAmbiguousTarget` branch
+                    // below, which runs *before* this retry path; it never
+                    // reaches here in practice.
+                    retry_ctx.tried_click_indices.clear();
+                    retry_ctx.tried_cdp_uids.clear();
+                    retry_ctx.cdp_ambiguity_overrides.clear();
                     self.evict_caches_for_node(node_type);
                     retry_ctx.cache_mode = super::app_resolve::CacheMode::Bypass;
                     self.record_event(
@@ -345,7 +355,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             // hint can drive a different disambiguation on
                             // the retry. Without this, the resolver would
                             // short-circuit on the stale override.
-                            ctx.write_cdp_ambiguity_overrides().clear();
+                            ctx.cdp_ambiguity_overrides.clear();
                             self.evict_caches_for_node(node_type);
                             ctx.cache_mode = super::app_resolve::CacheMode::Bypass;
                             self.record_event(
@@ -379,9 +389,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     // Reset supervision state so the manual retry gets a
                                     // fresh start with the full auto-retry budget.
                                     supervision_attempts = 0;
-                                    ctx.write_tried_click_indices().clear();
-                                    ctx.write_tried_cdp_uids().clear();
-                                    ctx.write_cdp_ambiguity_overrides().clear();
+                                    ctx.tried_click_indices.clear();
+                                    ctx.tried_cdp_uids.clear();
+                                    ctx.cdp_ambiguity_overrides.clear();
                                     ctx.supervision_hint = None;
                                     self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
                                         .await;
@@ -413,7 +423,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     // Agent-driven disambiguation: pick one candidate, stash
                     // the uid in the retry context, and re-run the node so the
                     // resolver short-circuits to the chosen uid.
-                    let already_tried = ctx.read_cdp_ambiguity_overrides().contains_key(&target);
+                    let already_tried = ctx.cdp_ambiguity_overrides.contains_key(&target);
                     if already_tried {
                         let msg = format!(
                             "Disambiguation already attempted for '{}' but resolver remained ambiguous",
@@ -449,7 +459,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 target,
                                 Self::truncate_for_trace(&res.reasoning, 200)
                             ));
-                            ctx.write_cdp_ambiguity_overrides()
+                            ctx.cdp_ambiguity_overrides
                                 .insert(target.clone(), res.chosen_uid.clone());
                             self.emit(ExecutorEvent::AmbiguityResolved {
                                 node_id,
@@ -599,12 +609,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // Regular execution nodes
             self.emit(ExecutorEvent::NodeStarted(node_id));
             ctx.supervision_hint = None;
-            ctx.write_tried_click_indices().clear();
-            ctx.write_tried_cdp_uids().clear();
+            ctx.tried_click_indices.clear();
+            ctx.tried_cdp_uids.clear();
             // Disambiguation overrides are per-node: a later node that happens
             // to share a target label (e.g. "Save") must re-resolve against
             // its own page rather than reuse an earlier node's chosen uid.
-            ctx.write_cdp_ambiguity_overrides().clear();
+            ctx.cdp_ambiguity_overrides.clear();
+            // Supervision history is scoped to the current node. Prior
+            // verdicts' visual observations otherwise pile into later
+            // prompts and confuse the supervisor.
+            ctx.reset_supervision_history();
             self.log(format!(
                 "Executing node: {} ({})",
                 node_name,
@@ -725,7 +739,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Skipped when the privacy kill switch is off so no cache
         // file is written to the workflow-level dir.
         if self.execution_mode == ExecutionMode::Test && self.storage.is_persistent() {
-            let save_result = self.read_decision_cache().save(&self.storage.cache_path());
+            let save_result = self.decision_cache.save(&self.storage.cache_path());
             match save_result {
                 Ok(()) => self.log("Decision cache saved"),
                 Err(e) => self.log(format!("Warning: failed to save decision cache: {}", e)),

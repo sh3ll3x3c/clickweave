@@ -2,9 +2,11 @@ pub(crate) mod best_effort;
 pub(crate) mod cdp;
 mod click;
 mod hover;
+pub(crate) mod tool_result;
 mod window;
 
 pub(crate) use best_effort::best_effort_tool_call;
+pub(crate) use tool_result::ToolResult;
 
 use super::retry_context::RetryContext;
 use super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
@@ -340,7 +342,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     self.log("Chrome URL navigation: baseline unavailable, skipping observation");
                 }
 
-                return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+                return Self::set_tool_result_and_parse(
+                    retry_ctx,
+                    ToolResult::from_text(result_text),
+                );
             }
             retry_ctx.last_typed_url = None;
         } else {
@@ -379,7 +384,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             }),
                         );
                         tokio::time::sleep(tokio::time::Duration::from_millis(p.dwell_ms)).await;
-                        return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+                        return Self::set_tool_result_and_parse(
+                            retry_ctx,
+                            ToolResult::from_text(result_text),
+                        );
                     }
                     Err(e) => {
                         self.log(format!("CDP hover failed, falling back to native: {e}"));
@@ -432,7 +440,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // Dwell: hold position for the configured duration
             tokio::time::sleep(tokio::time::Duration::from_millis(p.dwell_ms)).await;
 
-            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+            return Self::set_tool_result_and_parse(retry_ctx, ToolResult::from_text(result_text));
         }
 
         if let NodeType::FindApp(p) = node_type {
@@ -454,7 +462,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     retry_ctx,
                 )
                 .await?;
-            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+            return Self::set_tool_result_and_parse(retry_ctx, ToolResult::from_text(result_text));
         }
 
         // CDP Hover: same resolve path as CdpClick
@@ -468,7 +476,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     retry_ctx,
                 )
                 .await?;
-            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+            return Self::set_tool_result_and_parse(retry_ctx, ToolResult::from_text(result_text));
         }
 
         // CDP Fill: resolve target against the live snapshot so a UID baked in
@@ -500,7 +508,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "text_len": result_text.len(),
                 }),
             );
-            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+            return Self::set_tool_result_and_parse(retry_ctx, ToolResult::from_text(result_text));
         }
 
         // CDP Type: call cdp_type_text directly
@@ -529,7 +537,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "text_len": result_text.len(),
                 }),
             );
-            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+            return Self::set_tool_result_and_parse(retry_ctx, ToolResult::from_text(result_text));
         }
 
         // CDP Press Key: call cdp_press_key directly
@@ -561,7 +569,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "text_len": result_text.len(),
                 }),
             );
-            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+            return Self::set_tool_result_and_parse(retry_ctx, ToolResult::from_text(result_text));
         }
 
         if let NodeType::AppDebugKitOp(p) = node_type {
@@ -593,7 +601,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "text_len": result_text.len(),
                 }),
             );
-            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+            return Self::set_tool_result_and_parse(retry_ctx, ToolResult::from_text(result_text));
         }
 
         if let NodeType::McpToolCall(p) = node_type
@@ -636,7 +644,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 "result": Self::truncate_for_trace(&result_text, 8192),
                             }),
                         );
-                        return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+                        return Self::set_tool_result_and_parse(
+                            retry_ctx,
+                            ToolResult::from_text(result_text),
+                        );
                     }
                     Err(e) => {
                         self.log(format!("CDP click failed, falling back to native: {e}"));
@@ -912,7 +923,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "tool_result",
                 serde_json::json!({"name": "launch_app", "text": &result_text}),
             );
-            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
+            return Self::set_tool_result_and_parse(retry_ctx, ToolResult::from_text(result_text));
         }
 
         self.record_event(
@@ -1048,7 +1059,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             images.len()
         ));
 
-        Self::set_tool_result_and_parse(retry_ctx, &result_text)
+        Self::set_tool_result_and_parse(retry_ctx, ToolResult::from_text(result_text))
     }
 
     pub(crate) fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> ExecutorResult<()> {
@@ -1062,22 +1073,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok(())
     }
 
-    /// Parse a tool result text as JSON, falling back to a string Value or Null.
-    fn parse_result_text(text: &str) -> Value {
-        serde_json::from_str(text).unwrap_or(if text.is_empty() {
-            Value::Null
-        } else {
-            Value::String(text.to_string())
-        })
-    }
-
-    /// Store the tool result for supervision, then parse and return.
+    /// Store the tool result for supervision (preserving the raw text that
+    /// the supervisor prompt quotes back to the LLM), then return the
+    /// legacy [`Value`] shape that downstream variable extraction expects.
+    ///
+    /// Call sites assemble a [`ToolResult`] via [`ToolResult::from_text`]
+    /// so the text-to-JSON parse happens exactly once per tool invocation;
+    /// this helper is the lone seam where the executor hands that pair
+    /// back to [`RetryContext`] for supervision to re-use.
     fn set_tool_result_and_parse(
         retry_ctx: &mut RetryContext,
-        result_text: &str,
+        result: ToolResult,
     ) -> ExecutorResult<Value> {
-        retry_ctx.last_tool_result = Some(result_text.to_string());
-        Ok(Self::parse_result_text(result_text))
+        retry_ctx.last_tool_result = Some(result.raw_text().to_string());
+        Ok(result.into_value())
     }
 }
 

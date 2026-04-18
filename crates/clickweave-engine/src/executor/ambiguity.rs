@@ -69,7 +69,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Run the full disambiguation routine and return the chosen uid plus the
     /// candidate/rect data for the UI.
     pub(crate) async fn resolve_cdp_ambiguity(
-        &self,
+        &mut self,
         node_name: &str,
         target: &str,
         candidates: Vec<CdpCandidate>,
@@ -80,8 +80,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .capture_verification_screenshot(mcp)
             .await
             .ok_or_else(|| {
-                ExecutorError::Cdp(
-                    "Disambiguation: failed to capture screenshot for VLM prompt".to_string(),
+                ExecutorError::CdpDisambiguationFailed(
+                    "failed to capture screenshot for VLM prompt".to_string(),
                 )
             })?;
 
@@ -101,8 +101,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await?;
 
         if !candidates_with_rects.iter().any(|c| c.uid == chosen_uid) {
-            return Err(ExecutorError::Cdp(format!(
-                "Disambiguation: agent returned unknown uid '{}' for target '{}'",
+            return Err(ExecutorError::CdpDisambiguationFailed(format!(
+                "agent returned unknown uid '{}' for target '{}'",
                 chosen_uid, target
             )));
         }
@@ -143,7 +143,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             clickweave_llm::DEFAULT_MAX_DIMENSION,
         )
         .ok_or_else(|| {
-            ExecutorError::Cdp("Disambiguation: failed to prepare screenshot for VLM".to_string())
+            ExecutorError::CdpDisambiguationFailed(
+                "failed to prepare screenshot for VLM".to_string(),
+            )
         })?;
 
         let candidate_block = candidates
@@ -177,7 +179,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let response = vlm
             .chat_with_options(&messages, None, &ChatOptions::with_temperature(0.0))
             .await
-            .map_err(|e| ExecutorError::Cdp(format!("Disambiguation: VLM call failed: {}", e)))?;
+            .map_err(|e| {
+                ExecutorError::CdpDisambiguationFailed(format!("VLM call failed: {}", e))
+            })?;
 
         let raw = response
             .choices
@@ -187,10 +191,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .to_string();
 
         parse_disambiguation_response(&raw).ok_or_else(|| {
-            ExecutorError::Cdp(format!(
-                "Disambiguation: failed to parse VLM response: {}",
-                raw
-            ))
+            ExecutorError::CdpDisambiguationFailed(format!("failed to parse VLM response: {}", raw))
         })
     }
 
@@ -199,7 +200,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// trace event. Returns the screenshot path relative to that dir.
     #[allow(clippy::too_many_arguments)]
     fn persist_disambiguation_artifacts(
-        &self,
+        &mut self,
         node_name: &str,
         target: &str,
         chosen_uid: &str,
