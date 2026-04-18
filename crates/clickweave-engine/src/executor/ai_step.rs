@@ -213,18 +213,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                             *self.write_focused_app() = None;
                                             retry_ctx.focus_dirty = true;
                                         }
-                                        if self
-                                            .cdp_connected_app
-                                            .as_ref()
-                                            .is_some_and(|(name, _)| name == app)
-                                        {
-                                            self.cdp_connected_app = None;
-                                        }
-                                        // Quitting the app invalidates any
-                                        // remembered tab URL across all tracked
-                                        // PIDs for this app name.
-                                        self.cdp_selected_pages
-                                            .retain(|(name, _), _| name != app.as_str());
+                                        // Clears the active connection (when
+                                        // bound to this app) and every
+                                        // remembered tab URL for any PID of
+                                        // this app name.
+                                        self.cdp_state.mark_app_quit(app);
                                     }
                                 }
                                 _ => {}

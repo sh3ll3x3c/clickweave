@@ -719,8 +719,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     )
                     .await?;
                 // Sync the CDP connection PID to the freshly resolved PID.
-                if let Some((ref name, ref mut cdp_pid)) = self.cdp_connected_app
-                    && name == &app.name
+                // `ensure_cdp_connected` ran above with the pre-resolve PID;
+                // if the resolver now reports a different PID (typical after
+                // a relaunch that picked up a new process), rebind the
+                // stored identity to the new PID so later lookups match.
+                if let Some((name, cdp_pid)) = self.cdp_state.connected_app.as_mut()
+                    && name.as_str() == app.name.as_str()
                 {
                     *cdp_pid = app.pid;
                 }
@@ -890,7 +894,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     // connection is stale. Without this, ensure_cdp_connected
                     // short-circuits on the app name match and never connects
                     // to the new profile's Chrome instance.
-                    if let Some((prev_name, _)) = self.cdp_connected_app.clone() {
+                    if let Some((prev_name, _)) = self.cdp_state.connected_app.clone() {
                         best_effort::best_effort_tool_call(
                             mcp,
                             "cdp_disconnect",
@@ -898,12 +902,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             "launch_app profile branch: force-disconnect before relaunch",
                         )
                         .await;
-                        self.cdp_connected_app = None;
                         // The app was about to be killed for a profile
-                        // relaunch — every remembered tab URL for any
-                        // instance of this app name is stale.
-                        self.cdp_selected_pages
-                            .retain(|(name, _), _| name != &prev_name);
+                        // relaunch — forget the active connection and every
+                        // remembered tab URL for any instance of this app
+                        // name; they're all stale after the kill.
+                        self.cdp_state.mark_app_quit(&prev_name);
                     }
                     self.ensure_cdp_connected(
                         node_id,
@@ -996,25 +999,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             retry_ctx.focus_dirty = true;
         }
 
-        // quit_app clears focused_app and cdp_connected_app when the app being quit
-        // is the currently focused or connected app.
+        // quit_app clears focused_app and the shared CDP state when the
+        // app being quit is the currently focused or connected app.
         if let Some(ref app_name) = quit_app_name {
             if self.focused_app_name().as_deref() == Some(app_name.as_str())
                 || self.focused_app_name().is_none()
             {
                 *self.write_focused_app() = None;
             }
-            if self
-                .cdp_connected_app
-                .as_ref()
-                .is_some_and(|(name, _)| name == app_name)
-            {
-                self.cdp_connected_app = None;
-            }
-            // Quitting the app invalidates any remembered tab URL across
-            // all tracked PIDs for this app name.
-            self.cdp_selected_pages
-                .retain(|(name, _), _| name != app_name.as_str());
+            // Clears the active connection (when bound to this app) and
+            // every remembered tab URL for any PID of this app name.
+            self.cdp_state.mark_app_quit(app_name);
             self.write_app_cache().remove(app_name.as_str());
         }
 

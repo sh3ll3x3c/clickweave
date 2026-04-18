@@ -133,6 +133,12 @@ pub struct AgentRunner<'a, B: ChatBackend> {
     /// Clear-conversation to agent-built nodes. Defaults to a fresh UUID
     /// when `with_run_id` is not called.
     run_id: uuid::Uuid,
+    /// CDP lifecycle bookkeeping shared with the deterministic executor.
+    /// Tracks the currently connected `(app_name, pid)` and — critically
+    /// for the agent observe-act loop — the last-observed page URL per
+    /// app instance so the runner can restore the selected tab across a
+    /// CDP disconnect/reconnect cycle.
+    cdp_state: crate::cdp_lifecycle::CdpState,
 }
 
 impl<'a, B: ChatBackend> AgentRunner<'a, B> {
@@ -148,6 +154,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             vision: None,
             permissions: PermissionPolicy::default(),
             run_id: uuid::Uuid::new_v4(),
+            cdp_state: crate::cdp_lifecycle::CdpState::new(),
         }
     }
 
@@ -164,6 +171,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             vision: None,
             permissions: PermissionPolicy::default(),
             run_id: uuid::Uuid::new_v4(),
+            cdp_state: crate::cdp_lifecycle::CdpState::new(),
         }
     }
 
@@ -212,6 +220,29 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// Consume the runner and return the accumulated cache.
     pub fn into_cache(self) -> AgentCache {
         self.cache
+    }
+
+    /// Test-only accessor to the shared CDP lifecycle state.
+    ///
+    /// Kept behind `#[cfg(test)]` so production code reaches for
+    /// `self.cdp_state` directly — callers outside the runner have no
+    /// reason to inspect it.
+    #[cfg(test)]
+    pub(crate) fn cdp_state(&self) -> &crate::cdp_lifecycle::CdpState {
+        &self.cdp_state
+    }
+
+    /// Test-only entry point into the selected-page snapshot helper so
+    /// the agent-vs-executor parity suite can exercise exactly the code
+    /// the live run would hit, rather than poking fields.
+    #[cfg(test)]
+    pub(crate) async fn snapshot_selected_page_url_for_test(
+        &mut self,
+        app_name: &str,
+        pid: i32,
+        mcp: &(impl Mcp + ?Sized),
+    ) {
+        self.snapshot_selected_page_url(app_name, pid, mcp).await;
     }
 
     /// Send an event through the channel (backpressured).
@@ -1021,12 +1052,20 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// This method performs several hidden sub-actions (probe, quit, relaunch,
     /// connect) that are not individually approved. Each sub-action is logged
     /// via `StepCompleted` events so the UI can surface the full chain.
+    ///
+    /// Delegates the quit/relaunch/connect state machine to
+    /// [`cdp_lifecycle`] so agent and executor stay in lock-step on CDP
+    /// lifecycle fixes. Selected-tab tracking is shared via the agent's
+    /// own [`CdpState`][`crate::cdp_lifecycle::CdpState`] — the same
+    /// bookkeeping the executor has long relied on.
     async fn auto_connect_cdp(
-        &self,
+        &mut self,
         app_name: &str,
         kind_hint: Option<&str>,
         mcp: &(impl Mcp + ?Sized),
     ) -> Option<u16> {
+        use crate::cdp_lifecycle;
+
         if !mcp.has_tool("cdp_connect") {
             return None;
         }
@@ -1087,7 +1126,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         if let Some(port) = crate::executor::deterministic::cdp::existing_debug_port(app_name).await
         {
             info!(app = app_name, port, "Reusing existing debug port");
-            if self.cdp_connect_with_retries(port, mcp).await {
+            if cdp_lifecycle::connect_with_retries(mcp, port).await.is_ok() {
+                self.on_cdp_connected(app_name, port, mcp).await;
                 return Some(port);
             }
         }
@@ -1100,11 +1140,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             summary: format!("Auto: quitting {} for CDP relaunch", app_name),
         })
         .await;
-        let quit_args = serde_json::json!({"app_name": app_name});
-        let quit_outcome = mcp.call_tool("quit_app", Some(quit_args)).await;
-        let quit_summary = match &quit_outcome {
-            Ok(_) => format!("Auto: quit_app dispatched for {} (ok)", app_name),
-            Err(e) => format!("Auto: quit_app failed for {}: {}", app_name, e),
+        let quit_outcome = cdp_lifecycle::quit_and_wait(mcp, app_name, &mut self.cdp_state).await;
+        let quit_summary = match quit_outcome {
+            cdp_lifecycle::QuitOutcome::Graceful => {
+                format!("Auto: {} quit confirmed", app_name)
+            }
+            cdp_lifecycle::QuitOutcome::TimedOut => {
+                format!("Auto: {} did not quit gracefully, force-killing", app_name)
+            }
         };
         self.emit_event(AgentEvent::SubAction {
             tool_name: "quit_app".to_string(),
@@ -1112,30 +1155,9 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         })
         .await;
 
-        use crate::executor::deterministic::cdp as cdp_cfg;
-        let mut quit_confirmed = false;
-        for _ in 0..cdp_cfg::APP_QUIT_MAX_ATTEMPTS {
-            tokio::time::sleep(cdp_cfg::APP_QUIT_POLL_INTERVAL).await;
-            let list_args = serde_json::json!({"app_name": app_name, "user_apps_only": true});
-            if let Ok(r) = mcp.call_tool("list_apps", Some(list_args)).await {
-                let text = extract_result_text(&r);
-                if text.trim() == "[]" {
-                    quit_confirmed = true;
-                    break;
-                }
-            }
-        }
-        if !quit_confirmed {
-            warn!(app = app_name, "App did not quit within 10s, force-killing");
-            let force_args = serde_json::json!({"app_name": app_name, "force": true});
-            crate::executor::deterministic::best_effort_tool_call(
-                mcp,
-                "quit_app",
-                Some(force_args),
-                "agent force-quit during CDP auto-connect",
-            )
-            .await;
-            tokio::time::sleep(cdp_cfg::APP_FORCE_QUIT_GRACE).await;
+        if matches!(quit_outcome, cdp_lifecycle::QuitOutcome::TimedOut) {
+            warn!(app = app_name, "App did not quit gracefully, force-killing");
+            cdp_lifecycle::force_quit(mcp, app_name).await;
         }
 
         // Relaunch with debug port
@@ -1144,20 +1166,15 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             summary: format!("Auto: relaunching {} with debug port {}", app_name, port),
         })
         .await;
-        let launch_args = serde_json::json!({
-            "app_name": app_name,
-            "args": [format!("--remote-debugging-port={}", port)],
-        });
-        match mcp.call_tool("launch_app", Some(launch_args)).await {
-            Ok(r) if r.is_error != Some(true) => {
+        match cdp_lifecycle::launch_with_debug_port(mcp, app_name, port).await {
+            Ok(()) => {
                 self.emit_event(AgentEvent::SubAction {
                     tool_name: "launch_app".to_string(),
                     summary: format!("Auto: relaunched {} (ok)", app_name),
                 })
                 .await;
             }
-            Ok(r) => {
-                let err = extract_result_text(&r);
+            Err(err) => {
                 warn!(app = app_name, error = %err, "Relaunch with debug port failed");
                 self.emit_event(AgentEvent::SubAction {
                     tool_name: "launch_app".to_string(),
@@ -1169,79 +1186,90 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     mcp,
                     "launch_app",
                     Some(fallback),
-                    "agent fallback relaunch (server rejected debug-port args)",
-                )
-                .await;
-                return None;
-            }
-            Err(e) => {
-                warn!(app = app_name, error = %e, "Relaunch with debug port failed");
-                self.emit_event(AgentEvent::SubAction {
-                    tool_name: "launch_app".to_string(),
-                    summary: format!("Auto: relaunch failed for {}: {}", app_name, e),
-                })
-                .await;
-                let fallback = serde_json::json!({"app_name": app_name});
-                crate::executor::deterministic::best_effort_tool_call(
-                    mcp,
-                    "launch_app",
-                    Some(fallback),
-                    "agent fallback relaunch (transport error)",
+                    "agent fallback relaunch (debug-port launch failed)",
                 )
                 .await;
                 return None;
             }
         }
 
-        tokio::time::sleep(cdp_cfg::APP_RELAUNCH_WARMUP).await;
+        cdp_lifecycle::warmup_after_relaunch().await;
 
         self.emit_event(AgentEvent::SubAction {
             tool_name: "cdp_connect".to_string(),
             summary: format!("Auto: connecting CDP on port {}", port),
         })
         .await;
-        if self.cdp_connect_with_retries(port, mcp).await {
-            info!(app = app_name, port, "CDP connected");
-            self.emit_event(AgentEvent::SubAction {
-                tool_name: "cdp_connect".to_string(),
-                summary: format!("Auto: CDP connected on port {} (ok)", port),
-            })
-            .await;
-            Some(port)
-        } else {
-            warn!(app = app_name, port, "CDP connection failed after retries");
-            self.emit_event(AgentEvent::SubAction {
-                tool_name: "cdp_connect".to_string(),
-                summary: format!("Auto: CDP connect failed on port {}", port),
-            })
-            .await;
-            None
+        match cdp_lifecycle::connect_with_retries(mcp, port).await {
+            Ok(()) => {
+                info!(app = app_name, port, "CDP connected");
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "cdp_connect".to_string(),
+                    summary: format!("Auto: CDP connected on port {} (ok)", port),
+                })
+                .await;
+                self.on_cdp_connected(app_name, port, mcp).await;
+                Some(port)
+            }
+            Err(last_err) => {
+                warn!(
+                    app = app_name,
+                    port,
+                    error = %last_err,
+                    "CDP connection failed after retries",
+                );
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "cdp_connect".to_string(),
+                    summary: format!("Auto: CDP connect failed on port {}", port),
+                })
+                .await;
+                None
+            }
         }
     }
 
-    /// Attempt `cdp_connect` with retries, returning true on success.
-    async fn cdp_connect_with_retries(&self, port: u16, mcp: &(impl Mcp + ?Sized)) -> bool {
-        use crate::executor::deterministic::cdp as cdp_cfg;
-        let args = serde_json::json!({"port": port});
-        for attempt in 0..cdp_cfg::CDP_CONNECT_MAX_ATTEMPTS {
-            if attempt > 0 {
-                tokio::time::sleep(cdp_cfg::CDP_CONNECT_RETRY_INTERVAL).await;
-            }
-            match mcp.call_tool("cdp_connect", Some(args.clone())).await {
-                Ok(r) if r.is_error != Some(true) => return true,
-                Ok(r) => {
-                    debug!(
-                        attempt = attempt + 1,
-                        error = %extract_result_text(&r),
-                        "cdp_connect attempt failed"
-                    );
-                }
-                Err(e) => {
-                    debug!(attempt = attempt + 1, error = %e, "cdp_connect attempt failed");
-                }
-            }
+    /// Post-connect bookkeeping: mark the app instance as the active
+    /// CDP target and record the currently-selected page URL so the
+    /// next reconnect can restore the same tab.
+    ///
+    /// The agent has no reliable PID at observe-time (the MCP server's
+    /// response shape varies, and agent-side PID tracking would itself
+    /// duplicate executor bookkeeping), so the placeholder `0` is used.
+    /// [`CdpState::upgrade_pid`] promotes the entry later when the
+    /// runner learns the real PID.
+    async fn on_cdp_connected(&mut self, app_name: &str, _port: u16, mcp: &(impl Mcp + ?Sized)) {
+        self.cdp_state.set_connected(app_name, 0);
+        self.snapshot_selected_page_url(app_name, 0, mcp).await;
+    }
+
+    /// Capture whichever page is currently selected for `(app_name, pid)`
+    /// and record it so future reconnects can restore it.
+    ///
+    /// Mirrors [`crate::executor::WorkflowExecutor::snapshot_selected_page_url`]
+    /// but against the agent's own [`CdpState`]. Silent on any failure —
+    /// a missed snapshot just falls through to the default first-page
+    /// selection on the next reconnect, so the agent observe-act loop
+    /// never stalls because of a bad list.
+    async fn snapshot_selected_page_url(
+        &mut self,
+        app_name: &str,
+        pid: i32,
+        mcp: &(impl Mcp + ?Sized),
+    ) {
+        use clickweave_core::cdp::{current_selected_page_url, parse_cdp_page_list};
+
+        let result = match mcp
+            .call_tool("cdp_list_pages", Some(serde_json::json!({})))
+            .await
+        {
+            Ok(r) if r.is_error != Some(true) => r,
+            _ => return,
+        };
+        let text = extract_result_text(&result);
+        let pages = parse_cdp_page_list(&text);
+        if let Some(url) = current_selected_page_url(&pages) {
+            self.cdp_state.record_selected_page(app_name, pid, url);
         }
-        false
     }
 
     /// Request user approval for a tool action. Returns `None` if no
@@ -1367,13 +1395,22 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// live connection return a clean "not connected" error when called
     /// pre-connection; the agent recovers on the next step.
     async fn maybe_cdp_connect(
-        &self,
+        &mut self,
         tool_name: &str,
         arguments: &Value,
         result_text: &str,
         mcp: &(impl Mcp + ?Sized),
     ) {
         if tool_name != "launch_app" && tool_name != "focus_window" {
+            // The tool might still be `quit_app` — keep CDP state in
+            // lock-step with the underlying process. Executor-side
+            // ai_step.rs already performs the same bookkeeping for
+            // mid-run quit calls.
+            if tool_name == "quit_app"
+                && let Some(name) = arguments.get("app_name").and_then(Value::as_str)
+            {
+                self.cdp_state.mark_app_quit(name);
+            }
             return;
         }
         let Some((app_name, kind_hint)) =

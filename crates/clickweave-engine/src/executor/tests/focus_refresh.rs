@@ -53,7 +53,7 @@ async fn refresh_focused_pid_no_op_when_focused_app_empty() {
 async fn refresh_focused_pid_also_updates_cdp_connected_app_pid() {
     let mut exec = make_test_executor();
     *exec.write_focused_app() = Some(("Chrome".to_string(), AppKind::Native, 0));
-    exec.cdp_connected_app = Some(("Chrome".to_string(), 0));
+    exec.cdp_state_mut().connected_app = Some(("Chrome".to_string(), 0));
 
     let mcp = StubToolProvider::new();
     mcp.push_text_response(r#"[{"name": "Chrome", "pid": 9001}]"#);
@@ -62,7 +62,7 @@ async fn refresh_focused_pid_also_updates_cdp_connected_app_pid() {
 
     let (_name, _kind, pid) = exec.read_focused_app().clone().unwrap();
     assert_eq!(pid, 9001);
-    assert_eq!(exec.cdp_connected_app.as_ref().unwrap().1, 9001);
+    assert_eq!(exec.cdp_state().connected_app.as_ref().unwrap().1, 9001);
 }
 
 #[tokio::test]

@@ -182,23 +182,15 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     element_cache: HashMap<(String, Option<String>), String>,
     context: RuntimeContext,
     decision_cache: DecisionCache,
-    /// The app name and PID for which a CDP connection is active (via cdp_connect).
-    /// PID is used to distinguish same-name app instances within a single execution.
-    cdp_connected_app: Option<(String, i32)>,
-    /// Per-app-instance last-observed page URL, used to restore the selected
-    /// tab after a CDP reconnect. Keyed by `(app_name, pid)` for the same
-    /// reason as `cdp_connected_app`: two app instances sharing a name
-    /// (e.g., default Chrome + profile-scoped Chrome running side-by-side)
-    /// must not clobber each other's remembered tab. When the PID is not
-    /// yet known (e.g., immediately after launch, before
-    /// `refresh_focused_pid`) the placeholder `0` is used and later
-    /// migrated to the real PID by `refresh_focused_pid` — the same
-    /// upgrade path that promotes `cdp_connected_app`.
+    /// Shared CDP lifecycle bookkeeping.
     ///
-    /// In-memory only (not persisted to the decision cache): URLs are
-    /// session-specific and a stale cached URL is worse than the default
-    /// first-page fallback.
-    cdp_selected_pages: HashMap<(String, i32), String>,
+    /// Holds the currently-connected `(app_name, pid)` (see
+    /// [`crate::cdp_lifecycle::CdpState::connected_app`]) and the
+    /// per-instance last-observed page URLs used to restore the selected
+    /// tab across a disconnect/reconnect cycle. The same struct backs the
+    /// agent runner's CDP state so a fix to the lifecycle state machine
+    /// applies uniformly to both execution paths.
+    cdp_state: crate::cdp_lifecycle::CdpState,
     cancel_token: CancellationToken,
     /// Store for Chrome user-data-dir profiles (resolves profile names to paths).
     chrome_profile_store: ChromeProfileStore,
@@ -259,8 +251,7 @@ impl WorkflowExecutor {
             element_cache: HashMap::new(),
             context: RuntimeContext::new(),
             decision_cache,
-            cdp_connected_app: None,
-            cdp_selected_pages: HashMap::new(),
+            cdp_state: crate::cdp_lifecycle::CdpState::new(),
             cancel_token,
             chrome_profile_store,
             chrome_profiles,
@@ -379,20 +370,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Check whether a CDP connection is active for the currently focused app.
     /// Uses PID to distinguish same-name instances within a single execution.
     pub(crate) fn cdp_connected_to_focused_app(&self) -> bool {
-        match (&self.cdp_connected_app, self.read_focused_app()) {
-            (Some((cdp_name, cdp_pid)), Some((focus_name, _, focus_pid))) => {
-                if cdp_name != focus_name {
-                    return false;
-                }
-                // If both PIDs are known (non-zero), require they match.
-                // PID=0 means "unknown" (e.g., from AI step bookkeeping).
-                if *cdp_pid != 0 && *focus_pid != 0 {
-                    return cdp_pid == focus_pid;
-                }
-                true // Name matches, at least one PID unknown
+        match self.read_focused_app() {
+            Some((focus_name, _, focus_pid)) => {
+                self.cdp_state.is_connected_to(focus_name, *focus_pid)
             }
-            _ => false,
+            None => false,
         }
+    }
+
+    /// Read-only access to the shared CDP lifecycle state. Currently only
+    /// consumed by tests; retained behind `pub(crate)` + `#[allow(dead_code)]`
+    /// so production callers reach into `self.cdp_state` directly (the same
+    /// convention used for other executor fields).
+    #[allow(dead_code)]
+    pub(crate) fn cdp_state(&self) -> &crate::cdp_lifecycle::CdpState {
+        &self.cdp_state
+    }
+
+    /// Mutable access to the shared CDP lifecycle state. Same usage profile
+    /// as [`Self::cdp_state`] — test-only today.
+    #[allow(dead_code)]
+    pub(crate) fn cdp_state_mut(&mut self) -> &mut crate::cdp_lifecycle::CdpState {
+        &mut self.cdp_state
     }
 
     /// Format a "previously tried" list as a prompt suffix for disambiguation.

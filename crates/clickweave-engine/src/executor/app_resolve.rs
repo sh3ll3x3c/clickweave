@@ -319,20 +319,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let real_kind = classify_app_by_pid(real_pid);
         self.focused_app = Some((name.clone(), real_kind, real_pid));
 
-        if let Some((cdp_name, cdp_pid)) = self.cdp_connected_app.as_mut()
-            && cdp_name == &name
-            && *cdp_pid == 0
-        {
-            *cdp_pid = real_pid;
-        }
-
-        // Mirror the PID upgrade into `cdp_selected_pages`: any placeholder
-        // entry keyed by (name, 0) must migrate to (name, real_pid) so the
-        // next reconnect under the real PID still finds the remembered URL.
-        if let Some(url) = self.cdp_selected_pages.remove(&(name.clone(), 0)) {
-            self.cdp_selected_pages
-                .insert((name.clone(), real_pid), url);
-        }
+        // Promote any placeholder `(name, 0)` entries in the shared CDP
+        // state — both `connected_app` and `selected_pages` — to the
+        // freshly-resolved PID.
+        self.cdp_state.upgrade_pid(&name, real_pid);
 
         self.log(format!(
             "Refreshed focused app: \"{}\" kind={:?} pid={}",
