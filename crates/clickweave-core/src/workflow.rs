@@ -427,9 +427,13 @@ impl NodeType {
             NodeType::TypeText(p) => format!("Typed '{}'", p.text),
             NodeType::PressKey(p) => format!("Pressed key '{}'", p.key),
             NodeType::Scroll(p) => format!("Scrolled by {}", p.delta_y),
-            NodeType::FocusWindow(p) => match &p.value {
-                Some(v) => format!("Focused window '{}'", v),
-                None => "Focused window".to_string(),
+            NodeType::FocusWindow(p) => match &p.target {
+                FocusTarget::AppName(name) if !name.is_empty() => {
+                    format!("Focused window '{}'", name)
+                }
+                FocusTarget::WindowId(id) => format!("Focused window id {}", id),
+                FocusTarget::Pid(pid) => format!("Focused window pid {}", pid),
+                FocusTarget::AppName(_) | FocusTarget::None => "Focused window".to_string(),
             },
             NodeType::LaunchApp(p) => format!("Launched app '{}'", p.app_name),
             NodeType::QuitApp(p) => format!("Quit app '{}'", p.app_name),
@@ -497,64 +501,58 @@ impl NodeType {
         !matches!(self, NodeType::AiStep(_))
     }
 
-    /// Returns the verification method configured on this node, if any.
-    pub fn verification_method(&self) -> Option<crate::output_schema::VerificationMethod> {
+    /// Returns the verification config on this node, if any.
+    ///
+    /// Uses the [`HasVerification`](crate::output_schema::HasVerification)
+    /// trait impl that every action params struct carries so new node types
+    /// don't have to be added to a giant match arm.
+    pub fn verification(&self) -> Option<&crate::output_schema::VerificationConfig> {
+        use crate::output_schema::HasVerification;
         match self {
-            Self::Click(p) => p.verification_method,
-            Self::Hover(p) => p.verification_method,
-            Self::Drag(p) => p.verification_method,
-            Self::TypeText(p) => p.verification_method,
-            Self::PressKey(p) => p.verification_method,
-            Self::Scroll(p) => p.verification_method,
-            Self::FocusWindow(p) => p.verification_method,
-            Self::LaunchApp(p) => p.verification_method,
-            Self::QuitApp(p) => p.verification_method,
-            Self::CdpClick(p) => p.verification_method,
-            Self::CdpHover(p) => p.verification_method,
-            Self::CdpFill(p) => p.verification_method,
-            Self::CdpType(p) => p.verification_method,
-            Self::CdpPressKey(p) => p.verification_method,
-            Self::CdpNavigate(p) => p.verification_method,
-            Self::CdpNewPage(p) => p.verification_method,
-            Self::CdpClosePage(p) => p.verification_method,
-            Self::CdpSelectPage(p) => p.verification_method,
-            Self::CdpHandleDialog(p) => p.verification_method,
+            Self::Click(p) => p.verification(),
+            Self::Hover(p) => p.verification(),
+            Self::Drag(p) => p.verification(),
+            Self::TypeText(p) => p.verification(),
+            Self::PressKey(p) => p.verification(),
+            Self::Scroll(p) => p.verification(),
+            Self::FocusWindow(p) => p.verification(),
+            Self::LaunchApp(p) => p.verification(),
+            Self::QuitApp(p) => p.verification(),
+            Self::CdpClick(p) => p.verification(),
+            Self::CdpHover(p) => p.verification(),
+            Self::CdpFill(p) => p.verification(),
+            Self::CdpType(p) => p.verification(),
+            Self::CdpPressKey(p) => p.verification(),
+            Self::CdpNavigate(p) => p.verification(),
+            Self::CdpNewPage(p) => p.verification(),
+            Self::CdpClosePage(p) => p.verification(),
+            Self::CdpSelectPage(p) => p.verification(),
+            Self::CdpHandleDialog(p) => p.verification(),
             _ => None,
         }
+    }
+
+    /// Returns the verification method configured on this node, if any.
+    pub fn verification_method(&self) -> Option<crate::output_schema::VerificationMethod> {
+        self.verification().and_then(|v| v.verification_method)
     }
 
     /// Returns the verification assertion configured on this node, if any.
     pub fn verification_assertion(&self) -> Option<&str> {
-        match self {
-            Self::Click(p) => p.verification_assertion.as_deref(),
-            Self::Hover(p) => p.verification_assertion.as_deref(),
-            Self::Drag(p) => p.verification_assertion.as_deref(),
-            Self::TypeText(p) => p.verification_assertion.as_deref(),
-            Self::PressKey(p) => p.verification_assertion.as_deref(),
-            Self::Scroll(p) => p.verification_assertion.as_deref(),
-            Self::FocusWindow(p) => p.verification_assertion.as_deref(),
-            Self::LaunchApp(p) => p.verification_assertion.as_deref(),
-            Self::QuitApp(p) => p.verification_assertion.as_deref(),
-            Self::CdpClick(p) => p.verification_assertion.as_deref(),
-            Self::CdpHover(p) => p.verification_assertion.as_deref(),
-            Self::CdpFill(p) => p.verification_assertion.as_deref(),
-            Self::CdpType(p) => p.verification_assertion.as_deref(),
-            Self::CdpPressKey(p) => p.verification_assertion.as_deref(),
-            Self::CdpNavigate(p) => p.verification_assertion.as_deref(),
-            Self::CdpNewPage(p) => p.verification_assertion.as_deref(),
-            Self::CdpClosePage(p) => p.verification_assertion.as_deref(),
-            Self::CdpSelectPage(p) => p.verification_assertion.as_deref(),
-            Self::CdpHandleDialog(p) => p.verification_assertion.as_deref(),
-            _ => None,
-        }
+        self.verification()
+            .and_then(|v| v.verification_assertion.as_deref())
     }
 
-    /// Returns true when both `verification_method` and `verification_assertion`
-    /// are set, matching the executor's requirement for producing verification
-    /// output variables.
+    /// Returns true when the node has both a verification method and a
+    /// non-empty assertion — the executor's requirement for producing
+    /// verification output variables.
     pub fn has_verification(&self) -> bool {
-        self.verification_method().is_some()
-            && self.verification_assertion().is_some_and(|a| !a.is_empty())
+        self.verification().is_some_and(|v| {
+            v.verification_method.is_some()
+                && v.verification_assertion
+                    .as_deref()
+                    .is_some_and(|a| !a.is_empty())
+        })
     }
 
     /// All available node types with default parameters.

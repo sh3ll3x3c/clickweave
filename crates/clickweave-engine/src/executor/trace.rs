@@ -1,6 +1,6 @@
 use super::{ExecutorEvent, WorkflowExecutor};
 use base64::Engine;
-use clickweave_core::{ArtifactKind, NodeRun, RunStatus, TraceEvent, TraceLevel};
+use clickweave_core::{ArtifactKind, NodeRun, RunStatus, TraceEvent, TraceEventKind, TraceLevel};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::{ToolCallResult, ToolContent};
 use serde_json::Value;
@@ -81,10 +81,23 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .as_millis() as u64
     }
 
-    pub(crate) fn record_event(&self, run: Option<&NodeRun>, event_type: &str, payload: Value) {
+    /// Record a trace event.
+    ///
+    /// Accepts anything that can be converted to a [`TraceEventKind`], which
+    /// means call sites can pass either a typed variant
+    /// (`TraceEventKind::ToolCall`) or a snake_case `&str`
+    /// (`"tool_call"` / `"cdp_click"` / etc.) — the latter keeps the
+    /// existing thin-shim ergonomics while still going through the enum so
+    /// unknown strings land in [`TraceEventKind::Unknown`].
+    pub(crate) fn record_event(
+        &self,
+        run: Option<&NodeRun>,
+        event_type: impl Into<TraceEventKind>,
+        payload: Value,
+    ) {
         let event = TraceEvent {
             timestamp: Self::now_millis(),
-            event_type: event_type.to_string(),
+            event_type: event_type.into(),
             payload,
         };
         let result = match run {

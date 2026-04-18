@@ -1,6 +1,6 @@
 use crate::storage::{append_jsonl, format_timestamped_dirname, write_json_pretty};
 
-use super::types::{WalkthroughAction, WalkthroughEvent, WalkthroughSession};
+use super::types::{WalkthroughAction, WalkthroughEvent, WalkthroughSessionMeta};
 
 // --- Walkthrough storage ---
 
@@ -43,7 +43,7 @@ impl WalkthroughStorage {
     /// Returns the full path to the session directory.
     pub fn create_session_dir(
         &self,
-        session: &WalkthroughSession,
+        session: &WalkthroughSessionMeta,
     ) -> anyhow::Result<std::path::PathBuf> {
         let dirname = format_timestamped_dirname(session.started_at, session.id);
         let session_dir = self.base_path.join(&dirname);
@@ -55,12 +55,13 @@ impl WalkthroughStorage {
 
     /// Save the session metadata to `session.json`.
     ///
-    /// Note: `events` and `actions` are skipped during serialization —
-    /// they live in `events.jsonl` and `actions.json` respectively.
+    /// `events` and `actions` never flow through this record — they live in
+    /// `events.jsonl` and `actions.json` and are written separately by
+    /// [`append_event`](Self::append_event) / [`save_actions`](Self::save_actions).
     pub fn save_session(
         &self,
         session_dir: &std::path::Path,
-        session: &WalkthroughSession,
+        session: &WalkthroughSessionMeta,
     ) -> anyhow::Result<()> {
         write_json_pretty(&session_dir.join("session.json"), session)
     }

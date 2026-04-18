@@ -1,7 +1,7 @@
 use super::Mcp;
 use super::{ExecutorError, ExecutorResult, ResolvedApp, WorkflowExecutor};
 use clickweave_core::decision_cache::{self, AppResolution};
-use clickweave_core::{ExecutionMode, FocusMethod, NodeRun, NodeType};
+use clickweave_core::{ExecutionMode, FocusTarget, NodeRun, NodeType};
 use clickweave_llm::{ChatBackend, Message};
 use serde_json::Value;
 use tracing::debug;
@@ -356,7 +356,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// node type, so that retries re-resolve via LLM.
     pub(crate) fn evict_caches_for_node(&self, node_type: &NodeType) {
         let key = match node_type {
-            NodeType::FocusWindow(p) if p.method == FocusMethod::AppName => p.value.as_deref(),
+            NodeType::FocusWindow(p) => {
+                if let FocusTarget::AppName(name) = &p.target {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            }
             NodeType::TakeScreenshot(p) => p.target.as_deref(),
             _ => None,
         };

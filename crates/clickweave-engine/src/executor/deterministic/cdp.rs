@@ -161,9 +161,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )));
         }
 
+        // `action` is always "click" or "hover" from this private helper —
+        // map it to the typed variant and fall back to Unknown for safety.
+        let event_kind = match action {
+            "click" => clickweave_core::TraceEventKind::CdpClick,
+            "hover" => clickweave_core::TraceEventKind::CdpHover,
+            "fill" => clickweave_core::TraceEventKind::CdpFill,
+            _ => clickweave_core::TraceEventKind::Unknown,
+        };
         self.record_event(
             node_run,
-            &format!("cdp_{}", action),
+            event_kind,
             serde_json::json!({ "target": target, "uid": uid }),
         );
 

@@ -5,7 +5,7 @@ use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
     WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind,
-    WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
+    WalkthroughSessionRuntime, WalkthroughStatus, WalkthroughStorage,
 };
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
@@ -163,7 +163,7 @@ pub async fn start_walkthrough(
             return Err(CommandError::already_running());
         }
 
-        let session = WalkthroughSession::new(wf_id);
+        let session = WalkthroughSessionRuntime::new(wf_id);
 
         let storage = match &project_path {
             Some(p) => {
@@ -177,11 +177,11 @@ pub async fn start_walkthrough(
         };
 
         let session_dir = storage
-            .create_session_dir(&session)
+            .create_session_dir(&session.meta)
             .map_err(|e| CommandError::io(format!("Failed to create session dir: {e}")))?;
 
         storage
-            .save_session(&session_dir, &session)
+            .save_session(&session_dir, &session.meta)
             .map_err(|e| CommandError::io(format!("Failed to save initial session: {e}")))?;
 
         let processing_storage = storage.clone();
@@ -303,7 +303,7 @@ pub async fn pause_walkthrough(app: tauri::AppHandle) -> Result<(), CommandError
     let mut guard = handle.lock().unwrap();
 
     guard.ensure_status(&[WalkthroughStatus::Recording])?;
-    guard.session.as_mut().unwrap().status = WalkthroughStatus::Paused;
+    guard.session.as_mut().unwrap().meta.status = WalkthroughStatus::Paused;
 
     #[cfg(target_os = "macos")]
     if let Some(tap) = &guard.event_tap {
@@ -338,7 +338,7 @@ pub async fn resume_walkthrough(app: tauri::AppHandle) -> Result<(), CommandErro
     let mut guard = handle.lock().unwrap();
 
     guard.ensure_status(&[WalkthroughStatus::Paused])?;
-    guard.session.as_mut().unwrap().status = WalkthroughStatus::Recording;
+    guard.session.as_mut().unwrap().meta.status = WalkthroughStatus::Recording;
 
     #[cfg(target_os = "macos")]
     if let Some(tap) = &guard.event_tap {
@@ -379,8 +379,8 @@ pub async fn stop_walkthrough(
 
         guard.ensure_status(&[WalkthroughStatus::Recording, WalkthroughStatus::Paused])?;
         let session = guard.session.as_mut().unwrap();
-        session.status = WalkthroughStatus::Processing;
-        session.ended_at = Some(now_millis());
+        session.meta.status = WalkthroughStatus::Processing;
+        session.meta.ended_at = Some(now_millis());
 
         let task = guard.stop_capture();
 
@@ -399,8 +399,8 @@ pub async fn stop_walkthrough(
             task,
             guard.storage.clone(),
             guard.session_dir.clone(),
-            sess.workflow_id,
-            sess.id,
+            sess.meta.workflow_id,
+            sess.meta.id,
         )
     };
     emit_state(&app, WalkthroughStatus::Processing);
@@ -519,7 +519,10 @@ pub async fn stop_walkthrough(
     {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
-        let same_session = guard.session.as_ref().is_some_and(|s| s.id == session_id);
+        let same_session = guard
+            .session
+            .as_ref()
+            .is_some_and(|s| s.meta.id == session_id);
         if !same_session {
             tracing::info!(
                 "Walkthrough session changed during processing (expected {session_id}), skipping review"
@@ -528,12 +531,13 @@ pub async fn stop_walkthrough(
         }
         let session = guard.session.as_mut().unwrap();
         session.actions = actions.clone();
-        session.warnings = warnings.clone();
-        session.status = WalkthroughStatus::Review;
+        session.meta.warnings = warnings.clone();
+        session.meta.status = WalkthroughStatus::Review;
 
-        // Persist the updated session.
+        // Persist the updated session (meta only — actions/events live in
+        // their own files and are written by separate storage calls).
         if let (Some(storage), Some(dir)) = (&storage, &session_dir) {
-            let _ = storage.save_session(dir, session);
+            let _ = storage.save_session(dir, &session.meta);
         }
 
         // Emit results to frontend while still holding the lock, so cancel
@@ -574,7 +578,7 @@ pub async fn get_walkthrough_draft(
         guard.ensure_status(&[WalkthroughStatus::Review])?;
         let session = guard.session.as_ref().unwrap();
         let path = guard.session_dir.as_ref().map(|dir| dir.join("draft.json"));
-        (session.actions.clone(), session.warnings.clone(), path)
+        (session.actions.clone(), session.meta.warnings.clone(), path)
     };
 
     // Read draft from disk if available (no lock held).
@@ -646,7 +650,7 @@ pub async fn apply_walkthrough_annotations(
 
     guard.ensure_status(&[WalkthroughStatus::Review])?;
     let session = guard.session.as_mut().unwrap();
-    session.status = WalkthroughStatus::Applied;
+    session.meta.status = WalkthroughStatus::Applied;
 
     // TODO(M5): Actually apply annotations to the session's actions and
     // persist the result. For now we only update the status.

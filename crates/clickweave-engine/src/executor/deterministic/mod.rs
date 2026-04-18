@@ -11,7 +11,7 @@ use super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::AppKind;
 use clickweave_core::output_schema::NodeContext;
 use clickweave_core::{
-    FocusMethod, FocusWindowParams, NodeRun, NodeType, ScreenshotMode, TakeScreenshotParams,
+    FocusTarget, FocusWindowParams, NodeRun, NodeType, ScreenshotMode, TakeScreenshotParams,
     tool_mapping,
 };
 use clickweave_llm::ChatBackend;
@@ -654,10 +654,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let resolved_fw;
         let effective = if let NodeType::FocusWindow(p) = effective
-            && p.method == FocusMethod::AppName
-            && p.value.is_some()
+            && let FocusTarget::AppName(user_input) = &p.target
+            && !user_input.is_empty()
         {
-            let user_input = p.value.as_deref().unwrap();
+            let user_input = user_input.as_str();
             let mut app = self
                 .resolve_app_name(
                     node_id,
@@ -717,9 +717,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             *self.write_focused_app() = Some((app.name.clone(), app_kind, app.pid));
 
+            // `app.pid` is i32 from the MCP app listing; coerce to u32 for
+            // the typed target. Negative/overflow values fall back to
+            // `FocusTarget::None` — the executor already treats that as
+            // "no target" downstream.
+            let pid_target = u32::try_from(app.pid)
+                .map(FocusTarget::Pid)
+                .unwrap_or(FocusTarget::None);
             resolved_fw = NodeType::FocusWindow(FocusWindowParams {
-                method: FocusMethod::Pid,
-                value: Some(app.pid.to_string()),
+                target: pid_target,
                 bring_to_front: p.bring_to_front,
                 app_kind,
                 chrome_profile_id: p.chrome_profile_id.clone(),

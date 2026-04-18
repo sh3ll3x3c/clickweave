@@ -6,22 +6,24 @@ use crate::storage::now_millis;
 
 // --- Session ---
 
+/// On-disk + public shape of a walkthrough session.
+///
+/// This is what gets serialized to `session.json`. Runtime-only buffers
+/// (captured events, normalized actions) live on [`WalkthroughSessionRuntime`]
+/// instead — they have their own files (`events.jsonl`, `actions.json`) and
+/// should not round-trip through the meta record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct WalkthroughSession {
+pub struct WalkthroughSessionMeta {
     pub id: Uuid,
     pub workflow_id: Uuid,
     pub started_at: u64,
     pub ended_at: Option<u64>,
     pub status: WalkthroughStatus,
-    #[serde(skip)]
-    pub events: Vec<WalkthroughEvent>,
-    #[serde(skip)]
-    pub actions: Vec<WalkthroughAction>,
     pub warnings: Vec<String>,
 }
 
-impl WalkthroughSession {
+impl WalkthroughSessionMeta {
     pub fn new(workflow_id: Uuid) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -29,9 +31,30 @@ impl WalkthroughSession {
             started_at: now_millis(),
             ended_at: None,
             status: WalkthroughStatus::Recording,
+            warnings: Vec::new(),
+        }
+    }
+}
+
+/// Runtime companion to [`WalkthroughSessionMeta`].
+///
+/// Holds the in-memory buffers the session orchestrator fills while a
+/// recording is active — captured raw events and (post-processing)
+/// normalized actions. These are not part of the on-disk session payload;
+/// storage persists them to `events.jsonl` and `actions.json` separately.
+#[derive(Debug, Clone)]
+pub struct WalkthroughSessionRuntime {
+    pub meta: WalkthroughSessionMeta,
+    pub events: Vec<WalkthroughEvent>,
+    pub actions: Vec<WalkthroughAction>,
+}
+
+impl WalkthroughSessionRuntime {
+    pub fn new(workflow_id: Uuid) -> Self {
+        Self {
+            meta: WalkthroughSessionMeta::new(workflow_id),
             events: Vec::new(),
             actions: Vec::new(),
-            warnings: Vec::new(),
         }
     }
 }

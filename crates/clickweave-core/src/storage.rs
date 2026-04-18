@@ -8,6 +8,8 @@ use serde_json::Value;
 use tracing::warn;
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::TraceEventKind;
 use crate::{Artifact, ArtifactKind, NodeRun, NodeVerdict, RunStatus, TraceEvent, TraceLevel};
 
 /// Returns the current time as milliseconds since the Unix epoch.
@@ -812,14 +814,15 @@ mod tests {
 
         let event = TraceEvent {
             timestamp: RunStorage::now_millis(),
-            event_type: "test_event".to_string(),
+            event_type: TraceEventKind::Unknown,
             payload: serde_json::json!({"key": "value"}),
         };
         storage.append_event(&run, &event).expect("append event");
 
         let events_path = storage.run_dir(&run).join("events.jsonl");
         let content = std::fs::read_to_string(&events_path).expect("read events");
-        assert!(content.contains("test_event"));
+        // `Unknown` serializes as "unknown" because of rename_all = "snake_case".
+        assert!(content.contains("unknown"));
 
         cleanup(&dir);
     }
@@ -965,7 +968,7 @@ mod tests {
 
         let event = TraceEvent {
             timestamp: RunStorage::now_millis(),
-            event_type: "branch_evaluated".to_string(),
+            event_type: TraceEventKind::BranchEvaluated,
             payload: serde_json::json!({"node_name": "Check Result", "result": true}),
         };
         storage
@@ -1164,7 +1167,7 @@ mod tests {
 
         let event = TraceEvent {
             timestamp: RunStorage::now_millis(),
-            event_type: "test_event".to_string(),
+            event_type: TraceEventKind::Unknown,
             payload: serde_json::json!({"key": "value"}),
         };
         storage.append_event(&run, &event).expect("append event");

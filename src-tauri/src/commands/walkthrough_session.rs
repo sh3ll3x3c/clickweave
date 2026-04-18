@@ -13,8 +13,8 @@ use clickweave_core::walkthrough::session::{
     CDP_RETRIEVE_CLICK_JS, CDP_RETRIEVE_HOVERS_JS, CDP_STOP_HOVER_JS, CachedApp,
 };
 use clickweave_core::walkthrough::{
-    ScreenshotKind, WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
-    WalkthroughStorage,
+    ScreenshotKind, WalkthroughEvent, WalkthroughEventKind, WalkthroughSessionRuntime,
+    WalkthroughStatus, WalkthroughStorage,
 };
 use clickweave_mcp::McpClient;
 use tauri::{Emitter, Manager};
@@ -69,7 +69,7 @@ struct CdpAppState {
 
 /// Manages the walkthrough recording lifecycle.
 pub struct WalkthroughHandle {
-    pub session: Option<WalkthroughSession>,
+    pub session: Option<WalkthroughSessionRuntime>,
     pub session_dir: Option<std::path::PathBuf>,
     pub(super) storage: Option<WalkthroughStorage>,
     #[cfg(target_os = "macos")]
@@ -102,17 +102,17 @@ impl WalkthroughHandle {
     pub(super) fn ensure_status(
         &self,
         expected: &[WalkthroughStatus],
-    ) -> Result<&WalkthroughSession, super::error::CommandError> {
+    ) -> Result<&WalkthroughSessionRuntime, super::error::CommandError> {
         let session = self
             .session
             .as_ref()
             .ok_or(super::error::CommandError::validation(
                 "No walkthrough session is active",
             ))?;
-        if !expected.contains(&session.status) {
+        if !expected.contains(&session.meta.status) {
             return Err(super::error::CommandError::validation(format!(
                 "Walkthrough is in {:?} state, expected one of {:?}",
-                session.status, expected
+                session.meta.status, expected
             )));
         }
         Ok(session)

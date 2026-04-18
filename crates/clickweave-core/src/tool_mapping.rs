@@ -6,7 +6,7 @@ use crate::{
     AppKind, CdpClickParams, CdpClosePageParams, CdpFillParams, CdpHandleDialogParams,
     CdpHoverParams, CdpNavigateParams, CdpNewPageParams, CdpPressKeyParams, CdpSelectPageParams,
     CdpTarget, CdpTypeParams, CdpWaitParams, ClickParams, ClickTarget, DragParams, FindAppParams,
-    FindImageParams, FindTextParams, FocusMethod, FocusWindowParams, HoverParams, LaunchAppParams,
+    FindImageParams, FindTextParams, FocusTarget, FocusWindowParams, HoverParams, LaunchAppParams,
     McpToolCallParams, MouseButton, NodeType, PressKeyParams, QuitAppParams, ScreenshotMode,
     ScrollParams, TakeScreenshotParams, TypeTextParams,
 };
@@ -146,20 +146,17 @@ pub fn node_type_to_tool_invocation(
         }
         NodeType::FocusWindow(p) => {
             let mut args = serde_json::json!({});
-            if let Some(val) = &p.value {
-                match p.method {
-                    FocusMethod::AppName => args["app_name"] = Value::String(val.clone()),
-                    FocusMethod::WindowId => {
-                        if let Ok(id) = val.parse::<u64>() {
-                            args["window_id"] = serde_json::json!(id);
-                        }
-                    }
-                    FocusMethod::Pid => {
-                        if let Ok(pid) = val.parse::<u64>() {
-                            args["pid"] = serde_json::json!(pid);
-                        }
-                    }
+            match &p.target {
+                FocusTarget::AppName(name) if !name.is_empty() => {
+                    args["app_name"] = Value::String(name.clone());
                 }
+                FocusTarget::WindowId(id) => {
+                    args["window_id"] = serde_json::json!(id);
+                }
+                FocusTarget::Pid(pid) => {
+                    args["pid"] = serde_json::json!(pid);
+                }
+                FocusTarget::AppName(_) | FocusTarget::None => {}
             }
             if p.app_kind.uses_cdp() {
                 args["app_kind"] = serde_json::json!(p.app_kind);
@@ -293,7 +290,6 @@ pub fn tool_invocation_to_node_type(
                     .get("app_name")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                ..Default::default()
             }))
         }
         "find_image" => Ok(NodeType::FindImage(FindImageParams {
@@ -390,14 +386,39 @@ pub fn tool_invocation_to_node_type(
             }))
         }
         "focus_window" => {
-            let (method, value) = if let Some(app) = args.get("app_name").and_then(|v| v.as_str()) {
-                (FocusMethod::AppName, Some(app.to_string()))
-            } else if let Some(wid) = args.get("window_id").and_then(|v| v.as_u64()) {
-                (FocusMethod::WindowId, Some(wid.to_string()))
-            } else if let Some(pid) = args.get("pid").and_then(|v| v.as_u64()) {
-                (FocusMethod::Pid, Some(pid.to_string()))
+            // Require exactly one of `app_name` / `window_id` / `pid`. Reject
+            // malformed input (missing all three, or wrong types) with a typed
+            // `MissingArgument` error rather than silently stringifying a parse
+            // failure as was done before.
+            let target = if let Some(app) = args.get("app_name").and_then(|v| v.as_str()) {
+                FocusTarget::AppName(app.to_string())
+            } else if args.get("window_id").is_some() {
+                let wid = args
+                    .get("window_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| ToolMappingError::MissingArgument {
+                        tool: "focus_window".into(),
+                        argument: "window_id".into(),
+                    })?;
+                FocusTarget::WindowId(wid)
+            } else if args.get("pid").is_some() {
+                let pid_u64 = args.get("pid").and_then(|v| v.as_u64()).ok_or_else(|| {
+                    ToolMappingError::MissingArgument {
+                        tool: "focus_window".into(),
+                        argument: "pid".into(),
+                    }
+                })?;
+                let pid =
+                    u32::try_from(pid_u64).map_err(|_| ToolMappingError::MissingArgument {
+                        tool: "focus_window".into(),
+                        argument: "pid".into(),
+                    })?;
+                FocusTarget::Pid(pid)
             } else {
-                (FocusMethod::AppName, None)
+                return Err(ToolMappingError::MissingArgument {
+                    tool: "focus_window".into(),
+                    argument: "app_name|window_id|pid".into(),
+                });
             };
             let app_kind = args
                 .get("app_kind")
@@ -405,8 +426,7 @@ pub fn tool_invocation_to_node_type(
                 .and_then(AppKind::parse)
                 .unwrap_or(AppKind::Native);
             Ok(NodeType::FocusWindow(FocusWindowParams {
-                method,
-                value,
+                target,
                 bring_to_front: true,
                 app_kind,
                 chrome_profile_id: None,
@@ -707,8 +727,7 @@ mod tests {
     #[test]
     fn roundtrip_focus_window_app_name() {
         let nt = NodeType::FocusWindow(FocusWindowParams {
-            method: FocusMethod::AppName,
-            value: Some("Safari".into()),
+            target: FocusTarget::AppName("Safari".into()),
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
@@ -717,16 +736,16 @@ mod tests {
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "focus_window");
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
-        assert!(
-            matches!(back, NodeType::FocusWindow(p) if p.method == FocusMethod::AppName && p.value.as_deref() == Some("Safari"))
-        );
+        assert!(matches!(
+            back,
+            NodeType::FocusWindow(p) if p.target == FocusTarget::AppName("Safari".into())
+        ));
     }
 
     #[test]
     fn roundtrip_focus_window_window_id() {
         let nt = NodeType::FocusWindow(FocusWindowParams {
-            method: FocusMethod::WindowId,
-            value: Some("42".into()),
+            target: FocusTarget::WindowId(42),
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
@@ -734,16 +753,16 @@ mod tests {
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
-        assert!(
-            matches!(back, NodeType::FocusWindow(p) if p.method == FocusMethod::WindowId && p.value.as_deref() == Some("42"))
-        );
+        assert!(matches!(
+            back,
+            NodeType::FocusWindow(p) if p.target == FocusTarget::WindowId(42)
+        ));
     }
 
     #[test]
     fn roundtrip_focus_window_pid() {
         let nt = NodeType::FocusWindow(FocusWindowParams {
-            method: FocusMethod::Pid,
-            value: Some("1234".into()),
+            target: FocusTarget::Pid(1234),
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
@@ -751,9 +770,32 @@ mod tests {
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
-        assert!(
-            matches!(back, NodeType::FocusWindow(p) if p.method == FocusMethod::Pid && p.value.as_deref() == Some("1234"))
+        assert!(matches!(
+            back,
+            NodeType::FocusWindow(p) if p.target == FocusTarget::Pid(1234)
+        ));
+    }
+
+    #[test]
+    fn focus_window_rejects_empty_args() {
+        let result = tool_invocation_to_node_type("focus_window", &serde_json::json!({}), &[]);
+        assert!(matches!(
+            result,
+            Err(ToolMappingError::MissingArgument { .. })
+        ));
+    }
+
+    #[test]
+    fn focus_window_rejects_non_numeric_window_id() {
+        let result = tool_invocation_to_node_type(
+            "focus_window",
+            &serde_json::json!({"window_id": "not a number"}),
+            &[],
         );
+        assert!(matches!(
+            result,
+            Err(ToolMappingError::MissingArgument { .. })
+        ));
     }
 
     #[test]
@@ -834,8 +876,7 @@ mod tests {
     #[test]
     fn roundtrip_focus_window_preserves_app_kind() {
         let nt = NodeType::FocusWindow(FocusWindowParams {
-            method: FocusMethod::AppName,
-            value: Some("Chrome".into()),
+            target: FocusTarget::AppName("Chrome".into()),
             bring_to_front: true,
             app_kind: AppKind::ChromeBrowser,
             chrome_profile_id: None,
@@ -853,8 +894,7 @@ mod tests {
     #[test]
     fn roundtrip_focus_window_omits_native_app_kind() {
         let nt = NodeType::FocusWindow(FocusWindowParams {
-            method: FocusMethod::AppName,
-            value: Some("Calculator".into()),
+            target: FocusTarget::AppName("Calculator".into()),
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
@@ -870,7 +910,7 @@ mod tests {
         let nt = tool_invocation_to_node_type("focus_window", &args, &[]).unwrap();
         match nt {
             NodeType::FocusWindow(p) => {
-                assert_eq!(p.value.as_deref(), Some("Chrome"));
+                assert_eq!(p.target, FocusTarget::AppName("Chrome".into()));
                 assert_eq!(p.app_kind, AppKind::ChromeBrowser);
             }
             _ => panic!("expected FocusWindow"),

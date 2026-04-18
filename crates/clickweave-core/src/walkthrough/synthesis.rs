@@ -382,7 +382,7 @@ pub fn synthesize_draft(
     workflow_name: &str,
 ) -> crate::Workflow {
     use crate::{
-        CdpClickParams, CdpHoverParams, CdpTarget, ClickParams, ClickTarget, Edge, FocusMethod,
+        CdpClickParams, CdpHoverParams, CdpTarget, ClickParams, ClickTarget, Edge, FocusTarget,
         FocusWindowParams, HoverParams, Node, NodeType, Position, PressKeyParams, ScrollParams,
         TypeTextParams, Workflow,
     };
@@ -412,8 +412,7 @@ pub fn synthesize_draft(
         let (node_type, name) = match &action.kind {
             WalkthroughActionKind::LaunchApp { app_name, app_kind } => (
                 NodeType::FocusWindow(FocusWindowParams {
-                    method: FocusMethod::AppName,
-                    value: Some(app_name.clone()),
+                    target: FocusTarget::AppName(app_name.clone()),
                     bring_to_front: true,
                     app_kind: *app_kind,
                     chrome_profile_id: None,
@@ -428,8 +427,7 @@ pub fn synthesize_draft(
                 app_kind,
             } => (
                 NodeType::FocusWindow(FocusWindowParams {
-                    method: FocusMethod::AppName,
-                    value: Some(app_name.clone()),
+                    target: FocusTarget::AppName(app_name.clone()),
                     bring_to_front: true,
                     app_kind: *app_kind,
                     chrome_profile_id: None,
@@ -626,30 +624,36 @@ mod tests {
     }
 
     #[test]
-    fn test_session_serialization_skips_events_and_actions() {
-        let session = WalkthroughSession {
-            id: Uuid::new_v4(),
-            workflow_id: Uuid::new_v4(),
-            started_at: 1_700_000_000_000,
-            ended_at: None,
-            status: WalkthroughStatus::Recording,
+    fn test_session_meta_on_disk_shape_has_no_buffers() {
+        // Buffers (events, actions) live on WalkthroughSessionRuntime, not the
+        // on-disk meta record. Serializing the meta must therefore not contain
+        // any raw event payloads even when the runtime holds them.
+        let runtime = WalkthroughSessionRuntime {
+            meta: WalkthroughSessionMeta {
+                id: Uuid::new_v4(),
+                workflow_id: Uuid::new_v4(),
+                started_at: 1_700_000_000_000,
+                ended_at: None,
+                status: WalkthroughStatus::Recording,
+                warnings: vec![],
+            },
             events: vec![WalkthroughEvent {
                 id: Uuid::new_v4(),
                 timestamp: 1_700_000_000_100,
                 kind: WalkthroughEventKind::Paused,
             }],
             actions: vec![],
-            warnings: vec![],
         };
 
-        let json = serde_json::to_string(&session).expect("serialize");
+        let json = serde_json::to_string(&runtime.meta).expect("serialize meta");
         assert!(!json.contains("Paused"));
+        assert!(!json.contains("\"events\""));
+        assert!(!json.contains("\"actions\""));
 
-        let deserialized: WalkthroughSession = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.id, session.id);
+        let deserialized: WalkthroughSessionMeta =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.id, runtime.meta.id);
         assert_eq!(deserialized.status, WalkthroughStatus::Recording);
-        assert!(deserialized.events.is_empty());
-        assert!(deserialized.actions.is_empty());
     }
 
     #[test]
@@ -842,14 +846,12 @@ mod tests {
             .join(Uuid::new_v4().to_string());
         let storage = WalkthroughStorage::new(&dir);
 
-        let session = WalkthroughSession {
+        let session = WalkthroughSessionMeta {
             id: Uuid::new_v4(),
             workflow_id: Uuid::new_v4(),
             started_at: 1_700_000_000_000,
             ended_at: None,
             status: WalkthroughStatus::Recording,
-            events: vec![],
-            actions: vec![],
             warnings: vec![],
         };
 
@@ -876,14 +878,12 @@ mod tests {
             .join(Uuid::new_v4().to_string());
         let storage = WalkthroughStorage::new(&dir);
 
-        let session = WalkthroughSession {
+        let session = WalkthroughSessionMeta {
             id: Uuid::new_v4(),
             workflow_id: Uuid::new_v4(),
             started_at: 1_700_000_000_000,
             ended_at: None,
             status: WalkthroughStatus::Recording,
-            events: vec![],
-            actions: vec![],
             warnings: vec![],
         };
 
@@ -921,7 +921,7 @@ mod tests {
             .join("clickweave_test_wt")
             .join(Uuid::new_v4().to_string());
         let storage = WalkthroughStorage::new(&dir);
-        let session = WalkthroughSession::new(Uuid::new_v4());
+        let session = WalkthroughSessionMeta::new(Uuid::new_v4());
         let session_dir = storage.create_session_dir(&session).expect("create dir");
 
         let ev1 = WalkthroughEvent {
@@ -1363,7 +1363,7 @@ mod tests {
 
     mod synthesis_tests {
         use super::*;
-        use crate::{FocusMethod, NodeType};
+        use crate::{FocusTarget, NodeType};
 
         fn make_action(kind: WalkthroughActionKind) -> WalkthroughAction {
             WalkthroughAction {
@@ -1398,7 +1398,7 @@ mod tests {
             assert_eq!(wf.nodes.len(), 1);
             assert!(matches!(
                 &wf.nodes[0].node_type,
-                NodeType::FocusWindow(p) if p.method == FocusMethod::AppName && p.value.as_deref() == Some("Calculator")
+                NodeType::FocusWindow(p) if p.target == FocusTarget::AppName("Calculator".into())
             ));
             assert_eq!(wf.nodes[0].name, "Launch Calculator");
         }

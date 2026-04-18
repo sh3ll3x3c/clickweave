@@ -1,7 +1,7 @@
 use super::helpers::*;
 use clickweave_core::AppKind;
 use clickweave_core::{
-    ClickParams, ClickTarget, FindTextParams, FocusMethod, FocusWindowParams, McpToolCallParams,
+    ClickParams, ClickTarget, FindTextParams, FocusTarget, FocusWindowParams, McpToolCallParams,
     NodeType, ScreenshotMode, TakeScreenshotParams, TypeTextParams,
 };
 
@@ -85,8 +85,7 @@ fn evict_app_cache_for_focus_window_node() {
     );
 
     let node = NodeType::FocusWindow(FocusWindowParams {
-        method: FocusMethod::AppName,
-        value: Some("chrome".to_string()),
+        target: FocusTarget::AppName("chrome".to_string()),
         bring_to_front: true,
         app_kind: clickweave_core::AppKind::Native,
         chrome_profile_id: None,
