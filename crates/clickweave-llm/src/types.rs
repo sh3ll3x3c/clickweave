@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 
 #[derive(Debug, Serialize)]
 pub struct ChatRequest<'a> {
@@ -15,6 +16,107 @@ pub struct ChatRequest<'a> {
     /// (e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra_body: &'a serde_json::Map<String, Value>,
+}
+
+/// OpenAI chat message role.
+///
+/// Serializes to lowercase strings on the wire (`"system"`, `"user"`,
+/// `"assistant"`, `"tool"`) to match the OpenAI Chat Completions API.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+impl Role {
+    /// Lowercase wire string for this role.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
+        }
+    }
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl AsRef<str> for Role {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq<&str> for Role {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<str> for Role {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<Role> for &str {
+    fn eq(&self, other: &Role) -> bool {
+        *self == other.as_str()
+    }
+}
+
+impl PartialEq<Role> for str {
+    fn eq(&self, other: &Role) -> bool {
+        self == other.as_str()
+    }
+}
+
+/// OpenAI tool call type. The spec currently defines only `"function"`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum CallType {
+    #[default]
+    Function,
+}
+
+impl CallType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallType::Function => "function",
+        }
+    }
+}
+
+impl fmt::Display for CallType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl AsRef<str> for CallType {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq<&str> for CallType {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<str> for CallType {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
 }
 
 /// Message content can be a plain string or an array of content parts (for vision).
@@ -51,7 +153,7 @@ pub struct ImageUrl {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub role: String,
+    pub role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Content>,
     /// Thinking-model scratchpad. Captured from assistant responses and echoed
@@ -67,9 +169,9 @@ pub struct Message {
 }
 
 impl Message {
-    fn with_role(role: &str) -> Self {
+    fn with_role(role: Role) -> Self {
         Self {
-            role: role.to_string(),
+            role,
             content: None,
             reasoning_content: None,
             tool_calls: None,
@@ -81,14 +183,14 @@ impl Message {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             content: Some(Content::Text(content.into())),
-            ..Self::with_role("system")
+            ..Self::with_role(Role::System)
         }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             content: Some(Content::Text(content.into())),
-            ..Self::with_role("user")
+            ..Self::with_role(Role::User)
         }
     }
 
@@ -105,21 +207,21 @@ impl Message {
         );
         Self {
             content: Some(Content::Parts(parts)),
-            ..Self::with_role("user")
+            ..Self::with_role(Role::User)
         }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             content: Some(Content::Text(content.into())),
-            ..Self::with_role("assistant")
+            ..Self::with_role(Role::Assistant)
         }
     }
 
     pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
         Self {
             tool_calls: Some(tool_calls),
-            ..Self::with_role("assistant")
+            ..Self::with_role(Role::Assistant)
         }
     }
 
@@ -127,7 +229,7 @@ impl Message {
         Self {
             content: Some(Content::Text(content.into())),
             tool_call_id: Some(tool_call_id.into()),
-            ..Self::with_role("tool")
+            ..Self::with_role(Role::Tool)
         }
     }
 
@@ -140,8 +242,8 @@ impl Message {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
-    #[serde(rename = "type")]
-    pub call_type: String,
+    #[serde(rename = "type", default)]
+    pub call_type: CallType,
     pub function: FunctionCall,
 }
 
@@ -273,4 +375,118 @@ impl ModelInfo {
 #[derive(Debug, Deserialize)]
 pub struct ModelsResponse {
     pub data: Vec<ModelInfo>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_serializes_to_lowercase_string() {
+        assert_eq!(serde_json::to_string(&Role::System).unwrap(), "\"system\"");
+        assert_eq!(serde_json::to_string(&Role::User).unwrap(), "\"user\"");
+        assert_eq!(
+            serde_json::to_string(&Role::Assistant).unwrap(),
+            "\"assistant\""
+        );
+        assert_eq!(serde_json::to_string(&Role::Tool).unwrap(), "\"tool\"");
+    }
+
+    #[test]
+    fn role_deserializes_from_lowercase_string() {
+        let r: Role = serde_json::from_str("\"assistant\"").unwrap();
+        assert_eq!(r, Role::Assistant);
+    }
+
+    #[test]
+    fn role_display_matches_wire_format() {
+        assert_eq!(Role::System.to_string(), "system");
+        assert_eq!(Role::Tool.to_string(), "tool");
+    }
+
+    #[test]
+    fn role_compares_equal_to_string_slice() {
+        // Both directions of PartialEq<&str> must work for ergonomic
+        // comparisons at migration sites.
+        let r = Role::User;
+        assert!(r == "user");
+        assert!("user" == r);
+        assert!(r != "system");
+    }
+
+    #[test]
+    fn role_as_ref_str_returns_wire_value() {
+        let r: &str = Role::Assistant.as_ref();
+        assert_eq!(r, "assistant");
+    }
+
+    #[test]
+    fn call_type_serializes_to_function_string() {
+        assert_eq!(
+            serde_json::to_string(&CallType::Function).unwrap(),
+            "\"function\""
+        );
+    }
+
+    #[test]
+    fn call_type_deserializes_from_function_string() {
+        let c: CallType = serde_json::from_str("\"function\"").unwrap();
+        assert_eq!(c, CallType::Function);
+    }
+
+    #[test]
+    fn call_type_default_is_function() {
+        // OpenAI spec currently only defines `function`; the default keeps
+        // deserialization resilient if a provider omits the field.
+        assert_eq!(CallType::default(), CallType::Function);
+    }
+
+    #[test]
+    fn message_serializes_role_as_lowercase_string() {
+        // On-wire compatibility with the OpenAI API.
+        let msg = Message::system("hi");
+        let serialized = serde_json::to_string(&msg).unwrap();
+        assert!(
+            serialized.contains("\"role\":\"system\""),
+            "role must serialize to lowercase string, got: {serialized}"
+        );
+    }
+
+    #[test]
+    fn message_round_trips_through_json() {
+        let msg = Message::assistant("thinking");
+        let serialized = serde_json::to_string(&msg).unwrap();
+        let back: Message = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(back.role, Role::Assistant);
+        assert_eq!(back.content_text(), Some("thinking"));
+    }
+
+    #[test]
+    fn tool_call_serializes_type_as_function_string() {
+        // Use ToolCall inside a serialization harness to exercise the
+        // `#[serde(rename = "type")]` wire contract.
+        let tc = ToolCall {
+            id: "call_0".to_string(),
+            call_type: CallType::Function,
+            function: FunctionCall {
+                name: "click".to_string(),
+                arguments: Value::Object(serde_json::Map::new()),
+            },
+        };
+        let serialized = serde_json::to_string(&tc).unwrap();
+        assert!(
+            serialized.contains("\"type\":\"function\""),
+            "call_type must serialize as `type: \"function\"`, got: {serialized}"
+        );
+    }
+
+    #[test]
+    fn tool_call_round_trips_with_call_type() {
+        let payload =
+            r#"{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}"#;
+        let tc: ToolCall = serde_json::from_str(payload).unwrap();
+        assert_eq!(tc.call_type, CallType::Function);
+        assert_eq!(tc.id, "call_1");
+        assert_eq!(tc.function.name, "f");
+    }
 }

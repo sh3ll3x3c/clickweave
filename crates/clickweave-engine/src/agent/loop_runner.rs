@@ -553,7 +553,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 self.messages.push(Message::assistant_tool_calls(vec![
                                     clickweave_llm::ToolCall {
                                         id: tool_call_id.clone(),
-                                        call_type: "function".to_string(),
+                                        call_type: clickweave_llm::CallType::Function,
                                         function: clickweave_llm::FunctionCall {
                                             name: cached_tool.clone(),
                                             arguments: cached_args.clone(),

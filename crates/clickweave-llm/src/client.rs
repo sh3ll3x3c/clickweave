@@ -815,8 +815,8 @@ mod tests {
         // Verify the VLM received the system prompt + user message with images
         let messages = mock.last_messages();
         assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].role, "system");
-        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(messages[1].role, Role::User);
         // User message should contain image parts
         assert!(
             matches!(&messages[1].content, Some(Content::Parts(parts)) if parts.len() >= 2),

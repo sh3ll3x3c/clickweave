@@ -1,6 +1,6 @@
 use super::prompt::summarize_steps;
 use super::types::AgentStep;
-use clickweave_llm::{Content, Message};
+use clickweave_llm::{Content, Message, Role};
 use serde_json::Value;
 
 /// Rough token estimate: ~4 characters per token for English text.
@@ -42,7 +42,7 @@ fn make_superseded_placeholder(tool_name: &str) -> String {
 /// preceding assistant `tool_calls` for a matching id. Returns `None` if
 /// `msg` is not a tool-result or the id cannot be resolved.
 fn resolve_tool_name<'a>(messages: &'a [Message], msg: &Message) -> Option<&'a str> {
-    if msg.role != "tool" {
+    if msg.role != Role::Tool {
         return None;
     }
     let call_id = msg.tool_call_id.as_deref()?;
@@ -213,7 +213,7 @@ pub fn compact_step_summaries(
 
     // Keep the system message (always first)
     if let Some(system_msg) = messages.first()
-        && system_msg.role == "system"
+        && system_msg.role == Role::System
     {
         compacted.push(system_msg.clone());
     }
@@ -221,7 +221,7 @@ pub fn compact_step_summaries(
     // Keep the goal message (second message — user-controlled goal text
     // that must survive compaction to keep the LLM on-task).
     if let Some(goal_msg) = messages.get(1)
-        && goal_msg.role == "user"
+        && goal_msg.role == Role::User
     {
         compacted.push(goal_msg.clone());
     }
@@ -352,7 +352,7 @@ mod tests {
         assert!(compacted.len() < messages.len());
 
         // Should start with system message
-        assert_eq!(compacted[0].role, "system");
+        assert_eq!(compacted[0].role, Role::System);
 
         // Should contain a summary message
         let has_summary = compacted.iter().any(|m| {
@@ -466,7 +466,7 @@ mod tests {
     // Supersession tests
     // -----------------------------------------------------------------
 
-    use clickweave_llm::{FunctionCall, ToolCall};
+    use clickweave_llm::{CallType, FunctionCall, ToolCall};
 
     /// Build a synthetic (assistant tool_call, tool result) pair for the
     /// given tool name. The result body is large so supersession produces a
@@ -475,7 +475,7 @@ mod tests {
         let big_body = "x".repeat(body_kb * 1024);
         let assistant = Message::assistant_tool_calls(vec![ToolCall {
             id: call_id.to_string(),
-            call_type: "function".to_string(),
+            call_type: CallType::Function,
             function: FunctionCall {
                 name: tool_name.to_string(),
                 arguments: serde_json::json!({}),
@@ -522,7 +522,8 @@ mod tests {
         assert_eq!(collapsed.len(), messages.len());
 
         // Locate tool-result messages; all but the last should be placeholders.
-        let tool_results: Vec<&Message> = collapsed.iter().filter(|m| m.role == "tool").collect();
+        let tool_results: Vec<&Message> =
+            collapsed.iter().filter(|m| m.role == Role::Tool).collect();
         assert_eq!(tool_results.len(), 4);
 
         for m in &tool_results[..3] {
@@ -586,7 +587,7 @@ mod tests {
         // Expected collapsed ids: a0 and b0 only.
         let collapsed_ids: Vec<String> = collapsed
             .iter()
-            .filter(|m| m.role == "tool")
+            .filter(|m| m.role == Role::Tool)
             .filter(|m| {
                 m.content_text()
                     .is_some_and(|t| t.starts_with("[superseded "))
@@ -634,7 +635,7 @@ mod tests {
         // The click result must still carry its full original body.
         let click_body = collapsed
             .iter()
-            .find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some("call_0"))
+            .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_0"))
             .and_then(|m| m.content_text().map(|s| s.len()))
             .unwrap();
         assert!(

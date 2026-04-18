@@ -3,7 +3,8 @@ use crate::agent::types::*;
 use crate::executor::Mcp;
 use anyhow::Result;
 use clickweave_llm::{
-    ChatBackend, ChatOptions, ChatResponse, Choice, FunctionCall, Message, ModelInfo, ToolCall,
+    CallType, ChatBackend, ChatOptions, ChatResponse, Choice, FunctionCall, Message, ModelInfo,
+    Role, ToolCall,
 };
 use clickweave_mcp::{ToolCallResult, ToolContent};
 use serde_json::Value;
@@ -34,7 +35,7 @@ impl MockAgent {
                 index: 0,
                 message: Message::assistant_tool_calls(vec![ToolCall {
                     id: tool_call_id.to_string(),
-                    call_type: "function".to_string(),
+                    call_type: CallType::Function,
                     function: FunctionCall {
                         name: tool_name.to_string(),
                         arguments: parsed,
@@ -1120,7 +1121,7 @@ async fn cache_replay_reconstructs_transcript() {
 
     // Find the assistant message with tool_calls for the cached click
     let has_assistant_tool_call = messages.iter().any(|m| {
-        m.role == "assistant"
+        m.role == Role::Assistant
             && m.tool_calls
                 .as_ref()
                 .map(|tcs| tcs.iter().any(|tc| tc.function.name == "click"))
@@ -1133,7 +1134,7 @@ async fn cache_replay_reconstructs_transcript() {
 
     // Find the tool result message for the cached click
     let has_tool_result = messages.iter().any(|m| {
-        m.role == "tool"
+        m.role == Role::Tool
             && m.tool_call_id
                 .as_ref()
                 .map(|id| id.starts_with("cache-"))
@@ -1160,7 +1161,7 @@ async fn multi_tool_response_only_executes_first() {
                 message: Message::assistant_tool_calls(vec![
                     ToolCall {
                         id: "call_first".to_string(),
-                        call_type: "function".to_string(),
+                        call_type: CallType::Function,
                         function: FunctionCall {
                             name: "click".to_string(),
                             arguments: serde_json::json!({ "x": 10, "y": 20 }),
@@ -1168,7 +1169,7 @@ async fn multi_tool_response_only_executes_first() {
                     },
                     ToolCall {
                         id: "call_second".to_string(),
-                        call_type: "function".to_string(),
+                        call_type: CallType::Function,
                         function: FunctionCall {
                             name: "click".to_string(),
                             arguments: serde_json::json!({ "x": 300, "y": 400 }),
@@ -1248,7 +1249,7 @@ async fn malformed_tool_call_json_returns_error() {
                 index: 0,
                 message: Message::assistant_tool_calls(vec![ToolCall {
                     id: "call_bad".to_string(),
-                    call_type: "function".to_string(),
+                    call_type: CallType::Function,
                     function: FunctionCall {
                         name: "click".to_string(),
                         arguments: Value::String("not valid json{{{".to_string()),
@@ -1444,7 +1445,7 @@ async fn retained_history_stays_bounded_across_snapshot_heavy_steps() {
         .iter()
         .rev()
         .find(|m| {
-            m.role == "tool"
+            m.role == Role::Tool
                 && m.tool_call_id
                     .as_deref()
                     .is_some_and(|id| id.starts_with("call_wait_"))
