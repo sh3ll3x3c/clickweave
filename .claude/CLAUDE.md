@@ -50,9 +50,10 @@ Layout under the workflow dir:
   - `frontend/architecture.md` — React stack, directory layout, Zustand slices, graph editor behavior
   - `mcp/integration.md` — MCP client lifecycle, tool mapping, protocol types
 
-## Design & Implementation Plans
-- Location: `internal_docs/plans/` (gitignored, local-only)
-- Naming: `YYYY-MM-DD_HH-MM-SS-<topic>.md` (e.g., `2026-02-12_10-07-02-app-name-resolution.md`)
+## Design Docs & Implementation Plans
+- **Design docs** (durable decision record) live in a separate private repo — see `.claude/issues.local.md` for the path convention. Do not commit design docs to this public repo.
+- **Implementation plans** (ephemeral guidance for the coding agent): `internal_docs/plans/` (gitignored, local-only), named `YYYY-MM-DD_HH-MM-SS-<topic>.md`. Scoped to one execution, not a durable artifact.
+- **Design reviews** (Codex review output on drafts): `internal_docs/design-reviews/` (gitignored).
 
 ## Issue Conventions
 - **Issues repo is separate from this code repo.** Do not file issues against this repo.
