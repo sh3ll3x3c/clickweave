@@ -286,3 +286,76 @@ async fn resolve_and_ax_select_omits_value_arg() {
     assert_eq!(args["uid"], "a2g1");
     assert!(args.get("value").is_none());
 }
+
+#[tokio::test]
+async fn resolve_ax_descriptor_matches_server_lowercase_role_form() {
+    // Walkthrough capture stores descriptors with the raw macOS AX role
+    // (`AXButton`), but `take_ax_snapshot` on the live server emits CDP-style
+    // lowercase roles (`button`). The resolver must normalize and match
+    // either form.
+    let exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    mcp.push_response(ax_snapshot_result("uid=a1g3 button \"Save\"\n"));
+
+    let uid = exec
+        .resolve_ax_target_uid(
+            &AxTarget::Descriptor {
+                role: "AXButton".into(),
+                name: "Save".into(),
+                parent_name: None,
+            },
+            &mcp,
+        )
+        .await
+        .expect("descriptor should match across role-form mismatch");
+    assert_eq!(uid, "a1g3");
+}
+
+#[tokio::test]
+async fn resolve_ax_descriptor_matches_when_both_sides_use_lowercase_role() {
+    // Agent-loop enrichment stores descriptors using the snapshot's role
+    // string verbatim (already lowercase). Same-form match must still work.
+    let exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    mcp.push_response(ax_snapshot_result("uid=a1g3 button \"Save\"\n"));
+
+    let uid = exec
+        .resolve_ax_target_uid(
+            &AxTarget::Descriptor {
+                role: "button".into(),
+                name: "Save".into(),
+                parent_name: None,
+            },
+            &mcp,
+        )
+        .await
+        .expect("descriptor should match same-form role");
+    assert_eq!(uid, "a1g3");
+}
+
+#[tokio::test]
+async fn resolve_ax_descriptor_does_not_match_value_attribute_as_name() {
+    // An unlabeled textbox serializes as
+    //   `uid=a1g1 textbox value="hello" focused`
+    // — no quoted name. Resolving a descriptor with `name == "hello"` must
+    // NOT succeed against that line (otherwise the descriptor becomes
+    // value-dependent and breaks replay when the user edits the field).
+    let exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    mcp.push_response(ax_snapshot_result(
+        "uid=a1g1 textbox value=\"hello\" focused\n",
+    ));
+
+    let err = exec
+        .resolve_ax_target_uid(
+            &AxTarget::Descriptor {
+                role: "textbox".into(),
+                name: "hello".into(),
+                parent_name: None,
+            },
+            &mcp,
+        )
+        .await
+        .expect_err("value attribute must not be lifted as the descriptor name");
+    assert!(matches!(err, ExecutorError::AxNotFound { .. }));
+}

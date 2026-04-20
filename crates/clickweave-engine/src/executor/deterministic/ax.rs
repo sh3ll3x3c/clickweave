@@ -79,8 +79,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 name,
                 parent_name,
             } => {
+                // Role normalization: descriptors may carry the raw macOS AX
+                // role (`AXButton`) from walkthrough capture, while the
+                // server's `take_ax_snapshot` emits CDP-style roles
+                // (`button`). Compare normalized forms so either producer
+                // matches.
+                let want_role = normalize_ax_role(role);
                 let matched = entries.iter().find(|e| {
-                    e.role == *role
+                    normalize_ax_role(&e.role) == want_role
                         && e.name.as_deref().unwrap_or("") == name.as_str()
                         && match parent_name {
                             Some(pn) => e.parent_name.as_deref() == Some(pn.as_str()),
@@ -337,12 +343,13 @@ fn leading_indent_depth(line: &str) -> u32 {
 }
 
 /// Extract `(uid, role, name)` from a single trimmed snapshot line. The MCP
-/// formatter emits `uid=<uid> <Role> "<name>" [value="..." focused bbox=...]`,
-/// so we walk it once: find `uid=`, consume the uid and role as
-/// whitespace-delimited tokens, then pick out the first quoted substring as
-/// the name. `role` is `""` when missing, and `name` is `None` when the line
-/// has no quoted value at all. Returns `None` if `uid=` is absent or its
-/// value is empty — treated as a non-entry (blank lines, free-form text).
+/// formatter emits `uid=<uid> <role> ["<name>"] [key="val"] [focused] ...`
+/// where the quoted name (if present) appears *immediately* after the role.
+/// We walk the line once: find `uid=`, consume the uid and role as
+/// whitespace-delimited tokens, then check whether the next token starts
+/// with a bare `"` (name) or a `key="..."` attribute (no name). Returns
+/// `None` if `uid=` is absent or its value is empty — treated as a non-entry
+/// (blank lines, free-form text).
 fn parse_snapshot_line(line: &str) -> Option<(String, String, Option<String>)> {
     let start = line.find("uid=")?;
     let after_uid = &line[start + 4..];
@@ -350,10 +357,17 @@ fn parse_snapshot_line(line: &str) -> Option<(String, String, Option<String>)> {
     if uid.is_empty() {
         return None;
     }
-    let role = after
-        .map(|s| split_first_token(s.trim_start()).0)
-        .unwrap_or("");
-    let name = parse_first_quoted(line);
+    let (role, after_role) = match after {
+        Some(s) => split_first_token(s.trim_start()),
+        None => ("", None),
+    };
+    // The name is only present when the token immediately following the
+    // role starts with an unprefixed quote. Attributes like `value="..."`
+    // and `bbox=(...)` must not be mistaken for a name.
+    let name = after_role
+        .map(str::trim_start)
+        .filter(|s| s.starts_with('"'))
+        .and_then(parse_first_quoted);
     Some((uid.to_string(), role.to_string(), name))
 }
 
@@ -367,14 +381,82 @@ fn split_first_token(s: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// First quoted substring in a line — the MCP formatter emits role first,
-/// then `"name"`, then optional `value="..."` / `focused` / `bbox=...`.
-/// Treating the first quoted span as the name avoids picking up the value.
+/// First quoted substring in a line — caller has already verified that the
+/// line begins (after any whitespace) with a bare `"`. Returns the contents
+/// between the first two *unescaped* double quotes, with `\"` sequences
+/// decoded to `"` and `\\` decoded to `\` so descriptors captured out-of-band
+/// (e.g. from `element_at_point`) round-trip through any future snapshot
+/// formatter that emits escaped quotes. The installed MCP server does not
+/// escape quotes today — for a name that contains `"`, both producer and
+/// consumer therefore see the same truncated string and still match — but
+/// handling the escape is forward-compatible and the only way a name with
+/// internal quotes can survive the snapshot wire format.
 fn parse_first_quoted(line: &str) -> Option<String> {
     let start = line.find('"')?;
-    let rest = &line[start + 1..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    let mut out = String::new();
+    let mut chars = line[start + 1..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                // Treat `\"` as a literal `"` and `\\` as a literal `\`;
+                // anything else keeps the backslash (conservative — the
+                // formatter doesn't document other escapes, so preserving
+                // the raw sequence loses no information).
+                match chars.next() {
+                    Some('"') => out.push('"'),
+                    Some('\\') => out.push('\\'),
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                    None => {
+                        out.push('\\');
+                        return None;
+                    }
+                }
+            }
+            '"' => return Some(out),
+            other => out.push(other),
+        }
+    }
+    None
+}
+
+/// Normalize a macOS AX role (`AXButton`, `AXTextField`) to the CDP-style
+/// role the server's `take_ax_snapshot` formatter emits (`button`,
+/// `textbox`). Must stay in sync with
+/// `native-devtools-mcp::tools::ax_snapshot::map_ax_role`. Values already in
+/// lowercase / CDP form pass through unchanged (the fallback mirrors the
+/// server: strip `AX` prefix and lowercase), so the function is idempotent
+/// and safe to call on either producer's role string.
+pub(crate) fn normalize_ax_role(role: &str) -> String {
+    match role {
+        "AXButton" => "button".to_string(),
+        "AXStaticText" => "text".to_string(),
+        "AXTextField" | "AXTextArea" => "textbox".to_string(),
+        "AXCheckBox" => "checkbox".to_string(),
+        "AXWebArea" => "RootWebArea".to_string(),
+        "AXGroup" => "generic".to_string(),
+        "AXLink" => "link".to_string(),
+        "AXImage" => "img".to_string(),
+        "AXList" => "list".to_string(),
+        "AXHeading" => "heading".to_string(),
+        "AXMenuItem" => "menuitem".to_string(),
+        "AXTable" => "table".to_string(),
+        "AXRow" => "row".to_string(),
+        "AXCell" => "cell".to_string(),
+        "AXTabGroup" => "tablist".to_string(),
+        "AXComboBox" | "AXPopUpButton" => "combobox".to_string(),
+        "AXScrollArea" => "scrollbar".to_string(),
+        "AXToolbar" => "toolbar".to_string(),
+        "AXRadioButton" => "radio".to_string(),
+        "AXSlider" => "slider".to_string(),
+        "AXProgressIndicator" => "progressbar".to_string(),
+        other => other
+            .strip_prefix("AX")
+            .map(str::to_lowercase)
+            .unwrap_or_else(|| other.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -423,6 +505,99 @@ uid=a1g1 AXWindow \"Settings\"
         let text = "\n\nuid=a1g1 AXButton \"X\"\n\n";
         let entries = parse_ax_snapshot(text);
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn parse_ax_snapshot_handles_server_wire_format_with_lowercase_role() {
+        // The live MCP server emits CDP-style lowercase roles (`button`,
+        // `textbox`, `row`) from `map_ax_role`, not raw `AXButton`. Make sure
+        // we parse that form correctly.
+        let text = "uid=a1g3 button \"Submit\"\nuid=a2g3 row \"First\"\n";
+        let entries = parse_ax_snapshot(text);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].role, "button");
+        assert_eq!(entries[0].name.as_deref(), Some("Submit"));
+        assert_eq!(entries[1].role, "row");
+    }
+
+    #[test]
+    fn parse_ax_snapshot_unlabeled_field_does_not_lift_value_as_name() {
+        // An unlabeled text field with a current value would be serialized
+        // by the server as `uid=... textbox value="hello" focused` — no
+        // quoted name. Treating the value as a name would make the
+        // descriptor change whenever the field contents change, breaking
+        // replay. Correct behavior: `name == None`.
+        let text = "uid=a3g1 textbox value=\"hello\" focused\n";
+        let entries = parse_ax_snapshot(text);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].role, "textbox");
+        assert_eq!(entries[0].name, None);
+    }
+
+    #[test]
+    fn parse_first_quoted_decodes_escaped_internal_quote() {
+        // A label like `Save "As"` should round-trip through an escaped
+        // wire form without being truncated at the first internal quote.
+        let decoded = parse_first_quoted(r#""Save \"As\"""#);
+        assert_eq!(decoded.as_deref(), Some(r#"Save "As""#));
+    }
+
+    #[test]
+    fn parse_first_quoted_decodes_escaped_backslash() {
+        let decoded = parse_first_quoted(r#""a\\b""#);
+        assert_eq!(decoded.as_deref(), Some(r#"a\b"#));
+    }
+
+    #[test]
+    fn parse_first_quoted_preserves_unknown_escapes_verbatim() {
+        // The formatter doesn't document `\n` etc. — preserve the raw
+        // two-char sequence rather than invent a decoding.
+        let decoded = parse_first_quoted(r#""a\nb""#);
+        assert_eq!(decoded.as_deref(), Some(r#"a\nb"#));
+    }
+
+    #[test]
+    fn parse_first_quoted_handles_utf8_names() {
+        // Multibyte chars (emoji, accented letters) must round-trip
+        // correctly — byte-indexing would panic on split boundaries.
+        let decoded = parse_first_quoted("\"Café 🍰\"");
+        assert_eq!(decoded.as_deref(), Some("Café 🍰"));
+    }
+
+    #[test]
+    fn parse_first_quoted_returns_none_when_unterminated() {
+        assert_eq!(parse_first_quoted(r#""no close"#), None);
+    }
+
+    #[test]
+    fn parse_ax_snapshot_bare_role_with_no_name_and_no_attrs() {
+        // Truly empty row: `uid=... generic` — used for unnamed AXGroup.
+        // Also should not contribute to the ancestor stack.
+        let text = "\
+uid=a1g1 generic
+  uid=a2g1 button \"Close\"
+";
+        let entries = parse_ax_snapshot(text);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].role, "generic");
+        assert_eq!(entries[0].name, None);
+        // Unnamed parent should not become a `parent_name` for its child.
+        assert_eq!(entries[1].parent_name, None);
+    }
+
+    #[test]
+    fn normalize_ax_role_maps_common_ax_roles_to_cdp_form() {
+        assert_eq!(normalize_ax_role("AXButton"), "button");
+        assert_eq!(normalize_ax_role("AXTextField"), "textbox");
+        assert_eq!(normalize_ax_role("AXTextArea"), "textbox");
+        assert_eq!(normalize_ax_role("AXRow"), "row");
+        assert_eq!(normalize_ax_role("AXComboBox"), "combobox");
+        assert_eq!(normalize_ax_role("AXPopUpButton"), "combobox");
+        // Already-CDP form passes through unchanged (idempotent).
+        assert_eq!(normalize_ax_role("button"), "button");
+        assert_eq!(normalize_ax_role("textbox"), "textbox");
+        // Unknown role: strip `AX` and lowercase — mirrors the server.
+        assert_eq!(normalize_ax_role("AXSplitGroup"), "splitgroup");
     }
 
     #[test]

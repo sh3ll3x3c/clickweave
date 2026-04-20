@@ -672,6 +672,18 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             *last_cache_key = None;
             return ReplayResult::FellThrough;
         }
+        // AX dispatch tools cache a snapshot-generation-scoped uid that the
+        // server will reject as `snapshot_expired` on replay. Fall through
+        // to the LLM so the agent takes a fresh snapshot + descriptor
+        // resolution path.
+        if Self::is_ax_dispatch_tool(&cached.tool_name) {
+            debug!(
+                tool = %cached.tool_name,
+                "Skipping cached AX dispatch entry (uid is generation-scoped)"
+            );
+            *last_cache_key = None;
+            return ReplayResult::FellThrough;
+        }
         let cached_tool = cached.tool_name.clone();
         let cached_args = cached.arguments.clone();
         debug!(
@@ -916,11 +928,16 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     } else {
                         None
                     };
-                    // Only cache action tools, never observation tools.
-                    // Observation tools provide fresh environmental evidence
-                    // that must not be replayed from stale cache entries.
+                    // Only cache action tools, never observation tools or
+                    // AX dispatch tools. Observation tools provide fresh
+                    // environmental evidence that must not be replayed from
+                    // stale cache entries. AX dispatch tools carry a
+                    // snapshot-generation-scoped uid that the server rejects
+                    // on replay — re-running the deterministic resolve path
+                    // is the only correct behavior.
                     if self.config.use_cache
                         && !Self::is_observation_tool(tool_name, annotations_by_tool)
+                        && !Self::is_ax_dispatch_tool(tool_name)
                         && !elements.is_empty()
                     {
                         match produced_node_id {
@@ -1844,6 +1861,21 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         "android_list_devices",
     ];
 
+    /// AX dispatch tools whose `uid` argument is a
+    /// snapshot-generation-scoped handle. The server rejects these uids as
+    /// `snapshot_expired` after the next `take_ax_snapshot`, so caching the
+    /// raw MCP args and replaying them verbatim is never correct. The
+    /// executor's deterministic path re-resolves descriptors on every
+    /// invocation — the agent-loop cache must *not* short-circuit that.
+    const AX_DISPATCH_TOOLS: &'static [&'static str] = &["ax_click", "ax_set_value", "ax_select"];
+
+    /// True when the tool is an AX dispatch tool whose cached arguments
+    /// carry a stale uid and therefore must never replay from the decision
+    /// cache. See [`Self::AX_DISPATCH_TOOLS`] for the rationale.
+    fn is_ax_dispatch_tool(tool_name: &str) -> bool {
+        Self::AX_DISPATCH_TOOLS.contains(&tool_name)
+    }
+
     /// Decide whether a tool should be treated as observation-only for the
     /// purposes of approval gating, cache eligibility, and workflow-node
     /// inclusion.
@@ -2576,5 +2608,21 @@ mod observation_union_tests {
         assert!(!is_observation("ax_click", &annotations));
         assert!(!is_observation("ax_set_value", &annotations));
         assert!(!is_observation("ax_select", &annotations));
+    }
+
+    #[test]
+    fn ax_dispatch_tools_are_not_cacheable() {
+        // Cache eligibility on the write side AND replay on the read side
+        // must skip AX dispatch tools — their `uid` argument is scoped to
+        // one snapshot generation.
+        assert!(AgentRunner::<Backend>::is_ax_dispatch_tool("ax_click"));
+        assert!(AgentRunner::<Backend>::is_ax_dispatch_tool("ax_set_value"));
+        assert!(AgentRunner::<Backend>::is_ax_dispatch_tool("ax_select"));
+        // Snapshot and sibling tools are not dispatch tools.
+        assert!(!AgentRunner::<Backend>::is_ax_dispatch_tool(
+            "take_ax_snapshot"
+        ));
+        assert!(!AgentRunner::<Backend>::is_ax_dispatch_tool("click"));
+        assert!(!AgentRunner::<Backend>::is_ax_dispatch_tool("type_text"));
     }
 }
