@@ -684,6 +684,21 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             *last_cache_key = None;
             return ReplayResult::FellThrough;
         }
+        // State-transition tools (launch_app, focus_window, ...) must never
+        // replay: the cache key encodes the pre-transition page, and the
+        // next iteration's `fetch_elements` can briefly still return that
+        // same pre-transition CDP snapshot before auto-connect re-targets.
+        // Without this guard the cached decision fires a second time right
+        // after the LLM issues it, producing duplicate `step_completed`
+        // events and duplicate workflow nodes.
+        if Self::is_state_transition_tool(&cached.tool_name) {
+            debug!(
+                tool = %cached.tool_name,
+                "Skipping cached state-transition entry (not safe to replay)"
+            );
+            *last_cache_key = None;
+            return ReplayResult::FellThrough;
+        }
         let cached_tool = cached.tool_name.clone();
         let cached_args = cached.arguments.clone();
         debug!(
@@ -938,6 +953,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     if self.config.use_cache
                         && !Self::is_observation_tool(tool_name, annotations_by_tool)
                         && !Self::is_ax_dispatch_tool(tool_name)
+                        && !Self::is_state_transition_tool(tool_name)
                         && !elements.is_empty()
                     {
                         match produced_node_id {
@@ -1869,11 +1885,35 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// invocation — the agent-loop cache must *not* short-circuit that.
     const AX_DISPATCH_TOOLS: &'static [&'static str] = &["ax_click", "ax_set_value", "ax_select"];
 
+    /// Tools that transition app-level foreground / connection state rather
+    /// than act on page content. Their cache key (the pre-state page
+    /// elements) is inherently mismatched with their effect (a new state),
+    /// and the next iteration's `fetch_elements` can still return the
+    /// pre-transition CDP snapshot before the auto-connect hook
+    /// re-targets — which caused the cached decision to replay immediately
+    /// after the LLM issued it, doubling each `step_completed` event and
+    /// spawning duplicate workflow nodes.
+    const STATE_TRANSITION_TOOLS: &'static [&'static str] = &[
+        "launch_app",
+        "focus_window",
+        "quit_app",
+        "cdp_connect",
+        "cdp_disconnect",
+    ];
+
     /// True when the tool is an AX dispatch tool whose cached arguments
     /// carry a stale uid and therefore must never replay from the decision
     /// cache. See [`Self::AX_DISPATCH_TOOLS`] for the rationale.
     fn is_ax_dispatch_tool(tool_name: &str) -> bool {
         Self::AX_DISPATCH_TOOLS.contains(&tool_name)
+    }
+
+    /// True when the tool transitions app/window/CDP state and therefore
+    /// must not be cache-replayed: the cache key reflects the pre-state,
+    /// so a replay re-runs the transition against unchanged elements.
+    /// See [`Self::STATE_TRANSITION_TOOLS`].
+    fn is_state_transition_tool(tool_name: &str) -> bool {
+        Self::STATE_TRANSITION_TOOLS.contains(&tool_name)
     }
 
     /// Decide whether a tool should be treated as observation-only for the
@@ -2624,5 +2664,38 @@ mod observation_union_tests {
         ));
         assert!(!AgentRunner::<Backend>::is_ax_dispatch_tool("click"));
         assert!(!AgentRunner::<Backend>::is_ax_dispatch_tool("type_text"));
+    }
+
+    #[test]
+    fn state_transition_tools_are_not_cacheable() {
+        // Cache eligibility on the write side AND replay on the read side
+        // must skip state-transition tools. Their cache key encodes the
+        // pre-transition page, so replay re-fires the transition against
+        // unchanged elements — which caused double `step_completed` events
+        // and duplicate workflow nodes after the LLM issued a `launch_app`
+        // or `focus_window` that switched away from the current CDP target.
+        assert!(AgentRunner::<Backend>::is_state_transition_tool(
+            "launch_app"
+        ));
+        assert!(AgentRunner::<Backend>::is_state_transition_tool(
+            "focus_window"
+        ));
+        assert!(AgentRunner::<Backend>::is_state_transition_tool("quit_app"));
+        assert!(AgentRunner::<Backend>::is_state_transition_tool(
+            "cdp_connect"
+        ));
+        assert!(AgentRunner::<Backend>::is_state_transition_tool(
+            "cdp_disconnect"
+        ));
+        // Content-acting and observation tools are not state transitions.
+        assert!(!AgentRunner::<Backend>::is_state_transition_tool(
+            "cdp_click"
+        ));
+        assert!(!AgentRunner::<Backend>::is_state_transition_tool(
+            "take_ax_snapshot"
+        ));
+        assert!(!AgentRunner::<Backend>::is_state_transition_tool(
+            "ax_click"
+        ));
     }
 }

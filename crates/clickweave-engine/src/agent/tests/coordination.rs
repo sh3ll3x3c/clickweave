@@ -242,11 +242,15 @@ async fn buffered_events_do_not_leak_between_runs() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 3: Cached launch_app replay runs approval and post-tool hooks
+// Scenario 3: Cached state-transition tools (launch_app / focus_window) must
+// NOT replay — replaying them re-fires an app/window transition against
+// stale CDP elements, producing duplicate step_completed events and
+// duplicate workflow nodes. The cache read-side filter falls through to
+// the LLM in this case.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn cached_launch_app_replay_requests_approval_and_runs_post_tool_hook() {
+async fn cached_launch_app_is_not_replayed_and_falls_through_to_llm() {
     let mut cache = AgentCache::default();
     let elements = vec![clickweave_core::cdp::CdpFindElementMatch {
         uid: "1_0".to_string(),
@@ -348,23 +352,25 @@ async fn cached_launch_app_replay_requests_approval_and_runs_post_tool_hook() {
 
     let approvals = seen_approvals.lock().unwrap();
     assert!(
-        approvals.iter().any(|name| name == "launch_app"),
-        "Cached launch_app replay must re-request approval, saw {:?}",
+        !approvals.iter().any(|name| name == "launch_app"),
+        "Cached launch_app must NOT replay (no approval prompt expected), saw {:?}",
         *approvals,
     );
 
     let events = drain_events(&mut event_rx);
-    let saw_probe_sub_action = events.iter().any(|ev| {
+    let saw_launch_step = events.iter().any(|ev| {
         matches!(
             ev,
-            AgentEvent::SubAction { tool_name, .. } if tool_name == "probe_app"
+            AgentEvent::StepCompleted { tool_name, .. } if tool_name == "launch_app"
         )
     });
     assert!(
-        saw_probe_sub_action,
-        "Cached launch_app replay must run the post-tool hook (probe_app SubAction)"
+        !saw_launch_step,
+        "Cached launch_app must NOT replay — no StepCompleted for launch_app expected"
     );
 
+    // The LLM was given a chance to decide and emitted `done` — the run
+    // should complete through that path, not through cache replay.
     assert!(state.completed);
 }
 
