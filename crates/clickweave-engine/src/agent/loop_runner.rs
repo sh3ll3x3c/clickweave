@@ -163,6 +163,73 @@ pub struct AgentRunner<'a, B: ChatBackend> {
     /// app instance so the runner can restore the selected tab across a
     /// CDP disconnect/reconnect cycle.
     cdp_state: crate::cdp_lifecycle::CdpState,
+    /// Per-app-name kind hints (`"Native"`, `"ElectronApp"`,
+    /// `"ChromeBrowser"`) learned from structured `focus_window` /
+    /// `launch_app` responses and from `probe_app` output. Populated by
+    /// [`Self::record_app_kind`] whenever [`Self::resolve_cdp_target`]
+    /// surfaces a kind, and consulted by [`Self::should_skip_focus_window`]
+    /// so that a subsequent `focus_window` against a known-Native app on
+    /// macOS can be suppressed when AX dispatch tools are available —
+    /// AX dispatch is focus-preserving, so pre-focusing just steals
+    /// foreground from the user for no behavioral benefit.
+    known_app_kinds: HashMap<String, String>,
+}
+
+/// Reason the runner suppressed a `focus_window` MCP call. Each variant
+/// carries the LLM-visible result text (so the model sees the constraint
+/// in-context and adapts its next move) and a terse UI summary routed
+/// through the `SubAction` event stream. Keeping both in one type removes
+/// the string round-trip the dispatch site, the post-step bookkeeping
+/// predicate, and the tests previously did against free-standing `&'static str`
+/// sentinels.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum FocusSkipReason {
+    /// macOS Native target, full AX dispatch toolset available —
+    /// AX dispatch is focus-preserving so the real call is redundant.
+    AxAvailable,
+    /// Electron / Chrome target with a live CDP session and the minimum
+    /// CDP dispatch toolset — CDP operates on backgrounded windows.
+    CdpLive,
+    /// Operator flipped [`AgentConfig::allow_focus_window`] to `false`;
+    /// every focus_window is dropped regardless of kind or toolset.
+    PolicyDisabled,
+}
+
+impl FocusSkipReason {
+    const ALL: [Self; 3] = [Self::AxAvailable, Self::CdpLive, Self::PolicyDisabled];
+
+    /// Result text returned to the LLM in the synthetic `StepOutcome::Success`.
+    /// Must not drift from the strings the tests pin — they encode the
+    /// agent→LLM skip-contract.
+    pub(super) const fn llm_message(self) -> &'static str {
+        match self {
+            Self::AxAvailable => {
+                "skipped focus_window: AX tools available; window focus not required"
+            }
+            Self::CdpLive => "skipped focus_window: CDP already live; focus not required",
+            Self::PolicyDisabled => {
+                "focus_window skipped: agent policy disallows focus changes. Use AX dispatch \
+                 (ax_click/ax_set_value/ax_select) or CDP (cdp_click/cdp_fill) instead — \
+                 these operate on background windows."
+            }
+        }
+    }
+
+    /// Terse summary for the `SubAction` event surface.
+    pub(super) const fn sub_action_summary(self) -> &'static str {
+        match self {
+            Self::AxAvailable => "skipped: AX dispatch available",
+            Self::CdpLive => "skipped: CDP already live; focus not required",
+            Self::PolicyDisabled => "skipped: focus_window disabled by agent policy",
+        }
+    }
+
+    /// Recover the variant from an LLM-visible result text. Used by the
+    /// post-step bookkeeping predicate to keep synthetic skips invisible
+    /// to CDP auto-connect and workflow-node creation.
+    pub(super) fn from_llm_message(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.llm_message() == text)
+    }
 }
 
 impl<'a, B: ChatBackend> AgentRunner<'a, B> {
@@ -179,6 +246,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             permissions: PermissionPolicy::default(),
             run_id: uuid::Uuid::new_v4(),
             cdp_state: crate::cdp_lifecycle::CdpState::new(),
+            known_app_kinds: HashMap::new(),
         }
     }
 
@@ -196,6 +264,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             permissions: PermissionPolicy::default(),
             run_id: uuid::Uuid::new_v4(),
             cdp_state: crate::cdp_lifecycle::CdpState::new(),
+            known_app_kinds: HashMap::new(),
         }
     }
 
@@ -254,6 +323,17 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     #[cfg(test)]
     pub(crate) fn cdp_state(&self) -> &crate::cdp_lifecycle::CdpState {
         &self.cdp_state
+    }
+
+    /// Test-only seed for the `(app_kind, cdp_connected)` state the
+    /// runner would otherwise reach only after `launch_app` →
+    /// `auto_connect_cdp` → `on_cdp_connected`. Used by integration
+    /// tests that want to exercise the post-CDP-connect focus_window
+    /// skip path without the full quit/relaunch/connect choreography.
+    #[cfg(test)]
+    pub(crate) fn seed_cdp_live_for_test(&mut self, app_name: &str, kind: &str) {
+        self.record_app_kind(app_name, kind);
+        self.cdp_state.set_connected(app_name, 0);
     }
 
     /// Test-only entry point into the selected-page snapshot helper so
@@ -555,12 +635,17 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             // the app was already running (focus_window). The tool's response
             // text (structured JSON on modern MCP servers) is threaded in so
             // CDP probing can short-circuit on the server-supplied `kind`.
+            //
+            // Skipped `focus_window` calls bypass this entirely — no MCP call
+            // fired, so there's nothing to reclassify and no new connection
+            // identity to record.
             if let AgentCommand::ToolCall {
                 tool_name,
                 arguments,
                 ..
             } = &command
                 && let StepOutcome::Success(result_text) = &outcome
+                && !Self::is_synthetic_focus_skip(tool_name, result_text)
             {
                 self.maybe_cdp_connect(tool_name, arguments, result_text, mcp)
                     .await;
@@ -937,7 +1022,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 {
                     // Build the workflow node first so we know the node id
                     // to stamp onto the cache entry (for eviction-on-delete).
-                    let produced_node_id = if self.config.build_workflow {
+                    // A runner-skipped `focus_window` never hit MCP, so it
+                    // must not appear as a node in the recorded workflow —
+                    // the graph would otherwise show a FocusWindow step
+                    // that didn't actually run. The cache-write arm below
+                    // already excludes focus_window via STATE_TRANSITION_TOOLS.
+                    let produced_node_id = if self.config.build_workflow
+                        && !Self::is_synthetic_focus_skip(tool_name, result_text)
+                    {
                         self.add_workflow_node(tool_name, arguments, mcp_tools, annotations_by_tool)
                             .await
                     } else {
@@ -1544,6 +1636,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         else {
             return;
         };
+        // Stash the kind so subsequent `focus_window` calls against this
+        // app can be suppressed when AX dispatch is available — see
+        // [`Self::should_skip_focus_window`]. Must happen BEFORE the CDP
+        // decision so the record is present even if CDP connect is
+        // skipped (Native apps short-circuit `auto_connect_cdp`).
+        if let Some(kind) = kind_hint.as_deref() {
+            self.record_app_kind(&app_name, kind);
+        }
         if let Some(cdp_port) = self
             .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
             .await
@@ -1753,6 +1853,49 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     _ => {}
                 }
 
+                // Runner-side guard for focus-stealing focus_window calls.
+                // The system prompt already tells the LLM not to precede
+                // AX / CDP dispatch with `focus_window`, but local models
+                // ignore that guidance non-deterministically. Three skip
+                // paths collapse into one guard:
+                //   - User policy (`allow_focus_window == false`) →
+                //     unconditional suppression, no probe for app kind.
+                //   - Native + full AX dispatch toolset → AX dispatch is
+                //     focus-preserving.
+                //   - Electron / Chrome-browser + live CDP session + CDP
+                //     dispatch toolset → CDP operates on backgrounded
+                //     windows without stealing focus.
+                // See `should_skip_focus_window` for the exact conditions;
+                // with the policy flag `true` (default), first-ever
+                // calls, CDP-pre-connect flows, and unknown kinds still
+                // execute normally so cross-platform and
+                // connect-on-first-focus paths are untouched.
+                if tc.function.name == "focus_window"
+                    && let Some(reason) = self.should_skip_focus_window(&args, mcp)
+                {
+                    self.emit_event(AgentEvent::SubAction {
+                        tool_name: "focus_window".to_string(),
+                        summary: reason.sub_action_summary().to_string(),
+                    })
+                    .await;
+                    let debug_app = args.get("app_name").and_then(|v| v.as_str()).unwrap_or("");
+                    debug!(
+                        tool = "focus_window",
+                        app = debug_app,
+                        reason = reason.llm_message(),
+                        "Suppressing focus_window",
+                    );
+                    let command = AgentCommand::ToolCall {
+                        tool_name: tc.function.name.clone(),
+                        arguments: args.clone(),
+                        tool_call_id: tc.id.clone(),
+                    };
+                    return Ok((
+                        command,
+                        StepOutcome::Success(reason.llm_message().to_string()),
+                    ));
+                }
+
                 // Request user approval before executing the tool.
                 // Observation-only tools bypass approval entirely; for
                 // everything else, the permission policy decides whether
@@ -1914,6 +2057,123 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// See [`Self::STATE_TRANSITION_TOOLS`].
     fn is_state_transition_tool(tool_name: &str) -> bool {
         Self::STATE_TRANSITION_TOOLS.contains(&tool_name)
+    }
+
+    /// macOS AX-dispatch toolset — every tool required for the
+    /// focus-preserving automation path. When the MCP server advertises
+    /// **all** of these plus `take_ax_snapshot`, the agent can drive
+    /// native apps without moving the cursor or raising windows, which
+    /// makes a preceding `focus_window` call redundant (and focus-stealing).
+    /// See [`Self::should_skip_focus_window`] for the guard that consumes
+    /// this list.
+    const AX_DISPATCH_TOOLSET: &'static [&'static str] =
+        &["take_ax_snapshot", "ax_click", "ax_set_value", "ax_select"];
+
+    /// Minimum CDP dispatch toolset required before the runner may
+    /// suppress a `focus_window` against an Electron / Chrome-browser
+    /// target. Deliberately conservative: `cdp_find_elements` + `cdp_click`
+    /// is enough to prove that the agent's next move will operate against
+    /// the CDP target (all CDP operations are focus-preserving — they run
+    /// against backgrounded windows). Servers missing these tools fall
+    /// through to the real `focus_window` call because the agent would
+    /// otherwise be left with only coordinate-based tools that *do* need
+    /// focus. See [`Self::should_skip_focus_window`].
+    const CDP_DISPATCH_TOOLSET: &'static [&'static str] = &["cdp_find_elements", "cdp_click"];
+
+    /// True when `(tool_name, result_text)` pair identifies a
+    /// runner-skipped `focus_window` — i.e. one of the synthetic successes
+    /// this guard produces (AX-toolset, CDP-live, or user-policy path).
+    /// Post-step bookkeeping (CDP auto-connect, workflow-node creation)
+    /// consults this so the skipped call stays invisible to both the CDP
+    /// lifecycle and the graph.
+    fn is_synthetic_focus_skip(tool_name: &str, result_text: &str) -> bool {
+        tool_name == "focus_window" && FocusSkipReason::from_llm_message(result_text).is_some()
+    }
+
+    /// True when every member of `toolset` is advertised by the MCP
+    /// server. Callers use this to gate the focus-window skip — missing
+    /// any member of the relevant dispatch family means the agent can't
+    /// drive the target through that family, so `focus_window` still
+    /// matters.
+    fn mcp_has_toolset(mcp: &(impl Mcp + ?Sized), toolset: &[&str]) -> bool {
+        toolset.iter().all(|name| mcp.has_tool(name))
+    }
+
+    /// Record a per-app kind hint learned from a structured MCP response
+    /// (modern `focus_window` / `launch_app`) or from `probe_app`. Kept
+    /// as a method so [`Self::maybe_cdp_connect`] can stash whatever
+    /// `resolve_cdp_target` surfaced before the CDP decision runs.
+    fn record_app_kind(&mut self, app_name: &str, kind: &str) {
+        self.known_app_kinds
+            .insert(app_name.to_string(), kind.to_string());
+    }
+
+    /// Decide whether to suppress a `focus_window` MCP call.
+    ///
+    /// Returns a [`FocusSkipReason`] in three cases; the first is the
+    /// unconditional user-policy short-circuit, the other two require an
+    /// `app_name` in `arguments` (window-id / pid-only calls are
+    /// ambiguous and always defer to the real tool under the defer path):
+    ///
+    /// 1. **User policy — `allow_focus_window == false`.** Operator
+    ///    opted into a background-run policy; every `focus_window` is
+    ///    suppressed with no probe for app kind and no CDP-connected
+    ///    check. Takes precedence over every other branch. Returns
+    ///    [`FocusSkipReason::PolicyDisabled`]; its LLM-facing text nudges
+    ///    the model toward AX / CDP dispatch primitives instead of
+    ///    coordinate tools (which genuinely need focus).
+    ///
+    /// 2. **Native + full AX dispatch toolset.** The MCP server advertises
+    ///    every [`Self::AX_DISPATCH_TOOLSET`] tool AND
+    ///    [`Self::known_app_kinds`] previously recorded the app as
+    ///    `"Native"`. AX dispatch is focus-preserving, so the real
+    ///    `focus_window` would only steal foreground from the user.
+    ///    Returns [`FocusSkipReason::AxAvailable`].
+    ///
+    /// 3. **Electron / Chrome-browser + live CDP session + CDP toolset.**
+    ///    [`Self::known_app_kinds`] recorded the app as `"ElectronApp"` or
+    ///    `"ChromeBrowser"`, the shared [`CdpState`][`crate::cdp_lifecycle::CdpState`]
+    ///    reports a live session bound to this app, AND the MCP server
+    ///    advertises the minimum CDP dispatch toolset
+    ///    ([`Self::CDP_DISPATCH_TOOLSET`]). CDP dispatch operates on
+    ///    backgrounded windows, so `focus_window` is redundant. Crucially
+    ///    we only skip when a session is *already* live — the first
+    ///    `focus_window` against an Electron app often precedes
+    ///    `cdp_connect` and may be needed to bring the window front
+    ///    before the port is found. Returns [`FocusSkipReason::CdpLive`].
+    ///
+    /// Returns `None` in every other case — erring on the side of
+    /// executing `focus_window` normally so cross-platform workflows,
+    /// first-ever-focus calls, and CDP-pre-connect flows keep working.
+    fn should_skip_focus_window(
+        &self,
+        arguments: &Value,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<FocusSkipReason> {
+        // User-policy short-circuit takes precedence over kind/toolset
+        // checks — the operator explicitly asked for "no focus changes,
+        // ever" and we must honor that regardless of what the MCP server
+        // advertises or which app kind we've seen so far.
+        if !self.config.allow_focus_window {
+            return Some(FocusSkipReason::PolicyDisabled);
+        }
+        let app_name = arguments.get("app_name").and_then(Value::as_str)?;
+        match self.known_app_kinds.get(app_name).map(String::as_str) {
+            Some("Native") if Self::mcp_has_toolset(mcp, Self::AX_DISPATCH_TOOLSET) => {
+                Some(FocusSkipReason::AxAvailable)
+            }
+            Some("ElectronApp" | "ChromeBrowser")
+                // Agent-side CDP tracking uses PID=0 as a placeholder
+                // (see `on_cdp_connected`), so name-scoped lookup via
+                // `is_connected_to` is the authoritative is-connected
+                // predicate here.
+                if self.cdp_state.is_connected_to(app_name, 0)
+                    && Self::mcp_has_toolset(mcp, Self::CDP_DISPATCH_TOOLSET) =>
+            {
+                Some(FocusSkipReason::CdpLive)
+            }
+            _ => None,
+        }
     }
 
     /// Decide whether a tool should be treated as observation-only for the
@@ -2697,5 +2957,374 @@ mod observation_union_tests {
         assert!(!AgentRunner::<Backend>::is_state_transition_tool(
             "ax_click"
         ));
+    }
+
+    // -----------------------------------------------------------------
+    // focus_window skip guard
+    // -----------------------------------------------------------------
+
+    /// Minimal `Mcp` stub used to exercise the focus_window skip guard.
+    /// Only `has_tool` is consulted by
+    /// [`AgentRunner::should_skip_focus_window`] — `call_tool` /
+    /// `tools_as_openai` / `refresh_server_tool_list` are never reached
+    /// in these unit tests but must exist to satisfy the trait bound.
+    struct ToolsetStub {
+        tools: Vec<String>,
+    }
+
+    impl ToolsetStub {
+        fn with(tools: &[&str]) -> Self {
+            Self {
+                tools: tools.iter().map(|s| s.to_string()).collect(),
+            }
+        }
+    }
+
+    impl crate::executor::Mcp for ToolsetStub {
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<Value>,
+        ) -> anyhow::Result<clickweave_mcp::ToolCallResult> {
+            unimplemented!("focus_window skip guard does not dispatch tools")
+        }
+
+        fn has_tool(&self, name: &str) -> bool {
+            self.tools.iter().any(|t| t == name)
+        }
+
+        fn tools_as_openai(&self) -> Vec<Value> {
+            Vec::new()
+        }
+
+        async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Fresh runner pre-seeded with one app/kind hint for guard tests.
+    fn runner_with_kind<'a>(
+        backend: &'a Backend,
+        app_name: &str,
+        kind: &str,
+    ) -> AgentRunner<'a, Backend> {
+        let mut runner = AgentRunner::new(backend, AgentConfig::default());
+        runner.record_app_kind(app_name, kind);
+        runner
+    }
+
+    const FULL_AX_TOOLSET: &[&str] = &["take_ax_snapshot", "ax_click", "ax_set_value", "ax_select"];
+
+    #[test]
+    fn mcp_has_toolset_requires_every_member() {
+        // Missing even one member blocks the guard. The guard only fires
+        // when the full macOS AX dispatch toolset is present; on Windows
+        // and on older MCP servers the set is incomplete and
+        // focus_window still matters.
+        let mcp_full = ToolsetStub::with(FULL_AX_TOOLSET);
+        assert!(AgentRunner::<Backend>::mcp_has_toolset(
+            &mcp_full,
+            FULL_AX_TOOLSET,
+        ));
+
+        for (i, missing) in FULL_AX_TOOLSET.iter().enumerate() {
+            let partial: Vec<&str> = FULL_AX_TOOLSET
+                .iter()
+                .enumerate()
+                .filter_map(|(j, t)| (j != i).then_some(*t))
+                .collect();
+            let mcp = ToolsetStub::with(&partial);
+            assert!(
+                !AgentRunner::<Backend>::mcp_has_toolset(&mcp, FULL_AX_TOOLSET),
+                "toolset without {} must not count as full AX toolset",
+                missing,
+            );
+        }
+    }
+
+    #[test]
+    fn should_skip_focus_window_fires_for_known_native_with_full_ax_toolset() {
+        // Baseline happy path: MCP exposes the full AX toolset AND we've
+        // already seen that the target is Native — suppress focus_window
+        // to keep the user's foreground undisturbed.
+        let backend = Backend;
+        let runner = runner_with_kind(&backend, "Calculator", "Native");
+        let mcp = ToolsetStub::with(FULL_AX_TOOLSET);
+        let args = serde_json::json!({"app_name": "Calculator"});
+        assert_eq!(
+            runner.should_skip_focus_window(&args, &mcp),
+            Some(FocusSkipReason::AxAvailable),
+        );
+    }
+
+    #[test]
+    fn should_skip_focus_window_defers_for_electron_or_chrome_without_live_cdp() {
+        // Broader contract (see `should_skip_focus_window`): Electron /
+        // Chrome apps DO qualify for the skip, but only after CDP is
+        // live for that exact app. When no CDP session is bound yet,
+        // the first `focus_window` call often precedes `cdp_connect`
+        // and may be needed to bring the window front so the debug
+        // port is discoverable. Without CDP live, the guard must defer
+        // regardless of which dispatch toolset the MCP server exposes.
+        //
+        // NOTE: this test previously asserted that Electron / Chrome
+        // apps were NEVER skipped. That narrower contract was relaxed
+        // when CDP dispatch became the dominant path for these apps.
+        // The test now covers the pre-CDP-connect half of the broader
+        // contract; the post-CDP-connect half is covered by
+        // `should_skip_focus_window_fires_for_electron_with_live_cdp`.
+        let backend = Backend;
+        // AX + CDP toolsets both present — the only thing missing is
+        // the live CDP session, which is the point.
+        let mcp = ToolsetStub::with(&[
+            "take_ax_snapshot",
+            "ax_click",
+            "ax_set_value",
+            "ax_select",
+            "cdp_find_elements",
+            "cdp_click",
+        ]);
+        for kind in ["ElectronApp", "ChromeBrowser"] {
+            let runner = runner_with_kind(&backend, "VSCode", kind);
+            let args = serde_json::json!({"app_name": "VSCode"});
+            assert!(
+                runner.should_skip_focus_window(&args, &mcp).is_none(),
+                "focus_window must NOT be skipped for kind={} without a live CDP session",
+                kind,
+            );
+        }
+    }
+
+    /// Seed a runner with a kind hint AND an active CDP session bound
+    /// to the same app — the on-the-wire state the agent reaches after
+    /// `launch_app` + successful `cdp_connect`. Delegates to
+    /// [`AgentRunner::seed_cdp_live_for_test`] so the "post-`on_cdp_connected`
+    /// state shape" has a single source of truth.
+    fn runner_with_kind_and_cdp<'a>(
+        backend: &'a Backend,
+        app_name: &str,
+        kind: &str,
+    ) -> AgentRunner<'a, Backend> {
+        let mut runner = AgentRunner::new(backend, AgentConfig::default());
+        runner.seed_cdp_live_for_test(app_name, kind);
+        runner
+    }
+
+    const FULL_CDP_TOOLSET: &[&str] = &["cdp_find_elements", "cdp_click"];
+
+    #[test]
+    fn should_skip_focus_window_fires_for_electron_with_live_cdp() {
+        // CDP dispatch operates on backgrounded windows without stealing
+        // focus, so once a session is live for the exact app, the real
+        // `focus_window` is redundant and the guard must fire.
+        let backend = Backend;
+        let runner = runner_with_kind_and_cdp(&backend, "Signal", "ElectronApp");
+        let mcp = ToolsetStub::with(FULL_CDP_TOOLSET);
+        let args = serde_json::json!({"app_name": "Signal"});
+        assert_eq!(
+            runner.should_skip_focus_window(&args, &mcp),
+            Some(FocusSkipReason::CdpLive),
+        );
+    }
+
+    #[test]
+    fn should_skip_focus_window_fires_for_chrome_browser_with_live_cdp() {
+        // Same contract as the Electron path — ChromeBrowser targets
+        // go through CDP and must be suppressed when a session is live.
+        let backend = Backend;
+        let runner = runner_with_kind_and_cdp(&backend, "Google Chrome", "ChromeBrowser");
+        let mcp = ToolsetStub::with(FULL_CDP_TOOLSET);
+        let args = serde_json::json!({"app_name": "Google Chrome"});
+        assert_eq!(
+            runner.should_skip_focus_window(&args, &mcp),
+            Some(FocusSkipReason::CdpLive),
+        );
+    }
+
+    #[test]
+    fn should_skip_focus_window_defers_for_electron_when_cdp_not_connected() {
+        // Kind hint + full CDP toolset but NO live session — the first
+        // focus_window often precedes cdp_connect and may itself be
+        // what brings the window front so the debug port is findable.
+        // The guard must defer here.
+        let backend = Backend;
+        let runner = runner_with_kind(&backend, "Signal", "ElectronApp");
+        let mcp = ToolsetStub::with(FULL_CDP_TOOLSET);
+        let args = serde_json::json!({"app_name": "Signal"});
+        assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+
+    #[test]
+    fn should_skip_focus_window_defers_for_electron_when_cdp_tools_missing() {
+        // CDP is live but the MCP server does not advertise the CDP
+        // dispatch toolset (older server, stripped build). Without
+        // cdp_find_elements / cdp_click the agent cannot drive the
+        // target via CDP, so coordinate-based tools — which DO need
+        // focus — are the likely fallback. The guard must defer.
+        let backend = Backend;
+        let runner = runner_with_kind_and_cdp(&backend, "Signal", "ElectronApp");
+        // Only cdp_find_elements, missing cdp_click.
+        let mcp = ToolsetStub::with(&["cdp_find_elements"]);
+        let args = serde_json::json!({"app_name": "Signal"});
+        assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+
+    #[test]
+    fn should_skip_focus_window_defers_when_cdp_bound_to_other_app() {
+        // A live CDP session bound to a different app must not authorize
+        // a skip for this one — the name scope of `is_connected_to` is
+        // load-bearing.
+        let backend = Backend;
+        let mut runner = AgentRunner::new(&backend, AgentConfig::default());
+        runner.record_app_kind("Signal", "ElectronApp");
+        runner.cdp_state.set_connected("Slack", 0);
+        let mcp = ToolsetStub::with(FULL_CDP_TOOLSET);
+        let args = serde_json::json!({"app_name": "Signal"});
+        assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+
+    #[test]
+    fn should_skip_focus_window_defers_when_kind_unknown() {
+        // First-ever focus: no prior probe / structured response, so we
+        // can't classify the app. The task is explicit about erring on
+        // the side of executing focus_window normally in this case —
+        // breaking Electron / Windows workflows is strictly worse than
+        // a single preserved focus-steal on the first call.
+        let backend = Backend;
+        let runner = AgentRunner::new(&backend, AgentConfig::default());
+        let mcp = ToolsetStub::with(FULL_AX_TOOLSET);
+        let args = serde_json::json!({"app_name": "MysteryApp"});
+        assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+
+    #[test]
+    fn should_skip_focus_window_defers_when_ax_toolset_incomplete() {
+        // Windows / older MCP servers surface only a partial toolset.
+        // Without ax_click / ax_set_value / ax_select, the agent cannot
+        // drive the target via AX and `focus_window` is still required.
+        let backend = Backend;
+        let runner = runner_with_kind(&backend, "Calculator", "Native");
+        // Only take_ax_snapshot — no dispatch primitives.
+        let mcp = ToolsetStub::with(&["take_ax_snapshot"]);
+        let args = serde_json::json!({"app_name": "Calculator"});
+        assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+
+    #[test]
+    fn should_skip_focus_window_requires_app_name_in_args() {
+        // window_id / pid-only focus_window variants are ambiguous; we
+        // can't map them to a recorded kind, so the guard must not
+        // fire. resolve_cdp_target's list_apps / list_windows path
+        // still runs the real tool, which is the correct behavior.
+        let backend = Backend;
+        let runner = runner_with_kind(&backend, "Calculator", "Native");
+        let mcp = ToolsetStub::with(FULL_AX_TOOLSET);
+        let args = serde_json::json!({"window_id": 42});
+        assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+
+    #[test]
+    fn is_synthetic_focus_skip_matches_only_the_sentinels() {
+        // Post-step bookkeeping gates CDP auto-connect and workflow-node
+        // creation on this predicate — it must be tight enough that a
+        // real focus_window success never masquerades as a skip, yet
+        // match every FocusSkipReason variant so none of the runner's
+        // suppressions leak into the workflow graph.
+        for reason in FocusSkipReason::ALL {
+            assert!(
+                AgentRunner::<Backend>::is_synthetic_focus_skip(
+                    "focus_window",
+                    reason.llm_message()
+                ),
+                "focus_window + {:?} message must register as synthetic skip",
+                reason,
+            );
+            assert!(
+                !AgentRunner::<Backend>::is_synthetic_focus_skip(
+                    "launch_app",
+                    reason.llm_message()
+                ),
+                "non-focus_window tool with {:?} message must not register",
+                reason,
+            );
+        }
+        // Different result text — a real MCP success must not be
+        // treated as skipped.
+        assert!(!AgentRunner::<Backend>::is_synthetic_focus_skip(
+            "focus_window",
+            "Window focused successfully",
+        ));
+    }
+
+    #[test]
+    fn should_skip_focus_window_respects_allow_focus_window_policy() {
+        // Policy takes precedence over every kind / toolset branch: when
+        // `allow_focus_window == false`, the predicate must return the
+        // policy sentinel even for cases that would otherwise defer
+        // (unknown kind, missing toolset, missing app_name, CDP-not-live).
+        // The returned skip text is the LLM-facing nudge toward AX / CDP
+        // dispatch primitives.
+        let backend = Backend;
+        let mut runner = AgentRunner::new(
+            &backend,
+            AgentConfig {
+                allow_focus_window: false,
+                ..Default::default()
+            },
+        );
+        let mcp_empty = ToolsetStub::with(&[]);
+
+        // 1. Unknown app kind, empty toolset — would normally defer.
+        let args_named = serde_json::json!({"app_name": "MysteryApp"});
+        assert_eq!(
+            runner.should_skip_focus_window(&args_named, &mcp_empty),
+            Some(FocusSkipReason::PolicyDisabled),
+        );
+
+        // 2. Missing app_name (window_id / pid-only form) — the kind /
+        // toolset branches always defer here, but policy overrides.
+        let args_windowed = serde_json::json!({"window_id": 42});
+        assert_eq!(
+            runner.should_skip_focus_window(&args_windowed, &mcp_empty),
+            Some(FocusSkipReason::PolicyDisabled),
+        );
+
+        // 3. Electron kind hint but no live CDP session — normally
+        // defers because the first focus_window often precedes
+        // cdp_connect. Policy overrides.
+        runner.record_app_kind("Signal", "ElectronApp");
+        let args_electron = serde_json::json!({"app_name": "Signal"});
+        assert_eq!(
+            runner.should_skip_focus_window(&args_electron, &mcp_empty),
+            Some(FocusSkipReason::PolicyDisabled),
+        );
+
+        // 4. Default config still behaves as before — sanity check the
+        // feature is truly opt-in and the unknown-kind defer path is
+        // preserved.
+        let default_runner = AgentRunner::new(&backend, AgentConfig::default());
+        assert!(
+            default_runner
+                .should_skip_focus_window(&args_named, &mcp_empty)
+                .is_none(),
+            "default policy (allow_focus_window=true) must preserve the \
+             existing defer-for-unknown-kind behavior",
+        );
+    }
+
+    #[test]
+    fn record_app_kind_overwrites_previous_value_for_same_app() {
+        // Apps can transition between kinds across runs (e.g. a Chrome
+        // profile that used to be launched plain and is now launched
+        // with --remote-debugging-port). The latest hint must win so
+        // the guard reflects the current lifecycle, not history.
+        let backend = Backend;
+        let mut runner = AgentRunner::new(&backend, AgentConfig::default());
+        runner.record_app_kind("Calculator", "Native");
+        runner.record_app_kind("Calculator", "ElectronApp");
+        let mcp = ToolsetStub::with(FULL_AX_TOOLSET);
+        let args = serde_json::json!({"app_name": "Calculator"});
+        // Electron now — guard must NOT fire.
+        assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
     }
 }
