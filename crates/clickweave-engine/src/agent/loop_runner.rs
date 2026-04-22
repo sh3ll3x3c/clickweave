@@ -1223,29 +1223,28 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     }
 
     /// Append the assistant's response (tool call or plain text) to the
-    /// conversation transcript. Preserves `reasoning_content` so subsequent
-    /// turns can build on prior thinking instead of re-deriving it from
-    /// scratch each step. Only the first tool call is included — we execute
-    /// exactly one tool per turn, so appending extras would create
-    /// transcript entries with no corresponding tool result.
+    /// conversation transcript. `reasoning_content` is intentionally omitted
+    /// from the transcript: Gemma 4's model card prohibits feeding prior-turn
+    /// thought blocks back into subsequent requests, and doing so causes
+    /// context accumulation and degraded tool selection over multi-turn runs.
+    /// Only the first tool call is included — we execute exactly one tool per
+    /// turn, so appending extras would create transcript entries with no
+    /// corresponding tool result.
     fn append_assistant_message(
         &mut self,
         message: &clickweave_llm::Message,
         previous_result: Option<&str>,
     ) {
-        let reasoning = message.reasoning_content.clone();
         if let Some(tool_calls) = &message.tool_calls {
             if let Some(tc) = tool_calls.first() {
-                let mut assistant_msg = Message::assistant_tool_calls(vec![tc.clone()]);
-                assistant_msg.reasoning_content = reasoning;
+                let assistant_msg = Message::assistant_tool_calls(vec![tc.clone()]);
                 self.messages.push(assistant_msg);
                 let result_text = previous_result.unwrap_or("ok");
                 self.messages
                     .push(Message::tool_result(&tc.id, result_text));
             }
         } else if let Some(text) = message.content_text() {
-            let mut assistant_msg = Message::assistant(text);
-            assistant_msg.reasoning_content = reasoning;
+            let assistant_msg = Message::assistant(text);
             self.messages.push(assistant_msg);
         }
     }

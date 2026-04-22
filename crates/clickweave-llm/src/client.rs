@@ -214,9 +214,28 @@ impl ChatBackend for LlmClient {
             self.config.base_url.trim_end_matches('/')
         );
 
+        // Strip reasoning_content from all assistant messages before sending.
+        // Gemma 4 (and other thinking-capable models) must not receive prior
+        // turns' thought blocks in subsequent requests — only visible content
+        // and tool_calls should be echoed back. This is a defense-in-depth
+        // guard; the primary guard lives in AgentRunner::append_assistant_message.
+        let sanitized: Vec<Message> = messages
+            .iter()
+            .map(|m| {
+                if m.role == Role::Assistant && m.reasoning_content.is_some() {
+                    Message {
+                        reasoning_content: None,
+                        ..m.clone()
+                    }
+                } else {
+                    m.clone()
+                }
+            })
+            .collect();
+
         let request = ChatRequest {
             model: &self.config.model,
-            messages,
+            messages: &sanitized,
             tools,
             temperature: options.temperature.or(self.config.temperature),
             max_tokens: options.max_tokens.or(self.config.max_tokens),
@@ -795,13 +814,42 @@ mod tests {
     }
 
     #[test]
-    fn message_reasoning_content_round_trips_through_request() {
+    fn assistant_reasoning_content_stripped_from_request() {
+        // When an assistant message with reasoning_content is passed through
+        // the sanitization that LlmClient applies before every request, the
+        // outgoing ChatRequest body must not contain the thought block.
+        use crate::types::{ChatRequest, Role};
         let mut msg = Message::assistant("");
         msg.reasoning_content = Some("prior thought".to_string());
-        let serialized = serde_json::to_string(&msg).unwrap();
+
+        // Apply the same sanitization LlmClient uses in chat_with_options.
+        let sanitized: Vec<Message> = std::slice::from_ref(&msg)
+            .iter()
+            .map(|m| {
+                if m.role == Role::Assistant && m.reasoning_content.is_some() {
+                    Message {
+                        reasoning_content: None,
+                        ..m.clone()
+                    }
+                } else {
+                    m.clone()
+                }
+            })
+            .collect();
+
+        let extra = serde_json::Map::new();
+        let request = ChatRequest {
+            model: "test-model",
+            messages: &sanitized,
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            extra_body: &extra,
+        };
+        let serialized = serde_json::to_string(&request).unwrap();
         assert!(
-            serialized.contains("\"reasoning_content\":\"prior thought\""),
-            "reasoning_content must survive serialization for next-turn context"
+            !serialized.contains("reasoning_content"),
+            "reasoning_content must be absent from the outbound request body; got: {serialized}"
         );
     }
 
