@@ -6,6 +6,7 @@ pub mod permissions;
 mod phase;
 pub mod prior_turns;
 mod prompt;
+mod prompt_spine;
 mod recovery;
 mod render;
 mod step_record;
