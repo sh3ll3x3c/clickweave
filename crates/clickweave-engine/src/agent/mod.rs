@@ -1,6 +1,7 @@
 mod cache;
 mod completion_check;
 mod context;
+mod context_spine;
 mod loop_runner;
 pub mod permissions;
 mod phase;
