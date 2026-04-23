@@ -3,6 +3,7 @@ mod completion_check;
 mod context;
 mod loop_runner;
 pub mod permissions;
+mod phase;
 pub mod prior_turns;
 mod prompt;
 mod recovery;
