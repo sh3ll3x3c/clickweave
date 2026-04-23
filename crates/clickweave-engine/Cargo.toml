@@ -23,3 +23,4 @@ uuid.workspace = true
 [dev-dependencies]
 # `tokio::time::pause` lets cdp_lifecycle tests skip the real retry sleeps.
 tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
