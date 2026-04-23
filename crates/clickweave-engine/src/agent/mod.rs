@@ -7,6 +7,7 @@ mod phase;
 pub mod prior_turns;
 mod prompt;
 mod recovery;
+mod task_state;
 mod transition;
 mod types;
 
