@@ -10,6 +10,7 @@ mod prompt;
 mod prompt_spine;
 mod recovery;
 mod render;
+mod runner;
 mod step_record;
 mod task_state;
 mod transition;
