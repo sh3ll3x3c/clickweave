@@ -215,6 +215,107 @@ impl WorldModel {
     }
 }
 
+/// Parse native `take_ax_snapshot` text output into structured `AxElement`s.
+/// The format is documented in `native-devtools-mcp/src/tools/ax_snapshot.rs::format_snapshot`.
+pub fn parse_ax_snapshot(text: &str) -> Vec<AxElement> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if let Some(el) = parse_ax_line(line) {
+            out.push(el);
+        }
+    }
+    out
+}
+
+fn parse_ax_line(line: &str) -> Option<AxElement> {
+    // Count leading 2-space indents to compute depth.
+    let trimmed = line.trim_start_matches(' ');
+    let indent_chars = line.len() - trimmed.len();
+    let depth = (indent_chars / 2) as u32;
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // First token must be `uid=aXgY`.
+    let mut parts = trimmed.splitn(3, ' ');
+    let uid_tok = parts.next()?;
+    let uid = uid_tok.strip_prefix("uid=")?.to_string();
+    let role = parts.next()?.to_string();
+    let rest = parts.next().unwrap_or("");
+
+    // Walk the rest: optional `"name"`, then a sequence of attr tokens.
+    let mut name: Option<String> = None;
+    let mut value: Option<String> = None;
+    let mut focused = false;
+    let mut disabled = false;
+
+    let mut chars = rest.chars().peekable();
+    // Consume a leading `"..."` if present.
+    if chars.peek() == Some(&'"') {
+        chars.next();
+        let mut s = String::new();
+        for c in chars.by_ref() {
+            if c == '"' {
+                break;
+            }
+            s.push(c);
+        }
+        name = Some(s);
+    }
+
+    // Remaining tokens split on whitespace.
+    let remaining: String = chars.collect();
+    for tok in remaining.split_whitespace() {
+        if let Some(v) = tok
+            .strip_prefix("value=\"")
+            .and_then(|s| s.strip_suffix('"'))
+        {
+            value = Some(v.to_string());
+        } else if tok == "focused" {
+            focused = true;
+        } else if tok == "disabled" {
+            disabled = true;
+        }
+        // Unknown attributes ignored.
+    }
+
+    Some(AxElement {
+        uid,
+        role,
+        name,
+        value,
+        depth,
+        focused,
+        disabled,
+    })
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct OcrMatchRaw {
+    text: String,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    #[serde(default)]
+    confidence: f32,
+}
+
+pub fn parse_ocr_matches(text: &str) -> Result<Vec<OcrMatch>, serde_json::Error> {
+    let raw: Vec<OcrMatchRaw> = serde_json::from_str(text)?;
+    Ok(raw
+        .into_iter()
+        .map(|r| OcrMatch {
+            text: r.text,
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+            confidence: r.confidence,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)] // Tests build WorldModel in stages for readability.
 mod tests {
@@ -326,5 +427,69 @@ mod tests {
         });
         assert!(wm.uncertainty.score > baseline);
         assert!(wm.uncertainty.score <= 1.0);
+    }
+
+    #[test]
+    fn parse_ax_snapshot_basic() {
+        let text = "uid=a1g3 RootWebArea \"Page Title\"\n  uid=a2g3 button \"Submit\"\n  uid=a3g3 textbox value=\"hello\" focused";
+        let parsed = parse_ax_snapshot(text);
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].uid, "a1g3");
+        assert_eq!(parsed[0].role, "RootWebArea");
+        assert_eq!(parsed[0].name.as_deref(), Some("Page Title"));
+        assert_eq!(parsed[0].depth, 0);
+        assert_eq!(parsed[1].depth, 1);
+        assert_eq!(parsed[2].role, "textbox");
+        assert_eq!(parsed[2].value.as_deref(), Some("hello"));
+        assert!(parsed[2].focused);
+    }
+
+    #[test]
+    fn parse_ax_snapshot_empty_input_returns_empty_vec() {
+        assert!(parse_ax_snapshot("").is_empty());
+    }
+
+    #[test]
+    fn parse_ax_snapshot_handles_disabled_and_omitted_name() {
+        let text = "uid=a1g1 generic\n  uid=a2g1 checkbox \"Remember me\" disabled selected";
+        let parsed = parse_ax_snapshot(text);
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].name.is_none());
+        assert!(parsed[1].disabled);
+    }
+
+    #[test]
+    fn parse_ax_snapshot_tolerates_unknown_attributes() {
+        // Future MCP versions may add new trailing attributes. The parser
+        // must not panic or drop the element.
+        let text = "uid=a1g1 button \"Click\" novel_attr=42";
+        let parsed = parse_ax_snapshot(text);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].role, "button");
+    }
+
+    #[test]
+    fn parse_ocr_matches_from_find_text_json() {
+        let json = r#"[
+            {"text":"Submit","x":10,"y":20,"width":60,"height":24,"confidence":0.95},
+            {"text":"Cancel","x":80,"y":20,"width":60,"height":24,"confidence":0.92}
+        ]"#;
+        let parsed = parse_ocr_matches(json).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].text, "Submit");
+        assert_eq!(parsed[1].x, 80);
+    }
+
+    #[test]
+    fn parse_ocr_matches_tolerates_extra_fields() {
+        let json = r#"[{"text":"A","x":0,"y":0,"width":10,"height":10,"confidence":0.5,"extra":"ignored"}]"#;
+        let parsed = parse_ocr_matches(json).unwrap();
+        assert_eq!(parsed.len(), 1);
+    }
+
+    #[test]
+    fn parse_ocr_matches_rejects_malformed_json() {
+        let bad = "not json";
+        assert!(parse_ocr_matches(bad).is_err());
     }
 }
