@@ -272,6 +272,123 @@ impl StateRunner {
             _ => {}
         }
     }
+
+    /// Build a terminal `StepRecord` for a completed / halted run. Used by
+    /// the control loop on run-end boundaries and by integration tests.
+    pub fn build_step_record(
+        &self,
+        boundary_kind: crate::agent::step_record::BoundaryKind,
+        action_taken: serde_json::Value,
+        outcome: serde_json::Value,
+    ) -> crate::agent::step_record::StepRecord {
+        use crate::agent::step_record::{StepRecord, WorldModelSnapshot};
+        StepRecord {
+            step_index: self.step_index,
+            boundary_kind,
+            world_model_snapshot: WorldModelSnapshot::from_world_model(&self.world_model),
+            task_state_snapshot: self.task_state.clone(),
+            action_taken,
+            outcome,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+}
+
+/// Outcome of a single `StateRunner::run_turn` call — what the caller needs
+/// to drive the next iteration.
+#[derive(Debug, Clone)]
+pub enum TurnOutcome {
+    /// Tool call was dispatched; `tool_body` is the successful result text.
+    ToolSuccess {
+        tool_name: String,
+        tool_body: String,
+    },
+    /// Tool call was dispatched; tool returned an error.
+    ToolError { tool_name: String, error: String },
+    /// Agent signaled completion.
+    Done { summary: String },
+    /// Agent requested replan.
+    Replan { reason: String },
+}
+
+/// Executes an MCP tool call and returns either its successful body or an
+/// error message. Integration tests stub this with a deterministic sequence;
+/// Phase 3 cutover will bind it to the real `McpClient`.
+#[async_trait::async_trait]
+pub trait ToolExecutor: Send + Sync {
+    async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, String>;
+}
+
+impl StateRunner {
+    /// Apply one `AgentTurn` in the state-spine control flow:
+    ///
+    /// 1. Apply mutations in order (errors become warnings, not fatal).
+    /// 2. Observe (absorb any queued invalidation events + re-infer phase).
+    /// 3. Dispatch the action:
+    ///     - `ToolCall`: call the executor, update continuity on success,
+    ///       queue `ToolFailed` and bump `consecutive_errors` on error.
+    ///     - `AgentDone` / `AgentReplan`: return the terminal outcome.
+    /// 4. Advance `step_index`.
+    ///
+    /// Integration tests drive this with deterministic `AgentTurn`s; Phase 3
+    /// will wrap this with the LLM loop + compaction + cache replay.
+    pub async fn run_turn<E: ToolExecutor + ?Sized>(
+        &mut self,
+        turn: &AgentTurn,
+        executor: &E,
+    ) -> (TurnOutcome, Vec<String>) {
+        // 1. Apply mutations first — phase inference reads the stack/watch state.
+        let warnings = self.apply_mutations(&turn.mutations);
+
+        // 2. Observe: drain pending events + re-infer phase.
+        self.observe();
+
+        // 3. Dispatch action.
+        let outcome = match &turn.action {
+            AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                ..
+            } => match executor.call_tool(tool_name, arguments).await {
+                Ok(body) => {
+                    self.update_continuity_after_tool_success(tool_name, &body);
+                    self.consecutive_errors = 0;
+                    TurnOutcome::ToolSuccess {
+                        tool_name: tool_name.clone(),
+                        tool_body: body,
+                    }
+                }
+                Err(error) => {
+                    self.consecutive_errors += 1;
+                    self.queue_invalidation(InvalidationEvent::ToolFailed {
+                        tool: tool_name.clone(),
+                    });
+                    TurnOutcome::ToolError {
+                        tool_name: tool_name.clone(),
+                        error,
+                    }
+                }
+            },
+            AgentAction::AgentDone { summary } => TurnOutcome::Done {
+                summary: summary.clone(),
+            },
+            AgentAction::AgentReplan { reason } => {
+                self.last_replan_step = Some(self.step_index);
+                TurnOutcome::Replan {
+                    reason: reason.clone(),
+                }
+            }
+        };
+
+        // 4. Advance.
+        self.step_index += 1;
+
+        (outcome, warnings)
+    }
 }
 
 #[cfg(test)]

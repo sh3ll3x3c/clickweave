@@ -101,6 +101,17 @@ pub struct StepRecord {
     pub timestamp: DateTime<Utc>,
 }
 
+impl StepRecord {
+    /// Append this record as a single JSONL line at `path`. Creates the
+    /// file if missing; parent directories must already exist. This is
+    /// the low-level counterpart to `StateRunner::write_step_record` —
+    /// useful when the caller already holds a concrete path (tests,
+    /// offline tools) rather than a `RunStorage` handle.
+    pub fn write_to_events_jsonl(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        clickweave_core::storage::append_jsonl(path, self)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)] // Tests build WorldModel in stages for readability.
 mod tests {
