@@ -8,6 +8,7 @@ pub mod prior_turns;
 mod prompt;
 mod recovery;
 mod render;
+mod step_record;
 mod task_state;
 mod transition;
 mod types;
