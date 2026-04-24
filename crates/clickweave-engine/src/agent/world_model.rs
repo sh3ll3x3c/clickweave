@@ -141,23 +141,27 @@ pub struct UncertaintySignals {
 
 impl WorldModel {
     /// Recompute the uncertainty score from signal set + current world
-    /// model state (D14). Weights are intentionally conservative; tune
+    /// model state per design-doc decision D14. Inputs: number of
+    /// invalid (unobserved or invalidated-pending-refresh) fields,
+    /// consecutive errors, refuted-hypothesis count, and modal/dialog
+    /// target mismatch. Weights are intentionally conservative; tune
     /// later once the metric is observed in real runs.
     ///
-    /// Deviation from the Phase 1 plan: the plan's draft included a
-    /// "invalid fields" contribution derived from `Option::is_none` on
-    /// `focused_app`, `elements`, and `modal_present`. That incorrectly
-    /// fires on a freshly-constructed `WorldModel::default()` (where no
-    /// field has ever been observed) and makes the plan's own zero-signal
-    /// baseline test fail. Unknown is not the same as invalid; only
-    /// explicit invalidation bumps the score (see `apply_events` for
-    /// `ToolFailed`, which adds to the score directly). The three
-    /// explicit signals plumbed through `UncertaintySignals` are D14's
-    /// authoritative inputs here.
+    /// Invalid-field contribution matches POMDP belief-state semantics:
+    /// absent observations are epistemic uncertainty, so a fresh
+    /// `WorldModel::default()` starts nonzero — the agent is maximally
+    /// uncertain before it looks. Spec 1 only surfaces uncertainty via
+    /// the state block; gating dispatch on it is deferred to Spec 2
+    /// (design doc, out-of-scope section).
     pub fn recompute_uncertainty(&mut self, signals: UncertaintySignals) {
         let mut score: f32 = 0.0;
         let mut reasons: Vec<String> = Vec::new();
 
+        let invalid = self.invalid_field_count();
+        if invalid > 0 {
+            score += (invalid as f32) * 0.05;
+            reasons.push(format!("{invalid} invalid field(s)"));
+        }
         if signals.consecutive_errors > 0 {
             score += (signals.consecutive_errors as f32) * 0.15;
             reasons.push(format!("{} consecutive errors", signals.consecutive_errors));
@@ -173,6 +177,22 @@ impl WorldModel {
 
         self.uncertainty.score = score.min(1.0);
         self.uncertainty.reasons = reasons;
+    }
+
+    fn invalid_field_count(&self) -> usize {
+        [
+            self.focused_app.is_none(),
+            self.window_list.is_none(),
+            self.cdp_page.is_none(),
+            self.elements.is_none(),
+            self.modal_present.is_none(),
+            self.dialog_present.is_none(),
+            self.last_screenshot.is_none(),
+            self.last_native_ax_snapshot.is_none(),
+        ]
+        .iter()
+        .filter(|present| **present)
+        .count()
     }
 
     pub fn apply_events(&mut self, events: Vec<InvalidationEvent>) {
@@ -609,25 +629,31 @@ mod tests {
 
     #[test]
     fn recompute_uncertainty_covers_all_d14_signals() {
-        // P1.M3: D14 requires the score to factor in invalid field count,
-        // consecutive errors, refuted-hypothesis count, and modal/dialog
-        // mismatch. Each signal must contribute a monotonically
-        // non-decreasing increment.
+        // D14: score factors in invalid field count, consecutive
+        // errors, refuted-hypothesis count, and modal/dialog mismatch.
+        // Default WorldModel has 8 unobserved Option<Fresh<_>> fields,
+        // so the invalid-field contribution is nonzero from the start —
+        // POMDP belief-state semantics (missing observations are
+        // epistemic uncertainty). Each signal then increments
+        // monotonically.
         let mut wm = WorldModel::default();
-        let baseline = wm.uncertainty.score;
         wm.recompute_uncertainty(UncertaintySignals {
             consecutive_errors: 0,
             refuted_hypotheses: 0,
             modal_dialog_mismatch: false,
         });
-        assert_eq!(wm.uncertainty.score, baseline);
+        assert!(
+            wm.uncertainty.score > 0.0,
+            "default WorldModel has unobserved fields; invalid-field contribution must be nonzero"
+        );
+        let with_invalid_only = wm.uncertainty.score;
 
         wm.recompute_uncertainty(UncertaintySignals {
             consecutive_errors: 2,
             refuted_hypotheses: 1,
             modal_dialog_mismatch: true,
         });
-        assert!(wm.uncertainty.score > baseline);
+        assert!(wm.uncertainty.score > with_invalid_only);
         assert!(wm.uncertainty.score <= 1.0);
     }
 
