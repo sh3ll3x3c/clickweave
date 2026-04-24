@@ -568,6 +568,87 @@ impl StateRunner {
             timestamp: chrono::Utc::now(),
         }
     }
+
+    /// Persist one `BoundaryKind::SubgoalCompleted` record per milestone
+    /// appended during the current turn (D8). Called from
+    /// [`Self::run`] right after `run_turn` reports `milestones_appended >
+    /// 0`. Records the turn's batched mutations as `action_taken` so the
+    /// subgoal summaries are recoverable from `events.jsonl` without a
+    /// separate transcript lookup.
+    fn write_subgoal_completed_records(&self, count: usize, turn: &AgentTurn) {
+        let action_taken =
+            serde_json::to_value(&turn.mutations).unwrap_or_else(|_| serde_json::json!([]));
+        for _ in 0..count {
+            let record = self.build_step_record(
+                crate::agent::step_record::BoundaryKind::SubgoalCompleted,
+                action_taken.clone(),
+                serde_json::json!({"kind": "subgoal_completed"}),
+            );
+            self.write_step_record(&record);
+        }
+    }
+
+    /// Persist one `BoundaryKind::RecoverySucceeded` record on the exact
+    /// `Recovering -> Executing` transition (D8). Called from
+    /// [`Self::run`] when a tool success cleared the consecutive-error
+    /// streak. `action_taken` / `outcome` record the successful turn so
+    /// Spec 2's episodic memory can reason about what resolved the
+    /// recovery.
+    fn write_recovery_succeeded_record(&self, turn: &AgentTurn, outcome: &TurnOutcome) {
+        let action_taken =
+            serde_json::to_value(&turn.action).unwrap_or_else(|_| serde_json::json!({}));
+        let outcome_json = match outcome {
+            TurnOutcome::ToolSuccess {
+                tool_name,
+                tool_body,
+            } => serde_json::json!({
+                "kind": "tool_success",
+                "tool_name": tool_name,
+                "body_len": tool_body.len(),
+            }),
+            // RecoverySucceeded is only written on ToolSuccess; the other
+            // variants never reach this path (see `run()`'s guard).
+            _ => serde_json::json!({"kind": "tool_success"}),
+        };
+        let record = self.build_step_record(
+            crate::agent::step_record::BoundaryKind::RecoverySucceeded,
+            action_taken,
+            outcome_json,
+        );
+        self.write_step_record(&record);
+    }
+
+    /// Persist the single `BoundaryKind::Terminal` record at run end (D8).
+    /// Called exactly once from [`Self::run`] after the control loop has
+    /// populated `state.terminal_reason`. Encodes the terminal reason into
+    /// the outcome payload so the record is self-describing without a
+    /// cross-reference to the rest of `events.jsonl`.
+    fn write_terminal_record(&self) {
+        let terminal_reason = self.state.terminal_reason.as_ref();
+        let outcome_json = terminal_reason
+            .map(|tr| serde_json::to_value(tr).unwrap_or_else(|_| serde_json::json!({})))
+            .unwrap_or_else(|| serde_json::json!({"kind": "unknown"}));
+        // Best-effort action_taken: a minimal projection of the last
+        // recorded step (tool_name only — `AgentCommand` itself isn't
+        // `Serialize`). Falls back to the outcome for zero-step runs.
+        let action_taken = self
+            .state
+            .steps
+            .last()
+            .map(|step| {
+                serde_json::json!({
+                    "tool_name": step.command.tool_name_or_unknown(),
+                    "step_index": step.index,
+                })
+            })
+            .unwrap_or_else(|| outcome_json.clone());
+        let record = self.build_step_record(
+            crate::agent::step_record::BoundaryKind::Terminal,
+            action_taken,
+            outcome_json,
+        );
+        self.write_step_record(&record);
+    }
 }
 
 /// Outcome of a single `StateRunner::run_turn` call — what the caller needs
@@ -612,13 +693,31 @@ impl StateRunner {
     ///
     /// Integration tests drive this with deterministic `AgentTurn`s; Phase 3
     /// will wrap this with the LLM loop + compaction + cache replay.
+    ///
+    /// Return tuple: `(outcome, warnings, milestones_appended)`.
+    /// `milestones_appended` counts the number of `CompleteSubgoal`
+    /// mutations that successfully popped a subgoal off the stack during
+    /// this turn. The control loop in [`StateRunner::run`] uses this count
+    /// to emit one `BoundaryKind::SubgoalCompleted` `StepRecord` per
+    /// appended milestone (Task 3a.6.5 / D8).
     pub async fn run_turn<E: ToolExecutor + ?Sized>(
         &mut self,
         turn: &AgentTurn,
         executor: &E,
-    ) -> (TurnOutcome, Vec<String>) {
+    ) -> (TurnOutcome, Vec<String>, usize) {
         // 1. Apply mutations first — phase inference reads the stack/watch state.
+        //    Count successful `CompleteSubgoal` mutations by diffing the
+        //    milestones vec length (each `CompleteSubgoal` that passes
+        //    validation appends exactly one `Milestone`; see
+        //    `TaskState::apply`). Milestones don't shrink during normal
+        //    operation, so the delta is an exact count of new milestones.
+        let milestones_before = self.task_state.milestones.len();
         let warnings = self.apply_mutations(&turn.mutations);
+        let milestones_appended = self
+            .task_state
+            .milestones
+            .len()
+            .saturating_sub(milestones_before);
 
         // 2. Observe: drain pending events + re-infer phase.
         self.observe();
@@ -663,7 +762,7 @@ impl StateRunner {
         // 4. Advance.
         self.step_index += 1;
 
-        (outcome, warnings)
+        (outcome, warnings, milestones_appended)
     }
 }
 
@@ -2261,10 +2360,39 @@ impl StateRunner {
             }
 
             // 5. Apply mutations + dispatch the action via run_turn.
+            //    `previous_errors` captures the error counter from the
+            //    iteration just before the new turn; a drop from >0 to 0
+            //    after `run_turn` signals the `Recovering -> Executing`
+            //    transition that Task 3a.6.5 persists as a
+            //    `BoundaryKind::RecoverySucceeded` record (D8).
+            let previous_errors = self.consecutive_errors;
             let executor = McpToolExecutor { mcp };
-            let (outcome, warnings) = self.run_turn(&turn, &executor).await;
+            let (outcome, warnings, milestones_appended) = self.run_turn(&turn, &executor).await;
             for w in warnings {
                 tracing::warn!(warning = %w, "state-spine: mutation warning");
+            }
+
+            // 5a. SubgoalCompleted boundary writes — one `StepRecord` per
+            //     successfully popped subgoal (D8). Performed before the
+            //     outcome match so the record reflects the task_state /
+            //     world_model immediately after the mutation burst, matching
+            //     the semantic "the milestone just landed".
+            if milestones_appended > 0 {
+                self.write_subgoal_completed_records(milestones_appended, &turn);
+            }
+
+            // 5b. RecoverySucceeded boundary write — a tool success that
+            //     cleared the consecutive-error streak (D8). Only fires on
+            //     the exact `Recovering -> Executing` transition: the
+            //     previous turn had errors, this turn brought the counter
+            //     to zero. Tool calls that never errored (previous_errors
+            //     == 0) and repeated-error turns (consecutive_errors > 0)
+            //     are both skipped.
+            if previous_errors > 0
+                && self.consecutive_errors == 0
+                && matches!(outcome, TurnOutcome::ToolSuccess { .. })
+            {
+                self.write_recovery_succeeded_record(&turn, &outcome);
             }
 
             // 6. Map the TurnOutcome into AgentStep + TerminalReason.
@@ -2523,8 +2651,17 @@ impl StateRunner {
             });
         }
 
-        // TODO(task-3a.6.5): write the terminal `StepRecord` through the
-        // shared `RunStorage` handle here.
+        // Terminal boundary write (D8 / Task 3a.6.5). Every exit path from
+        // the loop above sets `state.terminal_reason` before breaking —
+        // plus the post-loop MaxStepsReached fallback right above — so a
+        // single write here covers `Completed`, `MaxStepsReached`,
+        // `MaxErrorsReached`, `ApprovalUnavailable`, `CompletionDisagreement`,
+        // `ConsecutiveDestructiveCap`, and `LoopDetected` uniformly. A
+        // run without any terminal_reason is a bug (no known code path
+        // produces it), so the match_ is exhaustive on `Some`.
+        if self.state.terminal_reason.is_some() {
+            self.write_terminal_record();
+        }
 
         Ok((self.state, self.cache))
     }
