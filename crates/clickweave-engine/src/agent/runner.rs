@@ -2523,11 +2523,10 @@ impl StateRunner {
                                     tool = %tool_name,
                                     "state-spine: identical policy-deny repeated — aborting"
                                 );
-                                self.state.terminal_reason =
-                                    Some(TerminalReason::LoopDetected {
-                                        tool_name: tool_name.clone(),
-                                        error: err_msg.clone(),
-                                    });
+                                self.state.terminal_reason = Some(TerminalReason::LoopDetected {
+                                    tool_name: tool_name.clone(),
+                                    error: err_msg.clone(),
+                                });
                                 break;
                             }
                             last_failure =

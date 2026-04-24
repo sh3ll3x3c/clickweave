@@ -55,9 +55,12 @@ fn make_superseded_placeholder(tool_name: &str) -> String {
 /// Resolve the tool name a tool-result message refers to by scanning the
 /// preceding assistant `tool_calls` for a matching id. Returns `None` if
 /// `msg` is not a tool-result or the id cannot be resolved.
-fn resolve_tool_name<'a>(messages: &'a [Message], msg: &Message) -> Option<&'a str> {
+fn resolve_tool_name<'a>(messages: &'a [Message], msg: &'a Message) -> Option<&'a str> {
     if msg.role != Role::Tool {
         return None;
+    }
+    if let Some(name) = msg.name.as_deref() {
+        return Some(name);
     }
     let call_id = msg.tool_call_id.as_deref()?;
     for prior in messages {
@@ -214,7 +217,8 @@ pub fn compact(messages: Vec<Message>, budget: &CompactBudget) -> Vec<Message> {
     // Pair up assistant + tool-result messages after messages[1].
     // Each "pair" is one assistant message followed by its tool-result(s).
     let tail = &messages[2..];
-    let pairs = group_into_pairs(tail);
+    let mut pairs = group_into_pairs(tail);
+    fold_snapshot_family_in_pairs(&mut pairs);
 
     let total_pairs = pairs.len();
     let recent_start = total_pairs.saturating_sub(budget.recent_n);
@@ -281,6 +285,100 @@ fn group_into_pairs(messages: &[Message]) -> Vec<Vec<Message>> {
         pairs.push(current);
     }
     pairs
+}
+
+fn fold_snapshot_family_in_pairs(pairs: &mut [Vec<Message>]) {
+    let Some(latest_family_result) = latest_snapshot_family_result(pairs) else {
+        return;
+    };
+
+    for (pair_idx, pair) in pairs.iter_mut().enumerate() {
+        let snapshot_results: Vec<(usize, String)> = pair
+            .iter()
+            .enumerate()
+            .filter_map(|(msg_idx, _)| {
+                snapshot_tool_name_for_pair_result(pair, msg_idx)
+                    .map(|tool_name| (msg_idx, tool_name.to_string()))
+            })
+            .collect();
+        let mut snapshot_tool_name: Option<String> = None;
+        for (msg_idx, tool_name) in snapshot_results {
+            snapshot_tool_name = Some(tool_name.clone());
+            if (pair_idx, msg_idx) == latest_family_result {
+                continue;
+            }
+            let msg = &mut pair[msg_idx];
+            if msg
+                .content_text()
+                .is_some_and(|t| t.starts_with(SUPERSEDED_PREFIX))
+            {
+                continue;
+            }
+            msg.content = Some(Content::Text(make_superseded_placeholder(&tool_name)));
+        }
+        if let Some(tool_name) = snapshot_tool_name {
+            drop_following_snapshot_observation(pair, &tool_name);
+        }
+    }
+}
+
+fn latest_snapshot_family_result(pairs: &[Vec<Message>]) -> Option<(usize, usize)> {
+    let mut latest = None;
+    for (pair_idx, pair) in pairs.iter().enumerate() {
+        for msg_idx in 0..pair.len() {
+            if snapshot_tool_name_for_pair_result(pair, msg_idx).is_some() {
+                latest = Some((pair_idx, msg_idx));
+            }
+        }
+    }
+    latest
+}
+
+fn snapshot_tool_name_for_pair_result(pair: &[Message], msg_idx: usize) -> Option<&str> {
+    let msg = pair.get(msg_idx)?;
+    if msg.role != Role::Tool {
+        return None;
+    }
+    if let Some(name) = msg.name.as_deref()
+        && SNAPSHOT_PRODUCING_TOOLS.contains(&name)
+    {
+        return Some(name);
+    }
+    let call_id = msg.tool_call_id.as_deref()?;
+    pair.iter()
+        .filter_map(|m| m.tool_calls.as_ref())
+        .flatten()
+        .find(|tc| tc.id == call_id)
+        .map(|tc| tc.function.name.as_str())
+        .filter(|name| SNAPSHOT_PRODUCING_TOOLS.contains(name))
+}
+
+fn drop_following_snapshot_observation(pair: &mut [Message], tool_name: &str) {
+    for msg in pair.iter_mut().filter(|m| m.role == Role::User) {
+        let Some(text) = msg.content_text() else {
+            continue;
+        };
+        let Some(rewritten) = replace_observation_body(
+            text,
+            &format!("[{tool_name}: snapshot observation omitted; use the retained tool result]"),
+        ) else {
+            continue;
+        };
+        msg.content = Some(Content::Text(rewritten));
+    }
+}
+
+fn replace_observation_body(text: &str, replacement: &str) -> Option<String> {
+    let start_tag = "<observation>\n";
+    let end_tag = "\n</observation>";
+    let body_start = text.find(start_tag)? + start_tag.len();
+    let body_end = body_start + text[body_start..].find(end_tag)?;
+
+    let mut out = String::with_capacity(text.len() - (body_end - body_start) + replacement.len());
+    out.push_str(&text[..body_start]);
+    out.push_str(replacement);
+    out.push_str(&text[body_end..]);
+    Some(out)
 }
 
 fn collapse_pair_to_brief(pair: &[Message]) -> Message {
@@ -407,12 +505,16 @@ mod state_spine_compact_tests {
     }
 
     fn tool_result(name: &str, body: &str) -> Message {
+        tool_result_with_id(name, "tc-1", body)
+    }
+
+    fn tool_result_with_id(name: &str, call_id: &str, body: &str) -> Message {
         Message {
             role: Role::Tool,
             content: Some(Content::Text(body.to_string())),
             reasoning_content: None,
             tool_calls: None,
-            tool_call_id: Some("tc-1".to_string()),
+            tool_call_id: Some(call_id.to_string()),
             name: Some(name.to_string()),
         }
     }
@@ -529,6 +631,60 @@ mod state_spine_compact_tests {
             total < 50_000,
             "no snapshot-family body should survive verbatim into the compacted output; got {} chars",
             total
+        );
+    }
+
+    #[test]
+    fn recent_window_folds_mixed_snapshot_family_results_in_same_step() {
+        let older_body = "dom".repeat(2_000);
+        let newer_body = "ax".repeat(2_000);
+        let messages = vec![
+            msg(Role::System, "sys"),
+            msg(Role::User, "goal"),
+            Message::assistant_tool_calls(vec![
+                ToolCall {
+                    id: "tc-dom".to_string(),
+                    call_type: Default::default(),
+                    function: FunctionCall {
+                        name: "cdp_find_elements".to_string(),
+                        arguments: Value::Object(Default::default()),
+                    },
+                },
+                ToolCall {
+                    id: "tc-ax".to_string(),
+                    call_type: Default::default(),
+                    function: FunctionCall {
+                        name: "take_ax_snapshot".to_string(),
+                        arguments: Value::Object(Default::default()),
+                    },
+                },
+            ]),
+            tool_result_with_id("cdp_find_elements", "tc-dom", &older_body),
+            tool_result_with_id("take_ax_snapshot", "tc-ax", &newer_body),
+        ];
+        let budget = CompactBudget {
+            max_tokens: 500_000,
+            recent_n: 1,
+        };
+
+        let out = compact(messages, &budget);
+
+        let dom = out
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("tc-dom"))
+            .expect("DOM result should remain linked");
+        assert!(
+            content_of(dom).starts_with(SUPERSEDED_PREFIX),
+            "older mixed-family snapshot should be folded inside the retained window"
+        );
+
+        let ax = out
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("tc-ax"))
+            .expect("AX result should remain linked");
+        assert!(
+            content_of(ax).len() > 1_024,
+            "newest snapshot-family result should stay at full fidelity"
         );
     }
 

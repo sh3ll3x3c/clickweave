@@ -1423,14 +1423,7 @@ async fn malformed_tool_call_json_returns_error() {
 /// (the smallest provider context we ship against) across 6 such calls,
 /// while the most recent snapshot is preserved at full fidelity.
 ///
-/// **Ignored under the state-spine runner (Task 3a.7.a)** — StateRunner's
-/// `context::compact` does not yet fold
-/// `collapse_superseded_snapshots` + `compact_step_summaries` into its
-/// compaction pipeline the way the legacy runner did. Re-enable
-/// this test in a follow-up once the runner-level compaction port lands
-/// (capability-gap ticket in Phase 3b scope).
 #[tokio::test]
-#[ignore = "state-spine: context compaction pipeline does not yet fold in snapshot supersession + step summarisation"]
 async fn retained_history_stays_bounded_across_snapshot_heavy_steps() {
     use crate::agent::context::{collapse_superseded_snapshots, estimate_messages_tokens};
 
