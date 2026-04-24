@@ -366,16 +366,14 @@ impl StateRunner {
 
     /// Fetch interactive elements from the current page via MCP.
     ///
-    /// Minimum port of `AgentRunner::fetch_elements` for the Task 3a.1
-    /// skeleton: calls `cdp_find_elements` when the tool is available,
-    /// parses the response into `CdpFindElementMatch`es, updates
-    /// `state.current_url`, and returns the parsed matches. Errors and
-    /// missing-tool paths return an empty vec so the rest of the loop
-    /// degrades gracefully.
-    ///
-    /// TODO(task-3a.4): surface schema-drift parse failures through a
-    /// `Warning` event so the operator can tell an empty page apart from a
-    /// wire-format drift.
+    /// Port of `AgentRunner::fetch_elements`: calls `cdp_find_elements` when
+    /// the tool is available, parses the response into `CdpFindElementMatch`es,
+    /// updates `state.current_url`, and returns the parsed matches. Errors and
+    /// missing-tool paths return an empty vec so the rest of the loop degrades
+    /// gracefully. A serde parse failure (schema drift between server and
+    /// engine) surfaces as an `AgentEvent::Warning` — a genuinely empty page
+    /// and a wire-format drift look identical from the agent's perspective, so
+    /// the operator needs the explicit signal.
     pub(crate) async fn fetch_elements<M: Mcp + ?Sized>(
         &mut self,
         mcp: &M,
@@ -402,6 +400,13 @@ impl StateRunner {
                             error = %parse_err,
                             "state-spine: failed to parse cdp_find_elements response"
                         );
+                        self.emit_event(AgentEvent::Warning {
+                            message: format!(
+                                "cdp_find_elements response failed to parse: {} — continuing with empty elements",
+                                parse_err
+                            ),
+                        })
+                        .await;
                     }
                 }
             }
@@ -555,6 +560,16 @@ enum ApprovalResult {
     Unavailable,
 }
 
+/// State of the consecutive-destructive-tool cap after a tool call.
+/// Mirrors `loop_runner::CapStatus` — private to `runner.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapStatus {
+    /// Streak is still below the cap — run continues normally.
+    Armed,
+    /// Cap reached — the caller must emit the cap-hit event and halt.
+    CapReached,
+}
+
 /// Observation tools whose cached entries are stale on read. Mirrors
 /// `loop_runner::OBSERVATION_TOOLS` — duplicated here because the legacy
 /// list is a private `const` on `AgentRunner`, and lifting it to a shared
@@ -673,6 +688,64 @@ impl StateRunner {
         if let Err(e) = tx.send(event).await {
             warn!("state-spine: failed to emit agent event (channel closed): {e}");
         }
+    }
+
+    /// Update the consecutive-destructive-call tracker after a successful
+    /// tool call, and report whether the cap has now been hit. Port of
+    /// `AgentRunner::maybe_halt_on_destructive_cap` (`loop_runner.rs:421`).
+    ///
+    /// `destructive_hint == Some(true)` increments the streak; anything else
+    /// resets it. A cap value of `0` disables the feature entirely, so the
+    /// method always returns `CapStatus::Armed` in that case.
+    fn maybe_halt_on_destructive_cap(
+        &mut self,
+        tool_name: &str,
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+    ) -> CapStatus {
+        if self.config.consecutive_destructive_cap == 0 {
+            return CapStatus::Armed;
+        }
+        let destructive = annotations_by_tool
+            .get(tool_name)
+            .and_then(|a| a.destructive_hint)
+            .unwrap_or(false);
+        if destructive {
+            self.state
+                .recent_destructive_tools
+                .push(tool_name.to_string());
+        } else {
+            self.state.recent_destructive_tools.clear();
+        }
+        if self.state.recent_destructive_tools.len() >= self.config.consecutive_destructive_cap {
+            CapStatus::CapReached
+        } else {
+            CapStatus::Armed
+        }
+    }
+
+    /// Halt the run because the consecutive-destructive cap was reached.
+    /// Emits the cap-hit event and sets the terminal reason. Called once
+    /// when `maybe_halt_on_destructive_cap` reports `CapStatus::CapReached`.
+    /// Clears `recent_destructive_tools` afterwards so state serialization
+    /// reflects the drained streak. Port of
+    /// `AgentRunner::emit_destructive_cap_hit` (`loop_runner.rs:452`).
+    async fn emit_destructive_cap_hit(&mut self) {
+        let recent = std::mem::take(&mut self.state.recent_destructive_tools);
+        let cap = self.config.consecutive_destructive_cap;
+        warn!(
+            cap,
+            tools = ?recent,
+            "state-spine: consecutive destructive cap reached — halting run"
+        );
+        self.emit_event(AgentEvent::ConsecutiveDestructiveCapHit {
+            recent_tool_names: recent.clone(),
+            cap,
+        })
+        .await;
+        self.state.terminal_reason = Some(TerminalReason::ConsecutiveDestructiveCap {
+            recent_tool_names: recent,
+            cap,
+        });
     }
 
     /// Evaluate the permission policy for a cached tool call.
@@ -1112,13 +1185,18 @@ impl StateRunner {
                 *previous_result = Some(result_text);
                 *last_cache_key = Some(current_key);
 
-                // TODO(task-3a.4): destructive-cap accounting for cached
-                // replays — mirrors `AgentRunner::maybe_halt_on_destructive_cap`.
-                // Without the cap, successive destructive replays would
-                // not halt via this path until the live-LLM tail reaches
-                // the same guard. State-transition tools (the common
-                // destructive case) already fall through at branch 4c so
-                // this gap is narrow.
+                // Destructive-cap accounting: the cached replay counts toward
+                // the streak just like a live tool call. State-transition
+                // tools (the common destructive case) already fall through at
+                // branch 4c, so this guards the narrow tail where a cached
+                // non-transition tool carries `destructive_hint == Some(true)`.
+                if matches!(
+                    self.maybe_halt_on_destructive_cap(&cached_tool, annotations_by_tool),
+                    CapStatus::CapReached
+                ) {
+                    self.emit_destructive_cap_hit().await;
+                    return ReplayResult::Break;
+                }
                 ReplayResult::Continue
             }
             Ok(result) => {
@@ -1154,48 +1232,58 @@ impl StateRunner {
 /// `agent_done` / `agent_replan` dispatch to the matching `AgentAction`
 /// variant; everything else becomes `AgentAction::ToolCall`.
 ///
+/// Text-only replies (no `tool_calls`) map to `AgentAction::AgentReplan`
+/// with the assistant's raw text as the reason — the LLM "forgot" to call a
+/// tool, so re-observe on the next iteration with the text as context
+/// instead of aborting the run.
+///
 /// `TODO(task-3a.2)`: extend to read a structured `{ mutations, action }`
 /// JSON envelope when the prompt spine asks the LLM for one.
 pub fn parse_agent_turn(message: &Message) -> anyhow::Result<AgentTurn> {
-    let tool_calls = message
-        .tool_calls
-        .as_ref()
-        .and_then(|tcs| tcs.first())
-        .context(
-            "LLM response had no tool_calls; state-spine requires one action per turn. \
-             TODO(task-3a.4): map a text-only response to AgentReplan with the raw text.",
-        )?;
+    if let Some(tool_call) = message.tool_calls.as_ref().and_then(|tcs| tcs.first()) {
+        let name = &tool_call.function.name;
+        let args = tool_call.function.arguments.clone();
 
-    let name = &tool_calls.function.name;
-    let args = tool_calls.function.arguments.clone();
+        let action = match name.as_str() {
+            "agent_done" => {
+                let summary = args
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Goal completed")
+                    .to_string();
+                AgentAction::AgentDone { summary }
+            }
+            "agent_replan" => {
+                let reason = args
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Unknown reason")
+                    .to_string();
+                AgentAction::AgentReplan { reason }
+            }
+            _ => AgentAction::ToolCall {
+                tool_name: name.clone(),
+                arguments: args,
+                tool_call_id: tool_call.id.clone(),
+            },
+        };
 
-    let action = match name.as_str() {
-        "agent_done" => {
-            let summary = args
-                .get("summary")
-                .and_then(Value::as_str)
-                .unwrap_or("Goal completed")
-                .to_string();
-            AgentAction::AgentDone { summary }
-        }
-        "agent_replan" => {
-            let reason = args
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown reason")
-                .to_string();
-            AgentAction::AgentReplan { reason }
-        }
-        _ => AgentAction::ToolCall {
-            tool_name: name.clone(),
-            arguments: args,
-            tool_call_id: tool_calls.id.clone(),
-        },
-    };
+        return Ok(AgentTurn {
+            mutations: Vec::new(),
+            action,
+        });
+    }
 
+    // Text-only response: treat as a replan request so the run re-observes
+    // next turn instead of aborting. Mirrors the legacy "no tool call"
+    // recovery hook.
+    let reason = message
+        .content_text()
+        .map(str::to_owned)
+        .unwrap_or_else(|| "LLM returned no tool call and no text".to_string());
     Ok(AgentTurn {
         mutations: Vec::new(),
-        action,
+        action: AgentAction::AgentReplan { reason },
     })
 }
 
@@ -1511,22 +1599,43 @@ impl StateRunner {
                         // actions; the other arms are unreachable here.
                         _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
                     };
+                    let step_idx_for_event = self.state.steps.len();
                     self.state.steps.push(AgentStep {
-                        index: self.state.steps.len(),
+                        index: step_idx_for_event,
                         elements: elements.clone(),
                         command,
                         outcome: step_outcome,
                         page_url: self.state.current_url.clone(),
                     });
-                    previous_result = Some(tool_body);
+                    previous_result = Some(tool_body.clone());
+                    // Clear the loop-detection tracker on any success.
+                    last_failure = None;
+                    // Emit the live StepCompleted event so subscribers see a
+                    // successful turn (cache-replay has its own emission in
+                    // `try_replay_cache`).
+                    self.emit_event(AgentEvent::StepCompleted {
+                        step_index: step_idx_for_event,
+                        tool_name: tool_name.clone(),
+                        summary: crate::agent::prompt_spine::truncate_summary(&tool_body, 120),
+                    })
+                    .await;
+                    // Destructive-cap accounting on the live path. Mirrors
+                    // `AgentRunner::handle_step_outcome`'s cap branch. The
+                    // cache-replay path has the same guard inline.
+                    if matches!(
+                        self.maybe_halt_on_destructive_cap(&tool_name, &annotations_by_tool),
+                        CapStatus::CapReached
+                    ) {
+                        self.emit_destructive_cap_hit().await;
+                        break;
+                    }
                     // TODO(task-3a.5): add_workflow_node (NodeAdded /
                     // EdgeAdded emission) goes here.
-                    // TODO(task-3a.4): destructive-cap accounting goes here.
                     // TODO(task-3a.6): auto_connect_cdp + synthetic
                     // focus_window skip go here.
                 }
                 TurnOutcome::ToolError { tool_name, error } => {
-                    let (command, step_outcome) = match &turn.action {
+                    let (command, step_outcome, tool_arguments) = match &turn.action {
                         AgentAction::ToolCall {
                             arguments,
                             tool_call_id,
@@ -1538,21 +1647,73 @@ impl StateRunner {
                                 tool_call_id: tool_call_id.clone(),
                             },
                             StepOutcome::Error(error.clone()),
+                            arguments.clone(),
                         ),
                         _ => unreachable!("ToolError outcome implies ToolCall action"),
                     };
+                    let step_idx_for_event = self.state.steps.len();
                     self.state.steps.push(AgentStep {
-                        index: self.state.steps.len(),
+                        index: step_idx_for_event,
                         elements: elements.clone(),
                         command,
                         outcome: step_outcome,
                         page_url: self.state.current_url.clone(),
                     });
                     self.state.consecutive_errors = self.consecutive_errors;
-                    previous_result = Some(error);
-                    // TODO(task-3a.4): loop detection (same-tool/same-error
-                    // short-circuit) goes here.
-                    // TODO(task-3a.6): recovery strategy goes here.
+                    previous_result = Some(error.clone());
+
+                    // Emit StepFailed so subscribers see the failing turn;
+                    // the cache-replay policy-deny branch emits the same
+                    // event for its synthetic errors.
+                    self.emit_event(AgentEvent::StepFailed {
+                        step_index: step_idx_for_event,
+                        tool_name: tool_name.clone(),
+                        error: error.clone(),
+                    })
+                    .await;
+
+                    // Loop detection: if the identical (tool, args) call
+                    // came back with the identical error on two successive
+                    // turns, halt instead of burning the max-errors budget.
+                    let looped = matches!(
+                        last_failure.as_ref(),
+                        Some((prev_tool, prev_args, prev_err))
+                            if prev_tool == &tool_name
+                                && prev_args == &tool_arguments
+                                && prev_err == &error
+                    );
+                    if looped {
+                        warn!(
+                            tool = %tool_name,
+                            error = %error,
+                            "state-spine: identical failing tool call repeated — aborting"
+                        );
+                        self.state.terminal_reason =
+                            Some(TerminalReason::LoopDetected { tool_name, error });
+                        break;
+                    }
+                    last_failure = Some((tool_name, tool_arguments, error));
+
+                    // Recovery strategy: `Abort` halts with MaxErrorsReached;
+                    // `Continue` falls through to the next iteration which
+                    // re-observes. Legacy placed this wiring in 3a.6's scope
+                    // but the 3a.4 test matrix requires MaxErrorsReached as
+                    // a terminal reason, so the whole hook lands together
+                    // here.
+                    let action = recovery_strategy(
+                        self.state.consecutive_errors,
+                        self.config.max_consecutive_errors,
+                    );
+                    if matches!(action, RecoveryAction::Abort) {
+                        warn!(
+                            errors = self.state.consecutive_errors,
+                            "state-spine: too many consecutive errors — aborting"
+                        );
+                        self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
+                            consecutive_errors: self.state.consecutive_errors,
+                        });
+                        break;
+                    }
                 }
                 TurnOutcome::Done { summary } => {
                     // Post-`agent_done` VLM verification. A NO verdict

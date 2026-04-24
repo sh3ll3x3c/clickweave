@@ -256,6 +256,11 @@ pub struct StaticMcp {
     /// text reply. Used by completion-verification tests that need
     /// `take_screenshot` to return an image payload the VLM path can prep.
     image_replies: Mutex<HashMap<String, (String, String)>>,
+    /// Error replies, keyed by tool name. When set, the tool returns a
+    /// `ToolCallResult { is_error: Some(true), ... }` so the runner's
+    /// executor treats it as a failure. Used by loop-detection and
+    /// recovery-strategy tests that need deterministic tool errors.
+    error_replies: Mutex<HashMap<String, String>>,
 }
 
 impl StaticMcp {
@@ -280,6 +285,7 @@ impl StaticMcp {
             tools,
             replies: Mutex::new(HashMap::new()),
             image_replies: Mutex::new(HashMap::new()),
+            error_replies: Mutex::new(HashMap::new()),
         }
     }
 
@@ -289,6 +295,27 @@ impl StaticMcp {
             .lock()
             .unwrap()
             .insert(tool_name.to_string(), body.to_string());
+        self
+    }
+
+    /// Register a canned error body for `tool_name`. Calls return a
+    /// `ToolCallResult` with `is_error: Some(true)` and the text body as
+    /// the single content block — the `McpToolExecutor` adapter maps this
+    /// to an `Err` so the runner's error path kicks in.
+    pub fn with_error(self, tool_name: &str, body: &str) -> Self {
+        self.error_replies
+            .lock()
+            .unwrap()
+            .insert(tool_name.to_string(), body.to_string());
+        self
+    }
+
+    /// Overwrite the advertised openai-shaped tool list wholesale. Useful
+    /// when a test needs to attach `annotations` (`destructiveHint`,
+    /// `readOnlyHint`, …) that the bare-entry `with_tools` constructor
+    /// doesn't include.
+    pub fn with_tools_override(mut self, tools: Vec<Value>) -> Self {
+        self.tools = tools;
         self
     }
 
@@ -311,6 +338,14 @@ impl Mcp for StaticMcp {
         name: &str,
         _arguments: Option<Value>,
     ) -> anyhow::Result<ToolCallResult> {
+        // Error replies take precedence so tests can pin deterministic
+        // failures even for tools that also have a text reply registered.
+        if let Some(body) = self.error_replies.lock().unwrap().get(name) {
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Text { text: body.clone() }],
+                is_error: Some(true),
+            });
+        }
         // Image replies take precedence — they represent tools like
         // `take_screenshot` whose normal shape is image content.
         if let Some((data, mime_type)) = self.image_replies.lock().unwrap().get(name) {
