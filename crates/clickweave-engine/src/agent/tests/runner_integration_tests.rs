@@ -355,3 +355,181 @@ mod run_agent_workflow_signature_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Task 3a.1: `StateRunner::run` top-level loop skeleton
+// ---------------------------------------------------------------------------
+//
+// Exercises the minimum observe → LLM → parse → apply → dispatch → compact
+// loop through stubbed `ChatBackend` (`ScriptedLlm`) + stubbed `Mcp`
+// (`StaticMcp`). Deferred behaviour (cache replay, VLM, approval, loop
+// detection, consecutive-destructive cap, workflow-graph emission, CDP
+// auto-connect, synthetic focus_window skip, recovery, boundary writes)
+// is asserted absent — each later task flips its behaviour on and must
+// delete its corresponding `TODO(task-3a.N)` marker from `runner.rs`.
+
+#[cfg(test)]
+mod top_level_loop_tests {
+    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use crate::agent::runner::StateRunner;
+    use crate::agent::types::{AgentConfig, TerminalReason};
+    use crate::executor::Mcp;
+
+    #[tokio::test]
+    async fn run_completes_on_agent_done_after_two_tool_calls() {
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool(
+                "cdp_find_elements",
+                serde_json::json!({"query": "", "max_results": 300}),
+            ),
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "d1"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = StaticMcp::with_tools(&["cdp_find_elements", "cdp_click"])
+            .with_reply(
+                "cdp_find_elements",
+                r#"{"page_url":"about:blank","source":"cdp","matches":[]}"#,
+            )
+            .with_reply("cdp_click", "clicked");
+
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), AgentConfig::default());
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        assert_eq!(
+            state.steps.len(),
+            2,
+            "two dispatched tool calls should be recorded as steps"
+        );
+        assert!(state.completed, "agent_done should mark state.completed");
+        assert!(
+            matches!(
+                state.terminal_reason,
+                Some(TerminalReason::Completed { .. })
+            ),
+            "terminal reason should be Completed, got {:?}",
+            state.terminal_reason,
+        );
+    }
+
+    #[tokio::test]
+    async fn run_terminates_at_max_steps_without_completion() {
+        let llm = ScriptedLlm::repeat(|| {
+            llm_reply_tool(
+                "cdp_find_elements",
+                serde_json::json!({"query": "", "max_results": 300}),
+            )
+        });
+        let mcp = StaticMcp::with_tools(&["cdp_find_elements"]).with_reply(
+            "cdp_find_elements",
+            r#"{"page_url":"about:blank","source":"cdp","matches":[]}"#,
+        );
+
+        let tools = mcp.tools_as_openai();
+        let cfg = AgentConfig {
+            max_steps: 3,
+            ..AgentConfig::default()
+        };
+        let runner = StateRunner::new("goal".to_string(), cfg);
+        let (state, _) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        assert_eq!(state.steps.len(), 3);
+        assert!(!state.completed);
+        assert!(
+            matches!(
+                state.terminal_reason,
+                Some(TerminalReason::MaxStepsReached { steps_executed: 3 })
+            ),
+            "terminal reason should be MaxStepsReached {{3}}, got {:?}",
+            state.terminal_reason,
+        );
+    }
+
+    #[tokio::test]
+    async fn run_records_tool_error_as_step_error() {
+        // cdp_click is asked to fail by the stub: the MCP returns is_error
+        // via a tool that does not exist. Instead we use NullMcp-style
+        // behaviour via StaticMcp without the right tool; but StaticMcp
+        // falls back to "ok". Simulate a tool error by having the stub
+        // return a reply through has_tool=false path — the McpToolExecutor
+        // surfaces the bail! as an error body.
+        use super::super::stub::NullMcp;
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "d1"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "stop"})),
+        ]);
+        let mcp = NullMcp;
+        let runner = StateRunner::new("goal".to_string(), AgentConfig::default());
+        let (state, _) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                None,
+                Vec::new(),
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        assert_eq!(state.steps.len(), 1, "the failing tool call is recorded");
+        let step = &state.steps[0];
+        assert!(matches!(
+            step.outcome,
+            crate::agent::types::StepOutcome::Error(_)
+        ));
+        assert!(state.completed);
+    }
+
+    /// The runner must have left `TODO(task-3a.N)` markers for every deferred
+    /// behaviour (cache replay, VLM, loop detection, destructive cap,
+    /// workflow-graph emission, CDP auto-connect, boundary writes). Later
+    /// tasks grep for these anchors as they wire each behaviour on.
+    #[test]
+    fn runner_source_retains_deferred_task_markers() {
+        let runner_src = include_str!("../runner.rs");
+        for marker in [
+            "TODO(task-3a.2)",
+            "TODO(task-3a.3)",
+            "TODO(task-3a.4)",
+            "TODO(task-3a.5)",
+            "TODO(task-3a.6)",
+            "TODO(task-3a.6.5)",
+        ] {
+            assert!(
+                runner_src.contains(marker),
+                "expected `{}` marker in runner.rs so Task 3a.{}+ can grep for its anchor",
+                marker,
+                marker
+                    .trim_start_matches("TODO(task-3a.")
+                    .trim_end_matches(')'),
+            );
+        }
+    }
+}

@@ -13,15 +13,21 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clickweave_llm::DynChatBackend;
+use anyhow::Context as _;
+use clickweave_llm::{ChatBackend, DynChatBackend, Message};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::agent::permissions::PermissionPolicy;
 use crate::agent::phase::{self, PhaseSignals};
 use crate::agent::task_state::{TaskState, TaskStateMutation};
-use crate::agent::types::{AgentCache, AgentConfig, AgentEvent, AgentState, ApprovalRequest};
+use crate::agent::types::{
+    AgentCache, AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest,
+    StepOutcome, TerminalReason,
+};
 use crate::agent::world_model::{InvalidationEvent, WorldModel};
+use crate::executor::Mcp;
 
 /// The one action an `AgentTurn` must carry (D10).
 ///
@@ -347,6 +353,55 @@ impl StateRunner {
         }
     }
 
+    /// Fetch interactive elements from the current page via MCP.
+    ///
+    /// Minimum port of `AgentRunner::fetch_elements` for the Task 3a.1
+    /// skeleton: calls `cdp_find_elements` when the tool is available,
+    /// parses the response into `CdpFindElementMatch`es, updates
+    /// `state.current_url`, and returns the parsed matches. Errors and
+    /// missing-tool paths return an empty vec so the rest of the loop
+    /// degrades gracefully.
+    ///
+    /// TODO(task-3a.4): surface schema-drift parse failures through a
+    /// `Warning` event so the operator can tell an empty page apart from a
+    /// wire-format drift.
+    pub(crate) async fn fetch_elements<M: Mcp + ?Sized>(
+        &mut self,
+        mcp: &M,
+    ) -> Vec<clickweave_core::cdp::CdpFindElementMatch> {
+        if !mcp.has_tool("cdp_find_elements") {
+            return Vec::new();
+        }
+        match mcp
+            .call_tool(
+                "cdp_find_elements",
+                Some(serde_json::json!({"query": "", "max_results": 300})),
+            )
+            .await
+        {
+            Ok(result) if result.is_error != Some(true) => {
+                let text = crate::cdp_lifecycle::extract_text(&result);
+                match serde_json::from_str::<clickweave_core::cdp::CdpFindElementsResponse>(&text) {
+                    Ok(parsed) => {
+                        self.state.current_url = parsed.page_url;
+                        return parsed.matches;
+                    }
+                    Err(parse_err) => {
+                        tracing::debug!(
+                            error = %parse_err,
+                            "state-spine: failed to parse cdp_find_elements response"
+                        );
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(error = %e, "state-spine: cdp_find_elements call failed");
+            }
+        }
+        Vec::new()
+    }
+
     /// Build a terminal `StepRecord` for a completed / halted run. Used by
     /// the control loop on run-end boundaries and by integration tests.
     pub fn build_step_record(
@@ -462,6 +517,386 @@ impl StateRunner {
         self.step_index += 1;
 
         (outcome, warnings)
+    }
+}
+
+/// Parse a raw LLM response `Message` into an `AgentTurn`.
+///
+/// The state-spine wire format is "0..N mutations + 1 action", but real
+/// backends return the action via OpenAI-style `tool_calls`. Task 3a.1
+/// implements a minimum parser: the **first** `tool_calls[0]` is mapped to
+/// an `AgentAction`; mutations stay empty (the harness-owned state mutation
+/// path for real LLM output is covered by a later task). Pseudo-tool names
+/// `agent_done` / `agent_replan` dispatch to the matching `AgentAction`
+/// variant; everything else becomes `AgentAction::ToolCall`.
+///
+/// `TODO(task-3a.2)`: extend to read a structured `{ mutations, action }`
+/// JSON envelope when the prompt spine asks the LLM for one.
+pub fn parse_agent_turn(message: &Message) -> anyhow::Result<AgentTurn> {
+    let tool_calls = message
+        .tool_calls
+        .as_ref()
+        .and_then(|tcs| tcs.first())
+        .context(
+            "LLM response had no tool_calls; state-spine requires one action per turn. \
+             TODO(task-3a.4): map a text-only response to AgentReplan with the raw text.",
+        )?;
+
+    let name = &tool_calls.function.name;
+    let args = tool_calls.function.arguments.clone();
+
+    let action = match name.as_str() {
+        "agent_done" => {
+            let summary = args
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or("Goal completed")
+                .to_string();
+            AgentAction::AgentDone { summary }
+        }
+        "agent_replan" => {
+            let reason = args
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("Unknown reason")
+                .to_string();
+            AgentAction::AgentReplan { reason }
+        }
+        _ => AgentAction::ToolCall {
+            tool_name: name.clone(),
+            arguments: args,
+            tool_call_id: tool_calls.id.clone(),
+        },
+    };
+
+    Ok(AgentTurn {
+        mutations: Vec::new(),
+        action,
+    })
+}
+
+/// Adapter that turns any `&dyn Mcp` into the `ToolExecutor` trait expected
+/// by `run_turn`. Kept private to `runner.rs` — the plan names this
+/// `McpToolExecutor` so later tasks can grep for the anchor.
+struct McpToolExecutor<'a, M: Mcp + ?Sized> {
+    mcp: &'a M,
+}
+
+#[async_trait::async_trait]
+impl<M: Mcp + ?Sized> ToolExecutor for McpToolExecutor<'_, M> {
+    async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, String> {
+        match self.mcp.call_tool(tool_name, Some(arguments.clone())).await {
+            Ok(result) if result.is_error != Some(true) => {
+                let text = result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(text)
+            }
+            Ok(result) => {
+                let text = result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Err(text)
+            }
+            Err(e) => Err(format!("{}", e)),
+        }
+    }
+}
+
+impl StateRunner {
+    /// Top-level observe → compose → LLM → parse → apply → dispatch →
+    /// compact control loop. Task 3a.1 ships the minimum skeleton; later
+    /// tasks (flagged by `TODO(task-3a.N)` markers inline) wire cache
+    /// replay, VLM verification, approval, loop detection,
+    /// consecutive-destructive cap, workflow-graph emission, CDP
+    /// auto-connect, synthetic `focus_window` skip, recovery strategy,
+    /// and boundary `StepRecord` writes.
+    ///
+    /// The signature mirrors `AgentRunner::run` so `run_agent_workflow`
+    /// can pivot onto `StateRunner` without a caller-side change. Crate-
+    /// private because the `Mcp` trait is `pub(crate)`; the public entry
+    /// point stays [`crate::agent::run_agent_workflow`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run<B, M>(
+        mut self,
+        llm: &B,
+        mcp: &M,
+        goal: String,
+        workflow: clickweave_core::Workflow,
+        variant_context: Option<&str>,
+        mcp_tools: Vec<Value>,
+        anchor_node_id: Option<uuid::Uuid>,
+        prior_turns: &[crate::agent::prior_turns::PriorTurn],
+    ) -> anyhow::Result<(AgentState, AgentCache)>
+    where
+        B: ChatBackend + ?Sized,
+        M: Mcp + ?Sized,
+    {
+        use crate::agent::context_spine::{CompactBudget, compact};
+        use crate::agent::prior_turns::build_goal_with_prior_turns;
+        use crate::agent::prompt_spine::{build_system_prompt, build_user_turn_message};
+
+        // Reset the visible state tuple to match the freshly-provided
+        // workflow. `AgentState::new(workflow)` wipes steps/terminal_reason
+        // so the same `StateRunner` could in theory be reused across runs,
+        // though `self` is consumed below.
+        self.state = AgentState::new(workflow);
+        self.state.last_node_id = anchor_node_id;
+
+        // Build the system prompt from the raw openai-shaped tool list.
+        // `build_system_prompt` expects `clickweave_mcp::Tool`; the raw
+        // `Vec<Value>` is already openai-shape, so extract the minimum
+        // fields each tool entry carries.
+        let tool_list_for_prompt = openai_tools_to_mcp_tool_list(&mcp_tools);
+        let mut system_text = build_system_prompt(&tool_list_for_prompt);
+        if let Some(ctx) = variant_context {
+            system_text.push_str(&format!("\n\nVariant context: {}", ctx));
+        }
+
+        // Compose the goal with inlined prior-turn log. Keeps messages[1]
+        // (the goal slot) stable across compaction (D12).
+        let composed_goal = build_goal_with_prior_turns(&goal, prior_turns, 1000);
+        let initial_user =
+            build_user_turn_message(&self.world_model, &self.task_state, 0, &composed_goal);
+
+        let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
+
+        // Add the pseudo-tools so the LLM sees the full action vocabulary.
+        // Seed once per run and never mutate — mid-run tool-list changes
+        // invalidate every prior prompt-cache prefix.
+        let tools: Vec<Value> = mcp_tools
+            .iter()
+            .cloned()
+            .chain([
+                crate::agent::prompt::agent_done_tool(),
+                crate::agent::prompt::agent_replan_tool(),
+            ])
+            .collect();
+
+        // TODO(task-3a.4): build annotations index here for the
+        // consecutive-destructive cap + permission policy.
+
+        let budget = CompactBudget::default();
+        let mut previous_result: Option<String> = None;
+
+        for _step_index in 0..self.config.max_steps {
+            if self.state.completed {
+                break;
+            }
+
+            // 1. Observe — fetch elements + detect page transition.
+            let elements = self.fetch_elements(mcp).await;
+
+            // TODO(task-3a.2): cache replay gate here — `try_replay_cache`
+            // short-circuit. Replay re-runs the tool call through the real
+            // `McpToolExecutor`; it does not reuse a serialized AgentTurn
+            // (D11).
+            // TODO(task-3a.6): pre-step CDP maybe-connect here.
+
+            // 2. Compose the per-turn user message with the state block +
+            // the previous tool body as the observation, then compact the
+            // history before the LLM call.
+            let step_obs = previous_result.clone().unwrap_or_default();
+            let step_msg = build_user_turn_message(
+                &self.world_model,
+                &self.task_state,
+                self.step_index,
+                &step_obs,
+            );
+            messages.push(Message::user(step_msg));
+            messages = compact(messages, &budget);
+
+            // 3. LLM call.
+            let response = llm
+                .chat(&messages, Some(&tools))
+                .await
+                .context("Agent LLM call failed")?;
+            let choice = response
+                .choices
+                .into_iter()
+                .next()
+                .context("No choices in LLM response")?;
+
+            // 4. Parse the LLM response into an AgentTurn. Task 3a.1's
+            // parser maps tool_calls[0] to the action; mutations stay empty.
+            let turn = parse_agent_turn(&choice.message)?;
+
+            // 5. Apply mutations + dispatch the action via run_turn.
+            let executor = McpToolExecutor { mcp };
+            let (outcome, warnings) = self.run_turn(&turn, &executor).await;
+            for w in warnings {
+                tracing::warn!(warning = %w, "state-spine: mutation warning");
+            }
+
+            // 6. Map the TurnOutcome into AgentStep + TerminalReason.
+            match outcome {
+                TurnOutcome::ToolSuccess {
+                    tool_name,
+                    tool_body,
+                } => {
+                    let (command, step_outcome) = match &turn.action {
+                        AgentAction::ToolCall {
+                            arguments,
+                            tool_call_id,
+                            ..
+                        } => (
+                            AgentCommand::ToolCall {
+                                tool_name: tool_name.clone(),
+                                arguments: arguments.clone(),
+                                tool_call_id: tool_call_id.clone(),
+                            },
+                            StepOutcome::Success(tool_body.clone()),
+                        ),
+                        // run_turn only returns ToolSuccess for ToolCall
+                        // actions; the other arms are unreachable here.
+                        _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
+                    };
+                    self.state.steps.push(AgentStep {
+                        index: self.state.steps.len(),
+                        elements: elements.clone(),
+                        command,
+                        outcome: step_outcome,
+                        page_url: self.state.current_url.clone(),
+                    });
+                    previous_result = Some(tool_body);
+                    // TODO(task-3a.5): add_workflow_node (NodeAdded /
+                    // EdgeAdded emission) goes here.
+                    // TODO(task-3a.4): destructive-cap accounting goes here.
+                    // TODO(task-3a.6): auto_connect_cdp + synthetic
+                    // focus_window skip go here.
+                }
+                TurnOutcome::ToolError { tool_name, error } => {
+                    let (command, step_outcome) = match &turn.action {
+                        AgentAction::ToolCall {
+                            arguments,
+                            tool_call_id,
+                            ..
+                        } => (
+                            AgentCommand::ToolCall {
+                                tool_name: tool_name.clone(),
+                                arguments: arguments.clone(),
+                                tool_call_id: tool_call_id.clone(),
+                            },
+                            StepOutcome::Error(error.clone()),
+                        ),
+                        _ => unreachable!("ToolError outcome implies ToolCall action"),
+                    };
+                    self.state.steps.push(AgentStep {
+                        index: self.state.steps.len(),
+                        elements: elements.clone(),
+                        command,
+                        outcome: step_outcome,
+                        page_url: self.state.current_url.clone(),
+                    });
+                    self.state.consecutive_errors = self.consecutive_errors;
+                    previous_result = Some(error);
+                    // TODO(task-3a.4): loop detection (same-tool/same-error
+                    // short-circuit) goes here.
+                    // TODO(task-3a.6): recovery strategy goes here.
+                }
+                TurnOutcome::Done { summary } => {
+                    // TODO(task-3a.3): verify_completion (VLM check) goes
+                    // here. The current skeleton accepts the agent's
+                    // self-reported completion verbatim.
+                    self.state.completed = true;
+                    self.state.summary = Some(summary.clone());
+                    self.state.terminal_reason = Some(TerminalReason::Completed { summary });
+                    break;
+                }
+                TurnOutcome::Replan { reason } => {
+                    // Replan does not add a step; the next iteration
+                    // re-observes. Record the reason as the observation
+                    // for the next turn so the LLM sees why it was asked
+                    // to replan.
+                    previous_result = Some(format!("replan: {}", reason));
+                }
+            }
+
+            // 7. Append the assistant message + tool result onto the
+            // transcript so the next iteration's LLM call sees the
+            // full turn.
+            append_assistant_and_tool_result(
+                &mut messages,
+                &choice.message,
+                previous_result.as_deref(),
+            );
+        }
+
+        // Post-loop: populate the terminal reason if the loop fell out of
+        // max_steps without completing.
+        if !self.state.completed && self.state.terminal_reason.is_none() {
+            self.state.terminal_reason = Some(TerminalReason::MaxStepsReached {
+                steps_executed: self.state.steps.len(),
+            });
+        }
+
+        // TODO(task-3a.6.5): write the terminal `StepRecord` through the
+        // shared `RunStorage` handle here.
+
+        Ok((self.state, self.cache))
+    }
+}
+
+/// Translate the openai-shaped `Vec<Value>` tool list (produced by
+/// `Mcp::tools_as_openai`) into the `clickweave_mcp::Tool` shape the
+/// prompt-spine builder needs. Keeps the openai format as the source of
+/// truth for dispatch while letting the prompt builder operate on a typed
+/// view.
+fn openai_tools_to_mcp_tool_list(tools: &[Value]) -> Vec<clickweave_mcp::Tool> {
+    tools
+        .iter()
+        .filter_map(|t| {
+            let fun = t.get("function")?;
+            let name = fun.get("name").and_then(Value::as_str)?.to_string();
+            let description = fun
+                .get("description")
+                .and_then(Value::as_str)
+                .map(String::from);
+            let input_schema = fun
+                .get("parameters")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let annotations = fun.get("annotations").cloned();
+            Some(clickweave_mcp::Tool {
+                name,
+                description,
+                input_schema,
+                annotations,
+            })
+        })
+        .collect()
+}
+
+/// Append the assistant's response and its tool result onto the transcript,
+/// mirroring `loop_runner::AgentRunner::append_assistant_message`.
+///
+/// When the assistant returned `tool_calls`, the transcript gets the
+/// assistant message (tool_calls only) plus a matching `tool_result`. When
+/// the assistant returned plain text, only the assistant message is
+/// appended.
+fn append_assistant_and_tool_result(
+    messages: &mut Vec<Message>,
+    assistant: &Message,
+    previous_result: Option<&str>,
+) {
+    if let Some(tool_calls) = &assistant.tool_calls {
+        if let Some(tc) = tool_calls.first() {
+            messages.push(Message::assistant_tool_calls(vec![tc.clone()]));
+            let result_text = previous_result.unwrap_or("ok");
+            messages.push(Message::tool_result(&tc.id, result_text));
+        }
+    } else if let Some(text) = assistant.content_text() {
+        messages.push(Message::assistant(text));
     }
 }
 
