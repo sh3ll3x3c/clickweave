@@ -38,7 +38,12 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// Trait abstracting MCP tool operations, used to enable test stubs.
-pub(crate) trait Mcp: Send + Sync {
+///
+/// Kept `pub` (rather than `pub(crate)`) so `crate::agent::run_agent_workflow`
+/// can accept any `M: Mcp` — the public entry point takes the trait as a
+/// bound so the engine-boundary end-to-end tests (Task 3a.8) can feed it a
+/// `StaticMcp` stub without constructing a real `McpClient` subprocess.
+pub trait Mcp: Send + Sync {
     fn call_tool(
         &self,
         name: &str,

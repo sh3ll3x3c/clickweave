@@ -34,7 +34,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clickweave_llm::{ChatBackend, DynChatBackend};
-use clickweave_mcp::McpClient;
+
+use crate::executor::Mcp;
 
 /// Channels that can be attached to the agent runner for live feedback.
 pub struct AgentChannels {
@@ -74,11 +75,11 @@ pub struct AgentChannels {
 pub type RunStorageHandle = std::sync::Arc<std::sync::Mutex<clickweave_core::storage::RunStorage>>;
 
 #[allow(clippy::too_many_arguments)]
-pub async fn run_agent_workflow<B: ChatBackend>(
+pub async fn run_agent_workflow<B, M>(
     llm: &B,
     config: AgentConfig,
     goal: String,
-    mcp: &McpClient,
+    mcp: &M,
     variant_context: Option<&str>,
     cache: Option<AgentCache>,
     channels: Option<AgentChannels>,
@@ -89,7 +90,11 @@ pub async fn run_agent_workflow<B: ChatBackend>(
     prior_turns: Vec<prior_turns::PriorTurn>,
     verification_artifacts_dir: Option<PathBuf>,
     storage: Option<RunStorageHandle>,
-) -> anyhow::Result<(AgentState, AgentCache)> {
+) -> anyhow::Result<(AgentState, AgentCache)>
+where
+    B: ChatBackend,
+    M: Mcp + ?Sized,
+{
     // Task 3a.1 pivots this wrapper off the legacy `AgentRunner` onto
     // `StateRunner`. The legacy runner stays alive in `loop_runner.rs`
     // (the ~95 legacy integration tests still drive it directly); only
