@@ -539,6 +539,9 @@ impl StateRunner {
         mcp: &M,
     ) -> Vec<clickweave_core::cdp::CdpFindElementMatch> {
         if !mcp.has_tool("cdp_find_elements") {
+            // No CDP surface this turn — clear the sticky URL so the
+            // next-turn state-block mirror does not render a stale page.
+            self.state.current_url = String::new();
             return Vec::new();
         }
         match mcp
@@ -567,12 +570,20 @@ impl StateRunner {
                             ),
                         })
                         .await;
+                        // Parse failure — clear the sticky URL so a later
+                        // turn does not keep rendering the previous page.
+                        self.state.current_url = String::new();
                     }
                 }
             }
-            Ok(_) => {}
+            Ok(_) => {
+                // MCP returned `is_error=true` or a non-Ok result — treat
+                // as "no fresh observation" and drop the sticky URL.
+                self.state.current_url = String::new();
+            }
             Err(e) => {
                 tracing::debug!(error = %e, "state-spine: cdp_find_elements call failed");
+                self.state.current_url = String::new();
             }
         }
         Vec::new()
@@ -2267,16 +2278,16 @@ impl StateRunner {
                         ttl_steps: Some(2),
                     });
                 } else {
-                    // No elements this turn (page empty, CDP unavailable,
-                    // or parse failure) — drop the stale cache so the
-                    // renderer does not print last turn's surface.
+                    // No elements this turn — drop the stale cache so
+                    // the renderer does not print last turn's surface.
                     self.world_model.elements = None;
                 }
                 // `fetch_elements` writes the response `page_url` into
-                // `state.current_url`. Mirror it (plus an elements-derived
-                // fingerprint) into `world_model.cdp_page` so the state
-                // block carries the page URL documented in
-                // `docs/reference/engine/execution.md`.
+                // `state.current_url` on success and clears it on every
+                // miss path (missing tool / parse failure / MCP error /
+                // call failure). Mirror the URL + elements-derived
+                // fingerprint into `world_model.cdp_page` when fresh,
+                // otherwise drop the stale page context entirely.
                 let url = self.state.current_url.clone();
                 if !url.is_empty() {
                     self.world_model.cdp_page = Some(Fresh {
@@ -2288,6 +2299,8 @@ impl StateRunner {
                         source: FreshnessSource::DirectObservation,
                         ttl_steps: Some(2),
                     });
+                } else {
+                    self.world_model.cdp_page = None;
                 }
             }
 
