@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `4425c6c`
+Verified at commit: `64f9cc2`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -141,7 +141,7 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **AgentSlice** (`agentSlice.ts`)
 
-The agent slice owns the live state of the observe-act agent loop. The loop emits `agent://*` events as it runs; the slice folds them into UI state.
+The agent slice owns the live state of the state-spine agent loop. The backend `StateRunner` emits `agent://*` events as it runs; the slice folds them into UI state. `AgentStep` / `AgentCommand` remain the wire shape the slice renders from (for backward compatibility — Spec 3 migrates the UI off them).
 
 - `agentStatus: "idle" | "running" | "complete" | "stopped" | "error"`
 - `agentGoal: string`, `agentSteps: AgentStep[]`, `agentError: string | null`, `currentAgentStep: number`
@@ -149,6 +149,8 @@ The agent slice owns the live state of the observe-act agent loop. The loop emit
 - `completionDisagreement: CompletionDisagreement | null` — populated when the backend emits `agent://completion_disagreement`; holds the screenshot, VLM reasoning, and agent summary surfaced by the assistant panel's disagreement card
 - `agentRunId: string | null` — per-run generation ID used to drop stale events from a prior run
 - actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `addAgentNode`, `addAgentEdge`, `setPendingApproval`, `approveAction`, `rejectAction`, `setCompletionDisagreement`, `confirmDisagreementAsComplete` (invokes `resolve_completion_disagreement` with `"confirm"` — backend writes the durable record and emits `agent://complete`), `cancelDisagreement` (invokes with `"cancel"` — backend emits `agent://stopped { reason: "user_cancelled_disagreement" }`), `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
+
+The new state-spine events (`agent://task_state_changed`, `agent://world_model_changed`, `agent://boundary_record_written`) are emitted by `StateRunner` and carried through to the frontend, but are not yet consumed by this slice — a later task lights up the subgoal-stack / world-model inspector panel. `WorldModelDiff` (payload of `world_model_changed`) is a minimal `{ changed_fields: Vec<String> }` shape — a re-render hint, not a full snapshot.
 
 **AssistantSlice** (`assistantSlice.ts`)
 
@@ -207,11 +209,15 @@ Owns the conversational surface. `messages` is the source of truth for continuat
 - `executor://checks_completed`, `executor://workflow_completed`
 - `executor://supervision_passed`, `executor://supervision_paused`
 - `agent://started`, `agent://step`, `agent://complete`, `agent://completion_disagreement`, `agent://completion_disagreement_resolved`, `agent://stopped`, `agent://error`, `agent://warning`, `agent://node_added`, `agent://edge_added`, `agent://approval_required`, `agent://cdp_connected`, `agent://step_failed`, `agent://sub_action`
+- State-spine additions (payloads carry `run_id` per D17, filtered by `isStaleRunId` alongside all other `agent://*` events):
+  - `agent://task_state_changed` — full `TaskState` snapshot emitted after any turn that applied at least one mutation
+  - `agent://world_model_changed` — emitted once per step after `observe`; payload carries a `WorldModelDiff { changed_fields: string[] }` re-render hint, not the full model
+  - `agent://boundary_record_written` — emitted when the runner persists a `StepRecord`; payload `{ boundary_kind, step_index }` where `boundary_kind` is `"terminal" | "subgoal_completed" | "recovery_succeeded"`
 - `walkthrough://state`, `walkthrough://event`, `walkthrough://draft_ready`, `walkthrough://cdp-setup`
 - `recording-bar://action`
 - `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`
 
-All `agent://*` payloads carry a `run_id` field. Events whose `run_id` does not match the active run are silently dropped so late-arriving events from a previous run cannot leak into the current UI state.
+All `agent://*` payloads carry a `run_id` field. Events whose `run_id` does not match the active run are silently dropped (`isStaleRunId` in `useAgentEvents`) so late-arriving events from a previous run cannot leak into the current UI state. The three state-spine additions above are filtered through the same stale-run gate.
 
 ## Graph Editor (`GraphCanvas`)
 

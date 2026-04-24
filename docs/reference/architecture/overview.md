@@ -1,6 +1,6 @@
 # Architecture Overview (Reference)
 
-Verified at commit: `4425c6c`
+Verified at commit: `64f9cc2`
 
 Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
 
@@ -64,7 +64,7 @@ src-tauri
 | `executor/supervision.rs` | Step verification via VLM + supervision LLM |
 | `executor/verdict.rs` | Inline verification verdicts |
 | `executor/trace.rs` | Trace events, artifacts, run finalization |
-| `agent/` | Agent observe-act loop, prompt building, action cache, transition logic |
+| `agent/` | State-spine agent runner (`StateRunner`), `WorldModel` + `TaskState`, `AgentTurn` / `AgentAction`, action cache, `StepRecord` boundary snapshots, prompt + compaction, transition logic |
 
 See [Workflow Execution](../engine/execution.md).
 
@@ -92,14 +92,23 @@ See [MCP Integration](../mcp/integration.md).
 ```
 UI
   -> Tauri command: run_agent (goal, endpoint config)
-  -> AgentRunner observe-act loop
-     - observe: take snapshot/screenshot via MCP
-     - plan: LLM decides next action
-     - act: execute via MCP tools
-     - record: add node to workflow
-     - evaluate: check goal completion
-  -> emit agent://* events to UI
+  -> run_agent_workflow builds a StateRunner
+     - observe: drain pending InvalidationEvents into WorldModel, refresh stale fields
+     - phase-infer: derive Phase { Exploring | Executing | Recovering } from signals
+     - cache-gate: replay AgentCache only when Phase::Exploring with empty stack / watch slots
+     - render: state block (<world_model> + <task_state>) at top of user turn
+     - decide: one LLM call -> AgentTurn { mutations, action }
+     - apply mutations: TaskStateMutation batch (push/complete subgoal, watch slots, hypotheses)
+     - dispatch: AgentAction::ToolCall via MCP, or AgentDone / AgentReplan
+     - continuity hooks: update WorldModel.last_screenshot / last_native_ax_snapshot
+     - invalidation: queue InvalidationEvents for the next observe
+     - boundary record: write StepRecord at Terminal / SubgoalCompleted / RecoverySucceeded
+     - compact: drop snapshot tool-result messages older than current step
+  -> emit agent://* events (including task_state_changed, world_model_changed,
+     boundary_record_written) to UI
 ```
+
+Backend types: `StateRunner` owns `WorldModel`, `TaskState` (flat subgoal stack + watch slots + harness-inferred `Phase`), and threads `AgentTurn` / `AgentAction` through each step. Boundary snapshots are captured as `StepRecord`s written to `events.jsonl`. `AgentState.steps: Vec<AgentStep>` and `AgentCommand` are preserved as the on-the-wire shape for the existing frontend; Spec 3 migrates the UI off them. See [Workflow Execution](../engine/execution.md).
 
 ### Workflow Execution
 
