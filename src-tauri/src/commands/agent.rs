@@ -522,6 +522,7 @@ pub async fn run_agent(
                 anchor_uuid,
                 prior_turns,
                 verification_artifacts_dir,
+                Some(storage.clone()),
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(

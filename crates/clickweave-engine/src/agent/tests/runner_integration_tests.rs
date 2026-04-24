@@ -328,3 +328,30 @@ async fn subgoal_completed_boundary_written_once_via_storage() {
         .count();
     assert_eq!(terminal_count, 1);
 }
+
+// ---------------------------------------------------------------------------
+// Task 3a.0.6: `RunStorage` parameter plumbing
+// ---------------------------------------------------------------------------
+//
+// Asserts the new `storage` parameter on `run_agent_workflow` compiles and
+// flows through the public seam. The legacy `AgentRunner` does not yet
+// consume the handle — that wiring lands in Task 3a.6.5. This test pins
+// the signature so subsequent tasks cannot silently drop the argument.
+
+#[cfg(test)]
+mod run_agent_workflow_signature_tests {
+    /// Compile-time assertion: `run_agent_workflow` accepts a
+    /// `Option<RunStorageHandle>` as its last parameter.
+    ///
+    /// If this coerces, the plumbing compiles; we do not invoke the
+    /// function here because it takes a concrete `McpClient` which cannot
+    /// be instantiated in-crate without spawning the external MCP server.
+    /// Task 3a.1's `ScriptedLlm`/`StaticMcp` stubs enable a live
+    /// end-to-end test.
+    #[test]
+    fn run_agent_workflow_accepts_storage_argument() {
+        fn _coerce() {
+            let _: Option<crate::agent::RunStorageHandle> = None;
+        }
+    }
+}

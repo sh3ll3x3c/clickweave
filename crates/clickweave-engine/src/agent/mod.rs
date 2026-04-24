@@ -27,6 +27,7 @@ pub use approval::ApprovalGate;
 pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, ToolAnnotations};
 pub use prior_turns::PriorTurn;
 pub use prompt::truncate_summary;
+pub use runner::{AgentAction, AgentTurn, StateRunner, ToolExecutor, TurnOutcome};
 pub use types::*;
 
 use std::path::PathBuf;
@@ -63,6 +64,14 @@ pub struct AgentChannels {
 /// `agent_done` VLM check — regardless of verdict — so every completion
 /// check leaves forensic evidence on disk.
 /// Returns both the final agent state and the (possibly updated) cache.
+/// Shared `RunStorage` handle threaded from the Tauri command into the
+/// engine. Phase 3a adds this as an explicit parameter so the new
+/// `StateRunner` can write boundary `StepRecord`s through the same
+/// storage the Tauri layer already owns (see Task 3a.6.5). The handle is
+/// optional: when `None`, the runner runs storage-less (matches existing
+/// integration tests).
+pub type RunStorageHandle = std::sync::Arc<std::sync::Mutex<clickweave_core::storage::RunStorage>>;
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agent_workflow<B: ChatBackend>(
     llm: &B,
@@ -78,7 +87,13 @@ pub async fn run_agent_workflow<B: ChatBackend>(
     anchor_node_id: Option<uuid::Uuid>,
     prior_turns: Vec<prior_turns::PriorTurn>,
     verification_artifacts_dir: Option<PathBuf>,
+    _storage: Option<RunStorageHandle>,
 ) -> anyhow::Result<(AgentState, AgentCache)> {
+    // Phase 3a: `_storage` is plumbed through now so the Tauri call site
+    // can hand its `Arc<Mutex<RunStorage>>` guard into the engine. It is
+    // consumed by `StateRunner::with_storage(...)` when the new top-level
+    // loop lands in Task 3a.1+. The legacy `AgentRunner` does not read it
+    // — `run_agent_workflow` continues to return `(AgentState, AgentCache)`.
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
     let mut runner = match cache {
