@@ -210,7 +210,6 @@ impl Mcp for MockMcp {
 
 mod conversational_extend;
 mod runner_integration_tests;
-mod stub;
 
 #[tokio::test]
 async fn agent_executes_single_click_and_completes() {

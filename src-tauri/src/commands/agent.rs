@@ -293,6 +293,145 @@ async fn await_disagreement_resolution(
     })
 }
 
+// ── Event forwarding seam ───────────────────────────────────────
+
+/// Forward one `AgentEvent` to its paired `agent://*` Tauri event.
+///
+/// The persistence side of the forwarder (appending every event to
+/// `events.jsonl`) stays at the call site so `RunStorage` lock ownership
+/// is not smeared across this helper. `GoalComplete` is deliberately a
+/// no-op: the terminal `agent://complete` is emitted from the main
+/// run-agent task after the engine returns, and the
+/// `CompletionDisagreementResolved` variant is emitted by the Tauri
+/// layer itself (see `await_disagreement_resolution`), so neither
+/// crosses this forwarder at runtime.
+///
+/// Extracted as a standalone function so the rubric-10 smoke test in
+/// `run_agent_smoke_tests` can drive a scripted `AgentEvent` stream
+/// against a mock `AppHandle` and assert the full (variant → topic)
+/// mapping, locking the forwarder contract before Phase 3b deletes
+/// `loop_runner.rs`.
+pub(crate) fn forward_agent_event<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    run_id: &str,
+    event: &AgentEvent,
+) {
+    match event {
+        AgentEvent::StepCompleted {
+            step_index,
+            tool_name,
+            summary,
+        } => {
+            let _ = app.emit(
+                "agent://step",
+                AgentStepPayload {
+                    run_id: run_id.to_string(),
+                    summary: summary.clone(),
+                    tool_name: tool_name.clone(),
+                    step_number: *step_index,
+                },
+            );
+        }
+        AgentEvent::NodeAdded { node } => {
+            let _ = app.emit(
+                "agent://node_added",
+                serde_json::json!({ "run_id": run_id, "node": node }),
+            );
+        }
+        AgentEvent::EdgeAdded { edge } => {
+            let _ = app.emit(
+                "agent://edge_added",
+                serde_json::json!({ "run_id": run_id, "edge": edge }),
+            );
+        }
+        AgentEvent::GoalComplete { .. } => {
+            // Terminal completion is emitted as agent://complete by the
+            // main task after the agent loop finishes. This in-band
+            // event is only used for durable tracing.
+        }
+        AgentEvent::Error { message } => {
+            let _ = app.emit(
+                "agent://error",
+                serde_json::json!({ "run_id": run_id, "message": message }),
+            );
+        }
+        AgentEvent::Warning { message } => {
+            let _ = app.emit(
+                "agent://warning",
+                serde_json::json!({ "run_id": run_id, "message": message }),
+            );
+        }
+        AgentEvent::CdpConnected { app_name, port } => {
+            let _ = app.emit(
+                "agent://cdp_connected",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "app_name": app_name,
+                    "port": port,
+                }),
+            );
+        }
+        AgentEvent::StepFailed {
+            step_index,
+            tool_name,
+            error,
+        } => {
+            let _ = app.emit(
+                "agent://step_failed",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "step_number": step_index,
+                    "tool_name": tool_name,
+                    "error": error,
+                }),
+            );
+        }
+        AgentEvent::SubAction { tool_name, summary } => {
+            let _ = app.emit(
+                "agent://sub_action",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "tool_name": tool_name,
+                    "summary": summary,
+                }),
+            );
+        }
+        AgentEvent::CompletionDisagreement {
+            screenshot_b64,
+            vlm_reasoning,
+            agent_summary,
+        } => {
+            let _ = app.emit(
+                "agent://completion_disagreement",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "screenshot_b64": screenshot_b64,
+                    "vlm_reasoning": vlm_reasoning,
+                    "agent_summary": agent_summary,
+                }),
+            );
+        }
+        AgentEvent::ConsecutiveDestructiveCapHit {
+            recent_tool_names,
+            cap,
+        } => {
+            let _ = app.emit(
+                "agent://consecutive_destructive_cap_hit",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "recent_tool_names": recent_tool_names,
+                    "cap": cap,
+                }),
+            );
+        }
+        // `CompletionDisagreementResolved` is emitted by the Tauri layer
+        // (not the engine) so the agent loop never sends it through this
+        // channel. Persisting it is handled in
+        // `await_disagreement_resolution`.
+        AgentEvent::CompletionDisagreementResolved { .. } => {}
+    }
+}
+
 // ── Commands ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -682,118 +821,11 @@ pub async fn run_agent(
                         Some(event) => {
                             // Durable trace: persist every event to events.jsonl
                             let _ = event_storage.lock().unwrap().append_agent_event(&event);
-
-                            match &event {
-                                AgentEvent::StepCompleted {
-                                    step_index,
-                                    tool_name,
-                                    summary,
-                                } => {
-                                    let _ = event_emit_handle.emit(
-                                        "agent://step",
-                                        AgentStepPayload {
-                                            run_id: event_run_id.clone(),
-                                            summary: summary.clone(),
-                                            tool_name: tool_name.clone(),
-                                            step_number: *step_index,
-                                        },
-                                    );
-                                }
-                                AgentEvent::NodeAdded { node } => {
-                                    let _ = event_emit_handle.emit("agent://node_added",
-                                        serde_json::json!({ "run_id": event_run_id, "node": node }));
-                                }
-                                AgentEvent::EdgeAdded { edge } => {
-                                    let _ = event_emit_handle.emit("agent://edge_added",
-                                        serde_json::json!({ "run_id": event_run_id, "edge": edge }));
-                                }
-                                AgentEvent::GoalComplete { .. } => {
-                                    // Terminal completion is emitted as agent://complete
-                                    // by the main task after the agent loop finishes.
-                                    // This in-band event is only used for durable tracing.
-                                }
-                                AgentEvent::Error { message } => {
-                                    let _ = event_emit_handle.emit(
-                                        "agent://error",
-                                        serde_json::json!({ "run_id": event_run_id, "message": message }),
-                                    );
-                                }
-                                AgentEvent::Warning { message } => {
-                                    let _ = event_emit_handle.emit(
-                                        "agent://warning",
-                                        serde_json::json!({ "run_id": event_run_id, "message": message }),
-                                    );
-                                }
-                                AgentEvent::CdpConnected { app_name, port } => {
-                                    let _ = event_emit_handle.emit(
-                                        "agent://cdp_connected",
-                                        serde_json::json!({
-                                            "run_id": event_run_id,
-                                            "app_name": app_name,
-                                            "port": port,
-                                        }),
-                                    );
-                                }
-                                AgentEvent::StepFailed {
-                                    step_index,
-                                    tool_name,
-                                    error,
-                                } => {
-                                    let _ = event_emit_handle.emit(
-                                        "agent://step_failed",
-                                        serde_json::json!({
-                                            "run_id": event_run_id,
-                                            "step_number": step_index,
-                                            "tool_name": tool_name,
-                                            "error": error,
-                                        }),
-                                    );
-                                }
-                                AgentEvent::SubAction { tool_name, summary } => {
-                                    let _ = event_emit_handle.emit(
-                                        "agent://sub_action",
-                                        serde_json::json!({
-                                            "run_id": event_run_id,
-                                            "tool_name": tool_name,
-                                            "summary": summary,
-                                        }),
-                                    );
-                                }
-                                AgentEvent::CompletionDisagreement {
-                                    screenshot_b64,
-                                    vlm_reasoning,
-                                    agent_summary,
-                                } => {
-                                    let _ = event_emit_handle.emit(
-                                        "agent://completion_disagreement",
-                                        serde_json::json!({
-                                            "run_id": event_run_id,
-                                            "screenshot_b64": screenshot_b64,
-                                            "vlm_reasoning": vlm_reasoning,
-                                            "agent_summary": agent_summary,
-                                        }),
-                                    );
-                                }
-                                AgentEvent::ConsecutiveDestructiveCapHit {
-                                    recent_tool_names,
-                                    cap,
-                                } => {
-                                    let _ = event_emit_handle.emit(
-                                        "agent://consecutive_destructive_cap_hit",
-                                        serde_json::json!({
-                                            "run_id": event_run_id,
-                                            "recent_tool_names": recent_tool_names,
-                                            "cap": cap,
-                                        }),
-                                    );
-                                }
-                                // `CompletionDisagreementResolved` is
-                                // emitted by the Tauri layer (not the
-                                // engine), so the agent loop never sends
-                                // it through this channel. Persisting it
-                                // is handled in `await_disagreement_resolution`.
-                                AgentEvent::CompletionDisagreementResolved { .. } => {}
-                            }
+                            // Fan out to the matching `agent://*` Tauri topic.
+                            // See `forward_agent_event` for the full variant
+                            // mapping — extracted so the run-agent smoke test
+                            // can drive it against a mock `AppHandle`.
+                            forward_agent_event(&event_emit_handle, &event_run_id, &event);
                         }
                         None => break,
                     }
@@ -1157,5 +1189,323 @@ mod tests {
             "receiver must still see the operator's Confirm — force_stop \
              had no pending sender to overwrite it with Cancel"
         );
+    }
+}
+
+#[cfg(test)]
+mod run_agent_smoke_tests {
+    //! Rubric-10 gate for Phase 3b cutover (D-PR2 / Task 3b.0).
+    //!
+    //! This test covers the user-visible Tauri seam of the agent run:
+    //! the engine produces `AgentEvent`s, the Tauri forwarder persists
+    //! every event to `events.jsonl` and fans it out to a matching
+    //! `agent://*` topic. Because the actual `run_agent` command
+    //! constructs a real `LlmClient` and spawns an MCP subprocess, the
+    //! scripted smoke test drives the backend-of-Tauri surface directly:
+    //!
+    //! - calls `clickweave_engine::agent::run_agent_workflow` with the
+    //!   shared `ScriptedLlm` + `StaticMcp` stubs (mirrors what
+    //!   `run_agent` would do after MCP bring-up),
+    //! - drains the engine event channel through a channel-pump loop
+    //!   that invokes the exact same `forward_agent_event` helper and
+    //!   `RunStorage::append_agent_event` call the production spawn
+    //!   uses,
+    //! - captures `agent://*` emits via `tauri::test::mock_app()` +
+    //!   per-topic `listen_any` handlers,
+    //! - asserts emit count matches `AgentEvent` line count in
+    //!   `events.jsonl` (filtered to exclude `StepRecord` boundary
+    //!   writes, which live in the same file per Task 3a.6.5), and
+    //! - asserts the legacy `AgentState` wire-shape
+    //!   (`state.steps.len()` matches the scripted tool-call count and
+    //!   `state.terminal_reason` is `Completed`).
+    //!
+    //! Any future event-forwarding regression — a missing match arm on
+    //! a new `AgentEvent` variant, a dropped persistence call, a
+    //! divergent emit topic — fails this test.
+
+    use super::*;
+    use clickweave_engine::agent::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use clickweave_engine::agent::{AgentConfig, run_agent_workflow};
+    use std::sync::{Arc, Mutex};
+    use tauri::Listener;
+
+    /// Every `agent://*` topic `forward_agent_event` can emit. Listed
+    /// explicitly so the test panics loud if a new `AgentEvent` variant
+    /// is added without a matching topic — keep in sync with
+    /// `forward_agent_event`.
+    const AGENT_TOPICS: &[&str] = &[
+        "agent://step",
+        "agent://node_added",
+        "agent://edge_added",
+        "agent://error",
+        "agent://warning",
+        "agent://cdp_connected",
+        "agent://step_failed",
+        "agent://sub_action",
+        "agent://completion_disagreement",
+        "agent://consecutive_destructive_cap_hit",
+    ];
+
+    /// Rubric-10 gate (D-PR2): every `AgentEvent` the engine emits
+    /// must (1) reach `events.jsonl` and (2) route to exactly one
+    /// `agent://<topic>` via `forward_agent_event`. The scripted
+    /// scenario runs two tool calls and terminates on `agent_done`,
+    /// which produces a known-non-zero event stream (at minimum
+    /// `StepCompleted`; typically also `NodeAdded` / `EdgeAdded` /
+    /// `GoalComplete`). The test does not pin an exact event count —
+    /// it asserts emit and persistence counts are equal and both
+    /// non-empty, which catches any future missing-match-arm
+    /// regression.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_agent_emits_full_event_stream_and_persists_records() {
+        // Guardrail: any future deadlock (runner hang, forwarder pump
+        // never draining, Tauri listener never firing) must produce a
+        // loud timeout rather than wedging CI. 60s is generous for a
+        // fully stubbed scenario — the engine-side happy-path
+        // equivalent finishes in ~50 ms.
+        tokio::time::timeout(std::time::Duration::from_secs(60), run_smoke_test_body())
+            .await
+            .expect("smoke test must finish within 60s (deadlock / hang regression)");
+    }
+
+    async fn run_smoke_test_body() {
+        // ── Arrange: mock Tauri AppHandle + per-topic capture ──────
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        // `listen_any` subscribes on a specific topic; collecting to
+        // a shared Vec gives us a post-run view of every forwarded
+        // event. The GoalComplete + CompletionDisagreementResolved
+        // variants intentionally do not show up here — those are
+        // emitted by the run-agent task itself, not by this
+        // forwarder.
+        let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        for topic in AGENT_TOPICS {
+            let topic = topic.to_string();
+            let captured = Arc::clone(&captured);
+            handle.listen_any(topic.clone(), move |evt| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push((topic.clone(), evt.payload().to_string()));
+            });
+        }
+
+        // ── Arrange: scripted LLM + MCP stubs ──────────────────────
+        // Two tool calls then agent_done. `cdp_find_elements` returns
+        // an empty matches set so no cache replay interferes with the
+        // step count (mirrors the stable fixture in the engine-side
+        // end-to-end happy-path test).
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool(
+                "cdp_find_elements",
+                serde_json::json!({"query": "", "max_results": 300}),
+            ),
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool(
+                "agent_done",
+                serde_json::json!({"summary": "rubric-10 smoke test"}),
+            ),
+        ]);
+        let mcp = StaticMcp::with_tools(&["cdp_find_elements", "cdp_click"])
+            .with_reply(
+                "cdp_find_elements",
+                r#"{"page_url":"about:blank","source":"cdp","matches":[]}"#,
+            )
+            .with_reply("cdp_click", "clicked");
+
+        // ── Arrange: real RunStorage rooted at a tempdir ───────────
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflow_name = "rubric-10-smoke";
+        let mut storage_inner =
+            clickweave_core::storage::RunStorage::new(tmp.path(), workflow_name);
+        let exec_dir = storage_inner.begin_execution().expect("begin_execution");
+        let events_path = tmp
+            .path()
+            .join(".clickweave")
+            .join("runs")
+            .join(workflow_name)
+            .join(&exec_dir)
+            .join("events.jsonl");
+        let storage = Arc::new(Mutex::new(storage_inner));
+
+        // ── Arrange: engine event channel + Tauri-forwarder pump ───
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+        let (approval_tx, _approval_rx) =
+            tokio::sync::mpsc::channel::<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>(1);
+        let channels = AgentChannels {
+            event_tx,
+            approval_tx,
+        };
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let run_uuid: uuid::Uuid = run_id.parse().unwrap();
+
+        // Forwarder pump: mirrors the production agent.rs body —
+        // persist to `events.jsonl`, then call
+        // `forward_agent_event`. Count forwarded events here so the
+        // assertion does not depend on listener-dispatch latency.
+        let forwarder_handle = handle.clone();
+        let forwarder_run_id = run_id.clone();
+        let forwarder_storage = Arc::clone(&storage);
+        let forwarded: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let forwarded_for_task = Arc::clone(&forwarded);
+        let forwarder_task = tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                let _ = forwarder_storage.lock().unwrap().append_agent_event(&event);
+                forward_agent_event(&forwarder_handle, &forwarder_run_id, &event);
+                forwarded_for_task.lock().unwrap().push(event);
+            }
+        });
+
+        // ── Act: drive the engine ──────────────────────────────────
+        let (state, _cache) = run_agent_workflow(
+            &llm,
+            AgentConfig::default(),
+            "rubric-10 gate: forwarder + persistence contract".to_string(),
+            &mcp,
+            None,
+            None,
+            Some(channels),
+            None,
+            // Permission policy: `allow_all` so scripted destructive-ish
+            // tool calls (cdp_click) don't block waiting on an approval
+            // oneshot that nothing in this test answers. The production
+            // agent.rs threads the operator's policy from the UI; this
+            // smoke test only cares about event forwarding, so the
+            // simplest shape that bypasses the approval gate is enough.
+            Some(PermissionPolicy {
+                allow_all: true,
+                ..PermissionPolicy::default()
+            }),
+            run_uuid,
+            None,
+            Vec::new(),
+            None,
+            Some(Arc::clone(&storage)),
+        )
+        .await
+        .expect("run_agent_workflow ok");
+
+        // Wait for the forwarder pump to drain (`event_tx` was dropped
+        // when the workflow returned, so the recv loop exits cleanly).
+        forwarder_task.await.expect("forwarder joined");
+
+        // Give the Tauri listener task a scheduling window so the
+        // per-topic capture vector observes every emit.
+        tokio::task::yield_now().await;
+
+        // ── Assert: legacy AgentState wire-shape ───────────────────
+        assert_eq!(
+            state.steps.len(),
+            2,
+            "scripted tool-call count (2) must match state.steps.len(); got {:?}",
+            state.steps,
+        );
+        assert!(
+            matches!(
+                state.terminal_reason,
+                Some(TerminalReason::Completed { ref summary })
+                    if summary == "rubric-10 smoke test"
+            ),
+            "terminal_reason must be Completed with the agent_done summary, got {:?}",
+            state.terminal_reason,
+        );
+        assert!(
+            state.completed,
+            "state.completed must be true after agent_done terminal",
+        );
+
+        // ── Assert: forwarder touched every engine event ───────────
+        let forwarded_events = forwarded.lock().unwrap();
+        let forwarded_count = forwarded_events.len();
+        assert!(
+            forwarded_count > 0,
+            "the forwarder must receive at least one AgentEvent from the engine",
+        );
+
+        // ── Assert: events.jsonl holds every forwarded event ───────
+        // `events.jsonl` also contains StepRecord boundary writes
+        // (Task 3a.6.5) — filter those out via their `boundary_kind`
+        // discriminator so the count comparison is apples-to-apples.
+        let trace_raw = std::fs::read_to_string(&events_path)
+            .unwrap_or_else(|e| panic!("read events.jsonl at {:?}: {}", events_path, e));
+        let trace_json: Vec<serde_json::Value> = trace_raw
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).expect("events.jsonl line is valid JSON"))
+            .collect();
+        let agent_event_lines: Vec<&serde_json::Value> = trace_json
+            .iter()
+            .filter(|v| v.get("boundary_kind").is_none())
+            .collect();
+        assert_eq!(
+            agent_event_lines.len(),
+            forwarded_count,
+            "events.jsonl AgentEvent line count ({}) must equal forwarded-event \
+             count ({}); trace_raw={}",
+            agent_event_lines.len(),
+            forwarded_count,
+            trace_raw,
+        );
+
+        // ── Assert: every forwarded event reached `agent://*` ──────
+        // `GoalComplete` and `CompletionDisagreementResolved` are the
+        // two variants `forward_agent_event` deliberately swallows
+        // (terminal emission / Tauri-only origin), so subtract those
+        // from the expected capture count. Every other forwarded
+        // variant must produce exactly one `agent://<topic>` payload.
+        let forwarder_silenced = forwarded_events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    AgentEvent::GoalComplete { .. }
+                        | AgentEvent::CompletionDisagreementResolved { .. }
+                )
+            })
+            .count();
+        let expected_emits = forwarded_count - forwarder_silenced;
+        let captured_events = captured.lock().unwrap();
+        assert_eq!(
+            captured_events.len(),
+            expected_emits,
+            "every forwarded AgentEvent (minus GoalComplete / \
+             CompletionDisagreementResolved) must produce exactly one \
+             `agent://<topic>` emission — forwarded={}, silenced={}, \
+             captured={:?}",
+            forwarded_count,
+            forwarder_silenced,
+            captured_events,
+        );
+
+        // ── Assert: the run emitted a concrete `agent://step` ──────
+        // A successful scripted scenario must pass through at least
+        // one `StepCompleted` — that's the canonical user-visible
+        // event the UI renders per step.
+        assert!(
+            captured_events
+                .iter()
+                .any(|(topic, _)| topic == "agent://step"),
+            "at least one `agent://step` emission expected; captured={:?}",
+            captured_events,
+        );
+
+        // Sanity: every captured event payload carries the run_id we
+        // seeded. This pins the `event_run_id.clone()` pass-through
+        // behaviour in `forward_agent_event` — a regression there
+        // would silently strip the id from frontend-visible payloads.
+        for (topic, payload) in captured_events.iter() {
+            let parsed: serde_json::Value = serde_json::from_str(payload)
+                .unwrap_or_else(|e| panic!("payload on {} is valid JSON: {}", topic, e));
+            assert_eq!(
+                parsed.get("run_id").and_then(|v| v.as_str()),
+                Some(run_id.as_str()),
+                "every `agent://*` payload must carry run_id={}; topic={}, payload={}",
+                run_id,
+                topic,
+                payload,
+            );
+        }
     }
 }

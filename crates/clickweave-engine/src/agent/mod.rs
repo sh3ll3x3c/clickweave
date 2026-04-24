@@ -140,5 +140,13 @@ where
         .await
 }
 
+/// Shared test doubles (`ScriptedLlm`, `StaticMcp`, `NullMcp`, `YesVlm`,
+/// `NoVlm`, `llm_reply_tool`, …). Gated on `cfg(test)` for this crate's
+/// own tests and on the `test-stubs` feature for downstream
+/// `[dev-dependencies]` consumers (see `clickweave-tauri`'s run-agent
+/// smoke test).
+#[cfg(any(test, feature = "test-stubs"))]
+pub mod test_stubs;
+
 #[cfg(test)]
 mod tests;

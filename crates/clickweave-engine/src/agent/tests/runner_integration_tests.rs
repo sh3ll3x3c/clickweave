@@ -374,7 +374,7 @@ mod run_agent_workflow_signature_tests {
 
 #[cfg(test)]
 mod top_level_loop_tests {
-    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::StateRunner;
     use crate::agent::types::{AgentConfig, TerminalReason};
     use crate::executor::Mcp;
@@ -481,7 +481,7 @@ mod top_level_loop_tests {
         // falls back to "ok". Simulate a tool error by having the stub
         // return a reply through has_tool=false path — the McpToolExecutor
         // surfaces the bail! as an error body.
-        use super::super::stub::NullMcp;
+        use super::super::super::test_stubs::NullMcp;
         let llm = ScriptedLlm::new(vec![
             llm_reply_tool("cdp_click", serde_json::json!({"uid": "d1"})),
             llm_reply_tool("agent_done", serde_json::json!({"summary": "stop"})),
@@ -564,7 +564,7 @@ mod top_level_loop_tests {
 
 #[cfg(test)]
 mod cache_replay_tests {
-    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::StateRunner;
     use crate::agent::types::{
         AgentCache, AgentCommand, AgentConfig, ApprovalRequest, CachedDecision, StepOutcome,
@@ -1281,7 +1281,7 @@ mod cache_replay_tests {
 //   4. Approval Unavailable → ApprovalUnavailable terminal
 //   5. Artifact persistence (both YES + NO verdicts)
 //
-// All tests use stubs from `agent/tests/stub.rs` — no network calls, no
+// All tests use stubs from `agent/test_stubs.rs` — no network calls, no
 // sleeps, no real backends.
 
 #[cfg(test)]
@@ -1292,7 +1292,7 @@ mod verify_and_approval_tests {
     use clickweave_llm::DynChatBackend;
     use tokio::sync::{mpsc, oneshot};
 
-    use super::super::stub::{NoVlm, ScriptedLlm, StaticMcp, YesVlm, llm_reply_tool};
+    use super::super::super::test_stubs::{NoVlm, ScriptedLlm, StaticMcp, YesVlm, llm_reply_tool};
     use crate::agent::runner::StateRunner;
     use crate::agent::types::{
         AgentConfig, AgentEvent, ApprovalRequest, StepOutcome, TerminalReason,
@@ -1669,7 +1669,7 @@ mod verify_and_approval_tests {
 
 #[cfg(test)]
 mod loop_and_cap_tests {
-    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::StateRunner;
     use crate::agent::types::{AgentConfig, AgentEvent, TerminalReason};
     use crate::executor::Mcp;
@@ -2031,7 +2031,7 @@ mod loop_and_cap_tests {
 
 #[cfg(test)]
 mod workflow_graph_tests {
-    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::StateRunner;
     use crate::agent::types::{
         AgentCache, AgentConfig, AgentEvent, CachedDecision, TerminalReason,
@@ -2420,7 +2420,7 @@ mod workflow_graph_tests {
 
 #[cfg(test)]
 mod cdp_and_focus_window_tests {
-    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::{FocusSkipReason, StateRunner};
     use crate::agent::types::{AgentConfig, AgentEvent, TerminalReason};
     use crate::executor::Mcp;
@@ -2832,7 +2832,7 @@ mod cdp_and_focus_window_tests {
 
 #[cfg(test)]
 mod boundary_persistence_tests {
-    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::StateRunner;
     use crate::agent::step_record::BoundaryKind;
     use crate::agent::types::AgentConfig;
@@ -3217,7 +3217,7 @@ mod boundary_persistence_tests {
 
 #[cfg(test)]
 mod e2e_run_agent_workflow_tests {
-    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::permissions::{PermissionAction, PermissionPolicy, PermissionRule};
     use crate::agent::types::{AgentCommand, AgentConfig, StepOutcome, TerminalReason};
     use crate::agent::{AgentChannels, run_agent_workflow};

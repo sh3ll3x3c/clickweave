@@ -417,6 +417,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-store",
  "tauri-specta",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

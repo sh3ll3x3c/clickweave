@@ -17,8 +17,14 @@
 //! The helper `llm_reply_tool(tool_name, arguments)` builds a `ChatResponse`
 //! holding a single `assistant_tool_calls` message — matching what
 //! `LlmClient` returns in real operation.
+//!
+//! This module also backs the `test-stubs` crate feature: downstream
+//! crates (notably `clickweave-tauri` dev-dependencies) reach the same
+//! fixtures via `clickweave_engine::agent::test_stubs`. Enabling the
+//! feature from a downstream `[dev-dependencies]` entry is enough; the
+//! production surface of `clickweave-engine` is untouched.
 
-#![allow(dead_code)] // Consumed piecemeal across Tasks 3a.1–3a.8.
+#![allow(dead_code)] // Consumed piecemeal across Tasks 3a.1–3a.8 + downstream test-stubs feature consumers.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
