@@ -1918,7 +1918,7 @@ impl StateRunner {
                 self.emit_event(AgentEvent::StepCompleted {
                     step_index,
                     tool_name: cached_tool.clone(),
-                    summary: crate::agent::prompt_spine::truncate_summary(&result_text, 120),
+                    summary: crate::agent::prompt::truncate_summary(&result_text, 120),
                 })
                 .await;
 
@@ -2114,9 +2114,9 @@ impl StateRunner {
         B: ChatBackend + ?Sized,
         M: Mcp + ?Sized,
     {
-        use crate::agent::context_spine::{CompactBudget, compact};
+        use crate::agent::context::{CompactBudget, compact};
         use crate::agent::prior_turns::build_goal_with_prior_turns;
-        use crate::agent::prompt_spine::{build_system_prompt, build_user_turn_message};
+        use crate::agent::prompt::{build_system_prompt, build_user_turn_message};
 
         // Reset the visible state tuple to match the freshly-provided
         // workflow. `AgentState::new(workflow)` wipes steps/terminal_reason
@@ -2292,7 +2292,7 @@ impl StateRunner {
                 self.emit_event(AgentEvent::StepCompleted {
                     step_index: step_idx_for_event,
                     tool_name: "focus_window".to_string(),
-                    summary: crate::agent::prompt_spine::truncate_summary(&skip_body, 120),
+                    summary: crate::agent::prompt::truncate_summary(&skip_body, 120),
                 })
                 .await;
                 append_assistant_and_tool_result(
@@ -2474,7 +2474,7 @@ impl StateRunner {
                     self.emit_event(AgentEvent::StepCompleted {
                         step_index: step_idx_for_event,
                         tool_name: tool_name.clone(),
-                        summary: crate::agent::prompt_spine::truncate_summary(&tool_body, 120),
+                        summary: crate::agent::prompt::truncate_summary(&tool_body, 120),
                     })
                     .await;
                     // Destructive-cap accounting on the live path. Mirrors

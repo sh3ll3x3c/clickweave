@@ -2,13 +2,13 @@ mod approval;
 mod cache;
 mod completion_check;
 mod context;
-mod context_spine;
-mod loop_runner;
+// `mod loop_runner;` is gone: the legacy runner was orphaned in Phase 3b
+// Task 3.2 and the file itself is removed in Task 3.3. Keeping it on disk
+// as an unreferenced orphan for one commit is fine; the `rm` follows.
 pub mod permissions;
 mod phase;
 pub mod prior_turns;
 mod prompt;
-mod prompt_spine;
 mod recovery;
 mod render;
 mod runner;
@@ -18,11 +18,10 @@ mod transition;
 mod types;
 mod world_model;
 
-pub use loop_runner::AgentRunner;
 // `ApprovalGate` lives in `approval` so the state-spine runner can own it
-// without a cyclic dep on `loop_runner`. Re-exported under the same path
-// so existing call sites keep working until Phase 3b deletes the legacy
-// runner.
+// without a cyclic dep on the legacy `loop_runner`. Phase 3b deletes the
+// legacy runner; this re-export keeps external callers pointed at a stable
+// path.
 pub use approval::ApprovalGate;
 pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, ToolAnnotations};
 pub use prior_turns::PriorTurn;

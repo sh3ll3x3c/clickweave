@@ -1,11 +1,20 @@
-// Task 3a.1: legacy context helpers stay live through `AgentRunner` in the
-// legacy integration tests; Task 3a.4 (loop detection / recovery) and
-// Task 3a.6 (CDP auto-connect) will consume them via `StateRunner::run`.
-// Mute lib-build dead_code until then.
-#![allow(dead_code)]
+//! Transcript compaction for the state-spine runner.
+//!
+//! Rules (D12):
+//! - `messages[0]` (system prompt) — never compacted.
+//! - `messages[1]` (goal, with prior_turns + variant context inlined) — never compacted.
+//! - Last `recent_n` assistant/tool pairs — preserved verbatim.
+//! - Beyond `recent_n` — collapsed to a brief harness-authored line.
+//! - Snapshot tool-result messages older than the current step are dropped.
+//!
+//! Continuity data lives in `WorldModel`; the transcript no longer carries it.
+//!
+//! Phase 2b: this module is dormant — nothing in the live runner imports it.
+//! Wiring lands in Phase 3 (cutover), at which point the old `context.rs` is
+//! deleted and this file is renamed `context.rs`.
 
-use super::prompt::summarize_steps;
-use super::types::AgentStep;
+#![allow(dead_code)] // Phase 2b: module is dormant; live consumers land in Phase 3 cutover.
+
 use clickweave_llm::{Content, Message, Role};
 use serde_json::Value;
 
@@ -73,6 +82,11 @@ pub(crate) fn estimate_tokens(text: &str) -> usize {
 }
 
 /// Estimate the total token count across a list of messages.
+///
+/// Ported from the legacy `context.rs` so callers outside the state-spine
+/// compaction pipeline (the Phase 3a capability-gap test and any future
+/// loop-detection / recovery code in `runner.rs`) can still reason about
+/// transcript token pressure.
 pub fn estimate_messages_tokens(messages: &[Message]) -> usize {
     messages
         .iter()
@@ -112,34 +126,13 @@ fn json_value_len(value: &Value) -> usize {
 /// Collapse snapshot-producing tool-result payloads that have been superseded
 /// by a more recent snapshot-family call.
 ///
-/// Each tool listed in [`SNAPSHOT_PRODUCING_TOOLS`] embeds a full page view
-/// in its result. The whole list is treated as a single **snapshot family**:
-/// once any family member captures fresher state (e.g. the agent switches
-/// from a `cdp_take_dom_snapshot` on one page to a `take_ax_snapshot` on a
-/// native window), every earlier family result is stale for planning
-/// purposes and can be collapsed. Without this family-wide supersession,
-/// switching tools between workflow phases leaves one full-size snapshot per
-/// tool name alive in history — enough to exhaust the context window on the
-/// second or third phase of a multi-app run.
-///
-/// Only the single most recent snapshot-family result keeps its full body.
-/// All earlier family results are rewritten to a short placeholder. The
-/// `tool_call_id` is preserved so the OpenAI tool-call linkage stays valid —
-/// stripping it would produce an orphan `tool` message that some providers
-/// reject. Tool-call arguments (on the assistant side) are untouched; they
-/// are tiny.
-///
-/// Returns `None` when no messages would change so callers can cheaply skip
-/// the log line and the copy in the common case.
+/// Ported from the legacy `context.rs`. The state-spine runner's primary
+/// `compact` pipeline already drops stale snapshot bodies via the
+/// recent-N / snapshot-family rules above, but this helper stays reachable
+/// for the capability-gap test in `tests/mod.rs` and for any future
+/// loop-detection / recovery code that wants an in-place supersession pass
+/// without running the full compaction.
 pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message>> {
-    // Find the single latest tool-result index across the whole snapshot
-    // family. Treating the list as one family (rather than keying by tool
-    // name) ensures that when the agent switches tools — e.g. DOM snapshot
-    // on a web page, then an AX snapshot on a native app — the older
-    // snapshot still collapses. Previously each tool name had its own
-    // "latest" slot, so a Signal-phase `cdp_take_dom_snapshot` and
-    // `cdp_find_elements` survived all the way into a Calculator-phase
-    // `take_ax_snapshot`, piling multi-KB bodies into the prompt.
     let mut latest_family_index: Option<usize> = None;
     for (idx, msg) in messages.iter().enumerate() {
         let Some(tool_name) = resolve_tool_name(messages, msg) else {
@@ -153,9 +146,6 @@ pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message
 
     let latest_family_index = latest_family_index?;
 
-    // Clone once and rewrite in place. Pre-computing the set of
-    // to-collapse indices would save allocations in the no-op case, but
-    // the early return above already covers the cheap path.
     let mut out = messages.to_vec();
     let mut changed = false;
     for (idx, msg) in out.iter_mut().enumerate() {
@@ -168,7 +158,6 @@ pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message
         if idx == latest_family_index {
             continue;
         }
-        // Idempotence: skip if already collapsed.
         if msg
             .content_text()
             .is_some_and(|t| t.starts_with(SUPERSEDED_PREFIX))
@@ -182,79 +171,478 @@ pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message
     if changed { Some(out) } else { None }
 }
 
-/// Compact old step details into a summary when the context window is getting full.
+/// Tool names whose results are snapshot-family. Bodies older than the
+/// current step get dropped entirely from the transcript.
+const SNAPSHOT_TOOL_NAMES: &[&str] = &[
+    "take_ax_snapshot",
+    "take_screenshot",
+    "cdp_take_ax_snapshot",
+    "cdp_take_dom_snapshot",
+    "cdp_take_snapshot",
+    "cdp_find_elements",
+    "cdp_wait_for",
+    "wait_for",
+];
+
+#[derive(Debug, Clone)]
+pub struct CompactBudget {
+    pub max_tokens: usize,
+    pub recent_n: usize,
+}
+
+impl Default for CompactBudget {
+    fn default() -> Self {
+        Self {
+            max_tokens: 100_000,
+            recent_n: 6,
+        }
+    }
+}
+
+/// Compact a chat-history vector under the state-spine rules.
 ///
-/// Replaces individual step messages with a compact summary of the oldest steps,
-/// keeping the most recent `keep_recent` steps in full detail.
-///
-/// Returns `None` if no compaction is needed (messages are within budget).
-pub fn compact_step_summaries(
-    messages: &[Message],
-    steps: &[AgentStep],
-    token_budget: usize,
-    keep_recent: usize,
-) -> Option<Vec<Message>> {
-    let current_tokens = estimate_messages_tokens(messages);
-    if current_tokens <= token_budget {
-        return None;
+/// Invariants:
+/// - `messages[0]` (system) and `messages[1]` (goal) are never modified.
+/// - The last `budget.recent_n` assistant/tool pairs are preserved verbatim,
+///   except that snapshot-family tool-result bodies older than the current
+///   step are replaced by a short placeholder (body dropped).
+/// - All pairs older than the recent-N window are collapsed to a single
+///   brief assistant-authored summary line.
+/// - If the total token estimate still exceeds `budget.max_tokens`, the
+///   largest surviving body is truncated in-place until the estimate fits
+///   or nothing is left to collapse.
+pub fn compact(messages: Vec<Message>, budget: &CompactBudget) -> Vec<Message> {
+    if messages.len() <= 2 {
+        return messages;
     }
 
-    if steps.len() <= keep_recent {
-        // Not enough steps to compact
-        return None;
+    let mut out = Vec::with_capacity(messages.len());
+    out.push(messages[0].clone());
+    out.push(messages[1].clone());
+
+    // Pair up assistant + tool-result messages after messages[1].
+    // Each "pair" is one assistant message followed by its tool-result(s).
+    let tail = &messages[2..];
+    let pairs = group_into_pairs(tail);
+
+    let total_pairs = pairs.len();
+    let recent_start = total_pairs.saturating_sub(budget.recent_n);
+    // The "current step" is the last pair. Any snapshot-family tool-result
+    // in an earlier pair is stale — the state block carries the fresh view
+    // and the body should be dropped outright, independent of the recent-N
+    // window and the token budget.
+    let current_step_idx = total_pairs.saturating_sub(1);
+
+    for (i, pair) in pairs.iter().enumerate() {
+        let is_current_step = i == current_step_idx;
+        if i >= recent_start {
+            // Recent-N window: keep verbatim, but drop stale snapshot bodies.
+            for m in pair {
+                if !is_current_step && is_snapshot_tool_result(m) {
+                    out.push(drop_snapshot_body(m));
+                } else {
+                    out.push(m.clone());
+                }
+            }
+        } else {
+            // Collapse: one brief summary line instead of the full pair.
+            out.push(collapse_pair_to_brief(pair));
+        }
     }
 
-    // Split steps into old (to summarize) and recent (to keep)
-    let split_at = steps.len().saturating_sub(keep_recent);
-    let old_steps = &steps[..split_at];
+    // If we are still over budget, collapse more-recent pairs (after the
+    // protected system + goal) until we fit.
+    enforce_token_budget(out, budget)
+}
 
-    // Build a compact summary of old steps
-    let summary = summarize_steps(old_steps);
-
-    // Rebuild messages: system prompt + goal + summary + recent step messages
-    let mut compacted = Vec::new();
-
-    // Keep the system message (always first)
-    if let Some(system_msg) = messages.first()
-        && system_msg.role == Role::System
-    {
-        compacted.push(system_msg.clone());
+/// Replace a snapshot-family tool-result body with a short placeholder,
+/// preserving `role`, `tool_call_id`, and `name` so OpenAI tool-call
+/// linkage stays intact.
+fn drop_snapshot_body(m: &Message) -> Message {
+    let placeholder = format!(
+        "[{}: body dropped (older snapshot)]",
+        m.name.as_deref().unwrap_or("snapshot")
+    );
+    Message {
+        role: m.role,
+        content: Some(Content::Text(placeholder)),
+        reasoning_content: m.reasoning_content.clone(),
+        tool_calls: m.tool_calls.clone(),
+        tool_call_id: m.tool_call_id.clone(),
+        name: m.name.clone(),
     }
+}
 
-    // Keep the goal message (second message — user-controlled goal text
-    // that must survive compaction to keep the LLM on-task).
-    if let Some(goal_msg) = messages.get(1)
-        && goal_msg.role == Role::User
-    {
-        compacted.push(goal_msg.clone());
+fn group_into_pairs(messages: &[Message]) -> Vec<Vec<Message>> {
+    let mut pairs: Vec<Vec<Message>> = Vec::new();
+    let mut current: Vec<Message> = Vec::new();
+    for m in messages {
+        if m.role == Role::Assistant {
+            if !current.is_empty() {
+                pairs.push(std::mem::take(&mut current));
+            }
+            current.push(m.clone());
+        } else {
+            current.push(m.clone());
+        }
     }
-
-    // Add compact summary as a user message
-    compacted.push(Message::user(summary));
-
-    // LLM steps contribute 3 messages (user observation + assistant tool-call + tool result).
-    // Cache-replayed steps contribute 2 (tool-call + tool-result).
-    // Use 3 (the maximum across step types) to avoid discarding context prematurely.
-    let messages_per_step = 3;
-    let recent_message_count = keep_recent * messages_per_step;
-    // Start copying from at least index 3 to skip the system message,
-    // goal message, and any previously injected summary that were already
-    // prepended above. This prevents repeated compaction from accumulating
-    // stale summaries. Index 3 is safe because compaction only runs when
-    // steps.len() > keep_recent, guaranteeing enough step messages exist.
-    let skip = messages.len().saturating_sub(recent_message_count).max(3);
-    for msg in messages.iter().skip(skip) {
-        compacted.push(msg.clone());
+    if !current.is_empty() {
+        pairs.push(current);
     }
+    pairs
+}
 
-    Some(compacted)
+fn collapse_pair_to_brief(pair: &[Message]) -> Message {
+    let asst = pair.iter().find(|m| m.role == Role::Assistant);
+    let tool = pair.iter().find(|m| m.role == Role::Tool);
+    let asst_kind = asst
+        .and_then(|m| m.tool_calls.as_ref())
+        .and_then(|tcs| tcs.first())
+        .map(|tc| tc.function.name.clone())
+        .unwrap_or_else(|| "text".to_string());
+    let tool_kind = tool
+        .and_then(|m| m.name.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let outcome = tool
+        .and_then(|m| m.content_text().map(|t| truncate(t, 120)))
+        .unwrap_or_default();
+    Message {
+        role: Role::Assistant,
+        content: Some(Content::Text(format!(
+            "[collapsed] action={} tool={} outcome={}",
+            asst_kind, tool_kind, outcome
+        ))),
+        reasoning_content: None,
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    }
+}
+
+fn truncate(s: &str, cap: usize) -> String {
+    if s.len() <= cap {
+        return s.to_string();
+    }
+    // Walk down to a UTF-8 char boundary so multibyte content
+    // (tool outputs, UI labels) never panics. Matches the existing
+    // `prompt.rs::truncate_summary` floor_char_boundary discipline.
+    let mut boundary = cap;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    format!("{}…", &s[..boundary])
+}
+
+fn is_snapshot_tool_result(m: &Message) -> bool {
+    if m.role != Role::Tool {
+        return false;
+    }
+    match m.name.as_deref() {
+        Some(n) => SNAPSHOT_TOOL_NAMES.contains(&n),
+        None => false,
+    }
+}
+
+fn content_len(m: &Message) -> usize {
+    m.content_text().map_or(0, |t| t.len())
+}
+
+fn enforce_token_budget(mut messages: Vec<Message>, budget: &CompactBudget) -> Vec<Message> {
+    // Rough estimate: 4 characters per token (matches `context::estimate_tokens`).
+    let est = |m: &Message| content_len(m) / 4 + 4;
+    loop {
+        let total: usize = messages.iter().map(est).sum();
+        if total <= budget.max_tokens {
+            return messages;
+        }
+        // Collapse the oldest non-system, non-goal body that still has a
+        // meaningful payload (ignore bodies already collapsed by a prior
+        // pass to guarantee progress).
+        let collapse_idx = messages
+            .iter()
+            .enumerate()
+            .skip(2)
+            .find(|(_, m)| {
+                let text = m.content_text().unwrap_or("");
+                text.len() > 200
+                    && !text.starts_with("[collapsed")
+                    && !text.starts_with("[collapsed to fit budget]")
+            })
+            .map(|(i, _)| i);
+        match collapse_idx {
+            Some(i) => {
+                let text = messages[i].content_text().unwrap_or("").to_string();
+                let shortened = format!("[collapsed to fit budget] {}", truncate(&text, 80));
+                messages[i].content = Some(Content::Text(shortened));
+            }
+            None => return messages, // cannot compact further
+        }
+    }
 }
 
 #[cfg(test)]
-mod tests {
+mod state_spine_compact_tests {
     use super::*;
-    use crate::agent::types::{AgentCommand, AgentStep, StepOutcome};
-    use clickweave_core::cdp::CdpFindElementMatch;
+    use clickweave_llm::{Content, FunctionCall, Message, Role, ToolCall};
+    use serde_json::Value;
+
+    fn msg(role: Role, content: &str) -> Message {
+        Message {
+            role,
+            content: Some(Content::Text(content.to_string())),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    fn assistant_call(tool_name: &str, call_id: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: None,
+            reasoning_content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: call_id.to_string(),
+                call_type: Default::default(),
+                function: FunctionCall {
+                    name: tool_name.to_string(),
+                    arguments: Value::Object(Default::default()),
+                },
+            }]),
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    fn tool_result(name: &str, body: &str) -> Message {
+        Message {
+            role: Role::Tool,
+            content: Some(Content::Text(body.to_string())),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: Some("tc-1".to_string()),
+            name: Some(name.to_string()),
+        }
+    }
+
+    fn content_of(m: &Message) -> &str {
+        m.content_text().unwrap_or("")
+    }
+
+    #[test]
+    fn system_and_goal_never_compacted() {
+        let messages = vec![
+            msg(Role::System, "system prompt"),
+            msg(Role::User, "goal text"),
+            msg(Role::Assistant, "I will start."),
+            tool_result("cdp_click", "ok"),
+        ];
+        let budget = CompactBudget {
+            max_tokens: 16,
+            recent_n: 1,
+        };
+        let out = compact(messages.clone(), &budget);
+        assert_eq!(content_of(&out[0]), "system prompt");
+        assert_eq!(content_of(&out[1]), "goal text");
+    }
+
+    #[test]
+    fn drops_snapshot_tool_result_bodies_even_when_budget_is_huge() {
+        // A snapshot tool-result older than the current step must be dropped,
+        // independent of budget. The state-block in the current user turn
+        // supersedes it.
+        let long_body = "uid=a1g3 button\n".repeat(500);
+        let messages = vec![
+            msg(Role::System, "sys"),
+            msg(Role::User, "goal"),
+            msg(Role::Assistant, "take snapshot"),
+            tool_result("take_ax_snapshot", &long_body),
+            msg(Role::Assistant, "click"),
+            tool_result("ax_click", "ok"),
+        ];
+        let budget = CompactBudget {
+            max_tokens: 100_000,
+            recent_n: 2,
+        };
+        let out = compact(messages, &budget);
+        let has_full_ax_body = out
+            .iter()
+            .any(|m| m.name.as_deref() == Some("take_ax_snapshot") && content_of(m).len() > 200);
+        assert!(
+            !has_full_ax_body,
+            "old snapshot tool-result bodies must be dropped, not merely collapsed"
+        );
+    }
+
+    #[test]
+    fn recent_n_pairs_preserved_verbatim_when_under_budget() {
+        let messages = vec![
+            msg(Role::System, "sys"),
+            msg(Role::User, "goal"),
+            msg(Role::Assistant, "a1"),
+            tool_result("cdp_click", "r1"),
+            msg(Role::Assistant, "a2"),
+            tool_result("cdp_click", "r2"),
+        ];
+        let budget = CompactBudget {
+            max_tokens: 10_000,
+            recent_n: 2,
+        };
+        let out = compact(messages, &budget);
+        assert!(out.iter().any(|m| content_of(m) == "a1"));
+        assert!(out.iter().any(|m| content_of(m) == "a2"));
+    }
+
+    #[test]
+    fn beyond_recent_n_pairs_collapse_to_brief_summaries() {
+        let mut messages = vec![msg(Role::System, "sys"), msg(Role::User, "goal")];
+        for i in 0..10 {
+            messages.push(msg(Role::Assistant, &format!("a{}", i)));
+            messages.push(tool_result("cdp_click", &format!("r{}", i)));
+        }
+        let budget = CompactBudget {
+            max_tokens: 2_000,
+            recent_n: 2,
+        };
+        let out = compact(messages, &budget);
+        // Oldest pairs must be collapsed — we should not see the full
+        // "a0" assistant content in the output.
+        let has_a0 = out.iter().any(|m| content_of(m) == "a0");
+        assert!(!has_a0, "oldest assistant pair must be collapsed");
+        // But the most recent 2 pairs must be present verbatim.
+        assert!(out.iter().any(|m| content_of(m) == "a8"));
+        assert!(out.iter().any(|m| content_of(m) == "a9"));
+    }
+
+    #[test]
+    fn cross_phase_snapshot_family_does_not_accumulate_bodies() {
+        let long = "x".repeat(5_000);
+        let messages = vec![
+            msg(Role::System, "sys"),
+            msg(Role::User, "goal"),
+            msg(Role::Assistant, "ax"),
+            tool_result("take_ax_snapshot", &long),
+            msg(Role::Assistant, "dom"),
+            tool_result("cdp_take_dom_snapshot", &long),
+            msg(Role::Assistant, "find"),
+            tool_result("cdp_find_elements", &long),
+        ];
+        let budget = CompactBudget {
+            max_tokens: 500_000,
+            recent_n: 3,
+        };
+        let out = compact(messages, &budget);
+        let total: usize = out.iter().map(content_len).sum();
+        assert!(
+            total < 50_000,
+            "no snapshot-family body should survive verbatim into the compacted output; got {} chars",
+            total
+        );
+    }
+
+    #[test]
+    fn collapsed_summary_surfaces_action_and_tool_names() {
+        // When a pair is collapsed beyond the recent-N window, the brief
+        // summary line should name the assistant's tool_call and the tool
+        // result it paired with, so the LLM retains the ordering even
+        // without the full bodies.
+        let messages = vec![
+            msg(Role::System, "sys"),
+            msg(Role::User, "goal"),
+            assistant_call("cdp_click", "tc-collapse"),
+            tool_result("cdp_click", "r-old"),
+            msg(Role::Assistant, "a-recent"),
+            tool_result("cdp_click", "r-recent"),
+        ];
+        let budget = CompactBudget {
+            max_tokens: 10_000,
+            recent_n: 1,
+        };
+        let out = compact(messages, &budget);
+        let collapsed = out
+            .iter()
+            .find(|m| content_of(m).starts_with("[collapsed]"))
+            .expect("should contain a collapsed summary");
+        let text = content_of(collapsed);
+        assert!(
+            text.contains("cdp_click"),
+            "collapsed summary should mention the tool name; got: {text}"
+        );
+    }
+
+    #[test]
+    fn truncate_is_utf8_boundary_safe() {
+        // Crafted so a naive byte-slice would land mid-multibyte, which
+        // would panic. The cap lands mid-ellipsis char → helper must walk
+        // down to a char boundary before slicing.
+        let s = "aa…bbb";
+        let out = truncate(s, 3);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn enforce_token_budget_shrinks_oversized_bodies() {
+        let huge = "y".repeat(20_000);
+        let messages = vec![
+            msg(Role::System, "sys"),
+            msg(Role::User, "goal"),
+            msg(Role::Assistant, &huge),
+            tool_result("cdp_click", "ok"),
+        ];
+        let budget = CompactBudget {
+            max_tokens: 100,
+            recent_n: 5,
+        };
+        let out = compact(messages, &budget);
+        let total_chars: usize = out.iter().map(content_len).sum();
+        assert!(
+            total_chars < 5_000,
+            "enforce_token_budget should shrink oversized bodies; got {total_chars} chars"
+        );
+        // System + goal are still the first two.
+        assert_eq!(content_of(&out[0]), "sys");
+        assert_eq!(content_of(&out[1]), "goal");
+    }
+
+    #[test]
+    fn short_histories_are_returned_unchanged() {
+        let messages = vec![msg(Role::System, "sys"), msg(Role::User, "goal")];
+        let budget = CompactBudget {
+            max_tokens: 10,
+            recent_n: 0,
+        };
+        let out = compact(messages.clone(), &budget);
+        assert_eq!(out.len(), 2);
+        assert_eq!(content_of(&out[0]), "sys");
+        assert_eq!(content_of(&out[1]), "goal");
+    }
+}
+
+#[cfg(test)]
+mod legacy_context_tests {
+    //! Tests for helpers ported from the pre-state-spine `context.rs`
+    //! (`estimate_tokens`, `estimate_messages_tokens`,
+    //! `collapse_superseded_snapshots`). These helpers are still reachable
+    //! from `prior_turns.rs` and from capability-gap tests in
+    //! `tests/mod.rs`, so they must stay covered after the Phase 3b
+    //! rename.
+    use super::*;
+    use clickweave_llm::{CallType, FunctionCall, ToolCall};
+
+    fn snapshot_pair(tool_name: &str, call_id: &str, body_kb: usize) -> (Message, Message) {
+        let big_body = "x".repeat(body_kb * 1024);
+        let assistant = Message::assistant_tool_calls(vec![ToolCall {
+            id: call_id.to_string(),
+            call_type: CallType::Function,
+            function: FunctionCall {
+                name: tool_name.to_string(),
+                arguments: serde_json::json!({}),
+            },
+        }]);
+        let result = Message::tool_result(call_id, big_body);
+        (assistant, result)
+    }
 
     #[test]
     fn estimate_tokens_basic() {
@@ -283,211 +671,6 @@ mod tests {
         assert_eq!(total, 5 + 4);
     }
 
-    fn make_step(index: usize) -> AgentStep {
-        AgentStep {
-            index,
-            elements: vec![CdpFindElementMatch {
-                uid: format!("1_{}", index),
-                role: "button".to_string(),
-                label: "Click me".to_string(),
-                tag: "button".to_string(),
-                disabled: false,
-                parent_role: None,
-                parent_name: None,
-            }],
-            command: AgentCommand::ToolCall {
-                tool_name: "click".to_string(),
-                arguments: serde_json::json!({"uid": format!("1_{}", index)}),
-                tool_call_id: format!("call_{}", index),
-            },
-            outcome: StepOutcome::Success("Clicked".to_string()),
-            page_url: "https://example.com".to_string(),
-        }
-    }
-
-    #[test]
-    fn compact_returns_none_within_budget() {
-        let messages = vec![
-            Message::system("System prompt"),
-            Message::user("Step 0"),
-            Message::assistant("Action 0"),
-        ];
-        let steps = vec![make_step(0)];
-
-        let result = compact_step_summaries(&messages, &steps, 100_000, 2);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn compact_returns_none_when_few_steps() {
-        let messages = vec![
-            Message::system("System prompt"),
-            Message::user("Step 0"),
-            Message::assistant("Action 0"),
-        ];
-        let steps = vec![make_step(0)];
-
-        // Budget is tiny but only 1 step which is <= keep_recent
-        let result = compact_step_summaries(&messages, &steps, 1, 2);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn compact_produces_shorter_messages() {
-        // Create enough messages to exceed a small token budget
-        let mut messages = vec![Message::system("System prompt")];
-        let mut steps = Vec::new();
-        for i in 0..10 {
-            messages.push(Message::user(format!(
-                "Observation step {} with a lot of element details and page info repeated",
-                i
-            )));
-            messages.push(Message::assistant(format!("Action for step {}", i)));
-            steps.push(make_step(i));
-        }
-
-        // Set a tiny budget to force compaction
-        let result = compact_step_summaries(&messages, &steps, 10, 2);
-        assert!(result.is_some());
-        let compacted = result.unwrap();
-
-        // Compacted should have fewer messages than original
-        assert!(compacted.len() < messages.len());
-
-        // Should start with system message
-        assert_eq!(compacted[0].role, Role::System);
-
-        // Should contain a summary message
-        let has_summary = compacted.iter().any(|m| {
-            m.content_text()
-                .is_some_and(|t| t.contains("Previous Steps Summary"))
-        });
-        assert!(has_summary);
-    }
-
-    #[test]
-    fn compact_preserves_goal_message() {
-        // Simulate: [system, goal, obs0, asst0, tool0, obs1, asst1, tool1, ..., obs9, asst9, tool9]
-        let mut messages = vec![
-            Message::system("System prompt"),
-            Message::user("## Goal\nOpen the calculator app"),
-        ];
-        let mut steps = Vec::new();
-        for i in 0..10 {
-            messages.push(Message::user(format!("Observation {}", i)));
-            messages.push(Message::assistant(format!("Action {}", i)));
-            messages.push(Message::tool_result(format!("call_{}", i), "ok"));
-            steps.push(make_step(i));
-        }
-
-        let result = compact_step_summaries(&messages, &steps, 10, 3);
-        assert!(result.is_some());
-        let compacted = result.unwrap();
-
-        // Goal must survive compaction
-        assert!(
-            compacted.iter().any(|m| m
-                .content_text()
-                .is_some_and(|t| t.contains("Open the calculator app"))),
-            "Goal message was dropped during compaction"
-        );
-    }
-
-    #[test]
-    fn compact_repeated_does_not_duplicate_goal_or_summary() {
-        let mut messages = vec![
-            Message::system("System prompt"),
-            Message::user("## Goal\nDo the thing"),
-        ];
-        let mut steps = Vec::new();
-        for i in 0..10 {
-            messages.push(Message::user(format!("Observation {}", i)));
-            messages.push(Message::assistant(format!("Action {}", i)));
-            messages.push(Message::tool_result(format!("call_{}", i), "ok"));
-            steps.push(make_step(i));
-        }
-
-        // First compaction
-        let first = compact_step_summaries(&messages, &steps, 10, 3).unwrap();
-
-        // Second compaction on already-compacted transcript
-        let second = compact_step_summaries(&first, &steps, 10, 3).unwrap();
-
-        // Count goal messages — should be exactly 1
-        let goal_count = second
-            .iter()
-            .filter(|m| m.content_text().is_some_and(|t| t.contains("Do the thing")))
-            .count();
-        assert_eq!(goal_count, 1, "Goal duplicated after repeated compaction");
-
-        // Count summary messages — should be exactly 1
-        let summary_count = second
-            .iter()
-            .filter(|m| {
-                m.content_text()
-                    .is_some_and(|t| t.contains("Previous Steps Summary"))
-            })
-            .count();
-        assert_eq!(
-            summary_count, 1,
-            "Summary duplicated after repeated compaction"
-        );
-    }
-
-    #[test]
-    fn compaction_preserves_prior_turn_log_embedded_in_goal() {
-        // Goal message carries a prior-turn log inlined above the current
-        // goal (as produced by `prior_turns::build_goal_with_prior_turns`).
-        // Compaction must preserve messages[1] verbatim so the log survives.
-        let goal_body = "Previous conversation:\n- Turn 1: \"A\" -> completed.\nCurrent goal: do X";
-        let mut messages = vec![Message::system("System prompt"), Message::user(goal_body)];
-        let mut steps = Vec::new();
-        for i in 0..20 {
-            messages.push(Message::user(format!(
-                "observation {}: {}",
-                i,
-                "x".repeat(400)
-            )));
-            messages.push(Message::assistant(format!("step {} thinking", i)));
-            messages.push(Message::tool_result(format!("call_{}", i), "ok"));
-            steps.push(make_step(i));
-        }
-
-        let compacted =
-            compact_step_summaries(&messages, &steps, 100, 2).expect("compaction should fire");
-
-        let goal_msg = &compacted[1];
-        let text = goal_msg.content_text().expect("goal message must be text");
-        assert!(
-            text.contains("Previous conversation"),
-            "prior-turn log must stay inside the preserved goal message"
-        );
-        assert!(text.contains("Current goal"));
-    }
-
-    // -----------------------------------------------------------------
-    // Supersession tests
-    // -----------------------------------------------------------------
-
-    use clickweave_llm::{CallType, FunctionCall, ToolCall};
-
-    /// Build a synthetic (assistant tool_call, tool result) pair for the
-    /// given tool name. The result body is large so supersession produces a
-    /// measurable token drop.
-    fn snapshot_pair(tool_name: &str, call_id: &str, body_kb: usize) -> (Message, Message) {
-        let big_body = "x".repeat(body_kb * 1024);
-        let assistant = Message::assistant_tool_calls(vec![ToolCall {
-            id: call_id.to_string(),
-            call_type: CallType::Function,
-            function: FunctionCall {
-                name: tool_name.to_string(),
-                arguments: serde_json::json!({}),
-            },
-        }]);
-        let result = Message::tool_result(call_id, big_body);
-        (assistant, result)
-    }
-
     #[test]
     fn collapse_returns_none_when_no_snapshot_tools() {
         let messages = vec![
@@ -501,7 +684,6 @@ mod tests {
 
     #[test]
     fn collapse_returns_none_with_single_snapshot() {
-        // Only one snapshot result in history — nothing to supersede.
         let mut messages = vec![Message::system("System"), Message::user("Goal")];
         let (asst, result) = snapshot_pair("cdp_find_elements", "call_0", 4);
         messages.push(asst);
@@ -521,10 +703,8 @@ mod tests {
         let collapsed = collapse_superseded_snapshots(&messages)
             .expect("expected supersession to change the transcript");
 
-        // Same message count: we rewrite in place, never drop.
         assert_eq!(collapsed.len(), messages.len());
 
-        // Locate tool-result messages; all but the last should be placeholders.
         let tool_results: Vec<&Message> =
             collapsed.iter().filter(|m| m.role == Role::Tool).collect();
         assert_eq!(tool_results.len(), 4);
@@ -536,11 +716,9 @@ mod tests {
                 "older snapshot was not collapsed: {:?}",
                 text,
             );
-            // tool_call_id must remain for OpenAI linkage.
             assert!(m.tool_call_id.is_some(), "tool_call_id was stripped");
         }
 
-        // The newest snapshot must still have its full body.
         let latest = tool_results.last().unwrap();
         let latest_text = latest.content_text().unwrap();
         assert!(
@@ -566,12 +744,6 @@ mod tests {
 
     #[test]
     fn collapse_leaves_only_latest_snapshot_family_member() {
-        // Interleaved snapshot tools. The entire list of snapshot-producing
-        // tools is treated as one family, so only the single globally-latest
-        // family result survives. Older results from *any* snapshot tool —
-        // even ones whose specific tool name was not repeated — are
-        // collapsed, because the newest snapshot from a newer tool already
-        // reflects the current page/app state.
         let mut messages = vec![Message::system("System"), Message::user("Goal")];
         let specs = [
             ("cdp_find_elements", "a0"),
@@ -589,7 +761,6 @@ mod tests {
         let collapsed = collapse_superseded_snapshots(&messages)
             .expect("supersession should fire for multi-tool history");
 
-        // Everything except the final b1 must be collapsed.
         let collapsed_ids: Vec<String> = collapsed
             .iter()
             .filter(|m| m.role == Role::Tool)
@@ -609,7 +780,6 @@ mod tests {
             ],
         );
 
-        // The latest family member (b1) still carries its full body.
         let latest = collapsed
             .iter()
             .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("b1"))
@@ -624,12 +794,6 @@ mod tests {
 
     #[test]
     fn collapse_supersedes_cross_phase_cdp_then_ax_snapshots() {
-        // Regression for the 40k-token overflow observed on 2026-04-21 at
-        // 18:25: a Signal-phase CDP workflow (`cdp_take_dom_snapshot` +
-        // `cdp_find_elements`) was followed by a Calculator AX phase
-        // (`take_ax_snapshot`). With per-tool-name supersession, all three
-        // snapshot bodies survived into the same prompt. Under family-wide
-        // supersession, only the final `take_ax_snapshot` keeps its body.
         let mut messages = vec![Message::system("System"), Message::user("Goal")];
 
         let signal_dom = snapshot_pair("cdp_take_dom_snapshot", "signal_dom", 8);
@@ -647,20 +811,18 @@ mod tests {
         let collapsed =
             collapse_superseded_snapshots(&messages).expect("cross-phase collapse must fire");
 
-        // Signal-phase snapshots collapsed to placeholders.
         for id in ["signal_dom", "signal_find"] {
-            let msg = collapsed
+            let m = collapsed
                 .iter()
                 .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some(id))
                 .unwrap_or_else(|| panic!("tool-result {id} missing"));
-            let text = msg.content_text().unwrap();
+            let text = m.content_text().unwrap();
             assert!(
                 text.starts_with(SUPERSEDED_PREFIX),
                 "{id} should be collapsed, got: {text:.60}"
             );
         }
 
-        // Calculator AX snapshot retains full body.
         let calc = collapsed
             .iter()
             .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("calc_ax"))
@@ -673,20 +835,12 @@ mod tests {
 
     #[test]
     fn collapse_brings_40k_token_history_below_model_ctx() {
-        // Simulate the conditions that blew past the local LLM's 40192-token
-        // context window: a long tail of snapshot-family tool results, each
-        // several KB, with a pair of small non-snapshot calls sprinkled in.
-        // After a single pass of family-wide supersession, the transcript
-        // must fit comfortably under the model's advertised `n_ctx`.
         const MODEL_CTX: usize = 40_192;
 
         let mut messages = vec![
             Message::system("You are an agent."),
             Message::user("## Goal\nMulti-phase workflow across Signal and Calculator"),
         ];
-        // 14 snapshot-family calls, alternating tool names to simulate
-        // phase transitions. 14 KiB per result × 14 ≈ 196 KiB ≈ 50k tokens
-        // on its own, solidly past the 40k context window.
         let rotation = [
             "cdp_take_dom_snapshot",
             "cdp_find_elements",
@@ -699,7 +853,6 @@ mod tests {
             messages.push(asst);
             messages.push(result);
         }
-        // A couple of small non-snapshot calls that must survive untouched.
         let (asst, result) = snapshot_pair("click", "click_0", 1);
         messages.push(asst);
         messages.push(result);
@@ -716,8 +869,6 @@ mod tests {
             after < MODEL_CTX,
             "collapsed history still exceeds model ctx: {after} > {MODEL_CTX}",
         );
-        // And it must be dramatically smaller — the point is to keep room
-        // for the system prompt, tool schemas, and the next turn's reply.
         assert!(
             after * 4 < before,
             "collapse barely helped: before={before} after={after}",
@@ -726,11 +877,6 @@ mod tests {
 
     #[test]
     fn collapse_treats_take_ax_snapshot_as_snapshot_tool() {
-        // AX snapshots are session-stateful — each call bumps the
-        // server-side generation, so uids from older snapshots are
-        // invalid on dispatch. Keeping older snapshot bodies in the
-        // transcript wastes tokens and tempts the LLM to reuse a stale
-        // uid, so they must be collapsed the same way CDP snapshots are.
         let mut messages = vec![Message::system("System"), Message::user("Goal")];
         for i in 0..3 {
             let (asst, result) = snapshot_pair("take_ax_snapshot", &format!("ax_{}", i), 4);
@@ -755,31 +901,22 @@ mod tests {
 
     #[test]
     fn collapse_preserves_take_screenshot_results() {
-        // take_screenshot must NOT be collapsed: its result body carries a
-        // screenshot_id that find_image and coordinate-based tools can
-        // reference on a later turn. Dropping the body would erase the only
-        // transcript copy of that id.
         let mut messages = vec![Message::system("System"), Message::user("Goal")];
         for i in 0..3 {
             let (asst, result) = snapshot_pair("take_screenshot", &format!("shot_{}", i), 2);
             messages.push(asst);
             messages.push(result);
         }
-
-        // No collapse should occur — take_screenshot is excluded.
         assert!(collapse_superseded_snapshots(&messages).is_none());
     }
 
     #[test]
     fn collapse_ignores_non_snapshot_tools() {
-        // A `click` result should never be collapsed even if it appears
-        // before a newer snapshot.
         let mut messages = vec![Message::system("System"), Message::user("Goal")];
         let (asst, result) = snapshot_pair("click", "call_0", 1);
         messages.push(asst);
         messages.push(result);
 
-        // Two snapshots so that supersession does fire on the newer one.
         for i in 0..2 {
             let (asst, result) = snapshot_pair("cdp_find_elements", &format!("snap_{}", i), 2);
             messages.push(asst);
@@ -788,7 +925,6 @@ mod tests {
 
         let collapsed = collapse_superseded_snapshots(&messages).unwrap();
 
-        // The click result must still carry its full original body.
         let click_body = collapsed
             .iter()
             .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_0"))
@@ -803,10 +939,6 @@ mod tests {
 
     #[test]
     fn collapse_bounds_history_tokens_across_many_snapshot_calls() {
-        // Regression: without supersession, 8 back-to-back snapshot calls
-        // of ~8 KiB each would push retained history well past 10k tokens.
-        // With supersession, only the last snapshot keeps its full body,
-        // so history must stay well under a sane threshold.
         let mut messages = vec![
             Message::system("You are an agent."),
             Message::user("## Goal\nMulti-step CDP workflow"),
@@ -827,8 +959,6 @@ mod tests {
             "precondition: uncompressed history must be heavy, was {}",
             before_tokens
         );
-        // Post-collapse budget. One full 8 KiB snapshot ≈ 2048 tokens; the
-        // rest is tiny placeholders + assistant tool-call wrappers.
         assert!(
             after_tokens < 4_000,
             "collapsed history too large: {} tokens (before={})",
