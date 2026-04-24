@@ -129,6 +129,16 @@ pub struct StateRunner {
     /// can be suppressed when AX / CDP dispatch is available. Mirrors
     /// the legacy `AgentRunner::known_app_kinds` field.
     pub(crate) known_app_kinds: HashMap<String, String>,
+
+    /// World-model field signatures captured by the top-level `run` loop
+    /// before it mirrors the observe-phase CDP results into
+    /// `world_model.elements` / `world_model.cdp_page`. When `Some`,
+    /// `run_turn` uses this as the baseline for its `WorldModelChanged`
+    /// diff so direct-observation writes (which happen outside
+    /// `run_turn`) still surface in `changed_fields`. When `None`, the
+    /// test/unit caller path is in effect and `run_turn` falls back to
+    /// snapshotting signatures itself immediately before `observe()`.
+    pub(crate) turn_pre_signatures: Option<Vec<(&'static str, Option<usize>)>>,
 }
 
 impl StateRunner {
@@ -158,6 +168,7 @@ impl StateRunner {
             verification_count: 0,
             cdp_state: crate::cdp_lifecycle::CdpState::new(),
             known_app_kinds: HashMap::new(),
+            turn_pre_signatures: None,
         }
     }
 
@@ -794,7 +805,15 @@ impl StateRunner {
 
         // 2. Observe: snapshot field signatures → drain pending events +
         //    re-infer phase → compute diff → emit `WorldModelChanged` (D17).
-        let pre_signatures = self.world_model.field_signatures();
+        //    If `run()` captured signatures before its observe-phase
+        //    mirror (`fetch_elements` → `world_model.elements`/`cdp_page`)
+        //    use that baseline so direct-observation writes also surface
+        //    in `changed_fields`; otherwise (unit/test callers) fall back
+        //    to snapshotting here.
+        let pre_signatures = self
+            .turn_pre_signatures
+            .take()
+            .unwrap_or_else(|| self.world_model.field_signatures());
         self.observe();
         let post_signatures = self.world_model.field_signatures();
         let diff = diff_world_model_signatures(&pre_signatures, &post_signatures);
@@ -2252,6 +2271,13 @@ impl StateRunner {
             }
 
             // 1. Observe — fetch elements + detect page transition.
+            //    Capture the pre-mirror world-model signatures so the
+            //    `WorldModelChanged` diff emitted by `run_turn` sees the
+            //    direct-observation writes below (R4.M1). `run_turn`
+            //    consumes the value via `Option::take`, so a later test
+            //    path that calls `run_turn` directly keeps its
+            //    snapshot-and-diff fallback.
+            self.turn_pre_signatures = Some(self.world_model.field_signatures());
             let elements = self.fetch_elements(mcp).await;
 
             // Mirror the observation into the world model so the state

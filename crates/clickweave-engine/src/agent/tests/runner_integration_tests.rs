@@ -3650,6 +3650,74 @@ mod state_spine_event_contract_tests {
         }
     }
 
+    /// Direct-observation writes the top-level `run` loop performs after
+    /// `fetch_elements` (populating `world_model.elements` and
+    /// `world_model.cdp_page`) must surface in
+    /// `WorldModelChanged.changed_fields`. Without the pre-mirror
+    /// signature capture these writes happen before `run_turn` snapshots
+    /// pre/post signatures, so the diff would silently report no change
+    /// on the very turn that changed the rendered state block.
+    #[tokio::test]
+    async fn world_model_changed_reports_cdp_page_on_first_observation() {
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool(
+                "cdp_find_elements",
+                serde_json::json!({"query": "", "max_results": 300}),
+            ),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        // Non-empty elements + page_url → first-turn mirror flips
+        // `world_model.elements` and `world_model.cdp_page` from None
+        // to Some, which must show up in the diff.
+        let body = r#"{"page_url":"https://example.com","source":"cdp","matches":[{"uid":"1_0","role":"button","label":"Submit","tag":"button","disabled":false,"parent_role":null,"parent_name":null}]}"#;
+        let mcp =
+            StaticMcp::with_tools(&["cdp_find_elements"]).with_reply("cdp_find_elements", body);
+
+        let run_id = uuid::Uuid::new_v4();
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let runner = StateRunner::new("goal".to_string(), AgentConfig::default())
+            .with_run_id(run_id)
+            .with_events(event_tx);
+
+        let tools = mcp.tools_as_openai();
+        let _ = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                tools,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        let changed_fields_sets: Vec<Vec<String>> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::WorldModelChanged { diff, .. } => Some(diff.changed_fields.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            changed_fields_sets
+                .iter()
+                .any(|cf| cf.iter().any(|f| f == "elements")),
+            "some WorldModelChanged event must report `elements` in changed_fields \
+             after fetch_elements populates world_model.elements; got {:?}",
+            changed_fields_sets,
+        );
+        assert!(
+            changed_fields_sets
+                .iter()
+                .any(|cf| cf.iter().any(|f| f == "cdp_page")),
+            "some WorldModelChanged event must report `cdp_page` in changed_fields \
+             after the per-turn mirror block sets world_model.cdp_page; got {:?}",
+            changed_fields_sets,
+        );
+    }
+
     /// A run that terminates on `agent_done` emits exactly one
     /// `AgentEvent::BoundaryRecordWritten { Terminal, .. }` with the
     /// runner's `run_id` (D17). The Terminal boundary write is the
