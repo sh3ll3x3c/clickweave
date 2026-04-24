@@ -8,11 +8,8 @@
 //! This module contains the *pure* pieces (prompt construction, YES/NO
 //! parsing, screenshot-scope selection, artifact persistence) so they can
 //! be unit tested with synthetic inputs. The orchestration that calls into
-//! MCP and the VLM lives in `loop_runner`.
+//! MCP and the VLM lives in `runner` (`StateRunner`).
 
-// Task 3a.1: pure helpers only stay live through `AgentRunner` in the
-// legacy integration tests; Task 3a.3 re-wires them against
-// `StateRunner::run`. Until then, mute lib-build dead_code warnings.
 #![allow(dead_code)]
 
 use std::path::Path;

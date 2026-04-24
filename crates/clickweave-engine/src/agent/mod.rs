@@ -2,9 +2,6 @@ mod approval;
 mod cache;
 mod completion_check;
 mod context;
-// `mod loop_runner;` is gone: the legacy runner was orphaned in Phase 3b
-// Task 3.2 and the file itself is removed in Task 3.3. Keeping it on disk
-// as an unreferenced orphan for one commit is fine; the `rm` follows.
 pub mod permissions;
 mod phase;
 pub mod prior_turns;
@@ -47,7 +44,7 @@ pub struct AgentChannels {
 
 /// Public entry point for running the agent loop from outside the engine crate.
 ///
-/// This wraps `AgentRunner::run` and resolves the `pub(crate)` Mcp trait
+/// This wraps `StateRunner::run` and resolves the `pub(crate)` Mcp trait
 /// boundary so that callers (e.g. Tauri commands) can pass a `McpClient`
 /// directly.
 ///
@@ -94,10 +91,8 @@ where
     B: ChatBackend,
     M: Mcp + ?Sized,
 {
-    // Task 3a.1 pivots this wrapper off the legacy `AgentRunner` onto
-    // `StateRunner`. The legacy runner stays alive in `loop_runner.rs`
-    // (the ~95 legacy integration tests still drive it directly); only
-    // this public entry point switches over. The `vision` parameter
+    // Phase 3b Task 3.3 deleted the legacy `loop_runner.rs`; this entry
+    // point now drives `StateRunner` directly. The `vision` parameter
     // shape follows D-PR1: `Arc<dyn DynChatBackend>` so primary and
     // VLM can be different concrete backend types without pushing a
     // second generic through the Tauri command surface.

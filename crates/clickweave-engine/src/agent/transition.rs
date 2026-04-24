@@ -1,7 +1,6 @@
-// Task 3a.1: page-transition detection stays live through `AgentRunner` in
-// the legacy integration tests; Task 3a.1+ will consume it via
-// `StateRunner::run` when the observe step starts comparing consecutive
-// element lists.
+// Page-transition detection. Reachable from `StateRunner::run` once the
+// observe step starts comparing consecutive element lists; mute the
+// dead_code warning on the helpers that are not yet wired in.
 #![allow(dead_code)]
 
 use clickweave_core::cdp::CdpFindElementMatch;

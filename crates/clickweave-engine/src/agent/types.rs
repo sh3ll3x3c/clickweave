@@ -137,7 +137,7 @@ pub struct AgentConfig {
     /// Whether the agent is allowed to execute `focus_window` at all.
     ///
     /// Defaults to `true` (existing behavior — `focus_window` runs normally
-    /// unless one of the AX / CDP-scoped guards in `loop_runner.rs`
+    /// unless one of the AX / CDP-scoped guards in `runner.rs`
     /// suppresses it). When set to `false`, every `focus_window` call is
     /// suppressed unconditionally at the dispatch site — no probe for app
     /// kind, no CDP-connected check — so the run is guaranteed not to

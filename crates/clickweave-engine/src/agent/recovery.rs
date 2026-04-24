@@ -1,5 +1,7 @@
-// Task 3a.1: recovery strategy stays live through `AgentRunner` in the
-// legacy integration tests; Task 3a.6 re-wires it against `StateRunner::run`.
+// Recovery strategy helpers. Phase 3b landed the state-spine cutover; the
+// `StateRunner` consumes this module via `runner.rs`. Live consumers pull
+// in a handful of variants; mute the dead_code warning for the rest until
+// Spec 2 (episodic memory) turns more of the surface live.
 #![allow(dead_code)]
 
 /// Action the agent should take after encountering an error.

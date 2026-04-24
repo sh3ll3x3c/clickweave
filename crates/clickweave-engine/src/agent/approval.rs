@@ -1,6 +1,6 @@
-//! Approval-gate channel pair shared between `StateRunner` (state-spine
-//! runner) and the legacy `AgentRunner`. Lives in its own module so the
-//! state-spine runner can own it without a cyclic dep on `loop_runner`.
+//! Approval-gate channel pair owned by `StateRunner`. Lives in its own
+//! module so other components (Tauri layer, tests) can import the gate
+//! type without a dep on the runner module itself.
 //!
 //! Each approval request uses a fresh `tokio::sync::oneshot` channel to
 //! avoid deadlocks — the runner sends an `ApprovalRequest` bundled with a
