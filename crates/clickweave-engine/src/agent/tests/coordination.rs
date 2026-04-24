@@ -143,10 +143,8 @@ async fn stop_during_approval_wait_sends_rejection_not_channel_drop() {
             &mcp,
             "Click it".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -191,10 +189,8 @@ async fn buffered_events_do_not_leak_between_runs() {
             &mcp_a,
             "goal A".to_string(),
             clickweave_core::Workflow::new("A"),
-            None,
             mcp_a.tools_as_openai(),
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -219,10 +215,8 @@ async fn buffered_events_do_not_leak_between_runs() {
             &mcp_b,
             "goal B".to_string(),
             clickweave_core::Workflow::new("B"),
-            None,
             mcp_b.tools_as_openai(),
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -346,10 +340,8 @@ async fn cached_launch_app_is_not_replayed_and_falls_through_to_llm() {
             &mcp,
             "launch Calculator".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -443,10 +435,8 @@ async fn empty_elements_skips_cache_read_and_write() {
             &mcp,
             "click somewhere".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -528,10 +518,8 @@ async fn workflow_mapping_miss_emits_warning_and_run_continues() {
             &mcp,
             "trigger mapping miss".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -683,10 +671,8 @@ async fn focus_window_after_native_launch_is_suppressed_with_ax_toolset() {
             &mcp,
             "reach Calculator via AX".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -847,10 +833,8 @@ async fn focus_window_still_runs_when_app_kind_is_unknown() {
             &mcp,
             "focus UnseenApp".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -982,10 +966,8 @@ async fn focus_window_after_cdp_connected_is_suppressed_for_electron_target() {
             &mcp,
             "reach Signal via CDP".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -1133,10 +1115,8 @@ async fn focus_window_suppressed_when_allow_focus_window_policy_is_false() {
             &mcp,
             "complete task in background".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();

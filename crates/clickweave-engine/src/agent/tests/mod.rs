@@ -238,10 +238,8 @@ async fn agent_executes_single_click_and_completes() {
             &mcp,
             "Click the submit button".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -296,10 +294,8 @@ async fn agent_stops_at_max_steps() {
             &mcp,
             "Click forever".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -343,10 +339,8 @@ async fn agent_handles_text_only_response() {
             &mcp,
             "Do something".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -392,10 +386,8 @@ async fn agent_replan_does_not_complete() {
             &mcp,
             "Click a missing button".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -432,10 +424,8 @@ async fn agent_state_reports_completed_reason_on_done() {
             &mcp,
             "Do it".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -478,10 +468,8 @@ async fn agent_state_reports_max_steps_reason() {
             &mcp,
             "Click forever".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -572,10 +560,8 @@ async fn agent_state_reports_max_errors_reason() {
             &mcp,
             "Click it".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -663,10 +649,8 @@ async fn agent_state_reports_loop_detected_on_identical_repeat_failure() {
             &mcp,
             "Click it".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -728,10 +712,8 @@ async fn approval_success_allows_execution() {
             &mcp,
             "Click it".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -783,10 +765,8 @@ async fn approval_rejection_triggers_replan() {
             &mcp,
             "Click it".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -834,10 +814,8 @@ async fn approval_channel_failure_terminates_agent() {
             &mcp,
             "Click it".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -962,10 +940,8 @@ async fn append_assistant_message_strips_reasoning_content_from_transcript() {
             &mcp,
             "Click the button".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -1104,10 +1080,8 @@ async fn cache_replay_creates_workflow_nodes() {
             &mcp,
             "Click the submit button".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -1228,10 +1202,8 @@ async fn cache_replay_reconstructs_transcript() {
             &mcp,
             "Click the submit button".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -1332,10 +1304,8 @@ async fn multi_tool_response_only_executes_first() {
             &mcp,
             "Click a button".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -1415,10 +1385,8 @@ async fn malformed_tool_call_json_returns_error() {
             &mcp,
             "Click something".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -1553,10 +1521,8 @@ async fn retained_history_stays_bounded_across_snapshot_heavy_steps() {
             &mcp,
             "Wait for a bunch of events".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -1919,10 +1885,8 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
             &mcp,
             "Launch and click".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2198,10 +2162,8 @@ async fn vlm_yes_verdict_completes_run_normally() {
             &mcp,
             "Open settings".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2268,10 +2230,8 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
             &mcp,
             "Open settings".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2349,10 +2309,8 @@ async fn vlm_check_falls_through_when_reply_is_empty() {
             &mcp,
             "Do it".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2405,10 +2363,8 @@ async fn vlm_check_falls_through_when_screenshot_fails() {
             &mcp,
             "Do it".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2562,10 +2518,8 @@ async fn policy_deny_fails_step_without_prompting() {
             &mcp,
             "Click".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2624,10 +2578,8 @@ async fn policy_allow_skips_approval_prompt() {
             &mcp,
             "Click".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2688,10 +2640,8 @@ async fn destructive_guardrail_still_prompts_when_tool_allowed() {
             &mcp,
             "Delete".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2787,10 +2737,8 @@ async fn consecutive_destructive_cap_halts_after_three_calls() {
             &mcp,
             "Cleanup".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2917,10 +2865,8 @@ async fn non_destructive_tool_resets_consecutive_destructive_counter() {
             &mcp,
             "Mix".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();
@@ -2981,10 +2927,8 @@ async fn consecutive_destructive_cap_of_zero_disables_feature() {
             &mcp,
             "Many".to_string(),
             workflow,
-            None,
             mcp_tools,
             None,
-            &[],
         )
         .await
         .unwrap();

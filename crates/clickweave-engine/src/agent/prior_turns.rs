@@ -109,6 +109,46 @@ pub fn build_goal_with_prior_turns(
     format!("{}\nCurrent goal: {}", log, current_goal)
 }
 
+/// Compose the full goal-block string the agent runner receives as its
+/// `goal` argument. Inlines the prior-turn log, variant-context text,
+/// and the user's current goal so all run-specific context lives in
+/// `messages[1]` (D18) — keeping `messages[0]` (the system prompt)
+/// stable across runs for prompt-cache hits.
+///
+/// Ordering (when all three are present):
+/// ```text
+/// Previous conversation:
+/// - Turn 1: …
+/// Current goal: <prior_turn placeholder goal>
+///
+/// Variant context: <variant_context>
+///
+/// <current_goal>
+/// ```
+///
+/// When the prior-turn log is empty, the goal is still prefixed with
+/// variant context when provided; when variant context is also empty,
+/// the function returns the raw `current_goal` unchanged.
+pub fn build_goal_block(
+    current_goal: &str,
+    turns: &[PriorTurn],
+    variant_context: Option<&str>,
+    budget_tokens: usize,
+) -> String {
+    let log = render_prior_turn_log(turns, budget_tokens);
+    let variant = variant_context.map(str::trim).unwrap_or("");
+
+    match (log.is_empty(), variant.is_empty()) {
+        (true, true) => current_goal.to_string(),
+        (true, false) => format!("Variant context: {}\n\n{}", variant, current_goal),
+        (false, true) => format!("{}\nCurrent goal: {}", log, current_goal),
+        (false, false) => format!(
+            "{}\nVariant context: {}\n\nCurrent goal: {}",
+            log, variant, current_goal
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +208,44 @@ mod tests {
     fn build_goal_with_empty_turns_is_identity() {
         let composed = build_goal_with_prior_turns("just the goal", &[], 1000);
         assert_eq!(composed, "just the goal");
+    }
+
+    #[test]
+    fn build_goal_block_all_empty_returns_raw_goal() {
+        let out = build_goal_block("just the goal", &[], None, 1000);
+        assert_eq!(out, "just the goal");
+    }
+
+    #[test]
+    fn build_goal_block_variant_only_prefixes_variant_context() {
+        let out = build_goal_block("open login page", &[], Some("variant=A"), 1000);
+        assert!(out.starts_with("Variant context: variant=A"));
+        assert!(out.contains("open login page"));
+    }
+
+    #[test]
+    fn build_goal_block_prior_turns_only_includes_log_and_current_goal() {
+        let turns = vec![t("prior", "done")];
+        let out = build_goal_block("new goal", &turns, None, 1000);
+        assert!(out.contains("Previous conversation"));
+        assert!(out.contains("Current goal: new goal"));
+        assert!(!out.contains("Variant context"));
+    }
+
+    #[test]
+    fn build_goal_block_all_three_composed_in_order() {
+        let turns = vec![t("prior", "done")];
+        let out = build_goal_block("new goal", &turns, Some("variant=A"), 1000);
+        let log_idx = out.find("Previous conversation").expect("has log");
+        let variant_idx = out.find("Variant context:").expect("has variant");
+        let goal_idx = out.find("Current goal: new goal").expect("has goal");
+        assert!(log_idx < variant_idx);
+        assert!(variant_idx < goal_idx);
+    }
+
+    #[test]
+    fn build_goal_block_whitespace_only_variant_is_treated_as_empty() {
+        let out = build_goal_block("g", &[], Some("   "), 1000);
+        assert_eq!(out, "g");
     }
 }

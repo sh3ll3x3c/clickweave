@@ -100,6 +100,67 @@ impl ChatBackend for ScriptedLlm {
     }
 }
 
+/// Scripted `ChatBackend` that also records the `messages` slice seen
+/// on each call. Used by tests that want to assert the exact prompt
+/// shape the engine sends to the LLM — e.g. locking the D18 invariant
+/// that variant-context text lives in `messages[1]` (goal slot) and
+/// never in `messages[0]` (system prompt, prompt-cache prefix).
+///
+/// Responses are served FIFO just like `ScriptedLlm`. Exhaustion falls
+/// through to a trailing `agent_done` so tests never hang.
+pub struct CapturingLlm {
+    responses: Mutex<Vec<ChatResponse>>,
+    captured: Mutex<Vec<Vec<Message>>>,
+    calls: Mutex<usize>,
+}
+
+impl CapturingLlm {
+    /// Build a capturing backend that returns each response in
+    /// `responses` once, in order.
+    pub fn new(responses: Vec<ChatResponse>) -> Self {
+        Self {
+            responses: Mutex::new(responses),
+            captured: Mutex::new(Vec::new()),
+            calls: Mutex::new(0),
+        }
+    }
+
+    /// Return the `messages` slice observed on the nth LLM call (0-based).
+    /// Panics if the call index was never made.
+    pub fn messages_at(&self, call_index: usize) -> Vec<Message> {
+        let cap = self.captured.lock().unwrap();
+        cap.get(call_index)
+            .cloned()
+            .unwrap_or_else(|| panic!("CapturingLlm: no messages captured at call {}", call_index))
+    }
+
+    pub fn call_count(&self) -> usize {
+        *self.calls.lock().unwrap()
+    }
+}
+
+impl ChatBackend for CapturingLlm {
+    fn model_name(&self) -> &str {
+        "capturing-llm"
+    }
+
+    async fn chat_with_options(
+        &self,
+        messages: &[Message],
+        _tools: Option<&[Value]>,
+        _options: &ChatOptions,
+    ) -> Result<ChatResponse> {
+        *self.calls.lock().unwrap() += 1;
+        self.captured.lock().unwrap().push(messages.to_vec());
+        let mut q = self.responses.lock().unwrap();
+        if q.is_empty() {
+            Ok(build_agent_done_response("capturing_llm: exhausted"))
+        } else {
+            Ok(q.remove(0))
+        }
+    }
+}
+
 /// `ChatBackend` that re-emits the same response on every call, rebuilt
 /// through the caller-supplied factory. Built by `ScriptedLlm::repeat`.
 pub struct RepeatLlm<F> {
@@ -467,7 +528,7 @@ pub fn llm_reply_text(text: &str) -> ChatResponse {
     }
 }
 
-fn build_agent_done_response(summary: &str) -> ChatResponse {
+pub fn build_agent_done_response(summary: &str) -> ChatResponse {
     llm_reply_tool("agent_done", serde_json::json!({ "summary": summary }))
 }
 
@@ -498,6 +559,21 @@ mod stub_self_tests {
         let tc = &r2.choices[0].message.tool_calls.as_ref().unwrap()[0];
         assert_eq!(tc.function.name, "agent_done");
         assert_eq!(llm.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn capturing_llm_records_messages_per_call() {
+        let llm = CapturingLlm::new(vec![llm_reply_tool(
+            "cdp_click",
+            serde_json::json!({"uid":"d1"}),
+        )]);
+        let m1 = vec![Message::user("first")];
+        let m2 = vec![Message::user("second")];
+        let _ = llm.chat(&m1, None).await.unwrap();
+        let _ = llm.chat(&m2, None).await.unwrap();
+        assert_eq!(llm.call_count(), 2);
+        assert_eq!(llm.messages_at(0)[0].content_text(), Some("first"));
+        assert_eq!(llm.messages_at(1)[0].content_text(), Some("second"));
     }
 
     #[tokio::test]

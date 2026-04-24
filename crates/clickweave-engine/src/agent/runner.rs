@@ -2178,17 +2178,14 @@ impl StateRunner {
         mcp: &M,
         goal: String,
         workflow: clickweave_core::Workflow,
-        variant_context: Option<&str>,
         mcp_tools: Vec<Value>,
         anchor_node_id: Option<uuid::Uuid>,
-        prior_turns: &[crate::agent::prior_turns::PriorTurn],
     ) -> anyhow::Result<(AgentState, AgentCache)>
     where
         B: ChatBackend + ?Sized,
         M: Mcp + ?Sized,
     {
         use crate::agent::context::{CompactBudget, compact};
-        use crate::agent::prior_turns::build_goal_with_prior_turns;
         use crate::agent::prompt::{build_system_prompt, build_user_turn_message};
 
         // Reset the visible state tuple to match the freshly-provided
@@ -2202,17 +2199,19 @@ impl StateRunner {
         // `build_system_prompt` expects `clickweave_mcp::Tool`; the raw
         // `Vec<Value>` is already openai-shape, so extract the minimum
         // fields each tool entry carries.
+        //
+        // D18 (Task 3.5): the system prompt is stable across runs —
+        // variant context + prior-turn log are pre-composed into `goal`
+        // at the caller seam (`build_goal_block`) so they land in
+        // `messages[1]`, preserving the `messages[0]` cache prefix.
         let tool_list_for_prompt = openai_tools_to_mcp_tool_list(&mcp_tools);
-        let mut system_text = build_system_prompt(&tool_list_for_prompt);
-        if let Some(ctx) = variant_context {
-            system_text.push_str(&format!("\n\nVariant context: {}", ctx));
-        }
+        let system_text = build_system_prompt(&tool_list_for_prompt);
 
-        // Compose the goal with inlined prior-turn log. Keeps messages[1]
-        // (the goal slot) stable across compaction (D12).
-        let composed_goal = build_goal_with_prior_turns(&goal, prior_turns, 1000);
-        let initial_user =
-            build_user_turn_message(&self.world_model, &self.task_state, 0, &composed_goal);
+        // `goal` already carries the prior-turn log + variant-context
+        // composed by `build_goal_block` at the Tauri seam. Feed it
+        // straight into the user turn so messages[1] is the single
+        // run-specific slot.
+        let initial_user = build_user_turn_message(&self.world_model, &self.task_state, 0, &goal);
 
         let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
 

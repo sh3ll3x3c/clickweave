@@ -37,10 +37,8 @@ async fn sequential_runs_chain_via_anchor() {
             &mcp1,
             "send test".to_string(),
             Workflow::default(),
-            None,
             mcp_tools.clone(),
             None,
-            &[],
         )
         .await
         .expect("run 1 succeeds");
@@ -70,16 +68,17 @@ async fn sequential_runs_chain_via_anchor() {
     }];
 
     let runner2 = StateRunner::new("wait for reply".to_string(), config).with_run_id(run_id_2);
+    // D18: caller composes prior-turn log + variant context into the
+    // goal string. Tests exercise the same seam.
+    let goal2 = crate::agent::build_goal_block("wait for reply", &prior, None, 1000);
     let (state2, _cache2) = runner2
         .run(
             &llm2,
             &mcp2,
-            "wait for reply".to_string(),
+            goal2,
             Workflow::default(),
-            None,
             mcp2.tools_as_openai(),
             Some(last_id_1),
-            &prior,
         )
         .await
         .expect("run 2 succeeds");

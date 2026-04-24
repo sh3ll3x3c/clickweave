@@ -688,14 +688,28 @@ pub async fn run_agent(
             approval_tx,
         };
 
+        // D18 (Task 3.5): compose prior-turn log + variant context +
+        // the user's goal into a single goal_block string. The engine
+        // feeds this into `messages[1]`, leaving `messages[0]` (the
+        // system prompt) stable across runs for prompt-cache hits.
+        let goal_block = clickweave_engine::agent::build_goal_block(
+            &goal,
+            &prior_turns,
+            if variant_context.is_empty() {
+                None
+            } else {
+                Some(variant_context.as_str())
+            },
+            1000,
+        );
+
         // Run the agent loop
         let result = tokio::select! {
             res = clickweave_engine::agent::run_agent_workflow(
                 &llm,
                 config,
-                goal,
+                goal_block,
                 &mcp,
-                if variant_context.is_empty() { None } else { Some(&variant_context) },
                 Some(cache),
                 Some(channels),
                 Some(vision.clone()),
@@ -706,7 +720,6 @@ pub async fn run_agent(
                 permission_policy.clone(),
                 run_uuid,
                 anchor_uuid,
-                prior_turns,
                 verification_artifacts_dir,
                 Some(storage.clone()),
             ) => res,
@@ -1409,7 +1422,6 @@ mod run_agent_smoke_tests {
             "rubric-10 gate: forwarder + persistence contract".to_string(),
             &mcp,
             None,
-            None,
             Some(channels),
             None,
             // Permission policy: `allow_all` so scripted destructive-ish
@@ -1424,7 +1436,6 @@ mod run_agent_smoke_tests {
             }),
             run_uuid,
             None,
-            Vec::new(),
             None,
             Some(Arc::clone(&storage)),
         )

@@ -21,7 +21,7 @@ mod world_model;
 // path.
 pub use approval::ApprovalGate;
 pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, ToolAnnotations};
-pub use prior_turns::PriorTurn;
+pub use prior_turns::{PriorTurn, build_goal_block};
 pub use prompt::truncate_summary;
 pub use runner::{AgentAction, AgentTurn, StateRunner, ToolExecutor, TurnOutcome};
 pub use types::*;
@@ -76,14 +76,12 @@ pub async fn run_agent_workflow<B, M>(
     config: AgentConfig,
     goal: String,
     mcp: &M,
-    variant_context: Option<&str>,
     cache: Option<AgentCache>,
     channels: Option<AgentChannels>,
     vision: Option<Arc<dyn DynChatBackend>>,
     permissions: Option<PermissionPolicy>,
     run_id: uuid::Uuid,
     anchor_node_id: Option<uuid::Uuid>,
-    prior_turns: Vec<prior_turns::PriorTurn>,
     verification_artifacts_dir: Option<PathBuf>,
     storage: Option<RunStorageHandle>,
 ) -> anyhow::Result<(AgentState, AgentCache)>
@@ -96,6 +94,12 @@ where
     // shape follows D-PR1: `Arc<dyn DynChatBackend>` so primary and
     // VLM can be different concrete backend types without pushing a
     // second generic through the Tauri command surface.
+    //
+    // D18 (Task 3.5): variant context + prior-turn log are no longer
+    // separate parameters. Callers compose them into `goal` via
+    // `build_goal_block`, so the engine sees a single goal string
+    // destined for `messages[1]`. The system prompt (`messages[0]`)
+    // stays stable across runs for prefix-cache hits.
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
     let mut runner = StateRunner::new(goal.clone(), config);
@@ -121,16 +125,7 @@ where
         runner = runner.with_storage(s);
     }
     runner
-        .run(
-            llm,
-            mcp,
-            goal,
-            workflow,
-            variant_context,
-            tools,
-            anchor_node_id,
-            &prior_turns,
-        )
+        .run(llm, mcp, goal, workflow, tools, anchor_node_id)
         .await
 }
 
