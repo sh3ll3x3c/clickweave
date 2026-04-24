@@ -508,19 +508,18 @@ mod top_level_loop_tests {
     }
 
     /// The runner must have left `TODO(task-3a.N)` markers for every deferred
-    /// behaviour (workflow-graph emission, CDP auto-connect, boundary
-    /// writes). Later tasks grep for these anchors as they wire each
-    /// behaviour on.
+    /// behaviour (CDP auto-connect, boundary writes). Later tasks grep for
+    /// these anchors as they wire each behaviour on.
     #[test]
     fn runner_source_retains_deferred_task_markers() {
         let runner_src = include_str!("../runner.rs");
         // Tasks 3a.2 (cache replay), 3a.3 (VLM verification + approval gate),
-        // and 3a.4 (loop detection, destructive cap, terminal-reason
-        // mapping) have landed — their markers were removed when the
-        // corresponding behaviour was wired into `StateRunner::run`. The
-        // remaining markers track work that still has to land in later
-        // tasks.
-        for marker in ["TODO(task-3a.5)", "TODO(task-3a.6)", "TODO(task-3a.6.5)"] {
+        // 3a.4 (loop detection, destructive cap, terminal-reason mapping),
+        // and 3a.5 (workflow-graph emission) have landed — their markers
+        // were removed when the corresponding behaviour was wired into
+        // `StateRunner::run`. The remaining markers track work that still
+        // has to land in later tasks.
+        for marker in ["TODO(task-3a.6)", "TODO(task-3a.6.5)"] {
             assert!(
                 runner_src.contains(marker),
                 "expected `{}` marker in runner.rs so Task 3a.{}+ can grep for its anchor",
@@ -690,12 +689,13 @@ mod cache_replay_tests {
             entry.hit_count, 2,
             "successful replay must bump hit_count by exactly 1"
         );
-        // `produced_node_ids` stays empty: Task 3a.5 owns workflow-node
-        // reconstruction. This test pins the D11 shape (the field exists,
-        // serializes, but 3a.2 leaves it empty on replay).
-        assert!(
-            entry.produced_node_ids.is_empty(),
-            "Task 3a.5 owns produced_node_ids lineage on replay"
+        // Task 3a.5 rebuilds the workflow node on a successful replay and
+        // appends the produced node id to the cached lineage so
+        // selective-delete can evict the right row later.
+        assert_eq!(
+            entry.produced_node_ids.len(),
+            1,
+            "successful replay must append the replayed node id to produced_node_ids"
         );
     }
 
@@ -2001,5 +2001,391 @@ mod loop_and_cap_tests {
             }
             other => panic!("expected MaxErrorsReached, got {:?}", other),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 3a.5: workflow-graph emission
+// ---------------------------------------------------------------------------
+//
+// Exercise `StateRunner::add_workflow_node` through the public `run()` entry
+// point. These tests pin the ported `NodeAdded` / `EdgeAdded` behaviour,
+// including `source_run_id` stamping, anchor chaining, observation-tool
+// filtering, the cache-replay lineage append, and AX descriptor enrichment.
+
+#[cfg(test)]
+mod workflow_graph_tests {
+    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use crate::agent::runner::StateRunner;
+    use crate::agent::types::{
+        AgentCache, AgentConfig, AgentEvent, CachedDecision, TerminalReason,
+    };
+    use crate::executor::Mcp;
+    use clickweave_core::Workflow;
+    use clickweave_core::cdp::CdpFindElementMatch;
+    use tokio::sync::mpsc;
+
+    fn cfg_with_steps(steps: usize) -> AgentConfig {
+        AgentConfig {
+            max_steps: steps,
+            ..AgentConfig::default()
+        }
+    }
+
+    /// Same as `cfg_with_steps` but disables the cache so tests that only
+    /// want to pin live-path behaviour never trigger the replay gate on
+    /// subsequent turns.
+    fn cfg_no_cache(steps: usize) -> AgentConfig {
+        AgentConfig {
+            max_steps: steps,
+            use_cache: false,
+            ..AgentConfig::default()
+        }
+    }
+
+    fn fixture_element() -> CdpFindElementMatch {
+        CdpFindElementMatch {
+            uid: "1_0".to_string(),
+            role: "button".to_string(),
+            label: "Submit".to_string(),
+            tag: "button".to_string(),
+            disabled: false,
+            parent_role: None,
+            parent_name: None,
+        }
+    }
+
+    /// MCP fixture: advertises `cdp_find_elements` + `cdp_click`; the
+    /// `cdp_find_elements` reply contains exactly one element so the
+    /// fingerprint is stable across runs.
+    fn build_mcp_with_one_element() -> StaticMcp {
+        let body = r#"{"page_url":"about:blank","source":"cdp","matches":[{"uid":"1_0","role":"button","label":"Submit","tag":"button","disabled":false,"parent_role":null,"parent_name":null}]}"#;
+        StaticMcp::with_tools(&["cdp_find_elements", "cdp_click"])
+            .with_reply("cdp_find_elements", body)
+            .with_reply("cdp_click", "clicked")
+    }
+
+    /// Drain `event_rx` of every already-buffered event. Non-blocking.
+    fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    /// A successful live-path tool call emits `AgentEvent::NodeAdded` with the
+    /// runner's `run_id` stamped as `source_run_id`, and the workflow gains a
+    /// single node with no prior edge (the anchor slot is empty).
+    #[tokio::test]
+    async fn successful_tool_call_emits_node_added_event_with_source_run_id() {
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+
+        let run_id = uuid::Uuid::new_v4();
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(16);
+        let runner = StateRunner::new("goal".to_string(), cfg_no_cache(5))
+            .with_run_id(run_id)
+            .with_events(event_tx);
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        let node_events: Vec<_> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                AgentEvent::NodeAdded { node } => Some(node.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(node_events.len(), 1, "one live tool call → one NodeAdded");
+        assert_eq!(
+            node_events[0].source_run_id,
+            Some(run_id),
+            "every emitted node must carry the runner's run_id as source_run_id"
+        );
+        // No EdgeAdded — anchor_node_id is None and this is the first node.
+        assert!(
+            !events
+                .iter()
+                .any(|ev| matches!(ev, AgentEvent::EdgeAdded { .. })),
+            "first node without an anchor must not emit an EdgeAdded"
+        );
+        assert_eq!(state.workflow.nodes.len(), 1);
+        assert!(state.workflow.edges.is_empty());
+    }
+
+    /// Two successful tool calls emit an `EdgeAdded` that connects the first
+    /// node to the second, and the workflow's edge vec is populated.
+    #[tokio::test]
+    async fn second_tool_call_emits_edge_added_connecting_to_first_node() {
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "2_0"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let runner = StateRunner::new("goal".to_string(), cfg_no_cache(5)).with_events(event_tx);
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        let nodes: Vec<_> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                AgentEvent::NodeAdded { node } => Some(node.as_ref().clone()),
+                _ => None,
+            })
+            .collect();
+        let edges: Vec<_> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                AgentEvent::EdgeAdded { edge } => Some(edge.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(nodes.len(), 2, "two live tool calls → two NodeAdded");
+        assert_eq!(edges.len(), 1, "two nodes, no anchor → one EdgeAdded");
+        assert_eq!(edges[0].from, nodes[0].id);
+        assert_eq!(edges[0].to, nodes[1].id);
+        assert_eq!(state.workflow.nodes.len(), 2);
+        assert_eq!(state.workflow.edges.len(), 1);
+    }
+
+    /// Observation-only tools (here `cdp_find_elements`) execute but must not
+    /// produce a workflow node or emit `NodeAdded`.
+    #[tokio::test]
+    async fn observation_tool_does_not_emit_node() {
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool(
+                "cdp_find_elements",
+                serde_json::json!({"query": "", "max_results": 300}),
+            ),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(16);
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_events(event_tx);
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        let node_count = events
+            .iter()
+            .filter(|ev| matches!(ev, AgentEvent::NodeAdded { .. }))
+            .count();
+        assert_eq!(
+            node_count, 0,
+            "observation tools must not produce workflow nodes"
+        );
+        assert!(state.workflow.nodes.is_empty());
+        assert!(state.workflow.edges.is_empty());
+    }
+
+    /// A caller-provided `anchor_node_id` seeds `state.last_node_id`, so the
+    /// first live node chains from the anchor via `EdgeAdded`.
+    #[tokio::test]
+    async fn anchor_node_id_chains_first_new_node() {
+        let anchor = uuid::Uuid::new_v4();
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(16);
+        let runner = StateRunner::new("goal".to_string(), cfg_no_cache(5)).with_events(event_tx);
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                Some(anchor),
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        let first_node = events.iter().find_map(|ev| match ev {
+            AgentEvent::NodeAdded { node } => Some(node.as_ref().clone()),
+            _ => None,
+        });
+        let first_edge = events.iter().find_map(|ev| match ev {
+            AgentEvent::EdgeAdded { edge } => Some(edge.clone()),
+            _ => None,
+        });
+        let node = first_node.expect("one live node");
+        let edge = first_edge.expect("anchor must produce a first edge");
+        assert_eq!(edge.from, anchor, "first edge must chain from the anchor");
+        assert_eq!(edge.to, node.id);
+        assert_eq!(state.workflow.edges.len(), 1);
+    }
+
+    /// A cache replay on a previously-stored decision rebuilds the workflow
+    /// node for the current run and appends the produced node id to the
+    /// cached entry's `produced_node_ids` lineage (required for
+    /// selective-delete).
+    #[tokio::test]
+    async fn replay_hit_appends_produced_node_id_to_cached_lineage() {
+        // Pre-seed a cache entry so the replay gate fires on step 0.
+        let mut cache = AgentCache::default();
+        cache.store(
+            "goal",
+            &[fixture_element()],
+            "cdp_click".to_string(),
+            serde_json::json!({"uid": "1_0"}),
+        );
+        // Sanity: seeded entry starts with an empty lineage.
+        let seeded: &CachedDecision = cache.entries.values().next().unwrap();
+        assert!(seeded.produced_node_ids.is_empty());
+
+        let llm = ScriptedLlm::new(vec![llm_reply_tool(
+            "agent_done",
+            serde_json::json!({"summary": "done after cache replay"}),
+        )]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(16);
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5))
+            .with_cache(cache)
+            .with_events(event_tx);
+
+        let (_state, cache_out) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        // Replay success path must have rebuilt the node and emitted the
+        // matching `NodeAdded` event.
+        let events = drain_events(&mut event_rx);
+        let node = events
+            .iter()
+            .find_map(|ev| match ev {
+                AgentEvent::NodeAdded { node } => Some(node.as_ref().clone()),
+                _ => None,
+            })
+            .expect("replay success must emit NodeAdded");
+
+        let entry = cache_out.entries.values().next().expect("entry survives");
+        assert_eq!(
+            entry.produced_node_ids.len(),
+            1,
+            "replay must append the rebuilt node id to produced_node_ids"
+        );
+        assert_eq!(entry.produced_node_ids[0], node.id);
+        assert_eq!(
+            entry.hit_count, 2,
+            "seeded + replay → hit_count bumps from 1 to 2"
+        );
+    }
+
+    /// `build_workflow = false` opts out of workflow-graph emission even on a
+    /// successful tool call. No nodes, no edges, no events.
+    #[tokio::test]
+    async fn build_workflow_false_suppresses_node_emission() {
+        let mut cfg = cfg_with_steps(5);
+        cfg.build_workflow = false;
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(16);
+        let runner = StateRunner::new("goal".to_string(), cfg).with_events(event_tx);
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        assert!(
+            !events
+                .iter()
+                .any(|ev| matches!(ev, AgentEvent::NodeAdded { .. })),
+            "build_workflow=false must suppress NodeAdded"
+        );
+        assert!(state.workflow.nodes.is_empty());
+        assert!(
+            matches!(
+                state.terminal_reason,
+                Some(TerminalReason::Completed { .. })
+            ),
+            "run still completes normally, {:?}",
+            state.terminal_reason,
+        );
     }
 }

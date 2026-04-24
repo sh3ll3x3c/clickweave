@@ -316,6 +316,90 @@ impl StateRunner {
         };
     }
 
+    /// Build a workflow node for the executed tool call. Returns the UUID of
+    /// the new node, or `None` when the tool is observation-only, when
+    /// workflow-graph building is disabled via `config.build_workflow`, or
+    /// when the tool-to-[`clickweave_core::NodeType`] mapping fails.
+    ///
+    /// On success the node is pushed onto `state.workflow.nodes`, an
+    /// `AgentEvent::NodeAdded` fires, and — when a prior node exists —
+    /// an edge from the previous node to this one is pushed onto
+    /// `state.workflow.edges` with a matching `AgentEvent::EdgeAdded`. The
+    /// first node in a run is chained from `state.last_node_id`, which the
+    /// top-level loop seeds from the caller-provided `anchor_node_id` so the
+    /// first tool call is linked to the prior workflow graph when one is
+    /// supplied. Every node is stamped with `source_run_id: self.run_id`.
+    ///
+    /// Port of `AgentRunner::add_workflow_node` from `loop_runner.rs`.
+    pub async fn add_workflow_node(
+        &mut self,
+        tool_name: &str,
+        arguments: &Value,
+        known_tools: &[Value],
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+    ) -> Option<uuid::Uuid> {
+        use clickweave_core::{Node, Position, tool_mapping::tool_invocation_to_node_type};
+
+        if !self.config.build_workflow {
+            return None;
+        }
+        if is_observation_tool(tool_name, annotations_by_tool) {
+            return None;
+        }
+
+        let mut node_type = match tool_invocation_to_node_type(tool_name, arguments, known_tools) {
+            Ok(nt) => nt,
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    tool = tool_name,
+                    "state-spine: could not map tool to workflow node type — workflow graph will be incomplete"
+                );
+                self.emit_event(AgentEvent::Warning {
+                    message: format!("Failed to map tool '{}' to workflow node: {}", tool_name, e),
+                })
+                .await;
+                return None;
+            }
+        };
+
+        // AX dispatch descriptor enrichment. The tool-mapping inbound path
+        // writes `AxTarget::ResolvedUid(uid)`; upgrade to `Descriptor`
+        // against the most recent native AX snapshot so the node replays
+        // correctly after a fresh snapshot (different generation id).
+        self.enrich_ax_descriptor(&mut node_type);
+
+        let position = Position {
+            x: 0.0,
+            y: (self.state.workflow.nodes.len() as f32) * 120.0,
+        };
+        let node = Node::new(node_type, position, tool_name, "").with_run_id(self.run_id);
+        let node_id = node.id;
+
+        // Emit the live NodeAdded event before mutating the workflow so
+        // subscribers observe creation order that matches the event stream.
+        self.emit_event(AgentEvent::NodeAdded {
+            node: Box::new(node.clone()),
+        })
+        .await;
+        self.state.workflow.nodes.push(node);
+
+        // Chain from the previous node (or the caller-supplied anchor on the
+        // first iteration).
+        if let Some(prev_id) = self.state.last_node_id {
+            let edge = clickweave_core::Edge {
+                from: prev_id,
+                to: node_id,
+            };
+            self.emit_event(AgentEvent::EdgeAdded { edge: edge.clone() })
+                .await;
+            self.state.workflow.edges.push(edge);
+        }
+
+        self.state.last_node_id = Some(node_id);
+        Some(node_id)
+    }
+
     /// After a successful tool call, refresh the world model's identity
     /// fields that the tool just captured. Non-snapshot tools are no-ops.
     pub fn update_continuity_after_tool_success(&mut self, tool_name: &str, body: &str) {
@@ -964,11 +1048,9 @@ impl StateRunner {
         goal: &str,
         elements: &[clickweave_core::cdp::CdpFindElementMatch],
         step_index: usize,
-        // `mcp_tools` is threaded through for Task 3a.5's
-        // `add_workflow_node` — the tool-to-NodeType mapping consults the
-        // advertised tool schemas. Unused in the 3a.2 stub but kept in the
-        // signature so the 3a.5 wiring is a parameter-name change only.
-        _mcp_tools: &[Value],
+        // Threaded through for `add_workflow_node` (Task 3a.5 wiring):
+        // the tool-to-NodeType mapping consults the advertised tool schemas.
+        mcp_tools: &[Value],
         annotations_by_tool: &HashMap<String, ToolAnnotations>,
         mcp: &M,
         messages: &mut Vec<Message>,
@@ -1128,18 +1210,18 @@ impl StateRunner {
                     tool_call_id: tool_call_id.clone(),
                 };
 
-                // TODO(task-3a.5): rebuild workflow node + emit NodeAdded /
-                // EdgeAdded for the replayed call. Until 3a.5 lands the
-                // cross-run lineage (cache.produced_node_ids) is not
-                // augmented; the replay still bumps hit_count below so
-                // the JSON field changes in a D11-compatible way.
-                let produced_node_id_on_replay: Option<uuid::Uuid> = None;
-                if let Some(node_id) = produced_node_id_on_replay
-                    && let Some(entry) = self.cache.entries.get_mut(&current_key)
-                {
-                    entry.produced_node_ids.push(node_id);
-                }
+                // Rebuild the workflow node for this run — the cache stores
+                // decisions across runs, so the current workflow needs the
+                // replayed action as a node. The produced node id is
+                // appended to the cached entry's lineage so selective-delete
+                // can evict the right cross-run rows later.
+                let produced_node_id_on_replay = self
+                    .add_workflow_node(&cached_tool, &cached_args, mcp_tools, annotations_by_tool)
+                    .await;
                 if let Some(entry) = self.cache.entries.get_mut(&current_key) {
+                    if let Some(node_id) = produced_node_id_on_replay {
+                        entry.produced_node_ids.push(node_id);
+                    }
                     entry.hit_count += 1;
                 }
 
@@ -1629,8 +1711,57 @@ impl StateRunner {
                         self.emit_destructive_cap_hit().await;
                         break;
                     }
-                    // TODO(task-3a.5): add_workflow_node (NodeAdded /
-                    // EdgeAdded emission) goes here.
+
+                    // Workflow-graph emission. Non-observation tools become
+                    // nodes on `state.workflow`; the first node chains from
+                    // `state.last_node_id` (seeded by `anchor_node_id` at
+                    // the top of `run`). Cache writes stamp the produced
+                    // node id into the cache entry's `produced_node_ids`
+                    // lineage so selective-delete can evict the right rows
+                    // later.
+                    let tool_arguments = match &turn.action {
+                        AgentAction::ToolCall { arguments, .. } => arguments.clone(),
+                        _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
+                    };
+                    let produced_node_id = self
+                        .add_workflow_node(
+                            &tool_name,
+                            &tool_arguments,
+                            &mcp_tools,
+                            &annotations_by_tool,
+                        )
+                        .await;
+
+                    // Cache write. Mirrors the legacy filter: only cache
+                    // action tools, never observation / AX dispatch /
+                    // state-transition tools, and only when the page
+                    // fingerprint is non-empty.
+                    if self.config.use_cache
+                        && !is_observation_tool(&tool_name, &annotations_by_tool)
+                        && !is_ax_dispatch_tool(&tool_name)
+                        && !is_state_transition_tool(&tool_name)
+                        && !elements.is_empty()
+                    {
+                        match produced_node_id {
+                            Some(node_id) => {
+                                self.cache.store_with_node(
+                                    &goal,
+                                    &elements,
+                                    tool_name.clone(),
+                                    tool_arguments.clone(),
+                                    node_id,
+                                );
+                            }
+                            None => {
+                                self.cache.store(
+                                    &goal,
+                                    &elements,
+                                    tool_name.clone(),
+                                    tool_arguments.clone(),
+                                );
+                            }
+                        }
+                    }
                     // TODO(task-3a.6): auto_connect_cdp + synthetic
                     // focus_window skip go here.
                 }
