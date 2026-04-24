@@ -5,7 +5,7 @@
 //! covered at the `AgentChannels` contract boundary.
 
 use super::{CapturingMockAgent, MockAgent, MockMcp};
-use crate::agent::loop_runner::AgentRunner;
+use crate::agent::StateRunner;
 use crate::agent::types::*;
 use crate::executor::Mcp;
 use clickweave_llm::Message;
@@ -131,17 +131,18 @@ async fn stop_during_approval_wait_sends_rejection_not_channel_drop() {
         }
     });
 
-    let mut runner = AgentRunner::new(&agent_llm, config)
+    let runner = StateRunner::new("Click it".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
     let workflow = clickweave_core::Workflow::new("Stop-during-approval");
     let mcp_tools = mcp.tools_as_openai();
 
-    let state = runner
+    let (state, _cache) = runner
         .run(
+            &agent_llm,
+            &mcp,
             "Click it".to_string(),
             workflow,
-            &mcp,
             None,
             mcp_tools,
             None,
@@ -181,14 +182,15 @@ async fn buffered_events_do_not_leak_between_runs() {
     let (approval_tx_a, approval_rx_a) = approval_channel();
     let approver_a = spawn_auto_approver(approval_rx_a);
 
-    let mut runner_a = AgentRunner::new(&llm_a, AgentConfig::default())
+    let runner_a = StateRunner::new("goal A".to_string(), AgentConfig::default())
         .with_events(event_tx_a)
         .with_approval(approval_tx_a);
     runner_a
         .run(
+            &llm_a,
+            &mcp_a,
             "goal A".to_string(),
             clickweave_core::Workflow::new("A"),
-            &mcp_a,
             None,
             mcp_a.tools_as_openai(),
             None,
@@ -208,14 +210,15 @@ async fn buffered_events_do_not_leak_between_runs() {
 
     let (event_tx_b, mut event_rx_b) = mpsc::channel::<AgentEvent>(64);
     let (approval_tx_b, _approval_rx_b) = approval_channel();
-    let mut runner_b = AgentRunner::new(&llm_b, AgentConfig::default())
+    let runner_b = StateRunner::new("goal B".to_string(), AgentConfig::default())
         .with_events(event_tx_b)
         .with_approval(approval_tx_b);
     runner_b
         .run(
+            &llm_b,
+            &mcp_b,
             "goal B".to_string(),
             clickweave_core::Workflow::new("B"),
-            &mcp_b,
             None,
             mcp_b.tools_as_openai(),
             None,
@@ -330,17 +333,19 @@ async fn cached_launch_app_is_not_replayed_and_falls_through_to_llm() {
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 
-    let mut runner = AgentRunner::with_cache(&agent_llm, config, cache)
+    let runner = StateRunner::new("launch Calculator".to_string(), config)
+        .with_cache(cache)
         .with_events(event_tx)
         .with_approval(approval_tx);
     let workflow = clickweave_core::Workflow::new("Cache-replay launch");
     let mcp_tools = mcp.tools_as_openai();
 
-    let state = runner
+    let (state, _cache) = runner
         .run(
+            &agent_llm,
+            &mcp,
             "launch Calculator".to_string(),
             workflow,
-            &mcp,
             None,
             mcp_tools,
             None,
@@ -426,16 +431,18 @@ async fn empty_elements_skips_cache_read_and_write() {
     let (approval_tx, approval_rx) = approval_channel();
     let approver = spawn_auto_approver(approval_rx);
 
-    let mut runner = AgentRunner::with_cache(&llm, config, cache)
+    let runner = StateRunner::new("click somewhere".to_string(), config)
+        .with_cache(cache)
         .with_events(event_tx)
         .with_approval(approval_tx);
     let workflow = clickweave_core::Workflow::new("Native-no-cache");
     let mcp_tools = mcp.tools_as_openai();
-    let state = runner
+    let (state, final_cache) = runner
         .run(
+            &llm,
+            &mcp,
             "click somewhere".to_string(),
             workflow,
-            &mcp,
             None,
             mcp_tools,
             None,
@@ -470,7 +477,6 @@ async fn empty_elements_skips_cache_read_and_write() {
     // Write-side guard: `store()` bumps hit_count. If the click had
     // written into the cache on success, the seed's hit_count would be 2.
     drop(state);
-    let final_cache = runner.into_cache();
     let seeded = final_cache
         .lookup("click somewhere", &[])
         .expect("pre-seeded entry should still exist");
@@ -511,16 +517,17 @@ async fn workflow_mapping_miss_emits_warning_and_run_continues() {
     let (approval_tx, approval_rx) = approval_channel();
     let approver = spawn_auto_approver(approval_rx);
 
-    let mut runner = AgentRunner::new(&agent_llm, config)
+    let runner = StateRunner::new("trigger mapping miss".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
     let workflow = clickweave_core::Workflow::new("Mapping-miss");
     let mcp_tools = mcp.tools_as_openai();
-    let state = runner
+    let (state, _cache) = runner
         .run(
+            &agent_llm,
+            &mcp,
             "trigger mapping miss".to_string(),
             workflow,
-            &mcp,
             None,
             mcp_tools,
             None,
@@ -664,17 +671,18 @@ async fn focus_window_after_native_launch_is_suppressed_with_ax_toolset() {
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 
-    let mut runner = AgentRunner::new(&agent_llm, config)
+    let runner = StateRunner::new("reach Calculator via AX".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
     let workflow = clickweave_core::Workflow::new("focus-window-skip");
     let mcp_tools = mcp.tools_as_openai();
 
-    let state = runner
+    let (state, _cache) = runner
         .run(
+            &agent_llm,
+            &mcp,
             "reach Calculator via AX".to_string(),
             workflow,
-            &mcp,
             None,
             mcp_tools,
             None,
@@ -827,17 +835,18 @@ async fn focus_window_still_runs_when_app_kind_is_unknown() {
     let (approval_tx, approval_rx) = approval_channel();
     let approver = spawn_auto_approver(approval_rx);
 
-    let mut runner = AgentRunner::new(&agent_llm, config)
+    let runner = StateRunner::new("focus UnseenApp".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
     let workflow = clickweave_core::Workflow::new("focus-unknown-kind");
     let mcp_tools = mcp.tools_as_openai();
 
-    let state = runner
+    let (state, _cache) = runner
         .run(
+            &agent_llm,
+            &mcp,
             "focus UnseenApp".to_string(),
             workflow,
-            &mcp,
             None,
             mcp_tools,
             None,
@@ -954,7 +963,7 @@ async fn focus_window_after_cdp_connected_is_suppressed_for_electron_target() {
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 
-    let mut runner = AgentRunner::new(&agent_llm, config)
+    let mut runner = StateRunner::new("reach Signal via CDP".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
     // Short-circuit the full launch → auto_connect_cdp choreography
@@ -967,11 +976,12 @@ async fn focus_window_after_cdp_connected_is_suppressed_for_electron_target() {
     let workflow = clickweave_core::Workflow::new("focus-window-cdp-skip");
     let mcp_tools = mcp.tools_as_openai();
 
-    let state = runner
+    let (state, _cache) = runner
         .run(
+            &agent_llm,
+            &mcp,
             "reach Signal via CDP".to_string(),
             workflow,
-            &mcp,
             None,
             mcp_tools,
             None,
@@ -1111,17 +1121,18 @@ async fn focus_window_suppressed_when_allow_focus_window_policy_is_false() {
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 
-    let mut runner = AgentRunner::new(&agent_llm, config)
+    let runner = StateRunner::new("complete task in background".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
     let workflow = clickweave_core::Workflow::new("focus-window-policy-off");
     let mcp_tools = mcp.tools_as_openai();
 
-    let state = runner
+    let (state, _cache) = runner
         .run(
+            &agent_llm,
+            &mcp,
             "complete task in background".to_string(),
             workflow,
-            &mcp,
             None,
             mcp_tools,
             None,

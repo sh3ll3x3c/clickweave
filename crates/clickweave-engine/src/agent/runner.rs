@@ -275,6 +275,19 @@ impl StateRunner {
         self.cdp_state.set_connected(app_name, pid);
     }
 
+    /// Test-only seed for the `(app_kind, cdp_connected)` state the
+    /// runner would otherwise reach only after `launch_app` →
+    /// `auto_connect_cdp` → `on_cdp_connected`. Used by integration
+    /// tests that want to exercise the post-CDP-connect focus_window
+    /// skip path without the full quit/relaunch/connect choreography.
+    /// Port of `AgentRunner::seed_cdp_live_for_test`
+    /// (`loop_runner.rs:364`) for 3a.7.b test migration.
+    #[cfg(test)]
+    pub(crate) fn seed_cdp_live_for_test(&mut self, app_name: &str, kind: &str) {
+        self.record_app_kind(app_name, kind);
+        self.cdp_state.set_connected(app_name, 0);
+    }
+
     /// Public-for-tests view of `cdp_state`. Keeps the field private
     /// outside the module while letting integration tests assert the
     /// post-tool auto-connect bookkeeping.
