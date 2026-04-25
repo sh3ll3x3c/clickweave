@@ -4,17 +4,27 @@ mod completion_check;
 mod context;
 pub mod episodic;
 pub mod permissions;
-mod phase;
+// Phase is part of `TaskState`'s public surface (used to construct
+// `task_state_at_entry` snapshots in the episodic memory layer's
+// integration tests), so the module surfaces as `pub mod`.
+pub mod phase;
 pub mod prior_turns;
 mod prompt;
 mod recovery;
 mod render;
 mod runner;
-mod step_record;
-mod task_state;
+// Phase 2 (episodic memory) integration tests construct
+// `WorldModelSnapshot`, `StepRecord`, and `TaskState` values from
+// outside the crate, so these modules surface as `pub mod`. The
+// underlying types already declared `#[allow(dead_code)]` while their
+// runtime consumers are wired up in later phases; making the modules
+// public does not change that contract — it only lets external test
+// code build fixture rows for the episodic store round-trip.
+pub mod step_record;
+pub mod task_state;
 mod transition;
 mod types;
-mod world_model;
+pub mod world_model;
 
 // `ApprovalGate` lives in `approval` so the state-spine runner can own it
 // without a cyclic dep on the legacy runner. Phase 3b deleted the legacy

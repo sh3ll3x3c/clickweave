@@ -127,6 +127,13 @@ pub enum AgentEvent {
         boundary_kind: BoundaryKind,
         step_index: usize,
     },
+    // `EpisodeWritten` and `EpisodePromoted` variants are added in
+    // Phase 3 alongside the runner integration that actually emits
+    // them. Phase 2's `EpisodicWriter` accepts an `event_tx` parameter
+    // for forward compatibility with that wiring, but the per-request
+    // emission paths inside the writer are stubbed (TODO comments) so
+    // adding the variants does not have to land before Phase 3 wires
+    // up the runner. See `episodic/write.rs`.
 }
 
 /// Per-step diff of the harness-owned `WorldModel`. Carries the field

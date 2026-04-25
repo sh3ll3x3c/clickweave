@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::phase::Phase;
+// Re-export `Phase` so external callers (e.g. Phase 2's episodic
+// memory integration tests) can construct `TaskState` values with the
+// canonical phase enum without reaching into `agent::phase` directly.
+pub use crate::agent::phase::Phase;
 
 /// Capacity of the rolling hypothesis ring buffer.
 /// Chosen so the state block renders in a bounded number of lines even
