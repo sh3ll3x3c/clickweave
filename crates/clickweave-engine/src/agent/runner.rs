@@ -2485,6 +2485,44 @@ impl StateRunner {
         B: ChatBackend + ?Sized,
         M: Mcp + ?Sized,
     {
+        // R2.M1: drain queued episodic writes on *every* exit path,
+        // including the early `?` returns from chat/parse failures.
+        // Without this, a recovery write queued moments before an LLM
+        // failure would race the Tauri-side cleanup and never commit
+        // before the writer is dropped, defeating the run-terminal
+        // promotion barrier the post-loop flush already installs.
+        let inner = Self::run_inner(
+            &mut self,
+            llm,
+            mcp,
+            goal,
+            workflow,
+            mcp_tools,
+            anchor_node_id,
+        );
+        let result = inner.await;
+        if let Some(writer) = &self.episodic_writer {
+            writer.flush().await;
+        }
+        match result {
+            Ok(()) => Ok((self.state, self.cache)),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn run_inner<B, M>(
+        &mut self,
+        llm: &B,
+        mcp: &M,
+        goal: String,
+        workflow: clickweave_core::Workflow,
+        mcp_tools: Vec<Value>,
+        anchor_node_id: Option<uuid::Uuid>,
+    ) -> anyhow::Result<()>
+    where
+        B: ChatBackend + ?Sized,
+        M: Mcp + ?Sized,
+    {
         use crate::agent::context::{CompactBudget, compact};
         use crate::agent::prompt::{build_system_prompt, build_user_turn_message};
 
@@ -3281,19 +3319,10 @@ impl StateRunner {
             self.write_terminal_record().await;
         }
 
-        // Drain queued episodic writes before handing control back to
-        // the caller. The Tauri run-terminal code path spawns a fresh
-        // `EpisodicWriter` for the promotion pass, which opens a new
-        // connection on the same `episodic.sqlite` file. Without this
-        // barrier, a `DeriveAndInsert` queued seconds earlier may not
-        // yet be committed when the promotion writer's `SELECT … WHERE
-        // last_seen_at >= run_started_at` runs, so a clean run with
-        // one recovery would silently fail to promote.
-        if let Some(writer) = &self.episodic_writer {
-            writer.flush().await;
-        }
-
-        Ok((self.state, self.cache))
+        // Drain happens in the outer `run` wrapper so it covers both
+        // `Ok` and early-`?` `Err` exits from this function. See the
+        // post-result `writer.flush().await` in `Self::run`.
+        Ok(())
     }
 }
 
