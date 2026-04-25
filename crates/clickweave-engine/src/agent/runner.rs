@@ -3145,7 +3145,7 @@ impl StateRunner {
                             .unwrap_or_else(|_| serde_json::json!({})),
                         serde_json::json!({"kind": "tool_success"}),
                     );
-                    let _ = writer
+                    let queue_result = writer
                         .queue(
                             crate::agent::episodic::types::WriteRequest::DeriveAndInsert {
                                 entry: Box::new(entry),
@@ -3154,6 +3154,20 @@ impl StateRunner {
                             },
                         )
                         .await;
+                    // F7 fix: surface backpressure drops as a Warning
+                    // event so consumers can distinguish "no recovery
+                    // happened" from "recovery succeeded but the
+                    // episodic write was dropped." D32 keeps the
+                    // agent loop running either way; this is purely
+                    // observability.
+                    if let Err(e) = queue_result {
+                        self.emit_event(AgentEvent::Warning {
+                            message: format!(
+                                "episodic: write dropped: backpressure ({e})"
+                            ),
+                        })
+                        .await;
+                    }
                 }
             }
 

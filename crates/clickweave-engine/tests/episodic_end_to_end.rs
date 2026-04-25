@@ -445,6 +445,79 @@ async fn single_writer_processes_derive_and_insert_then_promote_pass() {
     );
 }
 
+// ── F7 acceptance test ─────────────────────────────────────────────
+//
+// Writer-side derive/insert and promotion failures used to log via
+// `tracing::warn!` only — the durable event stream and UI never
+// learned that an episodic write was lost. After F7 those failure
+// arms also emit `AgentEvent::Warning` so consumers can distinguish
+// "no recovery happened" from "recovery succeeded but the write was
+// dropped."
+
+#[tokio::test]
+async fn writer_emits_warning_on_derive_and_insert_failure() {
+    // Force a derive/insert failure by dropping the `episodes` table
+    // out from under the writer's open connection after spawn. The
+    // next `wl.insert(...)` then fails inside SQLite ("no such
+    // table: episodes"), the writer's `Err(_)` arm runs, and the
+    // F7 wiring must emit an `AgentEvent::Warning` so the dropped
+    // write is visible in the durable event stream — not just in a
+    // `tracing::warn!` log line.
+
+    let dir = tempfile::tempdir().unwrap();
+    let wl_path = dir.path().join("wl.sqlite");
+
+    let ctx = EpisodicContext {
+        enabled: true,
+        workflow_local_path: wl_path.clone(),
+        global_path: None,
+        workflow_hash: "warn-w".into(),
+    };
+    let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
+    let writer = EpisodicWriter::spawn(ctx, Some(tx), uuid::Uuid::new_v4()).expect("spawn");
+
+    // Use a separate connection to drop the table the writer's
+    // connection is bound to. WAL journal makes this a clean
+    // schema-level break that the writer's next INSERT will hit.
+    {
+        let aux = rusqlite_open(&wl_path);
+        aux.execute("DROP TABLE episodes", []).unwrap();
+    }
+
+    writer
+        .queue(WriteRequest::DeriveAndInsert {
+            entry: Box::new(mk_recovery_snapshot("warn-w", "sig_warn")),
+            recovery_success: Box::new(mk_step_record()),
+            recovery_actions: vec![],
+        })
+        .await
+        .expect("queue");
+    writer.flush_for_tests().await;
+
+    let mut warning_seen = false;
+    while let Ok(Some(evt)) =
+        tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await
+    {
+        if let AgentEvent::Warning { message } = evt {
+            assert!(
+                message.starts_with("episodic:"),
+                "warning prefix `episodic:` lets consumers filter memory-loss signals; got {:?}",
+                message,
+            );
+            warning_seen = true;
+            break;
+        }
+    }
+    assert!(
+        warning_seen,
+        "F7: derive/insert failure must emit AgentEvent::Warning, not just a tracing log",
+    );
+}
+
+fn rusqlite_open(path: &std::path::Path) -> rusqlite::Connection {
+    rusqlite::Connection::open(path).expect("open aux conn")
+}
+
 // ── F3+F4 acceptance tests ─────────────────────────────────────────
 //
 // Cover the writer-store config plumbing (F3) and the unified

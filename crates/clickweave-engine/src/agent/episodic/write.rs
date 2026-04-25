@@ -138,7 +138,21 @@ impl EpisodicWriter {
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(error = %e, "episodic: derive_and_insert failed")
+                                tracing::warn!(error = %e, "episodic: derive_and_insert failed");
+                                // F7 fix: surface write failures through
+                                // the event channel as well so the UI /
+                                // event consumers learn that an episodic
+                                // write was lost. Bounded message with
+                                // a stable prefix; non-sensitive.
+                                if let Some(tx) = &event_tx_task {
+                                    let _ = tx
+                                        .send(crate::agent::types::AgentEvent::Warning {
+                                            message: format!(
+                                                "episodic: write dropped: derive_and_insert failed: {e}"
+                                            ),
+                                        })
+                                        .await;
+                                }
                             }
                         }
                     }
@@ -166,7 +180,21 @@ impl EpisodicWriter {
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::warn!(error = %e, "episodic: promotion pass failed")
+                                    tracing::warn!(error = %e, "episodic: promotion pass failed");
+                                    // F7 fix: see DeriveAndInsert error
+                                    // arm — same rationale, same prefix
+                                    // scheme so consumers can match on
+                                    // `episodic: ...` for memory-loss
+                                    // signals.
+                                    if let Some(tx) = &event_tx_task {
+                                        let _ = tx
+                                            .send(crate::agent::types::AgentEvent::Warning {
+                                                message: format!(
+                                                    "episodic: promotion dropped: {e}"
+                                                ),
+                                            })
+                                            .await;
+                                    }
                                 }
                             }
                         }
