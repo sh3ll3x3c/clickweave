@@ -19,11 +19,11 @@ pub mod store;
 pub mod types;
 pub mod write;
 
+pub use embedder::{Embedder, HashedShingleEmbedder};
 pub use types::{
     CompactAction, EpisodeRecord, EpisodeScope, EpisodicContext, EpisodicError, FailureSignature,
     InsertOutcome, PreStateSignature, PromotionTerminalKind, RecoveringEntrySnapshot,
     RecoveryActionsHash, RetrievalTrigger, RetrievedEpisode, ScoreBreakdown, TriggeringError,
     WriteRequest,
 };
-// `pub use embedder::{Embedder, HashedShingleEmbedder};` lands in Task 1.4.
 // `pub use store::{...}` and `pub use write::EpisodicWriter;` land in Phase 2.
