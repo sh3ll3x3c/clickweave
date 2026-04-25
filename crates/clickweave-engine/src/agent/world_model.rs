@@ -342,7 +342,7 @@ impl WorldModel {
         obs: &O,
         step_index: usize,
     ) -> Result<(), String> {
-        // P2.H1: try CDP first; fall back to AX when CDP is not attached in
+        // Try CDP first; fall back to AX when CDP is not attached in
         // this MCP session (observer returns Ok(None)).
         if self.elements.is_none() {
             let try_result = obs
@@ -829,7 +829,7 @@ mod refresh_tests {
 
     #[tokio::test]
     async fn refresh_repopulates_elements_via_cdp_when_available() {
-        // P2.H1: CDP availability is signaled by the observer returning
+        // CDP availability is signaled by the observer returning
         // Ok(Some(_)) from cdp_find_elements. The observer is the
         // authoritative source for "CDP is currently attached".
         let mut wm = WorldModel::default();

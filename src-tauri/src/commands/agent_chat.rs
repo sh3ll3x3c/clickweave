@@ -114,7 +114,7 @@ pub async fn save_agent_chat(
     request: SaveAgentChatRequest,
 ) -> Result<(), CommandError> {
     // Privacy kill switch: skip file write entirely. Must run before any
-    // std::fs:: call so the D1.M4 contract is respected.
+    // std::fs:: call so the privacy contract is respected.
     if !request.store_traces {
         return Ok(());
     }
@@ -141,9 +141,9 @@ pub async fn prune_agent_cache_for_nodes(
     app: tauri::AppHandle,
     request: PruneAgentCacheRequest,
 ) -> Result<(), CommandError> {
-    // Privacy kill switch: D1.M4 says don't touch the file. The next run
-    // still picks up the unmutated cache and applies `evict_for_node`
-    // before use. Must run before any std::fs:: call.
+    // Privacy kill switch: don't touch the file. The next run still
+    // picks up the unmutated cache and applies `evict_for_node` before
+    // use. Must run before any std::fs:: call.
     if !request.store_traces {
         return Ok(());
     }
@@ -261,9 +261,9 @@ mod tests {
     fn privacy_kill_switch_branches_return_before_file_io() {
         // The guard is `if !request.store_traces { return Ok(()); }`.
         // A change that moved file I/O above this guard would break the
-        // spec's D1.M4 resolution. Keep this contract documented as a
-        // test — scan the function body for the first real std::fs::
-        // call (skipping comments) and assert the guard precedes it.
+        // privacy contract. Keep this contract documented as a test —
+        // scan the function body for the first real std::fs:: call
+        // (skipping comments) and assert the guard precedes it.
         let src = include_str!("agent_chat.rs");
         for fn_name in [
             "pub async fn prune_agent_cache_for_nodes",

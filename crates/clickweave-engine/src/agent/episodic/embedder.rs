@@ -1,5 +1,5 @@
 //! Deterministic in-process embedder (D27) and cosine / NaN-safe-ordering
-//! helpers (D32, D1.M4 from the Round 1 review).
+//! helpers (D32).
 //!
 //! The default `HashedShingleEmbedder` hashes token shingles (width 2) and
 //! character n-grams (n = 3, 4, 5) into a fixed-size sparse vector and

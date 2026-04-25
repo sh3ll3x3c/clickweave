@@ -668,7 +668,7 @@ pub async fn run_agent(
     };
 
     // Capture the run-start timestamp so PromotePass scopes promotion
-    // to episodes touched during this run (P1.M3).
+    // to episodes touched during this run.
     let run_start_utc = chrono::Utc::now();
 
     let cancel_token = CancellationToken::new();
@@ -1007,8 +1007,8 @@ pub async fn run_agent(
                         }
                         _ => PromotionTerminalKind::SkipPromotion,
                     };
-                    // F8 fix: use `try_send` instead of awaited `send`
-                    // so a saturated writer channel cannot wedge the
+                    // Use `try_send` instead of awaited `send` so a
+                    // saturated writer channel cannot wedge the
                     // run-terminal path before the timeout-protected
                     // flush below. Matches the runner's nonblocking
                     // queue path (`EpisodicWriter::queue` →

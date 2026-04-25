@@ -184,10 +184,10 @@ pub enum PromotionTerminalKind {
 /// Captured at `Recovering`-entry on `StateRunner`; consumed at the matching
 /// exit inside Spec 1's RecoverySucceeded guard.
 ///
-/// **P1.C2 fix:** carries the `pre_state_signature` computed at query-time
-/// (with the same `compute_pre_state_signature` function the retrieval used),
+/// Carries `pre_state_signature` computed at query-time
+/// (with the same `compute_pre_state_signature` function retrieval uses),
 /// so writes and future exact-match queries share a single source of truth.
-/// **P1.H3 fix:** carries `events_jsonl_ref`, an absolute path to the
+/// Carries `events_jsonl_ref`, an absolute path to the
 /// currently-active execution's `events.jsonl`, so the write-side populates
 /// `step_record_refs` and D36's orphan-ref sweep has something to resolve.
 #[derive(Debug, Clone)]
@@ -237,7 +237,7 @@ pub enum WriteRequest {
     PromotePass {
         workflow_hash: String,
         terminal_kind: PromotionTerminalKind,
-        /// P1.M3 fix: only episodes whose `last_seen_at >= run_started_at`
+        /// Only episodes whose `last_seen_at >= run_started_at`
         /// participate. A clean run with no recovery must not re-promote
         /// old rows or inflate global `occurrence_count` on unrelated
         /// episodes. Required by every PromotePass.

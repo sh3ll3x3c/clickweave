@@ -164,8 +164,7 @@ where
     // — no second connection is opened. The caller (Tauri command) holds
     // this sender to queue a run-terminal `PromotePass` on the same
     // writer that processed all `DeriveAndInsert` requests during the run,
-    // eliminating the cross-connection visibility concern flagged in the
-    // architectural gap review (R1.H1).
+    // eliminating cross-connection visibility hazards.
     let writer_tx = runner.writer_sender();
 
     let (state, cache) = runner

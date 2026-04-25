@@ -80,9 +80,9 @@ pub struct StateRunner {
     pub last_replan_step: Option<usize>,
     pub pending_events: Vec<InvalidationEvent>,
 
-    // --- Compatibility fields (P2.H4) ---
-    // Carried so the Phase 3 cutover can swap the public seam without
-    // silently dropping what callers rely on today.
+    // --- Compatibility fields ---
+    // Carried so the public seam can change without silently dropping
+    // what callers rely on today.
     pub config: AgentConfig,
     pub state: AgentState,
     pub workflow: clickweave_core::Workflow,
@@ -182,8 +182,8 @@ impl StateRunner {
     /// or run_id), but the [`EpisodicWriter`] is deferred to
     /// [`Self::with_episodic_writer`] so it can capture the channel +
     /// run_id seeded by [`Self::with_events`] / [`Self::with_run_id`]
-    /// (P2.H2 — without those the writer's emitted events would fail
-    /// the frontend's stale-run filter).
+    /// — without those the writer's emitted events would fail the
+    /// frontend's stale-run filter.
     pub fn new_with_episodic(
         goal: String,
         config: AgentConfig,
@@ -328,12 +328,12 @@ impl StateRunner {
 
     /// Spawn the [`EpisodicWriter`] tied to this runner.
     ///
-    /// MUST be called after [`Self::with_events`] and [`Self::with_run_id`]
-    /// (P2.H2): the writer captures both at spawn so emitted
-    /// `EpisodeWritten` / `EpisodePromoted` events carry the live `run_id`
-    /// and pass the frontend's stale-run filter. Calling before either
-    /// silently skips the writer (so episodic stays best-effort and the
-    /// agent run still proceeds — D32).
+    /// MUST be called after [`Self::with_events`] and [`Self::with_run_id`]:
+    /// the writer captures both at spawn so emitted `EpisodeWritten` /
+    /// `EpisodePromoted` events carry the live `run_id` and pass the
+    /// frontend's stale-run filter. Calling before either silently
+    /// skips the writer (so episodic stays best-effort and the agent
+    /// run still proceeds — D32).
     pub fn with_episodic_writer(mut self) -> Self {
         if !self.episodic_active() {
             return self;
@@ -545,7 +545,7 @@ impl StateRunner {
             self.task_state.watch_slots.iter().map(|s| s.name).collect();
         let sig = compute_pre_state_signature(&self.world_model, &active_slots);
 
-        // P1.C2: capture snapshot at retrieval time so the eventual
+        // Capture snapshot at retrieval time so the eventual
         // write uses the same signature.
         if matches!(trigger, RetrievalTrigger::RecoveringEntry) {
             use crate::agent::episodic::types::{RecoveringEntrySnapshot, TriggeringError};
@@ -2583,7 +2583,7 @@ impl StateRunner {
         B: ChatBackend + ?Sized,
         M: Mcp + ?Sized,
     {
-        // R2.M1: drain queued episodic writes on *every* exit path,
+        // Drain queued episodic writes on *every* exit path,
         // including the early `?` returns from chat/parse failures.
         // Without this, a recovery write queued moments before an LLM
         // failure would race the Tauri-side cleanup and never commit
@@ -2688,13 +2688,13 @@ impl StateRunner {
             // 1. Observe — fetch elements + detect page transition.
             //    Capture the pre-mirror world-model signatures so the
             //    `WorldModelChanged` diff emitted by `run_turn` sees the
-            //    direct-observation writes below (R4.M1). Only seed the
+            //    direct-observation writes below. Only seed the
             //    baseline when it is empty: early-exit branches (cache
             //    replay `Continue`/`Break`, policy deny, approval reject)
             //    skip `run_turn` entirely, so the baseline must persist
-            //    across iterations until `run_turn.take()` consumes it
-            //    (R5.M1). `run_turn` falls back to an internal snapshot
-            //    when `None`, preserving the direct-driver test path.
+            //    across iterations until `run_turn.take()` consumes it.
+            //    `run_turn` falls back to an internal snapshot when
+            //    `None`, preserving the direct-driver test path.
             if self.turn_pre_signatures.is_none() {
                 self.turn_pre_signatures = Some(self.world_model.field_signatures());
             }
@@ -2750,7 +2750,7 @@ impl StateRunner {
                 }
             }
 
-            // Spec 2 (P1.C1): re-infer phase from current consecutive-error
+            // Spec 2: re-infer phase from current consecutive-error
             // counter BEFORE the cache gate / retrieval / render. The
             // outer-loop top hasn't run `observe()` yet — `run_turn`'s
             // internal observe runs AFTER mutations on the prior iteration,
@@ -2795,7 +2795,7 @@ impl StateRunner {
             // LLM picks before a connection exists return a "not
             // connected" MCP error that the recovery strategy absorbs.
 
-            // Spec 2: episodic retrieval on cache miss (P1.H7). Cache
+            // Spec 2: episodic retrieval on cache miss. Cache
             // hits fast-pathed via `Continue` above, so we only land
             // here on miss / fall-through. `try_retrieve_episodic`
             // returns an empty vec when episodic is inactive or no
@@ -4000,7 +4000,7 @@ mod agent_turn_parsing_tests {
 
     #[test]
     fn rejects_malformed_json() {
-        // P1.M4: the design's error-path table says a malformed AgentTurn
+        // The design's error-path table says a malformed AgentTurn
         // triggers one repair retry; the parser must surface the error
         // clearly rather than returning a default.
         let json = r#"{"mutations": [], "action":"#; // truncated

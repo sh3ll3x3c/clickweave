@@ -38,7 +38,7 @@ pub fn score(
     let text_similarity = if candidate.embedding_impl_id == "hashed_shingle_v1" {
         cosine(query_embedding, &candidate.goal_subgoal_embedding).max(0.0)
     } else {
-        0.0 // D1.M4: impl-id mismatch — skip text scoring, keep structured
+        0.0 // impl-id mismatch — skip text scoring, keep structured
     };
 
     let occurrence_boost = ((candidate.occurrence_count as f32) + 1.0).ln();

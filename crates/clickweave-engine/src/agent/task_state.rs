@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn complete_subgoal_pops_top_and_records_milestone() {
-        // CompleteSubgoal does not take an id (P1.H1): the state block
+        // CompleteSubgoal does not take an id: the state block
         // never surfaces SubgoalIds to the LLM, so the LLM cannot author
         // them. The flat stack guarantees completion always targets the
         // top; the harness pops whichever subgoal is active.

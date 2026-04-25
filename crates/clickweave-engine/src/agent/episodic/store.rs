@@ -65,13 +65,13 @@ pub struct SqliteEpisodicStore {
     pub(crate) conn: Arc<Mutex<Connection>>,
     pub(crate) scope: EpisodeScope,
     pub(crate) path: PathBuf,
-    /// Config-derived score weights (P1.M2). Set at construction so
+    /// Config-derived score weights. Set at construction so
     /// `retrieve()` doesn't have to re-read `AgentConfig`.
     pub score_weights: ScoreWeights,
-    /// Half-life (in days) for the time-decay factor in scoring (P1.M2).
+    /// Half-life (in days) for the time-decay factor in scoring.
     pub decay_halflife_days: f32,
-    /// Maximum rows to retain per scope before LRU eviction kicks in
-    /// (P1.M2). `insert()` calls `prune_lru(self.max_per_scope)` after
+    /// Maximum rows to retain per scope before LRU eviction kicks in.
+    /// `insert()` calls `prune_lru(self.max_per_scope)` after
     /// every fresh row write.
     pub max_per_scope: usize,
 }
@@ -115,9 +115,8 @@ impl SqliteEpisodicStore {
         Self::new_with_config(path, scope, ScoreWeights::default(), 90.0, 500)
     }
 
-    /// Production constructor (P1.M2): config-tuned weights, half-life,
-    /// and per-scope cap. `StateRunner::new` (Phase 3) calls this with
-    /// values derived from `AgentConfig`.
+    /// Production constructor: config-tuned weights, half-life, and
+    /// per-scope cap. Callers pass values derived from `AgentConfig`.
     pub fn new_with_config(
         path: &Path,
         scope: EpisodeScope,
@@ -354,7 +353,7 @@ impl EpisodicStore for SqliteEpisodicStore {
 
         let outcome = outcome_result?;
 
-        // P1.M2: prune LRU only after fresh-insert paths grew the row count.
+        // Prune LRU only after fresh-insert paths grew the row count.
         // Dedup-merges keep row count constant, so they skip pruning.
         if matches!(outcome, InsertOutcome::Inserted { .. }) {
             let _ = self.prune_lru(self.max_per_scope).await;
@@ -376,7 +375,7 @@ impl EpisodicStore for SqliteEpisodicStore {
         let goal = query.goal.to_string();
         let subgoal = query.subgoal_text.map(|s| s.to_string());
         let now = query.now;
-        // P1.M2: capture config-derived tuning before moving into spawn_blocking.
+        // Capture config-derived tuning before moving into spawn_blocking.
         let store_weights = self.score_weights;
         let store_halflife = self.decay_halflife_days;
 
