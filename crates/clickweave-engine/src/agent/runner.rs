@@ -187,12 +187,7 @@ impl StateRunner {
 
         let (episodic_store, episodic_global) = if episodic_ctx.enabled && config.episodic_enabled {
             use crate::agent::episodic::SqliteEpisodicStore;
-            use crate::agent::episodic::retrieval::ScoreWeights;
-            let weights = ScoreWeights {
-                structured: config.episodic_score_weights.structured,
-                text: config.episodic_score_weights.text,
-                occurrence: config.episodic_score_weights.occurrence,
-            };
+            let weights = config.episodic_score_weights.into();
             let halflife = config.episodic_decay_halflife_days;
             let wl = SqliteEpisodicStore::new_with_config(
                     &episodic_ctx.workflow_local_path,

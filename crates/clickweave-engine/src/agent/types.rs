@@ -277,6 +277,16 @@ impl Default for EpisodicScoreWeights {
     }
 }
 
+impl From<EpisodicScoreWeights> for crate::agent::episodic::retrieval::ScoreWeights {
+    fn from(w: EpisodicScoreWeights) -> Self {
+        Self {
+            structured: w.structured,
+            text: w.text,
+            occurrence: w.occurrence,
+        }
+    }
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
