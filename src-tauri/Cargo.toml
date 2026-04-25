@@ -29,6 +29,11 @@ tracing-subscriber.workspace = true
 
 image.workspace = true
 regex = "1"
+# Used by `privacy.rs` for the Spec 2 episodic-store retention sweep
+# (D36). Workflow-local + global stores are derived views over
+# `events.jsonl` and inherit the trace-retention window — the sweep
+# opens each `episodic.sqlite` directly to drop expired rows.
+rusqlite = { version = "0.31", features = ["bundled"] }
 clickweave-core = { workspace = true, features = ["specta"] }
 clickweave-engine = { workspace = true, features = ["specta"] }
 clickweave-llm = { workspace = true, features = ["specta"] }

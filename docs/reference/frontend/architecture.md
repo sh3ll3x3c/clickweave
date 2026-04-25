@@ -152,6 +152,8 @@ The agent slice owns the live state of the state-spine agent loop. The backend `
 
 The new state-spine events (`agent://task_state_changed`, `agent://world_model_changed`, `agent://boundary_record_written`) are emitted by `StateRunner` and carried through to the frontend, but are not yet consumed by this slice — a later task lights up the subgoal-stack / world-model inspector panel. `WorldModelDiff` (payload of `world_model_changed`) is a minimal `{ changed_fields: Vec<String> }` shape — a re-render hint, not a full snapshot.
 
+The Spec 2 episodic-memory events (`agent://episodes_retrieved`, `agent://episode_written`, `agent://episode_promoted`) are emitted by the engine and the background `EpisodicWriter` task, fan out through the same `forward_agent_event` seam, and carry the active `run_id` so the stale-run filter drops late events from a previous run. The slice itself does not yet consume them — they currently support telemetry / future inspector surfaces only. The fields the UI threads into `AgentRunRequest` to control the layer (`episodic_enabled`, `retrieved_episodes_k`, `episodic_global_participation`) are sourced from the SettingsSlice fields documented below.
+
 **AssistantSlice** (`assistantSlice.ts`)
 
 Owns the conversational surface. `messages` is the source of truth for continuation: each `user` + `assistant` pair shares a `runId` so the backend can build `prior_turns` for the next turn. `system` messages are deletion annotations (center-aligned, muted blue) with no `runId`.
@@ -164,12 +166,20 @@ Owns the conversational surface. `messages` is the source of truth for continuat
 
 **SettingsSlice** (`settingsSlice.ts`)
 
-- `supervisorConfig`, `agentConfig`, `fastConfig`, `fastEnabled`, `maxRepairAttempts`, `hoverDwellThreshold`, `supervisionDelayMs`, `toolPermissions`, `traceRetentionDays`, `storeTraces`
+- `supervisorConfig`, `agentConfig`, `fastConfig`, `fastEnabled`, `maxRepairAttempts`, `hoverDwellThreshold`, `supervisionDelayMs`, `toolPermissions`, `traceRetentionDays`, `storeTraces`, `episodicEnabled`, `retrievedEpisodesK`, `episodicGlobalParticipation`
 - persistence via `store/settings.ts` (`settings.json` through Tauri plugin-store)
 
 `supervisorConfig` is the supervisor LLM endpoint used for Test-mode step verdicts and walkthrough-enrichment VLM fallback. `agentConfig` drives the agent loop. `fastConfig` (enabled by `fastEnabled`) is the fast-VLM used for screenshot description before the supervisor runs its judge pass.
 
 `traceRetentionDays` (default 30, `0` disables cleanup) drives the run-trace retention sweep at app startup; `storeTraces` (default on) is the privacy kill switch threaded into each run request — when off, agent and workflow runs execute entirely in memory and nothing is written under `.clickweave/runs/`.
+
+The Spec 2 episodic-memory controls are surfaced under the Execution settings tab's "Agent Memory" subsection:
+
+- `episodicEnabled` (default `true`) — master kill switch. When off, the engine builds an `EpisodicContext::disabled()` for the run regardless of the global-participation flag, and the runner skips every retrieval and write.
+- `retrievedEpisodesK` (default `2`, range `[1, 10]`) — top-k episodes returned per retrieval trigger. Higher values surface more candidate recoveries at the cost of a longer `<retrieved_recoveries>` block in the user turn.
+- `episodicGlobalParticipation` (default `false`, **privacy opt-in**) — when on, recovery episodes from this workflow may be promoted into the cross-workflow `<app_data_dir>/episodic.sqlite` store. Default off keeps every workflow's recoveries strictly isolated; the global path is only opened when this flag is true.
+
+All three flow through `AgentRunRequest` (`episodic_enabled`, `retrieved_episodes_k`, `episodic_global_participation`) and are persisted to `settings.json` via `saveSetting` per-key.
 
 **UiSlice** (`uiSlice.ts`)
 
@@ -213,6 +223,10 @@ Owns the conversational surface. `messages` is the source of truth for continuat
   - `agent://task_state_changed` — full `TaskState` snapshot emitted after any turn that applied at least one mutation
   - `agent://world_model_changed` — emitted once per step after `observe`; payload carries a `WorldModelDiff { changed_fields: string[] }` re-render hint, not the full model
   - `agent://boundary_record_written` — emitted when the runner persists a `StepRecord`; payload `{ boundary_kind, step_index }` where `boundary_kind` is `"terminal" | "subgoal_completed" | "recovery_succeeded"`
+- Spec 2 episodic-memory additions (same stale-run filtering; payload shapes locked by D33):
+  - `agent://episodes_retrieved` — payload `{ trigger: "run_start" | "recovering_entry", count, episode_ids: string[], scope_breakdown: { workflow, global } }`. Fired by the runner when a retrieval pass returned at least one candidate.
+  - `agent://episode_written` — payload `{ outcome: "inserted" | "merged" | "dropped: <reason>", episode_id, scope: "workflow_local" | "global", occurrence_count }`. Fired by the background `EpisodicWriter` task after each successful insert / merge.
+  - `agent://episode_promoted` — payload `{ promoted_episode_ids: string[], skipped_count }`. Fired once at run-terminal when the promotion pass copies eligible workflow-local episodes into the global cross-workflow store. IDs in `promoted_episode_ids` are the actual global-store row IDs (existing IDs on dedup-merge, freshly minted IDs on insert), so they always resolve in the global store.
 - `walkthrough://state`, `walkthrough://event`, `walkthrough://draft_ready`, `walkthrough://cdp-setup`
 - `recording-bar://action`
 - `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`

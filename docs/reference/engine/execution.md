@@ -138,6 +138,9 @@ The loop emits events through an `AgentChannels` mpsc channel, forwarded as Taur
 - `agent://task_state_changed` — emitted after `apply_mutations` applies at least one mutation during a turn. Payload: `{ run_id, task_state }` (full snapshot — subgoal stack, watch slots, phase, milestones, hypotheses).
 - `agent://world_model_changed` — emitted once per step after `observe` runs. Payload: `{ run_id, diff: WorldModelDiff }` where `WorldModelDiff.changed_fields` lists the `WorldModel` field names whose freshness-wrapped value changed during that step's observe phase (stable names: `focused_app`, `window_list`, `cdp_page`, `elements`, `modal_present`, `dialog_present`, `last_screenshot`, `last_native_ax_snapshot`, `uncertainty`).
 - `agent://boundary_record_written` — emitted every time a boundary `StepRecord` is persisted to `events.jsonl`. Payload: `{ run_id, boundary_kind, step_index }` where `boundary_kind` is `"terminal" | "subgoal_completed" | "recovery_succeeded"`.
+- `agent://episodes_retrieved` — Spec 2 D33. Emitted by `StateRunner` when an episodic-retrieval pass returns at least one candidate. Triggered once per run at the run-start retrieval slot and on each `Exploring/Executing -> Recovering` phase transition. Payload: `{ run_id, trigger: "run_start" | "recovering_entry", count, episode_ids: string[], scope_breakdown: { workflow, global } }`.
+- `agent://episode_written` — Spec 2 D33. Emitted by the background `EpisodicWriter` task after a recovery snapshot is persisted to a SQLite store. Payload: `{ run_id, outcome: "inserted" | "merged" | "dropped: <reason>", episode_id, scope: "workflow_local" | "global", occurrence_count }`.
+- `agent://episode_promoted` — Spec 2 D33. Emitted by the run-terminal promotion pass after the writer copies one or more workflow-local episodes into the global cross-workflow store. Payload: `{ run_id, promoted_episode_ids: string[], skipped_count }`. On dedup-merge the existing global row's ID is reported (not a freshly minted ID), so the IDs always resolve in the global store.
 
 After `StepOutcome::Done`, the loop runs a VLM completion check when a vision backend is attached: it takes a screenshot via `take_screenshot`, sends it with the goal and agent summary, and parses YES/NO from the reply. YES lets the run complete normally (`Completed`). NO halts the run with `TerminalReason::CompletionDisagreement` and emits `agent://completion_disagreement`. Verification errors (no vision backend, screenshot failure, empty or failed VLM response) log a warning and fall through to the legacy `Completed` path — a broken verifier must not tank successful runs.
 
@@ -148,4 +151,25 @@ All payloads carry the `run_id` so stale events from a prior run can be filtered
 - `stop_agent` — cancels the running loop; sends an explicit rejection through any pending approval so the engine returns `Ok(false)` instead of "approval unavailable". Also resolves a pending VLM-disagreement oneshot as `Cancel` so the run still records a truthful `DisagreementCancelled` terminal reason (instead of an ambiguous `unknown`).
 - `approve_agent_action { approved: bool }` — responds to the current pending approval.
 - `resolve_completion_disagreement { action: "confirm" | "cancel" }` — resolves a pending VLM completion disagreement. `confirm` records the run as successful with a `DisagreementConfirmed` terminal reason and emits `agent://complete`. `cancel` records it as failed with a `DisagreementCancelled` reason and emits `agent://stopped { reason: "user_cancelled_disagreement" }`. Both paths append a `CompletionDisagreementResolved` entry to `events.jsonl` and a `VariantEntry` with a distinct `divergence_summary`.
+
+### Episodic Memory (Spec 2)
+
+The engine maintains a two-tier episodic memory layer (`crates/clickweave-engine/src/agent/episodic/`) so the agent can recall how it recovered from similar stuck states in past runs. Episodic is a **derived view** over `events.jsonl` — it never owns ground truth — and runs entirely best-effort: every failure path is swallowed (D32) so an unhealthy SQLite store never tanks an agent run.
+
+**Boundary type.** `EpisodicContext` is the engine-boundary type the Tauri layer constructs once per run. It carries `{ enabled, workflow_local_path, global_path: Option, workflow_hash }`. The disabled context (`EpisodicContext::disabled()`) is the no-op shape — the runner skips every retrieval and write when `enabled = false`. The Tauri command sets `enabled = false` whenever the privacy `store_traces` kill switch is off (D34) or the operator turned the master kill switch off in settings.
+
+**Retrieval triggers.** The runner runs `try_retrieve_episodic` once per outer-loop iteration on a cache miss; the helper itself is the gate (D24). It fires retrieval only on:
+
+1. **Run-start** — `step_index == 0`. Lets the agent surface relevant past recoveries before it commits to a strategy.
+2. **`Recovering`-entry** — the harness-inferred `Phase` flips from `Exploring` / `Executing` to `Recovering`. Captured at the top of the iteration via `prev_phase_at_top` so the same call simultaneously emits `EpisodesRetrieved` and snapshots a `RecoveringEntrySnapshot` for the matching `Recovering -> Executing` exit (the eventual write hangs off Spec 1's existing `RecoverySucceeded` boundary).
+
+Retrieved episodes render as a `<retrieved_recoveries>` block above the observation in the user-turn message (`render::render_retrieved_recoveries_block`), preserving D6's stable system-prompt invariant.
+
+**Storage.** Each scope is a separate SQLite database (D26): `<workflow_dir>/episodic.sqlite` for workflow-local, `<app_data_dir>/episodic.sqlite` for global. The global file is opt-in per run — the Tauri command sets `EpisodicContext::global_path = Some(...)` only when the operator enabled "Share recoveries across workflows" (D35).
+
+**Write path.** Async, fire-and-forget. The runner queues `WriteRequest::DeriveAndInsert` to a bounded `mpsc::channel<WriteRequest>` at the `RecoverySucceeded` guard; the consumer task derives an `EpisodeRecord` and inserts via the dedup-aware path. Channel back-pressure surfaces as `EpisodicError::Backpressure` and the runner drops the request silently — the agent loop never blocks on episodic.
+
+**Promotion.** Run-terminal. The Tauri command queues a single `WriteRequest::PromotePass` after the agent loop returns, gated on a clean terminal (`TerminalReason::Completed` or `DisagreementConfirmed` → `PromotionTerminalKind::Clean`; everything else → `SkipPromotion`) AND the operator's global-participation opt-in. The pure `should_promote(occurrence_count, global_has_match)` rule promotes a row when its workflow-local `occurrence_count >= 2` OR a row with the same `pre_state_signature` already exists in global (cross-workflow confirmation, D31).
+
+**Source-of-truth invariant.** `events.jsonl` remains authoritative. Every episode row carries `step_record_refs: Vec<String>` pointing back to the `events.jsonl` line that fed it, so the trace-retention sweep in `src-tauri/src/privacy.rs` can sweep orphaned rows when their backing trace is deleted (D36).
 

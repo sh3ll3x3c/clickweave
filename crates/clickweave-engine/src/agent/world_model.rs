@@ -1,6 +1,6 @@
 #![allow(dead_code)] // Phase 1: module wired to its own tests only; runtime consumers land in later phases.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use clickweave_core::cdp::CdpFindElementMatch;
 
@@ -22,16 +22,17 @@ pub struct Fresh<T> {
 
 /// Classification for the currently-focused app. Mirrors the existing
 /// `AppKind` classification used by the runner — will unify in Phase 4.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "snake_case")]
 pub enum AppKind {
+    #[default]
     Native,
     ElectronApp,
     ChromeBrowser,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct FocusedApp {
     pub name: String,
@@ -39,7 +40,7 @@ pub struct FocusedApp {
     pub pid: i32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WindowRef {
     pub app_name: String,
@@ -47,7 +48,7 @@ pub struct WindowRef {
     pub pid: i32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CdpPageState {
     pub url: String,
@@ -91,7 +92,7 @@ pub struct OcrMatch {
     pub confidence: f32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ScreenshotRef {
     pub screenshot_id: String,
@@ -107,7 +108,7 @@ pub struct AxSnapshotData {
     pub ax_tree_text: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct UncertaintyScore {
     pub score: f32, // 0.0 .. 1.0
@@ -341,7 +342,7 @@ impl WorldModel {
         obs: &O,
         step_index: usize,
     ) -> Result<(), String> {
-        // P2.H1: try CDP first; fall back to AX when CDP is not attached in
+        // Try CDP first; fall back to AX when CDP is not attached in
         // this MCP session (observer returns Ok(None)).
         if self.elements.is_none() {
             let try_result = obs
@@ -828,7 +829,7 @@ mod refresh_tests {
 
     #[tokio::test]
     async fn refresh_repopulates_elements_via_cdp_when_available() {
-        // P2.H1: CDP availability is signaled by the observer returning
+        // CDP availability is signaled by the observer returning
         // Ok(Some(_)) from cdp_find_elements. The observer is the
         // authoritative source for "CDP is currently attached".
         let mut wm = WorldModel::default();

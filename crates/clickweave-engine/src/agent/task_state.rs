@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::phase::Phase;
+// Re-export `Phase` so external callers (e.g. Phase 2's episodic
+// memory integration tests) can construct `TaskState` values with the
+// canonical phase enum without reaching into `agent::phase` directly.
+pub use crate::agent::phase::Phase;
 
 /// Capacity of the rolling hypothesis ring buffer.
 /// Chosen so the state block renders in a bounded number of lines even
@@ -255,7 +258,7 @@ mod tests {
 
     #[test]
     fn complete_subgoal_pops_top_and_records_milestone() {
-        // CompleteSubgoal does not take an id (P1.H1): the state block
+        // CompleteSubgoal does not take an id: the state block
         // never surfaces SubgoalIds to the LLM, so the LLM cannot author
         // them. The flat stack guarantees completion always targets the
         // top; the harness pops whichever subgoal is active.

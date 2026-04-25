@@ -2,18 +2,29 @@ mod approval;
 mod cache;
 mod completion_check;
 mod context;
+pub mod episodic;
 pub mod permissions;
-mod phase;
+// Phase is part of `TaskState`'s public surface (used to construct
+// `task_state_at_entry` snapshots in the episodic memory layer's
+// integration tests), so the module surfaces as `pub mod`.
+pub mod phase;
 pub mod prior_turns;
 mod prompt;
 mod recovery;
 mod render;
 mod runner;
-mod step_record;
-mod task_state;
+// Phase 2 (episodic memory) integration tests construct
+// `WorldModelSnapshot`, `StepRecord`, and `TaskState` values from
+// outside the crate, so these modules surface as `pub mod`. The
+// underlying types already declared `#[allow(dead_code)]` while their
+// runtime consumers are wired up in later phases; making the modules
+// public does not change that contract — it only lets external test
+// code build fixture rows for the episodic store round-trip.
+pub mod step_record;
+pub mod task_state;
 mod transition;
 mod types;
-mod world_model;
+pub mod world_model;
 
 // `ApprovalGate` lives in `approval` so the state-spine runner can own it
 // without a cyclic dep on the legacy runner. Phase 3b deleted the legacy
@@ -83,7 +94,21 @@ pub async fn run_agent_workflow<B, M>(
     anchor_node_id: Option<uuid::Uuid>,
     verification_artifacts_dir: Option<PathBuf>,
     storage: Option<RunStorageHandle>,
-) -> anyhow::Result<(AgentState, AgentCache)>
+    // Spec 2 episodic-memory wiring. `None` → `EpisodicContext::disabled()`,
+    // preserving the legacy "no episodic" behaviour for tests and
+    // internal callers that don't construct paths.
+    episodic_ctx: Option<crate::agent::episodic::EpisodicContext>,
+) -> anyhow::Result<(
+    AgentState,
+    AgentCache,
+    // A clone of the runner-owned episodic writer's channel sender. The
+    // Tauri caller enqueues `WriteRequest::PromotePass` on this sender
+    // after `run` returns so that the single worker task — and its single
+    // pair of SQLite connections — handles both `DeriveAndInsert` and
+    // `PromotePass`. Dropping the sender signals the worker to exit after
+    // draining. `None` when episodic is disabled for this run.
+    Option<tokio::sync::mpsc::Sender<crate::agent::episodic::types::WriteRequest>>,
+)>
 where
     B: ChatBackend,
     M: Mcp + ?Sized,
@@ -101,7 +126,13 @@ where
     // stays stable across runs for prefix-cache hits.
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
-    let mut runner = StateRunner::new(goal.clone(), config);
+    // P4: thread the per-run `EpisodicContext` through `new_with_episodic`
+    // so the runner can open the workflow-local + global SQLite stores
+    // before the loop starts. Callers that pass `None` get the disabled
+    // context — episodic stays a no-op for that run.
+    let episodic_ctx =
+        episodic_ctx.unwrap_or_else(crate::agent::episodic::EpisodicContext::disabled);
+    let mut runner = StateRunner::new_with_episodic(goal.clone(), config, episodic_ctx);
     if let Some(c) = cache {
         runner = runner.with_cache(c);
     }
@@ -123,9 +154,23 @@ where
     if let Some(s) = storage {
         runner = runner.with_storage(s);
     }
-    runner
+    // Spawn the episodic writer last so it captures the live `event_tx`
+    // and `run_id` already seeded by `with_events` / `with_run_id`. The
+    // writer is a no-op when `episodic_active()` is false.
+    runner = runner.with_episodic_writer();
+
+    // Clone the writer's channel sender *before* `run` consumes the
+    // runner. The clone shares the same worker task and SQLite connections
+    // — no second connection is opened. The caller (Tauri command) holds
+    // this sender to queue a run-terminal `PromotePass` on the same
+    // writer that processed all `DeriveAndInsert` requests during the run,
+    // eliminating cross-connection visibility hazards.
+    let writer_tx = runner.writer_sender();
+
+    let (state, cache) = runner
         .run(llm, mcp, goal, workflow, tools, anchor_node_id)
-        .await
+        .await?;
+    Ok((state, cache, writer_tx))
 }
 
 /// Shared test doubles (`ScriptedLlm`, `StaticMcp`, `NullMcp`, `YesVlm`,

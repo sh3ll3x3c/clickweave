@@ -86,7 +86,11 @@ async fn single_step_agent_done_completes_run() {
     let (outcome, warnings, _milestones) = r.run_turn(&agent_done("completed login"), &exec).await;
     assert!(warnings.is_empty());
     assert!(matches!(outcome, TurnOutcome::Done { .. }));
-    assert_eq!(r.step_index, 1);
+    // `step_index` counts recorded AgentSteps (advanced by
+    // `advance_recorded_step_index`, called only by sites that push
+    // onto `state.steps`). `agent_done` is terminal and pushes no
+    // step, so the counter stays at 0.
+    assert_eq!(r.step_index, 0);
 }
 
 #[tokio::test]
@@ -260,7 +264,10 @@ async fn terminal_boundary_record_captures_final_state() {
     );
     let json = serde_json::to_string(&record).unwrap();
     assert!(json.contains("\"boundary_kind\":\"terminal\""));
-    assert_eq!(record.step_index, 1);
+    // `step_index` reflects recorded AgentSteps. `agent_done` is
+    // terminal with no step push, so the boundary record describes
+    // the run as terminating before any step was recorded.
+    assert_eq!(record.step_index, 0);
 }
 
 #[tokio::test]
@@ -3177,7 +3184,7 @@ mod e2e_run_agent_workflow_tests {
             )
             .with_reply("cdp_click", "clicked");
 
-        let (state, _cache) = run_agent_workflow(
+        let (state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             "log me in".to_string(),
@@ -3187,6 +3194,7 @@ mod e2e_run_agent_workflow_tests {
             None,
             None,
             uuid::Uuid::new_v4(),
+            None,
             None,
             None,
             None,
@@ -3282,7 +3290,7 @@ mod e2e_run_agent_workflow_tests {
             approval_tx,
         };
 
-        let (state, _cache) = run_agent_workflow(
+        let (state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig {
                 max_steps: 5,
@@ -3295,6 +3303,7 @@ mod e2e_run_agent_workflow_tests {
             None,
             Some(policy),
             uuid::Uuid::new_v4(),
+            None,
             None,
             None,
             None,
@@ -3371,7 +3380,7 @@ mod e2e_run_agent_workflow_tests {
             .join("events.jsonl");
         let storage = Arc::new(Mutex::new(storage));
 
-        let (_state, _cache) = run_agent_workflow(
+        let (_state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             "exercise storage".to_string(),
@@ -3384,6 +3393,7 @@ mod e2e_run_agent_workflow_tests {
             None,
             None,
             Some(storage.clone()),
+            None,
         )
         .await
         .expect("run_agent_workflow ok");
@@ -3454,7 +3464,7 @@ mod variant_context_placement_tests {
             1000,
         );
 
-        let (_state, _cache) = run_agent_workflow(
+        let (_state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             goal_block,
@@ -3464,6 +3474,7 @@ mod variant_context_placement_tests {
             None,
             None,
             uuid::Uuid::new_v4(),
+            None,
             None,
             None,
             None,
@@ -3522,7 +3533,7 @@ mod variant_context_placement_tests {
 
         let goal_block = build_goal_block("just a goal", &[], None, 1000);
 
-        let (_state, _cache) = run_agent_workflow(
+        let (_state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             goal_block,
@@ -3532,6 +3543,7 @@ mod variant_context_placement_tests {
             None,
             None,
             uuid::Uuid::new_v4(),
+            None,
             None,
             None,
             None,

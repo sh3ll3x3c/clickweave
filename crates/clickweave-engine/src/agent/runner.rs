@@ -80,9 +80,9 @@ pub struct StateRunner {
     pub last_replan_step: Option<usize>,
     pub pending_events: Vec<InvalidationEvent>,
 
-    // --- Compatibility fields (P2.H4) ---
-    // Carried so the Phase 3 cutover can swap the public seam without
-    // silently dropping what callers rely on today.
+    // --- Compatibility fields ---
+    // Carried so the public seam can change without silently dropping
+    // what callers rely on today.
     pub config: AgentConfig,
     pub state: AgentState,
     pub workflow: clickweave_core::Workflow,
@@ -139,12 +139,95 @@ pub struct StateRunner {
     /// test/unit caller path is in effect and `run_turn` falls back to
     /// snapshotting signatures itself immediately before `observe()`.
     pub(crate) turn_pre_signatures: Option<Vec<(&'static str, Option<usize>)>>,
+
+    // --- Spec 2 episodic-memory fields (Phase 3) ---
+    pub(crate) episodic_ctx: crate::agent::episodic::EpisodicContext,
+    pub(crate) episodic_store: Option<std::sync::Arc<crate::agent::episodic::SqliteEpisodicStore>>,
+    pub(crate) episodic_global: Option<std::sync::Arc<crate::agent::episodic::SqliteEpisodicStore>>,
+    pub(crate) episodic_writer: Option<crate::agent::episodic::EpisodicWriter>,
+    pub(crate) recovering_snapshot: Option<crate::agent::episodic::types::RecoveringEntrySnapshot>,
+    pub(crate) recovery_actions_accumulator: Vec<crate::agent::episodic::types::CompactAction>,
+    pub(crate) last_failed_tool_name: Option<String>,
+    pub(crate) last_failed_error_kind: Option<String>,
+    /// Cached events.jsonl path for the active execution; resolved
+    /// lazily when retrieval needs to populate
+    /// `RecoveringEntrySnapshot::events_jsonl_ref`.
+    pub(crate) episodic_events_ref: Option<String>,
+    /// Authoritative gate for D24 run-start retrieval: set true the
+    /// first time `try_retrieve_episodic` reaches its trigger-decision
+    /// slot, regardless of whether retrieval returned hits. Decoupled
+    /// from `step_index` so cache-replay / synthetic-skip / policy-deny
+    /// / approval-reject paths cannot let `step_index == 0` re-fire
+    /// run-start retrieval after the run has already taken actions.
+    pub(crate) episodic_run_start_retrieved: bool,
 }
 
 impl StateRunner {
     pub fn new(goal: String, config: AgentConfig) -> Self {
+        Self::new_with_episodic(
+            goal,
+            config,
+            crate::agent::episodic::EpisodicContext::disabled(),
+        )
+    }
+
+    /// Construct a runner with an explicit Spec 2 [`EpisodicContext`].
+    ///
+    /// Production callers go through this constructor; the legacy
+    /// [`Self::new`] is preserved for the many integration tests that
+    /// don't care about episodic memory and pass the disabled context
+    /// implicitly.
+    ///
+    /// SQLite stores are opened here (they don't need the event channel
+    /// or run_id), but the [`EpisodicWriter`] is deferred to
+    /// [`Self::with_episodic_writer`] so it can capture the channel +
+    /// run_id seeded by [`Self::with_events`] / [`Self::with_run_id`]
+    /// — without those the writer's emitted events would fail the
+    /// frontend's stale-run filter.
+    pub fn new_with_episodic(
+        goal: String,
+        config: AgentConfig,
+        episodic_ctx: crate::agent::episodic::EpisodicContext,
+    ) -> Self {
         let workflow = clickweave_core::Workflow::default();
         let state = AgentState::new(workflow.clone());
+
+        let (episodic_store, episodic_global) = if episodic_ctx.enabled && config.episodic_enabled {
+            use crate::agent::episodic::SqliteEpisodicStore;
+            let weights = config.episodic_score_weights.into();
+            let halflife = config.episodic_decay_halflife_days;
+            let wl = SqliteEpisodicStore::new_with_config(
+                    &episodic_ctx.workflow_local_path,
+                    crate::agent::episodic::EpisodeScope::WorkflowLocal,
+                    weights,
+                    halflife,
+                    config.episodic_max_per_scope_workflow,
+                )
+                .map(std::sync::Arc::new)
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "episodic: failed to open workflow-local store; disabling");
+                    e
+                })
+                .ok();
+            let global = episodic_ctx
+                .global_path
+                .as_ref()
+                .and_then(|p| {
+                    SqliteEpisodicStore::new_with_config(
+                        p,
+                        crate::agent::episodic::EpisodeScope::Global,
+                        weights,
+                        halflife,
+                        config.episodic_max_per_scope_global,
+                    )
+                    .ok()
+                })
+                .map(std::sync::Arc::new);
+            (wl, global)
+        } else {
+            (None, None)
+        };
+
         Self {
             world_model: WorldModel::default(),
             task_state: TaskState::new(goal),
@@ -169,6 +252,16 @@ impl StateRunner {
             cdp_state: crate::cdp_lifecycle::CdpState::new(),
             known_app_kinds: HashMap::new(),
             turn_pre_signatures: None,
+            episodic_ctx,
+            episodic_store,
+            episodic_global,
+            episodic_writer: None,
+            recovering_snapshot: None,
+            recovery_actions_accumulator: Vec::new(),
+            last_failed_tool_name: None,
+            last_failed_error_kind: None,
+            episodic_events_ref: None,
+            episodic_run_start_retrieved: false,
         }
     }
 
@@ -233,11 +326,88 @@ impl StateRunner {
         self
     }
 
+    /// Spawn the [`EpisodicWriter`] tied to this runner.
+    ///
+    /// MUST be called after [`Self::with_events`] and [`Self::with_run_id`]:
+    /// the writer captures both at spawn so emitted `EpisodeWritten` /
+    /// `EpisodePromoted` events carry the live `run_id` and pass the
+    /// frontend's stale-run filter. Calling before either silently
+    /// skips the writer (so episodic stays best-effort and the agent
+    /// run still proceeds — D32).
+    pub fn with_episodic_writer(mut self) -> Self {
+        if !self.episodic_active() {
+            return self;
+        }
+        let event_tx = self.event_tx.clone();
+        // Pass the configured store knobs through to the writer so
+        // its workflow-local + global stores honour the same
+        // weights / half-life / per-scope caps the runner-side
+        // retrieval stores were opened with. The default `spawn`
+        // path opens both stores via `SqliteEpisodicStore::new`,
+        // which hard-codes the cap to 500.
+        let store_config = crate::agent::episodic::store::EpisodicStoreConfig {
+            score_weights: self.config.episodic_score_weights.into(),
+            decay_halflife_days: self.config.episodic_decay_halflife_days,
+            max_per_scope_workflow: self.config.episodic_max_per_scope_workflow,
+            max_per_scope_global: self.config.episodic_max_per_scope_global,
+        };
+        match crate::agent::episodic::EpisodicWriter::spawn_with_config(
+            self.episodic_ctx.clone(),
+            store_config,
+            event_tx,
+            self.run_id,
+        ) {
+            Ok(w) => self.episodic_writer = Some(w),
+            Err(e) => tracing::warn!(error = %e, "episodic: failed to spawn writer"),
+        }
+        self
+    }
+
+    /// Whether the episodic memory layer is wired up and active for
+    /// this runner. Cheap, side-effect-free; safe to call from hot
+    /// paths.
+    pub(crate) fn episodic_active(&self) -> bool {
+        self.config.episodic_enabled && self.episodic_ctx.enabled && self.episodic_store.is_some()
+    }
+
+    /// Resolve the active execution's `events.jsonl` path through
+    /// `RunStorage`, caching the result so repeated calls don't take
+    /// the storage mutex repeatedly.
+    pub(crate) fn current_events_jsonl_ref(&mut self) -> Option<String> {
+        if let Some(cached) = &self.episodic_events_ref {
+            return Some(cached.clone());
+        }
+        let storage = self.storage.as_ref()?;
+        let guard = storage.lock().ok()?;
+        let exec_dir = guard.execution_dir_name()?;
+        let path = guard.base_path().join(exec_dir).join("events.jsonl");
+        let s = path.to_string_lossy().into_owned();
+        self.episodic_events_ref = Some(s.clone());
+        Some(s)
+    }
+
     /// Consume the runner and return the accumulated [`AgentCache`].
     /// API parity with `AgentRunner::into_cache` — the Phase 3b cutover
     /// keeps `run_agent_workflow`'s `(AgentState, AgentCache)` contract.
     pub fn into_cache(self) -> AgentCache {
         self.cache
+    }
+
+    /// Clone the episodic writer's channel sender, if a writer is active.
+    ///
+    /// The returned sender shares the same worker task as the writer owned
+    /// by this runner — no second SQLite connection is opened. Callers can
+    /// enqueue `WriteRequest`s (including `PromotePass`) on it even after
+    /// `run` has consumed and dropped the runner, as long as they hold the
+    /// sender clone. Dropping the clone releases the channel once the
+    /// runner's own copy is also gone, allowing the worker to exit.
+    ///
+    /// Returns `None` when episodic is disabled or the writer was not yet
+    /// spawned.
+    pub(crate) fn writer_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Sender<crate::agent::episodic::types::WriteRequest>> {
+        self.episodic_writer.as_ref().map(|w| w.sender())
     }
 
     /// Write a boundary `StepRecord` through the shared `RunStorage` handle.
@@ -325,6 +495,146 @@ impl StateRunner {
 
     pub fn queue_invalidation(&mut self, e: InvalidationEvent) {
         self.pending_events.push(e);
+    }
+
+    /// Spec 2: run an episodic-memory retrieval if the trigger conditions
+    /// hold (run-start or `Recovering` entry). On `Recovering` entry,
+    /// also captures the [`RecoveringEntrySnapshot`] for the eventual
+    /// write at the matching `Recovering -> Executing` exit.
+    ///
+    /// `prev_phase_at_top` is the phase as it was at the top of the
+    /// outer-loop iteration before `observe()` ran, so the
+    /// `Exploring/Executing -> Recovering` transition is detectable.
+    pub(crate) async fn try_retrieve_episodic(
+        &mut self,
+        prev_phase_at_top: crate::agent::phase::Phase,
+    ) -> Vec<crate::agent::episodic::RetrievedEpisode> {
+        use crate::agent::episodic::signature::compute_pre_state_signature;
+        use crate::agent::episodic::{
+            EpisodicStore as _, RetrievalQuery, RetrievalTrigger, RetrievedEpisode,
+        };
+        use crate::agent::phase::Phase;
+
+        if !self.episodic_active() {
+            return Vec::new();
+        }
+        let store = match &self.episodic_store {
+            Some(s) => s.clone(),
+            None => return Vec::new(),
+        };
+
+        // D24: run-start retrieval fires once per run, full stop.
+        // `episodic_run_start_retrieved` is the authoritative gate (not
+        // `step_index == 0`, which lied on cache-replay / synthetic-skip
+        // / policy-deny / approval-reject paths because none of those
+        // ticked the counter). Marked consumed on first reach so a
+        // zero-hit retrieval still counts as "the run-start slot was
+        // used" and can never fire a second time.
+        let trigger = if !self.episodic_run_start_retrieved {
+            self.episodic_run_start_retrieved = true;
+            RetrievalTrigger::RunStart
+        } else if prev_phase_at_top != Phase::Recovering
+            && self.task_state.phase == Phase::Recovering
+        {
+            RetrievalTrigger::RecoveringEntry
+        } else {
+            return Vec::new();
+        };
+
+        let active_slots: Vec<crate::agent::task_state::WatchSlotName> =
+            self.task_state.watch_slots.iter().map(|s| s.name).collect();
+        let sig = compute_pre_state_signature(&self.world_model, &active_slots);
+
+        // Capture snapshot at retrieval time so the eventual
+        // write uses the same signature.
+        if matches!(trigger, RetrievalTrigger::RecoveringEntry) {
+            use crate::agent::episodic::types::{RecoveringEntrySnapshot, TriggeringError};
+            use crate::agent::step_record::WorldModelSnapshot;
+            let events_ref = self.current_events_jsonl_ref();
+            let snap = WorldModelSnapshot::from_world_model(&self.world_model);
+            self.recovering_snapshot = Some(RecoveringEntrySnapshot {
+                entered_at_step: self.step_index,
+                world_model_at_entry: snap,
+                task_state_at_entry: self.task_state.clone(),
+                triggering_error: TriggeringError {
+                    failed_tool: self.last_failed_tool_name.clone().unwrap_or_default(),
+                    error_kind: self.last_failed_error_kind.clone().unwrap_or_default(),
+                    consecutive_errors_at_entry: self.consecutive_errors as u32,
+                    step_index: self.step_index,
+                },
+                workflow_hash: self.episodic_ctx.workflow_hash.clone(),
+                pre_state_signature: sig.clone(),
+                active_watch_slots: active_slots.clone(),
+                events_jsonl_ref: events_ref,
+            });
+            self.recovery_actions_accumulator.clear();
+        }
+
+        let subgoal_owned = self.task_state.subgoal_stack.last().map(|s| s.text.clone());
+        let goal_owned = self.task_state.goal.clone();
+        let workflow_hash = self.episodic_ctx.workflow_hash.clone();
+        let now = chrono::Utc::now();
+
+        let q = RetrievalQuery {
+            trigger,
+            pre_state_signature: &sig,
+            goal: &goal_owned,
+            subgoal_text: subgoal_owned.as_deref(),
+            workflow_hash: &workflow_hash,
+            now,
+        };
+
+        let k_each = self.config.retrieved_episodes_k.max(1) * 2;
+        let mut wl_hits: Vec<RetrievedEpisode> =
+            store.retrieve(&q, k_each).await.unwrap_or_default();
+
+        let g_cap = self.config.episodic_global_cap_per_retrieval.max(1) * 2;
+        let mut g_hits: Vec<RetrievedEpisode> = match &self.episodic_global {
+            Some(g) => g.retrieve(&q, g_cap).await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+
+        for h in &mut wl_hits {
+            h.score_breakdown.final_score *= self.config.episodic_workflow_priority_multiplier;
+        }
+        g_hits.truncate(self.config.episodic_global_cap_per_retrieval);
+
+        let mut merged: Vec<RetrievedEpisode> = wl_hits.into_iter().chain(g_hits).collect();
+        merged.sort_by(|a, b| {
+            crate::agent::episodic::embedder::nan_safe_desc(
+                a.score_breakdown.final_score,
+                b.score_breakdown.final_score,
+            )
+        });
+        merged.truncate(self.config.retrieved_episodes_k);
+
+        // Emit `EpisodesRetrieved` whenever the retrieval pass returned
+        // at least one candidate. Frontends use this to surface the
+        // `<retrieved_recoveries>` block before the LLM call lands.
+        if !merged.is_empty() {
+            use crate::agent::episodic::EpisodeScope;
+            let workflow_count = merged
+                .iter()
+                .filter(|r| matches!(r.scope, EpisodeScope::WorkflowLocal))
+                .count();
+            let global_count = merged.len() - workflow_count;
+            let event = AgentEvent::EpisodesRetrieved {
+                run_id: self.run_id,
+                trigger,
+                count: merged.len(),
+                episode_ids: merged
+                    .iter()
+                    .map(|r| r.episode.episode_id.clone())
+                    .collect(),
+                scope_breakdown: crate::agent::types::ScopeBreakdown {
+                    workflow: workflow_count,
+                    global: global_count,
+                },
+            };
+            self.emit_event(event).await;
+        }
+
+        merged
     }
 
     /// Apply any pending invalidation events and re-infer the phase from
@@ -860,10 +1170,48 @@ impl StateRunner {
             }
         };
 
-        // 4. Advance.
-        self.step_index += 1;
+        // `step_index` is owned by the outer-loop call sites that record
+        // an `AgentStep` (via `advance_recorded_step_index`). `run_turn`
+        // intentionally does not advance it — early-continue paths
+        // (cache replay, synthetic focus skip, policy deny, approval
+        // reject) record their own steps without going through
+        // `run_turn`, and prior to this fix the divergent advancement
+        // let `step_index == 0` re-fire D24 run-start retrieval after
+        // the run had already taken actions.
 
         (outcome, warnings, milestones_appended)
+    }
+
+    /// Advance the recorded-step counter. Single owner of `step_index`
+    /// updates. Call after every `self.state.steps.push(...)` site so
+    /// `step_index` matches `state.steps.len()` and the prompt's
+    /// rendered step number stays in sync with what the run has
+    /// actually executed.
+    pub(crate) fn advance_recorded_step_index(&mut self) {
+        self.step_index += 1;
+    }
+
+    /// Record a permission-policy denial as the current "last failure"
+    /// so any subsequent `Recovering`-entry snapshot captures a real
+    /// `(failed_tool, error_kind)` pair instead of the empty defaults.
+    /// `error_kind` is the stable string `"policy_denied"` so episodic
+    /// retrieval can group denied-tool recoveries by failure family
+    /// without parsing the human-readable message. Shared helper for
+    /// cached-replay deny + live deny so the two branches can't
+    /// drift on the kind string.
+    pub(crate) fn record_policy_deny_failure(&mut self, tool_name: &str) {
+        self.last_failed_tool_name = Some(tool_name.to_string());
+        self.last_failed_error_kind = Some("policy_denied".to_string());
+    }
+
+    /// Mirror of `record_policy_deny_failure`'s clear half. Called by
+    /// every recovery-success path (live ToolSuccess in `run_turn`,
+    /// cache-replay success, synthetic focus-window skip) so a prior
+    /// deny / tool-error doesn't bleed into a later Recovering snapshot
+    /// after the agent has demonstrably recovered.
+    pub(crate) fn clear_last_failure_tracking(&mut self) {
+        self.last_failed_tool_name = None;
+        self.last_failed_error_kind = None;
     }
 }
 
@@ -1075,6 +1423,22 @@ fn build_annotations_index(mcp_tools: &[Value]) -> HashMap<String, ToolAnnotatio
             Some((name.to_string(), ToolAnnotations::from_tool_json(tool)))
         })
         .collect()
+}
+
+/// Compress a tool-arguments JSON value into a short string suitable
+/// for the episodic [`CompactAction::brief_args`] field. Capped at
+/// 120 chars (a multi-byte-safe truncation) so a giant blob argument
+/// can never bloat the writer's payload.
+fn brief_summarize_args(arguments: &Value) -> String {
+    let s = serde_json::to_string(arguments).unwrap_or_default();
+    if s.len() <= 120 {
+        return s;
+    }
+    let cut = (0..=117)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}...", &s[..cut])
 }
 
 /// Join all text content from a `ToolCallResult` into a single string —
@@ -1922,6 +2286,11 @@ impl StateRunner {
                     page_url: self.state.current_url.clone(),
                 };
                 self.state.steps.push(step);
+                self.advance_recorded_step_index();
+                // A denied tool is the recovery-trigger event. Capture
+                // it as the last failure so the next `Recovering`-entry
+                // snapshot has a real `(failed_tool, error_kind)` pair.
+                self.record_policy_deny_failure(&cached_tool);
                 self.state.consecutive_errors += 1;
                 self.consecutive_errors = self.state.consecutive_errors;
                 *previous_result = Some(format!("Error: {}", err_msg));
@@ -1959,6 +2328,7 @@ impl StateRunner {
                             page_url: self.state.current_url.clone(),
                         };
                         self.state.steps.push(step);
+                        self.advance_recorded_step_index();
                         *previous_result = Some("Replan: user rejected cached action".to_string());
                         return ReplayResult::Continue;
                     }
@@ -2039,9 +2409,15 @@ impl StateRunner {
                     page_url: self.state.current_url.clone(),
                 };
                 self.state.steps.push(step);
+                self.advance_recorded_step_index();
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 *last_failure = None;
+                // Clear the per-turn failure tracking so a prior
+                // policy-deny / tool-error doesn't bleed into a later
+                // `Recovering`-entry snapshot after the agent has
+                // demonstrably recovered via cache replay.
+                self.clear_last_failure_tracking();
                 *previous_result = Some(result_text);
                 *last_cache_key = Some(current_key);
 
@@ -2207,6 +2583,44 @@ impl StateRunner {
         B: ChatBackend + ?Sized,
         M: Mcp + ?Sized,
     {
+        // Drain queued episodic writes on *every* exit path,
+        // including the early `?` returns from chat/parse failures.
+        // Without this, a recovery write queued moments before an LLM
+        // failure would race the Tauri-side cleanup and never commit
+        // before the writer is dropped, defeating the run-terminal
+        // promotion barrier the post-loop flush already installs.
+        let inner = Self::run_inner(
+            &mut self,
+            llm,
+            mcp,
+            goal,
+            workflow,
+            mcp_tools,
+            anchor_node_id,
+        );
+        let result = inner.await;
+        if let Some(writer) = &self.episodic_writer {
+            writer.flush().await;
+        }
+        match result {
+            Ok(()) => Ok((self.state, self.cache)),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn run_inner<B, M>(
+        &mut self,
+        llm: &B,
+        mcp: &M,
+        goal: String,
+        workflow: clickweave_core::Workflow,
+        mcp_tools: Vec<Value>,
+        anchor_node_id: Option<uuid::Uuid>,
+    ) -> anyhow::Result<()>
+    where
+        B: ChatBackend + ?Sized,
+        M: Mcp + ?Sized,
+    {
         use crate::agent::context::{CompactBudget, compact};
         use crate::agent::prompt::{build_system_prompt, build_user_turn_message};
 
@@ -2233,7 +2647,8 @@ impl StateRunner {
         // composed by `build_goal_block` at the Tauri seam. Feed it
         // straight into the user turn so messages[1] is the single
         // run-specific slot.
-        let initial_user = build_user_turn_message(&self.world_model, &self.task_state, 0, &goal);
+        let initial_user =
+            build_user_turn_message(&self.world_model, &self.task_state, 0, &goal, &[]);
 
         let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
 
@@ -2273,13 +2688,13 @@ impl StateRunner {
             // 1. Observe — fetch elements + detect page transition.
             //    Capture the pre-mirror world-model signatures so the
             //    `WorldModelChanged` diff emitted by `run_turn` sees the
-            //    direct-observation writes below (R4.M1). Only seed the
+            //    direct-observation writes below. Only seed the
             //    baseline when it is empty: early-exit branches (cache
             //    replay `Continue`/`Break`, policy deny, approval reject)
             //    skip `run_turn` entirely, so the baseline must persist
-            //    across iterations until `run_turn.take()` consumes it
-            //    (R5.M1). `run_turn` falls back to an internal snapshot
-            //    when `None`, preserving the direct-driver test path.
+            //    across iterations until `run_turn.take()` consumes it.
+            //    `run_turn` falls back to an internal snapshot when
+            //    `None`, preserving the direct-driver test path.
             if self.turn_pre_signatures.is_none() {
                 self.turn_pre_signatures = Some(self.world_model.field_signatures());
             }
@@ -2335,6 +2750,20 @@ impl StateRunner {
                 }
             }
 
+            // Spec 2: re-infer phase from current consecutive-error
+            // counter BEFORE the cache gate / retrieval / render. The
+            // outer-loop top hasn't run `observe()` yet — `run_turn`'s
+            // internal observe runs AFTER mutations on the prior iteration,
+            // so this idempotent re-observe surfaces phase transitions
+            // (Executing -> Recovering) that the previous turn's error
+            // already triggered. Capturing `prev_phase_at_top` first gives
+            // us the "phase as it was at end of last iteration" needed
+            // for transition detection.
+            let prev_phase_at_top = self.task_state.phase;
+            if self.episodic_active() {
+                self.observe();
+            }
+
             // 1a. Cache-replay gate. `is_replay_eligible` enforces D17
             // (Phase::Exploring, empty subgoal stack, no watch slots);
             // `try_replay_cache` layers in the per-entry stale-on-read
@@ -2366,6 +2795,13 @@ impl StateRunner {
             // LLM picks before a connection exists return a "not
             // connected" MCP error that the recovery strategy absorbs.
 
+            // Spec 2: episodic retrieval on cache miss. Cache
+            // hits fast-pathed via `Continue` above, so we only land
+            // here on miss / fall-through. `try_retrieve_episodic`
+            // returns an empty vec when episodic is inactive or no
+            // trigger condition fires.
+            let retrieved = self.try_retrieve_episodic(prev_phase_at_top).await;
+
             // 2. Compose the per-turn user message with the state block +
             // the previous tool body as the observation, then compact the
             // history before the LLM call.
@@ -2375,6 +2811,7 @@ impl StateRunner {
                 &self.task_state,
                 self.step_index,
                 &step_obs,
+                &retrieved,
             );
             messages.push(Message::user(step_msg));
             messages = compact(messages, &budget);
@@ -2440,9 +2877,14 @@ impl StateRunner {
                     outcome: StepOutcome::Success(skip_body.clone()),
                     page_url: self.state.current_url.clone(),
                 });
+                self.advance_recorded_step_index();
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 last_failure = None;
+                // Synthetic focus_window skip is a successful
+                // observation outcome — clear failure tracking the
+                // same way the live ToolSuccess path does.
+                self.clear_last_failure_tracking();
                 previous_result = Some(skip_body.clone());
                 self.emit_event(AgentEvent::StepCompleted {
                     step_index: step_idx_for_event,
@@ -2488,6 +2930,10 @@ impl StateRunner {
                                 outcome: StepOutcome::Error(err_msg.clone()),
                                 page_url: self.state.current_url.clone(),
                             });
+                            self.advance_recorded_step_index();
+                            // Shared with the cached-deny branch — see
+                            // `record_policy_deny_failure` for rationale.
+                            self.record_policy_deny_failure(tool_name);
                             self.state.consecutive_errors += 1;
                             self.consecutive_errors = self.state.consecutive_errors;
                             previous_result = Some(err_msg.clone());
@@ -2581,6 +3027,7 @@ impl StateRunner {
                                         ),
                                         page_url: self.state.current_url.clone(),
                                     });
+                                    self.advance_recorded_step_index();
                                     previous_result =
                                         Some("Replan: user rejected action".to_string());
                                     append_assistant_and_tool_result(
@@ -2634,11 +3081,89 @@ impl StateRunner {
             //     to zero. Tool calls that never errored (previous_errors
             //     == 0) and repeated-error turns (consecutive_errors > 0)
             //     are both skipped.
+            // Spec 2: per-turn bookkeeping for the episodic write/retrieve
+            // path. Tool failures populate `last_failed_*` (consumed by
+            // `try_retrieve_episodic` when capturing a `Recovering`-entry
+            // snapshot); successes clear it. While in `Recovering`, push
+            // a `CompactAction` per dispatched tool so the eventual
+            // write carries the full recovery action sequence.
+            if self.episodic_active() {
+                match &outcome {
+                    TurnOutcome::ToolError { tool_name, error } => {
+                        self.last_failed_tool_name = Some(tool_name.clone());
+                        self.last_failed_error_kind = Some(error.clone());
+                    }
+                    TurnOutcome::ToolSuccess { .. } => {
+                        self.clear_last_failure_tracking();
+                    }
+                    _ => {}
+                }
+                if self.task_state.phase == crate::agent::phase::Phase::Recovering
+                    && let AgentAction::ToolCall {
+                        tool_name,
+                        arguments,
+                        ..
+                    } = &turn.action
+                {
+                    let outcome_kind = match &outcome {
+                        TurnOutcome::ToolSuccess { .. } => "ok",
+                        TurnOutcome::ToolError { .. } => "error",
+                        TurnOutcome::Done { .. } => "done",
+                        TurnOutcome::Replan { .. } => "replan",
+                    };
+                    let brief_args = brief_summarize_args(arguments);
+                    self.recovery_actions_accumulator.push(
+                        crate::agent::episodic::types::CompactAction {
+                            tool_name: tool_name.clone(),
+                            brief_args,
+                            outcome_kind: outcome_kind.to_string(),
+                        },
+                    );
+                }
+            }
+
             if previous_errors > 0
                 && self.consecutive_errors == 0
                 && matches!(outcome, TurnOutcome::ToolSuccess { .. })
             {
                 self.write_recovery_succeeded_record(&turn, &outcome).await;
+
+                // Spec 2: queue an episodic-memory write for this
+                // recovery (D30). Best-effort — backpressure / disabled
+                // writer / missing snapshot are all silent no-ops so
+                // the agent loop keeps running on D32.
+                if self.episodic_active()
+                    && let Some(entry) = self.recovering_snapshot.take()
+                    && let Some(writer) = &self.episodic_writer
+                {
+                    let actions = std::mem::take(&mut self.recovery_actions_accumulator);
+                    let record = self.build_step_record(
+                        crate::agent::step_record::BoundaryKind::RecoverySucceeded,
+                        serde_json::to_value(&turn.action)
+                            .unwrap_or_else(|_| serde_json::json!({})),
+                        serde_json::json!({"kind": "tool_success"}),
+                    );
+                    let queue_result = writer
+                        .queue(
+                            crate::agent::episodic::types::WriteRequest::DeriveAndInsert {
+                                entry: Box::new(entry),
+                                recovery_success: Box::new(record),
+                                recovery_actions: actions,
+                            },
+                        )
+                        .await;
+                    // Surface backpressure drops as a Warning event so
+                    // consumers can distinguish "no recovery happened"
+                    // from "recovery succeeded but the episodic write
+                    // was dropped." D32 keeps the agent loop running
+                    // either way; this is purely observability.
+                    if let Err(e) = queue_result {
+                        self.emit_event(AgentEvent::Warning {
+                            message: format!("episodic: write dropped: backpressure ({e})"),
+                        })
+                        .await;
+                    }
+                }
             }
 
             // 6. Map the TurnOutcome into AgentStep + TerminalReason.
@@ -2672,6 +3197,7 @@ impl StateRunner {
                         outcome: step_outcome,
                         page_url: self.state.current_url.clone(),
                     });
+                    self.advance_recorded_step_index();
                     previous_result = Some(tool_body.clone());
                     // Clear the loop-detection tracker on any success.
                     last_failure = None;
@@ -2781,6 +3307,7 @@ impl StateRunner {
                         outcome: step_outcome,
                         page_url: self.state.current_url.clone(),
                     });
+                    self.advance_recorded_step_index();
                     self.state.consecutive_errors = self.consecutive_errors;
                     previous_result = Some(error.clone());
 
@@ -2912,7 +3439,10 @@ impl StateRunner {
             self.write_terminal_record().await;
         }
 
-        Ok((self.state, self.cache))
+        // Drain happens in the outer `run` wrapper so it covers both
+        // `Ok` and early-`?` `Err` exits from this function. See the
+        // post-result `writer.flush().await` in `Self::run`.
+        Ok(())
     }
 }
 
@@ -3470,7 +4000,7 @@ mod agent_turn_parsing_tests {
 
     #[test]
     fn rejects_malformed_json() {
-        // P1.M4: the design's error-path table says a malformed AgentTurn
+        // The design's error-path table says a malformed AgentTurn
         // triggers one repair retry; the parser must surface the error
         // clearly rather than returning a default.
         let json = r#"{"mutations": [], "action":"#; // truncated
@@ -3967,6 +4497,170 @@ mod focus_skip_tests {
         let args = serde_json::json!({"app_name": "Calculator"});
         // Electron now — guard must NOT fire.
         assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+}
+
+/// D24/D29 run-start retrieval gate + step_index ownership tests.
+/// The gate (`episodic_run_start_retrieved`) replaces the drift-prone
+/// `step_index == 0` proxy; the helper (`advance_recorded_step_index`)
+/// is the single owner of `step_index` updates so the counter matches
+/// `state.steps.len()` across all recording paths (cache replay,
+/// synthetic skip, policy deny, approval reject, normal LLM turn).
+#[cfg(test)]
+mod retrieval_gate_tests {
+    use super::*;
+    use crate::agent::episodic::{EpisodeScope, EpisodicContext, SqliteEpisodicStore};
+    use crate::agent::phase::Phase;
+    use tempfile::TempDir;
+
+    fn enabled_runner_with_store() -> (StateRunner, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let wl_path = dir.path().join("episodic.sqlite");
+        let ctx = EpisodicContext {
+            enabled: true,
+            workflow_local_path: wl_path.clone(),
+            global_path: None,
+            workflow_hash: "gate-test-workflow".into(),
+        };
+        let runner =
+            StateRunner::new_with_episodic("goal".to_string(), AgentConfig::default(), ctx);
+        // Sanity: store opened.
+        assert!(
+            runner.episodic_store.is_some(),
+            "test setup expects an episodic store",
+        );
+        // The `wl_path` is referenced indirectly through the runner's
+        // store; pre-open one to confirm SQLite WAL mode took.
+        let _verify = SqliteEpisodicStore::new(&wl_path, EpisodeScope::WorkflowLocal).unwrap();
+        (runner, dir)
+    }
+
+    #[tokio::test]
+    async fn run_start_retrieval_consumes_gate_on_first_call() {
+        let (mut r, _dir) = enabled_runner_with_store();
+        assert!(!r.episodic_run_start_retrieved);
+
+        // First call: run-start trigger fires (zero hits, but the
+        // gate-consumed semantic still applies).
+        let hits = r.try_retrieve_episodic(Phase::Exploring).await;
+        assert!(
+            hits.is_empty(),
+            "fresh store has no episodes yet — retrieval should be empty",
+        );
+        assert!(
+            r.episodic_run_start_retrieved,
+            "first call must mark the run-start slot consumed regardless of hit count",
+        );
+
+        // Second call with no Recovering transition: must skip
+        // entirely. Previously `step_index == 0` would have re-fired
+        // RunStart on cache-replay / policy-deny early-continue paths.
+        // Force `step_index` back to 0 to prove the gate (not the
+        // counter) is what blocks re-fire.
+        r.step_index = 0;
+        let hits2 = r.try_retrieve_episodic(Phase::Exploring).await;
+        assert!(
+            hits2.is_empty(),
+            "second call without Recovering transition must be a no-op",
+        );
+    }
+
+    #[tokio::test]
+    async fn recovering_entry_still_fires_after_run_start_consumed() {
+        let (mut r, _dir) = enabled_runner_with_store();
+
+        // Consume the run-start slot.
+        let _ = r.try_retrieve_episodic(Phase::Exploring).await;
+        assert!(r.episodic_run_start_retrieved);
+
+        // Transition into Recovering. Retrieval should fire on the
+        // edge (returns empty here because no episodes exist yet, but
+        // the call should still execute the trigger branch — verified
+        // by the side effect of capturing a `recovering_snapshot`).
+        r.task_state.phase = Phase::Recovering;
+        let _ = r.try_retrieve_episodic(Phase::Exploring).await;
+        assert!(
+            r.recovering_snapshot.is_some(),
+            "Recovering entry must capture a snapshot for the eventual write",
+        );
+    }
+
+    #[tokio::test]
+    async fn advance_recorded_step_index_increments_counter() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        assert_eq!(r.step_index, 0);
+        r.advance_recorded_step_index();
+        assert_eq!(r.step_index, 1);
+        r.advance_recorded_step_index();
+        assert_eq!(r.step_index, 2);
+    }
+
+    #[tokio::test]
+    async fn record_policy_deny_failure_sets_stable_kind() {
+        // Both cached-deny and live-deny branches funnel through
+        // this helper, and the snapshot derived from
+        // `last_failed_*` populates `FailureSignature` on the
+        // eventual write. The `error_kind` must be the stable
+        // snake_case `policy_denied`, not a free-form string.
+        let mut r = StateRunner::new_for_test("g".to_string());
+        assert!(r.last_failed_tool_name.is_none());
+        assert!(r.last_failed_error_kind.is_none());
+
+        r.record_policy_deny_failure("cdp_click");
+        assert_eq!(r.last_failed_tool_name.as_deref(), Some("cdp_click"));
+        assert_eq!(
+            r.last_failed_error_kind.as_deref(),
+            Some("policy_denied"),
+            "policy-deny error_kind must be the stable snake_case string used by both branches",
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_last_failure_tracking_drops_both_fields() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.record_policy_deny_failure("ax_click");
+        r.clear_last_failure_tracking();
+        assert!(
+            r.last_failed_tool_name.is_none(),
+            "tool_name must be cleared after success",
+        );
+        assert!(
+            r.last_failed_error_kind.is_none(),
+            "error_kind must be cleared after success",
+        );
+    }
+
+    #[tokio::test]
+    async fn run_turn_no_longer_advances_step_index_directly() {
+        // Under the new ownership rule, `run_turn` does not bump the
+        // counter — that's the helper's job, called by sites that push
+        // an `AgentStep`. `agent_done` is terminal with no step push,
+        // so `step_index` must stay 0 after the turn.
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct EmptyExec(Mutex<Vec<Result<String, String>>>);
+        #[async_trait]
+        impl ToolExecutor for EmptyExec {
+            async fn call_tool(&self, _: &str, _: &serde_json::Value) -> Result<String, String> {
+                let mut q = self.0.lock().unwrap();
+                q.pop().unwrap_or_else(|| Err("no result".into()))
+            }
+        }
+
+        let mut r = StateRunner::new_for_test("g".to_string());
+        let exec = EmptyExec(Mutex::new(vec![]));
+        let done = AgentTurn {
+            mutations: vec![],
+            action: AgentAction::AgentDone {
+                summary: "done".into(),
+            },
+        };
+        let _ = r.run_turn(&done, &exec).await;
+        assert_eq!(
+            r.step_index, 0,
+            "run_turn must not advance step_index — only `advance_recorded_step_index` does",
+        );
     }
 }
 

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::agent::task_state::TaskState;
 use crate::agent::world_model::{
@@ -20,7 +20,7 @@ pub enum BoundaryKind {
     RecoverySucceeded,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct AxSnapshotRef {
     pub snapshot_id: String,
@@ -28,7 +28,7 @@ pub struct AxSnapshotRef {
     pub captured_at_step: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ElementSummary {
     pub total: usize,
@@ -39,7 +39,14 @@ pub struct ElementSummary {
 /// Serializable projection of `WorldModel` (D15, remaining-risks review).
 /// Drops `ax_tree_text` and the full element list. Keeps identity +
 /// signature data only. Used in `StepRecord` for `events.jsonl` writes.
-#[derive(Debug, Clone, Serialize)]
+///
+/// Spec 2 round-trips this projection through SQLite (episodic memory
+/// store reads it back to render `<retrieved_recoveries>`), so it must
+/// derive `Deserialize` and `Default`. The fail-soft read path
+/// (`row_to_episode` in `episodic::store`) uses `unwrap_or_default()`
+/// when JSON parsing fails to satisfy D32 (episodic store unavailable
+/// must never fail the agent run).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WorldModelSnapshot {
     pub focused_app: Option<FocusedApp>,

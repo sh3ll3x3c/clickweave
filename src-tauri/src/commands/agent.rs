@@ -11,6 +11,17 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 
+/// Resolve the path to the global episodic SQLite store. Pulls the
+/// app-data root from the managed `AppDataDir` state — the same single
+/// source `RunStorage::new_app_data` and the trace-retention sweep use,
+/// so the global store always lands where D36's privacy sweep walks.
+fn app_data_episodic_path(
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, super::error::CommandError> {
+    let base = app.state::<crate::commands::types::AppDataDir>().0.clone();
+    Ok(base.join("episodic.sqlite"))
+}
+
 // ── Request / payload types ─────────────────────────────────────
 
 /// Wire form of a single permission rule. Mirrors
@@ -133,6 +144,21 @@ pub struct AgentRunRequest {
     /// inline above the current goal. Runtime order = chronological.
     #[serde(default)]
     pub prior_turns: Vec<PriorTurnWire>,
+    /// Spec 2 master kill switch for episodic memory on this run.
+    /// `None` = inherit the engine default (`true`); `Some(false)` =
+    /// run with episodic disabled regardless of `EpisodicContext`.
+    #[serde(default)]
+    pub episodic_enabled: Option<bool>,
+    /// Spec 2 retrieval depth — top-k episodes returned per trigger.
+    /// `None` = engine default (2). Clamped to `[1, 10]` at the
+    /// Tauri seam.
+    #[serde(default)]
+    pub retrieved_episodes_k: Option<usize>,
+    /// Spec 2 D35 privacy opt-in: when `true`, recoveries from this
+    /// workflow may be promoted into the global cross-workflow store.
+    /// Default off keeps workflows isolated.
+    #[serde(default)]
+    pub episodic_global_participation: Option<bool>,
 }
 
 /// Wire form of a prior-turn entry (matches
@@ -470,6 +496,67 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                 }),
             );
         }
+        // Spec 2 D33: episodic-memory events. The runner emits
+        // `EpisodesRetrieved` when retrieval surfaces candidates; the
+        // background `EpisodicWriter` task emits `EpisodeWritten`
+        // (insert/merge in the workflow-local store) and `EpisodePromoted`
+        // (run-terminal promotion pass into the global store). All three
+        // payloads carry the run's UUID so the frontend's stale-run
+        // filter (`useAgentEvents::isStale`) drops late events from a
+        // previous run.
+        AgentEvent::EpisodesRetrieved {
+            run_id: event_run_id,
+            trigger,
+            count,
+            episode_ids,
+            scope_breakdown,
+        } => {
+            let _ = app.emit(
+                "agent://episodes_retrieved",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "trigger": trigger,
+                    "count": count,
+                    "episode_ids": episode_ids,
+                    "scope_breakdown": scope_breakdown,
+                }),
+            );
+        }
+        AgentEvent::EpisodeWritten {
+            run_id: event_run_id,
+            outcome,
+            episode_id,
+            scope,
+            occurrence_count,
+        } => {
+            let _ = app.emit(
+                "agent://episode_written",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "outcome": outcome,
+                    "episode_id": episode_id,
+                    "scope": scope,
+                    "occurrence_count": occurrence_count,
+                }),
+            );
+        }
+        AgentEvent::EpisodePromoted {
+            run_id: event_run_id,
+            promoted_episode_ids,
+            skipped_count,
+        } => {
+            let _ = app.emit(
+                "agent://episode_promoted",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "promoted_episode_ids": promoted_episode_ids,
+                    "skipped_count": skipped_count,
+                }),
+            );
+        }
     }
 }
 
@@ -551,6 +638,38 @@ pub async fn run_agent(
     let permission_policy: Option<PermissionPolicy> = request.permissions.map(Into::into);
     let consecutive_destructive_cap = request.consecutive_destructive_cap;
     let allow_focus_window = request.allow_focus_window;
+    let episodic_settings_enabled = request.episodic_enabled.unwrap_or(true);
+    let retrieved_episodes_k_override = request.retrieved_episodes_k;
+    let episodic_global_participation = request.episodic_global_participation.unwrap_or(false);
+
+    // Spec 2 D34: construct the per-run EpisodicContext. The context is
+    // disabled when persistence is off (the privacy kill switch flips
+    // episodic with traces — there's nothing to derive episodes from
+    // without `events.jsonl`) or when the per-run kill switch from the
+    // UI is `false`. The workflow-local SQLite lives next to the rest of
+    // the workflow's runtime state under `RunStorage::base_path()`; the
+    // global store sits at the same `AppDataDir` root the trace-retention
+    // sweep walks, so D36's privacy sweep finds it.
+    let episodic_ctx = if persist_traces && episodic_settings_enabled {
+        let wl_path = storage.lock().unwrap().base_path().join("episodic.sqlite");
+        let global_path = if episodic_global_participation {
+            Some(app_data_episodic_path(&app)?)
+        } else {
+            None
+        };
+        clickweave_engine::agent::episodic::EpisodicContext {
+            enabled: true,
+            workflow_local_path: wl_path,
+            global_path,
+            workflow_hash: request.workflow_id.clone(),
+        }
+    } else {
+        clickweave_engine::agent::episodic::EpisodicContext::disabled()
+    };
+
+    // Capture the run-start timestamp so PromotePass scopes promotion
+    // to episodes touched during this run.
+    let run_start_utc = chrono::Utc::now();
 
     let cancel_token = CancellationToken::new();
     let agent_token = cancel_token.clone();
@@ -575,6 +694,9 @@ pub async fn run_agent(
     let task_run_id = run_id.clone();
     let event_run_id = run_id.clone();
     let approval_run_id = run_id.clone();
+    let task_episodic_ctx = episodic_ctx.clone();
+    let promotion_episodic_ctx = episodic_ctx.clone();
+    let promotion_workflow_hash = episodic_ctx.workflow_hash.clone();
 
     // Channels used to signal cleanup when the agent task, event forwarder,
     // and approval forwarder have all finished, preventing stale event leakage.
@@ -644,6 +766,13 @@ pub async fn run_agent(
         }
         if let Some(allow) = allow_focus_window {
             config.allow_focus_window = allow;
+        }
+        // Spec 2 per-run overrides: master kill switch + retrieval depth.
+        // The global-participation flag is encoded in `task_episodic_ctx`
+        // (it gates `EpisodicContext::global_path`), not on `AgentConfig`.
+        config.episodic_enabled = episodic_settings_enabled;
+        if let Some(k) = retrieved_episodes_k_override {
+            config.retrieved_episodes_k = k.clamp(1, 10);
         }
 
         // Begin storage execution and load cross-run state under a single lock.
@@ -722,6 +851,9 @@ pub async fn run_agent(
                 anchor_uuid,
                 verification_artifacts_dir,
                 Some(storage.clone()),
+                // Spec 2 P4: thread the per-run EpisodicContext into the
+                // engine. Disabled context = no episodic stores opened.
+                Some(task_episodic_ctx.clone()),
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
@@ -734,7 +866,7 @@ pub async fn run_agent(
         };
 
         match result {
-            Ok((state, updated_cache)) => {
+            Ok((state, updated_cache, writer_tx)) => {
                 // Persist the updated cache — skipped when the privacy
                 // kill switch is off so the workflow-level cache file
                 // stays as it was before the run.
@@ -840,6 +972,86 @@ pub async fn run_agent(
                             serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
                         );
                     }
+                }
+
+                // Spec 2 D31 / Task 4.2: run-terminal promotion pass.
+                // Only fires when episodic is active for this run AND
+                // the operator opted into global-tier sharing. The
+                // terminal kind classifies whether promotion is even
+                // attempted: clean completion → eligible; disagreement,
+                // loop, error, cancellation → SkipPromotion.
+                //
+                // `writer_tx` is a cloned sender for the *same* worker task
+                // the runner used for `DeriveAndInsert` requests. Queuing
+                // `PromotePass` on it reuses the existing SQLite connections
+                // (one workflow-local + one global), eliminating the second
+                // SQLite connection that the previous implementation opened
+                // by spawning a fresh `EpisodicWriter` here.
+                //
+                // The flush barrier (`WriteRequest::Flush` sentinel sent
+                // by `EpisodicWriter::flush`) is carried through the same
+                // channel, so the `agent://episode_promoted` event lands
+                // before the `done_tx` cleanup signal closes the event
+                // forwarder — same guarantee as before, single connection.
+                if promotion_episodic_ctx.enabled
+                    && promotion_episodic_ctx.global_path.is_some()
+                    && let Some(tx) = writer_tx
+                {
+                    use clickweave_engine::agent::episodic::{
+                        PromotionTerminalKind, types::WriteRequest as EpisodicWriteRequest,
+                    };
+                    let terminal_kind = match &resolved_terminal {
+                        Some(TerminalReason::Completed { .. })
+                        | Some(TerminalReason::DisagreementConfirmed { .. }) => {
+                            PromotionTerminalKind::Clean
+                        }
+                        _ => PromotionTerminalKind::SkipPromotion,
+                    };
+                    // Use `try_send` instead of awaited `send` so a
+                    // saturated writer channel cannot wedge the
+                    // run-terminal path before the timeout-protected
+                    // flush below. Matches the runner's nonblocking
+                    // queue path (`EpisodicWriter::queue` →
+                    // `try_send`). On backpressure drop, surface a
+                    // Warning via the event forwarder so the UI sees
+                    // "promotion was dropped" instead of a silent
+                    // miss; D32 keeps the rest of terminal cleanup
+                    // running.
+                    if let Err(e) = tx.try_send(EpisodicWriteRequest::PromotePass {
+                        workflow_hash: promotion_workflow_hash.clone(),
+                        terminal_kind,
+                        run_started_at: run_start_utc,
+                    }) {
+                        tracing::warn!(error = %e, "episodic: PromotePass dropped at terminal");
+                        let _ = emit_handle.emit(
+                            "agent://warning",
+                            serde_json::json!({
+                                "run_id": task_run_id,
+                                "message": format!(
+                                    "episodic: promotion dropped: backpressure ({e})"
+                                ),
+                            }),
+                        );
+                    }
+                    // Flush sentinel: wait for the worker to ack so the
+                    // `EpisodePromoted` event is emitted before we signal
+                    // the event forwarder to close.
+                    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<()>();
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                        if tx
+                            .send(EpisodicWriteRequest::Flush { ack: ack_tx })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        let _ = ack_rx.await;
+                    })
+                    .await;
+                    // Drop `tx`: the runner's copy was dropped when `run`
+                    // returned; this is now the last sender. Dropping it
+                    // closes the channel and lets the worker task exit.
+                    drop(tx);
                 }
             }
             Err(e) => {
@@ -1301,6 +1513,9 @@ mod run_agent_smoke_tests {
         "agent://task_state_changed",
         "agent://world_model_changed",
         "agent://boundary_record_written",
+        "agent://episodes_retrieved",
+        "agent://episode_written",
+        "agent://episode_promoted",
     ];
 
     /// Rubric-10 gate (D-PR2): every `AgentEvent` the engine emits
@@ -1416,7 +1631,7 @@ mod run_agent_smoke_tests {
         });
 
         // ── Act: drive the engine ──────────────────────────────────
-        let (state, _cache) = run_agent_workflow(
+        let (state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             "rubric-10 gate: forwarder + persistence contract".to_string(),
@@ -1438,6 +1653,7 @@ mod run_agent_smoke_tests {
             None,
             None,
             Some(Arc::clone(&storage)),
+            None,
         )
         .await
         .expect("run_agent_workflow ok");
@@ -1565,5 +1781,165 @@ mod run_agent_smoke_tests {
                 payload,
             );
         }
+    }
+
+    /// F2 acceptance test: pin the exact top-level JSON keys for the
+    /// three Spec 2 D33 episodic events. The locked contract lives at
+    /// `docs/design/2026-04-24_agent-episodic-memory.md:699-701`. A
+    /// future drift on either the engine event variant fields or the
+    /// `forward_agent_event` payload shape must fail this test loud.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn forward_agent_event_emits_locked_episodic_payload_shapes() {
+        use clickweave_engine::agent::ScopeBreakdown;
+        use clickweave_engine::agent::episodic::{EpisodeScope, RetrievalTrigger};
+        use std::collections::BTreeSet;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        for topic in [
+            "agent://episodes_retrieved",
+            "agent://episode_written",
+            "agent://episode_promoted",
+        ] {
+            let captured = Arc::clone(&captured);
+            handle.listen_any(topic, move |evt| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push((topic.to_string(), evt.payload().to_string()));
+            });
+        }
+
+        let run_id = uuid::Uuid::new_v4();
+        let run_id_str = run_id.to_string();
+
+        let retrieved = AgentEvent::EpisodesRetrieved {
+            run_id,
+            trigger: RetrievalTrigger::RunStart,
+            count: 2,
+            episode_ids: vec!["ep_a".into(), "ep_b".into()],
+            scope_breakdown: ScopeBreakdown {
+                workflow: 1,
+                global: 1,
+            },
+        };
+        let written = AgentEvent::EpisodeWritten {
+            run_id,
+            outcome: "inserted".into(),
+            episode_id: "ep_c".into(),
+            scope: EpisodeScope::WorkflowLocal,
+            occurrence_count: 1,
+        };
+        let promoted = AgentEvent::EpisodePromoted {
+            run_id,
+            promoted_episode_ids: vec!["ep_d".into()],
+            skipped_count: 3,
+        };
+
+        forward_agent_event(&handle, &run_id_str, &retrieved);
+        forward_agent_event(&handle, &run_id_str, &written);
+        forward_agent_event(&handle, &run_id_str, &promoted);
+
+        // Yield so listener tasks pick up the emits.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+
+        let captured = captured.lock().unwrap();
+        let by_topic = |t: &str| -> serde_json::Value {
+            let raw = captured
+                .iter()
+                .find(|(topic, _)| topic == t)
+                .unwrap_or_else(|| panic!("no emission on {} — captured={:?}", t, captured))
+                .1
+                .clone();
+            serde_json::from_str(&raw).expect("payload is valid JSON")
+        };
+        let key_set = |v: &serde_json::Value| -> BTreeSet<String> {
+            v.as_object()
+                .expect("payload is an object")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let expect_keys = |actual: BTreeSet<String>, want: &[&str], topic: &str| {
+            let want_set: BTreeSet<String> = want.iter().map(|s| (*s).to_string()).collect();
+            assert_eq!(
+                actual, want_set,
+                "{} payload must carry exactly the locked Spec 2 D33 keys",
+                topic,
+            );
+        };
+
+        let r = by_topic("agent://episodes_retrieved");
+        // `event_run_id` is the harness-added forwarder echo of the
+        // engine-side `run_id`; the spec contract is on the engine
+        // payload's keys (which are the *other* fields). Both must be
+        // present in the emit per the existing forwarder pattern.
+        expect_keys(
+            key_set(&r),
+            &[
+                "run_id",
+                "event_run_id",
+                "trigger",
+                "count",
+                "episode_ids",
+                "scope_breakdown",
+            ],
+            "episodes_retrieved",
+        );
+        let breakdown = r.get("scope_breakdown").expect("scope_breakdown present");
+        let breakdown_keys: BTreeSet<String> = breakdown
+            .as_object()
+            .expect("scope_breakdown is an object")
+            .keys()
+            .cloned()
+            .collect();
+        expect_keys(
+            breakdown_keys,
+            &["workflow", "global"],
+            "episodes_retrieved.scope_breakdown",
+        );
+
+        let w = by_topic("agent://episode_written");
+        expect_keys(
+            key_set(&w),
+            &[
+                "run_id",
+                "event_run_id",
+                "outcome",
+                "episode_id",
+                "scope",
+                "occurrence_count",
+            ],
+            "episode_written",
+        );
+
+        let p = by_topic("agent://episode_promoted");
+        expect_keys(
+            key_set(&p),
+            &[
+                "run_id",
+                "event_run_id",
+                "promoted_episode_ids",
+                "skipped_count",
+            ],
+            "episode_promoted",
+        );
+        // `promoted_episode_ids` must carry the actual IDs, not be
+        // collapsed to a count.
+        let ids = p
+            .get("promoted_episode_ids")
+            .and_then(|v| v.as_array())
+            .expect("promoted_episode_ids is an array");
+        assert_eq!(
+            ids.len(),
+            1,
+            "exactly one promoted ID expected from synthetic event",
+        );
+        assert_eq!(ids[0].as_str(), Some("ep_d"));
     }
 }
