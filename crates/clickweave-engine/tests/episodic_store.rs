@@ -1,0 +1,508 @@
+//! Integration tests for `SqliteEpisodicStore` against a real temp-file
+//! SQLite database, plus end-to-end coverage for `EpisodicWriter`.
+//!
+//! These tests live outside `src/` so they exercise the public surface
+//! the runner (Phase 3) will eventually depend on. Anything they need
+//! that is `pub(crate)` must surface through a public test helper —
+//! see `SqliteEpisodicStore::row_count_for_tests` for the pattern.
+
+use chrono::Utc;
+use clickweave_engine::agent::episodic::store::EpisodicStore;
+use clickweave_engine::agent::episodic::{
+    CompactAction, Embedder, EpisodeRecord, EpisodeScope, EpisodicContext, EpisodicWriter,
+    FailureSignature, HashedShingleEmbedder, InsertOutcome, PreStateSignature,
+    PromotionTerminalKind, RecoveringEntrySnapshot, RecoveryActionsHash, RetrievalQuery,
+    RetrievalTrigger, SqliteEpisodicStore, TriggeringError, WriteRequest,
+};
+use clickweave_engine::agent::step_record::{BoundaryKind, StepRecord, WorldModelSnapshot};
+use clickweave_engine::agent::task_state::{Phase, TaskState};
+
+fn empty_world_model_snapshot() -> WorldModelSnapshot {
+    WorldModelSnapshot {
+        focused_app: None,
+        window_list: None,
+        cdp_page: None,
+        element_summary: None,
+        modal_present: None,
+        dialog_present: None,
+        last_screenshot: None,
+        last_native_ax_snapshot: None,
+        uncertainty: Default::default(),
+    }
+}
+
+fn empty_task_state(goal: &str, phase: Phase) -> TaskState {
+    TaskState {
+        goal: goal.into(),
+        subgoal_stack: vec![],
+        watch_slots: vec![],
+        hypotheses: vec![],
+        phase,
+        milestones: vec![],
+    }
+}
+
+fn mk_episode(sig: &str, actions_hash: &str, workflow_hash: &str) -> EpisodeRecord {
+    let now = Utc::now();
+    let e = HashedShingleEmbedder::default();
+    EpisodeRecord {
+        episode_id: format!("ep_{}", ulid::Ulid::new()),
+        scope: EpisodeScope::WorkflowLocal,
+        workflow_hash: workflow_hash.into(),
+        pre_state_signature: PreStateSignature(sig.into()),
+        goal: "test goal".into(),
+        subgoal_text: Some("test subgoal".into()),
+        failure_signature: FailureSignature {
+            failed_tool: "cdp_click".into(),
+            error_kind: "NotFound".into(),
+            consecutive_errors_at_entry: 1,
+        },
+        recovery_actions: vec![CompactAction {
+            tool_name: "ax_click".into(),
+            brief_args: "button Continue".into(),
+            outcome_kind: "ok".into(),
+        }],
+        recovery_actions_hash: RecoveryActionsHash(actions_hash.into()),
+        outcome_summary: "ok".into(),
+        pre_state_snapshot: empty_world_model_snapshot(),
+        goal_subgoal_embedding: e.embed("test goal test subgoal"),
+        embedding_impl_id: e.impl_id().into(),
+        occurrence_count: 1,
+        created_at: now,
+        last_seen_at: now,
+        last_retrieved_at: None,
+        step_record_refs: vec!["exec_1/node_a/events.jsonl".into()],
+    }
+}
+
+#[tokio::test]
+async fn new_store_bootstraps_schema_and_opens_wal_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("episodic.sqlite");
+    let _store = SqliteEpisodicStore::new(&path, EpisodeScope::WorkflowLocal).unwrap();
+    assert!(path.exists(), "sqlite file should have been created");
+
+    // WAL pragma is set during construction; the -wal sidecar should
+    // appear after the first write (the schema bootstrap counts).
+    let wal = path.with_extension("sqlite-wal");
+    assert!(
+        wal.exists() || path.exists(),
+        "expected the sqlite or its -wal sidecar to exist after bootstrap"
+    );
+}
+
+#[tokio::test]
+async fn insert_new_episode_returns_inserted() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+    let ep = mk_episode("sig_A", "hash_A", "w1");
+    let out = store.insert(ep.clone()).await.unwrap();
+    match out {
+        InsertOutcome::Inserted { episode_id } => {
+            assert_eq!(episode_id, ep.episode_id);
+        }
+        other => panic!("expected Inserted, got {:?}", other),
+    }
+    assert_eq!(store.row_count_for_tests().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn insert_duplicate_merges_and_bumps_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+    let ep1 = mk_episode("sig_A", "hash_A", "w1");
+    let ep2 = mk_episode("sig_A", "hash_A", "w1"); // same signature + actions_hash
+    let first = store.insert(ep1.clone()).await.unwrap();
+    let out = store.insert(ep2).await.unwrap();
+    match (first, out) {
+        (
+            InsertOutcome::Inserted { .. },
+            InsertOutcome::MergedWithExisting {
+                episode_id,
+                new_occurrence_count,
+            },
+        ) => {
+            assert_eq!(new_occurrence_count, 2);
+            assert_eq!(
+                episode_id, ep1.episode_id,
+                "merge must reuse the existing row's id, not the new one"
+            );
+        }
+        (a, b) => panic!(
+            "expected (Inserted, MergedWithExisting), got ({:?}, {:?})",
+            a, b
+        ),
+    }
+    // Dedup means only one row exists.
+    assert_eq!(store.row_count_for_tests().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn insert_different_actions_hash_is_separate_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+    let ep1 = mk_episode("sig_A", "hash_A", "w1");
+    let ep2 = mk_episode("sig_A", "hash_B", "w1");
+    let out1 = store.insert(ep1).await.unwrap();
+    let out2 = store.insert(ep2).await.unwrap();
+    assert!(matches!(out1, InsertOutcome::Inserted { .. }));
+    assert!(matches!(out2, InsertOutcome::Inserted { .. }));
+    assert_eq!(store.row_count_for_tests().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn retrieve_returns_empty_when_no_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+    let sig = PreStateSignature("nope".into());
+    let q = RetrievalQuery {
+        trigger: RetrievalTrigger::RunStart,
+        pre_state_signature: &sig,
+        goal: "anything",
+        subgoal_text: None,
+        workflow_hash: "w1",
+        now: Utc::now(),
+    };
+    let out = store.retrieve(&q, 2).await.unwrap();
+    assert!(out.is_empty());
+}
+
+#[tokio::test]
+async fn retrieve_structured_match_returns_matching_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+    store
+        .insert(mk_episode("sig_A", "hash_A", "w1"))
+        .await
+        .unwrap();
+    store
+        .insert(mk_episode("sig_B", "hash_B", "w1"))
+        .await
+        .unwrap();
+
+    let sig = PreStateSignature("sig_A".into());
+    let q = RetrievalQuery {
+        trigger: RetrievalTrigger::RecoveringEntry,
+        pre_state_signature: &sig,
+        goal: "test goal",
+        subgoal_text: Some("test subgoal"),
+        workflow_hash: "w1",
+        now: Utc::now(),
+    };
+    let out = store.retrieve(&q, 5).await.unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].episode.pre_state_signature.0, "sig_A");
+    assert!(
+        out[0].score_breakdown.structured_match,
+        "structured stage must mark the match flag"
+    );
+    assert!(
+        out[0].score_breakdown.final_score > 0.0,
+        "structured-match candidate must score above zero"
+    );
+}
+
+#[tokio::test]
+async fn retrieve_fallback_used_when_no_structured_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+    store
+        .insert(mk_episode("sig_X", "hash_X", "w1"))
+        .await
+        .unwrap();
+
+    let sig = PreStateSignature("no_match".into());
+    let q = RetrievalQuery {
+        trigger: RetrievalTrigger::RunStart,
+        pre_state_signature: &sig,
+        goal: "test goal",
+        subgoal_text: Some("test subgoal"),
+        workflow_hash: "w1",
+        now: Utc::now(),
+    };
+    let out = store.retrieve(&q, 2).await.unwrap();
+    assert_eq!(
+        out.len(),
+        1,
+        "embedding-only fallback should return the one row"
+    );
+    assert!(
+        !out[0].score_breakdown.structured_match,
+        "fallback rows must report structured_match = false"
+    );
+}
+
+#[tokio::test]
+async fn retrieve_respects_top_k() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+    for i in 0..5 {
+        store
+            .insert(mk_episode("sig_A", &format!("hash_{}", i), "w1"))
+            .await
+            .unwrap();
+    }
+
+    let sig = PreStateSignature("sig_A".into());
+    let q = RetrievalQuery {
+        trigger: RetrievalTrigger::RecoveringEntry,
+        pre_state_signature: &sig,
+        goal: "test goal",
+        subgoal_text: Some("test subgoal"),
+        workflow_hash: "w1",
+        now: Utc::now(),
+    };
+    let out = store.retrieve(&q, 2).await.unwrap();
+    assert_eq!(out.len(), 2);
+}
+
+#[tokio::test]
+async fn retrieve_renders_pre_state_snapshot_round_trip() {
+    // The render path (`render_retrieved_recoveries_block`) reads
+    // `pre_state_snapshot.focused_app.name` etc. straight off the
+    // retrieved row, so the SQLite round-trip must preserve at least
+    // the focused-app field. This pins the upstream Deserialize +
+    // Default contract on `WorldModelSnapshot` so a future refactor
+    // can't accidentally regress the render contract.
+    use clickweave_engine::agent::world_model::{AppKind, FocusedApp};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+    let mut ep = mk_episode("sig_with_snap", "hash_with_snap", "w1");
+    ep.pre_state_snapshot.focused_app = Some(FocusedApp {
+        name: "Safari".into(),
+        kind: AppKind::ChromeBrowser,
+        pid: 4242,
+    });
+    ep.pre_state_snapshot.modal_present = Some(true);
+    store.insert(ep).await.unwrap();
+
+    let sig = PreStateSignature("sig_with_snap".into());
+    let q = RetrievalQuery {
+        trigger: RetrievalTrigger::RecoveringEntry,
+        pre_state_signature: &sig,
+        goal: "test goal",
+        subgoal_text: Some("test subgoal"),
+        workflow_hash: "w1",
+        now: Utc::now(),
+    };
+    let out = store.retrieve(&q, 1).await.unwrap();
+    assert_eq!(out.len(), 1);
+    let snap = &out[0].episode.pre_state_snapshot;
+    let app = snap
+        .focused_app
+        .as_ref()
+        .expect("focused_app must round-trip through SQLite");
+    assert_eq!(app.name, "Safari");
+    assert!(matches!(app.kind, AppKind::ChromeBrowser));
+    assert_eq!(snap.modal_present, Some(true));
+}
+
+#[tokio::test]
+async fn prune_lru_respects_recent_grace_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+    for i in 0..5 {
+        store
+            .insert(mk_episode(
+                &format!("sig_{}", i),
+                &format!("hash_{}", i),
+                "w1",
+            ))
+            .await
+            .unwrap();
+    }
+    // All five rows are fresh; the 1h grace window must shield them
+    // from eviction even though `cap = 2`.
+    let deleted = store.prune_lru(2).await.unwrap();
+    assert_eq!(deleted, 0);
+    assert_eq!(store.row_count_for_tests().unwrap(), 5);
+}
+
+#[tokio::test]
+async fn writer_persists_on_derive_and_insert() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = EpisodicContext {
+        enabled: true,
+        workflow_local_path: dir.path().join("wl.sqlite"),
+        global_path: None,
+        workflow_hash: "w1".into(),
+    };
+    let writer = EpisodicWriter::spawn(ctx.clone(), None, uuid::Uuid::new_v4()).unwrap();
+
+    let now = Utc::now();
+    let entry = RecoveringEntrySnapshot {
+        entered_at_step: 1,
+        world_model_at_entry: empty_world_model_snapshot(),
+        task_state_at_entry: empty_task_state("test", Phase::Recovering),
+        triggering_error: TriggeringError {
+            failed_tool: "cdp_click".into(),
+            error_kind: "NotFound".into(),
+            consecutive_errors_at_entry: 1,
+            step_index: 1,
+        },
+        workflow_hash: "w1".into(),
+        pre_state_signature: PreStateSignature("test_sig_abcdef01".into()),
+        active_watch_slots: vec![],
+        events_jsonl_ref: Some("/tmp/fake/events.jsonl".into()),
+    };
+    let recovery_success = StepRecord {
+        step_index: 2,
+        boundary_kind: BoundaryKind::RecoverySucceeded,
+        world_model_snapshot: empty_world_model_snapshot(),
+        task_state_snapshot: empty_task_state("test", Phase::Executing),
+        action_taken: serde_json::Value::Null,
+        outcome: serde_json::Value::Null,
+        timestamp: now,
+    };
+
+    writer
+        .queue(WriteRequest::DeriveAndInsert {
+            entry: Box::new(entry),
+            recovery_success: Box::new(recovery_success),
+            recovery_actions: vec![CompactAction {
+                tool_name: "ax_click".into(),
+                brief_args: "button Continue".into(),
+                outcome_kind: "ok".into(),
+            }],
+        })
+        .await
+        .unwrap();
+
+    writer.flush_for_tests().await;
+
+    // Re-open the workflow-local store from outside the writer task
+    // and verify the row landed. Using the public `row_count_for_tests`
+    // helper avoids reaching into the writer's internal connection.
+    let store =
+        SqliteEpisodicStore::new(&ctx.workflow_local_path, EpisodeScope::WorkflowLocal).unwrap();
+    assert_eq!(store.row_count_for_tests().unwrap(), 1);
+
+    let q_sig = PreStateSignature("test_sig_abcdef01".into());
+    let q = RetrievalQuery {
+        trigger: RetrievalTrigger::RecoveringEntry,
+        pre_state_signature: &q_sig,
+        goal: "test",
+        subgoal_text: None,
+        workflow_hash: "w1",
+        now: Utc::now(),
+    };
+    let retrieved = store.retrieve(&q, 5).await.unwrap();
+    assert_eq!(retrieved.len(), 1);
+    let ep = &retrieved[0].episode;
+    assert_eq!(ep.failure_signature.failed_tool, "cdp_click");
+    assert_eq!(ep.failure_signature.error_kind, "NotFound");
+    assert_eq!(
+        ep.recovery_actions
+            .iter()
+            .map(|a| a.tool_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ax_click"]
+    );
+    assert_eq!(
+        ep.step_record_refs,
+        vec!["/tmp/fake/events.jsonl".to_string()],
+        "writer must populate step_record_refs from the entry snapshot"
+    );
+}
+
+#[tokio::test]
+async fn writer_skip_promotion_does_not_touch_global_store() {
+    // SkipPromotion terminals (CompletionDisagreement, LoopDetected, errored
+    // terminals — see PromotionTerminalKind) must not copy any rows into
+    // the global store. This is the safety net for D31's "promote only
+    // on clean terminals" gate.
+    let dir = tempfile::tempdir().unwrap();
+    let wl_path = dir.path().join("wl.sqlite");
+    let global_path = dir.path().join("global.sqlite");
+    let ctx = EpisodicContext {
+        enabled: true,
+        workflow_local_path: wl_path.clone(),
+        global_path: Some(global_path.clone()),
+        workflow_hash: "w1".into(),
+    };
+    let writer = EpisodicWriter::spawn(ctx, None, uuid::Uuid::new_v4()).unwrap();
+
+    // Pre-populate workflow-local with a row that *would* qualify for
+    // promotion (occurrence_count = 2, cross-workflow already in global
+    // = false → should_promote returns true).
+    let wl_store = SqliteEpisodicStore::new(&wl_path, EpisodeScope::WorkflowLocal).unwrap();
+    let mut ep = mk_episode("sig_skip", "hash_skip", "w1");
+    ep.occurrence_count = 2;
+    wl_store.insert(ep).await.unwrap();
+
+    writer
+        .queue(WriteRequest::PromotePass {
+            workflow_hash: "w1".into(),
+            terminal_kind: PromotionTerminalKind::SkipPromotion,
+            run_started_at: Utc::now() - chrono::Duration::hours(1),
+        })
+        .await
+        .unwrap();
+    writer.flush_for_tests().await;
+
+    let global_store = SqliteEpisodicStore::new(&global_path, EpisodeScope::Global).unwrap();
+    assert_eq!(
+        global_store.row_count_for_tests().unwrap(),
+        0,
+        "SkipPromotion must not copy any rows into the global store"
+    );
+}
+
+#[tokio::test]
+async fn workflow_a_episodes_do_not_appear_in_workflow_b_retrievals() {
+    // Cross-scope isolation canary (D34): two distinct workflow-local
+    // stores must never see each other's rows, even when they share a
+    // PreStateSignature. This is the structural guarantee that prevents
+    // context-bleed from one workflow into another.
+    let dir = tempfile::tempdir().unwrap();
+    let a_path = dir.path().join("a.sqlite");
+    let b_path = dir.path().join("b.sqlite");
+
+    let store_a = SqliteEpisodicStore::new(&a_path, EpisodeScope::WorkflowLocal).unwrap();
+    let store_b = SqliteEpisodicStore::new(&b_path, EpisodeScope::WorkflowLocal).unwrap();
+
+    store_a
+        .insert(mk_episode("sig_shared", "hash_A", "workflow_a"))
+        .await
+        .unwrap();
+
+    let sig = PreStateSignature("sig_shared".into());
+    let q = RetrievalQuery {
+        trigger: RetrievalTrigger::RecoveringEntry,
+        pre_state_signature: &sig,
+        goal: "anything",
+        subgoal_text: None,
+        workflow_hash: "workflow_b",
+        now: Utc::now(),
+    };
+    let results = store_b.retrieve(&q, 5).await.unwrap();
+    assert!(
+        results.is_empty(),
+        "workflow B retrieved {} rows from workflow A's store",
+        results.len()
+    );
+    assert_eq!(
+        store_b.row_count_for_tests().unwrap(),
+        0,
+        "store B should remain empty"
+    );
+}
