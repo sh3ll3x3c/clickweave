@@ -1,7 +1,7 @@
 //! Episodic memory layer for the Spec 2 agent.
 //!
-//! See `/Users/x0/Work/clickweave-vault/docs/design/2026-04-24_agent-episodic-memory.md`
-//! for the full design rationale. High-level shape:
+//! See the agent-episodic-memory design doc for the full rationale.
+//! High-level shape:
 //!
 //! - Primary use case: recovery reuse (D20).
 //! - Storage: SQLite per scope (D26), two-tier workflow-local + global (D21).
