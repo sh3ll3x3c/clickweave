@@ -55,7 +55,7 @@ pub struct CompactAction {
     pub outcome_kind: String, // "ok" | "error" | etc.
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct FailureSignature {
     pub failed_tool: String,

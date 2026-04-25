@@ -22,7 +22,8 @@ use rusqlite::{Connection, params};
 
 use crate::agent::episodic::retrieval::ScoreWeights;
 use crate::agent::episodic::types::{
-    EpisodeRecord, EpisodeScope, EpisodicError, InsertOutcome, RetrievalQuery, RetrievedEpisode,
+    EpisodeRecord, EpisodeScope, EpisodicError, FailureSignature, InsertOutcome, PreStateSignature,
+    RecoveryActionsHash, RetrievalQuery, RetrievedEpisode,
 };
 
 /// Column list shared by every `SELECT * FROM episodes` query path. Kept
@@ -433,52 +434,39 @@ fn row_to_episode(row: &rusqlite::Row<'_>) -> rusqlite::Result<EpisodeRecord> {
     let goal_subgoal_embedding: Vec<f32> =
         bincode::deserialize(&embedding_blob).unwrap_or_default();
 
-    let failure_signature: crate::agent::episodic::types::FailureSignature = {
-        let s: String = row.get("failure_signature_json")?;
-        serde_json::from_str(&s).unwrap_or(crate::agent::episodic::types::FailureSignature {
-            failed_tool: String::new(),
-            error_kind: String::new(),
-            consecutive_errors_at_entry: 0,
-        })
-    };
-    let recovery_actions = {
-        let s: String = row.get("recovery_actions_json")?;
-        serde_json::from_str(&s).unwrap_or_default()
-    };
-    let pre_state_snapshot = {
-        let s: String = row.get("pre_state_snapshot_json")?;
-        serde_json::from_str(&s).unwrap_or_default()
-    };
-    let step_record_refs: Vec<String> = {
-        let s: String = row.get("step_record_refs_json")?;
-        serde_json::from_str(&s).unwrap_or_default()
-    };
+    fn parse_or_default<T: serde::de::DeserializeOwned + Default>(s: &str) -> T {
+        serde_json::from_str(s).unwrap_or_default()
+    }
+    let failure_signature: FailureSignature =
+        parse_or_default(&row.get::<_, String>("failure_signature_json")?);
+    let recovery_actions = parse_or_default(&row.get::<_, String>("recovery_actions_json")?);
+    let pre_state_snapshot = parse_or_default(&row.get::<_, String>("pre_state_snapshot_json")?);
+    let step_record_refs: Vec<String> =
+        parse_or_default(&row.get::<_, String>("step_record_refs_json")?);
+
+    fn parse_rfc3339_or_now(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+    }
 
     Ok(EpisodeRecord {
         episode_id: row.get("episode_id")?,
         scope,
         workflow_hash: row.get("workflow_hash")?,
-        pre_state_signature: crate::agent::episodic::types::PreStateSignature(
-            row.get("pre_state_signature")?,
-        ),
+        pre_state_signature: PreStateSignature(row.get("pre_state_signature")?),
         goal: row.get("goal")?,
         subgoal_text: row.get("subgoal_text")?,
         failure_signature,
         recovery_actions,
-        recovery_actions_hash: crate::agent::episodic::types::RecoveryActionsHash(
-            row.get("recovery_actions_hash")?,
-        ),
+        recovery_actions_hash: RecoveryActionsHash(row.get("recovery_actions_hash")?),
         outcome_summary: row.get("outcome_summary")?,
         pre_state_snapshot,
         goal_subgoal_embedding,
         embedding_impl_id: row.get("embedding_impl_id")?,
         occurrence_count: row.get::<_, i64>("occurrence_count")? as u32,
-        created_at: DateTime::parse_from_rfc3339(&created_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
-        last_seen_at: DateTime::parse_from_rfc3339(&last_seen_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
+        created_at: parse_rfc3339_or_now(&created_at),
+        last_seen_at: parse_rfc3339_or_now(&last_seen_at),
         last_retrieved_at: last_retrieved_at
             .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
             .map(|dt| dt.with_timezone(&Utc)),
