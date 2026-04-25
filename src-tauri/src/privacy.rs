@@ -147,7 +147,17 @@ fn sweep_episodic_workflow_local(runs_root: &Path, retention_days: u64) {
 /// Drop rows whose `created_at` is older than `retention_days`. Uses
 /// `datetime(...)` on both sides so SQLite parses the RFC3339 timestamp
 /// correctly regardless of sub-second precision.
+///
+/// Mirrors the clamp `clickweave_core::storage::cleanup_expired_runs`
+/// applies to the same setting: a hand-edited `settings.json` with a
+/// huge `traceRetentionDays` would otherwise wrap into a negative
+/// `Duration::days` cast and move the cutoff into the future, deleting
+/// every fresh row. 10 years is past any legitimate retention window
+/// (the UI clamp is also 3650 days), so saturating here is
+/// indistinguishable from "retain forever" in practice.
 fn delete_rows_older_than(conn: &rusqlite::Connection, retention_days: u64) {
+    const MAX_RETENTION_DAYS: u64 = 3650;
+    let retention_days = retention_days.min(MAX_RETENTION_DAYS);
     let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
     let _ = conn.execute(
         "DELETE FROM episodes WHERE datetime(created_at) < datetime(?1)",
