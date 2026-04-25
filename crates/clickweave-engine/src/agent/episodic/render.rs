@@ -9,6 +9,14 @@ use std::fmt::Write;
 
 use crate::agent::episodic::types::{EpisodeRecord, EpisodeScope, RetrievedEpisode};
 
+/// Per-text-field rendered cap (chars). Long enough to keep typical
+/// subgoals and tool-arg summaries intact (~2 sentences) while bounding
+/// the worst case so an oversized stored field cannot inflate a single
+/// retrieved-recoveries block past a useful share of the prompt budget.
+/// Truncation is applied *after* escaping so the post-escape sequence
+/// stays valid.
+const FIELD_CHAR_CAP: usize = 200;
+
 pub fn render_retrieved_recoveries_block(retrieved: &[RetrievedEpisode]) -> String {
     if retrieved.is_empty() {
         return String::new();
@@ -24,7 +32,7 @@ pub fn render_retrieved_recoveries_block(retrieved: &[RetrievedEpisode]) -> Stri
         writeln!(
             s,
             "  <recovery id=\"{}\" scope=\"{}\" occurrence_count=\"{}\">",
-            escape(&r.episode.episode_id),
+            escape_capped(&r.episode.episode_id),
             scope,
             r.episode.occurrence_count
         )
@@ -39,8 +47,9 @@ pub fn render_retrieved_recoveries_block(retrieved: &[RetrievedEpisode]) -> Stri
             // `</retrieved_recoveries>` cannot break out of the block.
             // `Debug` formatting only escapes Rust control characters,
             // which is not enough to neutralise prompt-structure
-            // injection.
-            writeln!(s, "    subgoal_at_recovery: \"{}\"", escape(sub)).unwrap();
+            // injection. Cap is applied so an oversized stored subgoal
+            // cannot dominate the prompt budget either.
+            writeln!(s, "    subgoal_at_recovery: \"{}\"", escape_capped(sub)).unwrap();
         }
 
         writeln!(s, "    actions:").unwrap();
@@ -54,14 +63,19 @@ pub fn render_retrieved_recoveries_block(retrieved: &[RetrievedEpisode]) -> Stri
             writeln!(
                 s,
                 "      - {} {}{}",
-                escape(&act.tool_name),
-                escape(&act.brief_args),
+                escape_capped(&act.tool_name),
+                escape_capped(&act.brief_args),
                 trailing
             )
             .unwrap();
         }
 
-        writeln!(s, "    outcome: {}", escape(&r.episode.outcome_summary)).unwrap();
+        writeln!(
+            s,
+            "    outcome: {}",
+            escape_capped(&r.episode.outcome_summary)
+        )
+        .unwrap();
         writeln!(s, "  </recovery>").unwrap();
     }
     writeln!(s, "</retrieved_recoveries>").unwrap();
@@ -72,18 +86,19 @@ fn format_pre_state(ep: &EpisodeRecord) -> String {
     // `WorldModelSnapshot` exposes the Spec 1 projection — `focused_app`
     // is `Option<FocusedApp>` with `name: String`, `cdp_page` is
     // `Option<CdpPageState>` with `url: String`. All untrusted text
-    // fields run through `escape()` so values that contain `<` or `>`
-    // cannot rewrite the surrounding `<retrieved_recoveries>` block.
+    // fields run through `escape_capped()` so values that contain `<`
+    // or `>` cannot rewrite the surrounding `<retrieved_recoveries>`
+    // block, and oversized values get truncated.
     let snap = &ep.pre_state_snapshot;
     let mut parts: Vec<String> = Vec::new();
     if let Some(app) = &snap.focused_app {
-        parts.push(format!("focused_app={}", escape(&app.name)));
+        parts.push(format!("focused_app={}", escape_capped(&app.name)));
     }
     if let Some(page) = &snap.cdp_page
         && let Ok(parsed) = url::Url::parse(&page.url)
         && let Some(host) = parsed.host_str()
     {
-        parts.push(format!("host={}", escape(host)));
+        parts.push(format!("host={}", escape_capped(host)));
     }
     if let Some(m) = snap.modal_present {
         parts.push(format!("modal_present={}", m));
@@ -94,10 +109,24 @@ fn format_pre_state(ep: &EpisodeRecord) -> String {
     parts.join(", ")
 }
 
-fn escape(s: &str) -> String {
-    // Keep it conservative — the block lands in a prompt, so escape angle
-    // brackets so malicious content can't close the container early.
-    s.replace('<', "&lt;").replace('>', "&gt;")
+/// Escape `<` and `>` so a stored field cannot close the surrounding
+/// `<retrieved_recoveries>` block, then truncate to `FIELD_CHAR_CAP`
+/// chars (UTF-8-safe via `char_indices`). Order matters: cap *after*
+/// escaping so the post-escape `&lt;` / `&gt;` entities are not split
+/// mid-sequence.
+fn escape_capped(s: &str) -> String {
+    let escaped = s.replace('<', "&lt;").replace('>', "&gt;");
+    if escaped.chars().count() <= FIELD_CHAR_CAP {
+        return escaped;
+    }
+    let cut = escaped
+        .char_indices()
+        .nth(FIELD_CHAR_CAP)
+        .map(|(i, _)| i)
+        .unwrap_or(escaped.len());
+    let mut out = escaped[..cut].to_string();
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -223,6 +252,24 @@ mod tests {
         // The escaped form is still present so the model can read the
         // text faithfully.
         assert!(out.contains("&lt;/retrieved_recoveries&gt;"));
+    }
+
+    #[test]
+    fn oversized_subgoal_is_truncated_and_marked() {
+        // `TaskState::apply` does not bound `PushSubgoal` text, so a
+        // verbose stored subgoal could otherwise dominate the prompt
+        // budget when retrieved. Cap is per-field, post-escape.
+        let mut r = mk_retrieved();
+        r.episode.subgoal_text = Some("x".repeat(FIELD_CHAR_CAP * 4));
+        let out = render_retrieved_recoveries_block(&[r]);
+        // The truncation marker is present.
+        assert!(out.contains("…"));
+        // No `subgoal_at_recovery` line ever exceeds cap+marker+overhead.
+        let line = out
+            .lines()
+            .find(|l| l.contains("subgoal_at_recovery:"))
+            .expect("subgoal line present");
+        assert!(line.chars().count() < FIELD_CHAR_CAP * 2);
     }
 
     #[test]
