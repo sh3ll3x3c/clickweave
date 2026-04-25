@@ -17,20 +17,6 @@ use clickweave_engine::agent::episodic::{
 use clickweave_engine::agent::step_record::{BoundaryKind, StepRecord, WorldModelSnapshot};
 use clickweave_engine::agent::task_state::{Phase, TaskState};
 
-fn empty_world_model_snapshot() -> WorldModelSnapshot {
-    WorldModelSnapshot {
-        focused_app: None,
-        window_list: None,
-        cdp_page: None,
-        element_summary: None,
-        modal_present: None,
-        dialog_present: None,
-        last_screenshot: None,
-        last_native_ax_snapshot: None,
-        uncertainty: Default::default(),
-    }
-}
-
 fn empty_task_state(goal: &str, phase: Phase) -> TaskState {
     TaskState {
         goal: goal.into(),
@@ -64,7 +50,7 @@ fn mk_episode(sig: &str, actions_hash: &str, workflow_hash: &str) -> EpisodeReco
         }],
         recovery_actions_hash: RecoveryActionsHash(actions_hash.into()),
         outcome_summary: "ok".into(),
-        pre_state_snapshot: empty_world_model_snapshot(),
+        pre_state_snapshot: WorldModelSnapshot::default(),
         goal_subgoal_embedding: e.embed("test goal test subgoal"),
         embedding_impl_id: e.impl_id().into(),
         occurrence_count: 1,
@@ -351,7 +337,7 @@ async fn writer_persists_on_derive_and_insert() {
     let now = Utc::now();
     let entry = RecoveringEntrySnapshot {
         entered_at_step: 1,
-        world_model_at_entry: empty_world_model_snapshot(),
+        world_model_at_entry: WorldModelSnapshot::default(),
         task_state_at_entry: empty_task_state("test", Phase::Recovering),
         triggering_error: TriggeringError {
             failed_tool: "cdp_click".into(),
@@ -367,7 +353,7 @@ async fn writer_persists_on_derive_and_insert() {
     let recovery_success = StepRecord {
         step_index: 2,
         boundary_kind: BoundaryKind::RecoverySucceeded,
-        world_model_snapshot: empty_world_model_snapshot(),
+        world_model_snapshot: WorldModelSnapshot::default(),
         task_state_snapshot: empty_task_state("test", Phase::Executing),
         action_taken: serde_json::Value::Null,
         outcome: serde_json::Value::Null,

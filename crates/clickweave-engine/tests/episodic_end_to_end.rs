@@ -28,20 +28,6 @@ use clickweave_engine::agent::step_record::{BoundaryKind, StepRecord, WorldModel
 use clickweave_engine::agent::task_state::{Phase, TaskState};
 use tokio::sync::mpsc;
 
-fn empty_world_model_snapshot() -> WorldModelSnapshot {
-    WorldModelSnapshot {
-        focused_app: None,
-        window_list: None,
-        cdp_page: None,
-        element_summary: None,
-        modal_present: None,
-        dialog_present: None,
-        last_screenshot: None,
-        last_native_ax_snapshot: None,
-        uncertainty: Default::default(),
-    }
-}
-
 fn empty_task_state(goal: &str) -> TaskState {
     TaskState {
         goal: goal.into(),
@@ -56,7 +42,7 @@ fn empty_task_state(goal: &str) -> TaskState {
 fn mk_recovery_snapshot(workflow_hash: &str, sig: &str) -> RecoveringEntrySnapshot {
     RecoveringEntrySnapshot {
         entered_at_step: 1,
-        world_model_at_entry: empty_world_model_snapshot(),
+        world_model_at_entry: WorldModelSnapshot::default(),
         task_state_at_entry: empty_task_state("login"),
         triggering_error: TriggeringError {
             failed_tool: "cdp_click".into(),
@@ -75,7 +61,7 @@ fn mk_step_record() -> StepRecord {
     StepRecord {
         step_index: 2,
         boundary_kind: BoundaryKind::RecoverySucceeded,
-        world_model_snapshot: empty_world_model_snapshot(),
+        world_model_snapshot: WorldModelSnapshot::default(),
         task_state_snapshot: empty_task_state("login"),
         action_taken: serde_json::json!({"kind":"tool_call","tool_name":"ax_click"}),
         outcome: serde_json::json!({"kind":"tool_success"}),
@@ -105,7 +91,7 @@ fn mk_episode_pre_seeded(scope: EpisodeScope, sig: &str, actions_hash: &str) -> 
         }],
         recovery_actions_hash: RecoveryActionsHash(actions_hash.into()),
         outcome_summary: "ok".into(),
-        pre_state_snapshot: empty_world_model_snapshot(),
+        pre_state_snapshot: WorldModelSnapshot::default(),
         goal_subgoal_embedding: e.embed("login"),
         embedding_impl_id: e.impl_id().into(),
         // P1.M3: occurrence_count >= 2 ensures should_promote returns

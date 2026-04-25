@@ -76,23 +76,6 @@ mod tests {
     use crate::agent::step_record::WorldModelSnapshot;
     use chrono::Duration;
 
-    /// `WorldModelSnapshot` is serialize-only and has no `Default` impl;
-    /// build a fully-empty snapshot here so test rows don't pin Spec 1
-    /// internals.
-    fn empty_snapshot() -> WorldModelSnapshot {
-        WorldModelSnapshot {
-            focused_app: None,
-            window_list: None,
-            cdp_page: None,
-            element_summary: None,
-            modal_present: None,
-            dialog_present: None,
-            last_screenshot: None,
-            last_native_ax_snapshot: None,
-            uncertainty: Default::default(),
-        }
-    }
-
     fn mk_candidate(now: DateTime<Utc>, age_days: i64, count: u32) -> EpisodeRecord {
         EpisodeRecord {
             episode_id: "ep_test".into(),
@@ -113,7 +96,7 @@ mod tests {
             }],
             recovery_actions_hash: RecoveryActionsHash("aaaa1111".into()),
             outcome_summary: "subgoal completed".into(),
-            pre_state_snapshot: empty_snapshot(),
+            pre_state_snapshot: WorldModelSnapshot::default(),
             goal_subgoal_embedding: vec![0.1; 4096],
             embedding_impl_id: "hashed_shingle_v1".into(),
             occurrence_count: count,
