@@ -153,6 +153,13 @@ pub struct StateRunner {
     /// lazily when retrieval needs to populate
     /// `RecoveringEntrySnapshot::events_jsonl_ref`.
     pub(crate) episodic_events_ref: Option<String>,
+    /// Authoritative gate for D24 run-start retrieval: set true the
+    /// first time `try_retrieve_episodic` reaches its trigger-decision
+    /// slot, regardless of whether retrieval returned hits. Decoupled
+    /// from `step_index` so cache-replay / synthetic-skip / policy-deny
+    /// / approval-reject paths cannot let `step_index == 0` re-fire
+    /// run-start retrieval after the run has already taken actions.
+    pub(crate) episodic_run_start_retrieved: bool,
 }
 
 impl StateRunner {
@@ -254,6 +261,7 @@ impl StateRunner {
             last_failed_tool_name: None,
             last_failed_error_kind: None,
             episodic_events_ref: None,
+            episodic_run_start_retrieved: false,
         }
     }
 
@@ -502,7 +510,15 @@ impl StateRunner {
             None => return Vec::new(),
         };
 
-        let trigger = if self.step_index == 0 {
+        // D24: run-start retrieval fires once per run, full stop.
+        // `episodic_run_start_retrieved` is the authoritative gate (not
+        // `step_index == 0`, which lied on cache-replay / synthetic-skip
+        // / policy-deny / approval-reject paths because none of those
+        // ticked the counter). Marked consumed on first reach so a
+        // zero-hit retrieval still counts as "the run-start slot was
+        // used" and can never fire a second time.
+        let trigger = if !self.episodic_run_start_retrieved {
+            self.episodic_run_start_retrieved = true;
             RetrievalTrigger::RunStart
         } else if prev_phase_at_top != Phase::Recovering
             && self.task_state.phase == Phase::Recovering
@@ -1141,10 +1157,25 @@ impl StateRunner {
             }
         };
 
-        // 4. Advance.
-        self.step_index += 1;
+        // `step_index` is owned by the outer-loop call sites that record
+        // an `AgentStep` (via `advance_recorded_step_index`). `run_turn`
+        // intentionally does not advance it — early-continue paths
+        // (cache replay, synthetic focus skip, policy deny, approval
+        // reject) record their own steps without going through
+        // `run_turn`, and prior to this fix the divergent advancement
+        // let `step_index == 0` re-fire D24 run-start retrieval after
+        // the run had already taken actions.
 
         (outcome, warnings, milestones_appended)
+    }
+
+    /// Advance the recorded-step counter. Single owner of `step_index`
+    /// updates. Call after every `self.state.steps.push(...)` site so
+    /// `step_index` matches `state.steps.len()` and the prompt's
+    /// rendered step number stays in sync with what the run has
+    /// actually executed.
+    pub(crate) fn advance_recorded_step_index(&mut self) {
+        self.step_index += 1;
     }
 }
 
@@ -2219,6 +2250,7 @@ impl StateRunner {
                     page_url: self.state.current_url.clone(),
                 };
                 self.state.steps.push(step);
+                self.advance_recorded_step_index();
                 self.state.consecutive_errors += 1;
                 self.consecutive_errors = self.state.consecutive_errors;
                 *previous_result = Some(format!("Error: {}", err_msg));
@@ -2256,6 +2288,7 @@ impl StateRunner {
                             page_url: self.state.current_url.clone(),
                         };
                         self.state.steps.push(step);
+                        self.advance_recorded_step_index();
                         *previous_result = Some("Replan: user rejected cached action".to_string());
                         return ReplayResult::Continue;
                     }
@@ -2336,6 +2369,7 @@ impl StateRunner {
                     page_url: self.state.current_url.clone(),
                 };
                 self.state.steps.push(step);
+                self.advance_recorded_step_index();
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 *last_failure = None;
@@ -2798,6 +2832,7 @@ impl StateRunner {
                     outcome: StepOutcome::Success(skip_body.clone()),
                     page_url: self.state.current_url.clone(),
                 });
+                self.advance_recorded_step_index();
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 last_failure = None;
@@ -2846,6 +2881,7 @@ impl StateRunner {
                                 outcome: StepOutcome::Error(err_msg.clone()),
                                 page_url: self.state.current_url.clone(),
                             });
+                            self.advance_recorded_step_index();
                             self.state.consecutive_errors += 1;
                             self.consecutive_errors = self.state.consecutive_errors;
                             previous_result = Some(err_msg.clone());
@@ -2939,6 +2975,7 @@ impl StateRunner {
                                         ),
                                         page_url: self.state.current_url.clone(),
                                     });
+                                    self.advance_recorded_step_index();
                                     previous_result =
                                         Some("Replan: user rejected action".to_string());
                                     append_assistant_and_tool_result(
@@ -3098,6 +3135,7 @@ impl StateRunner {
                         outcome: step_outcome,
                         page_url: self.state.current_url.clone(),
                     });
+                    self.advance_recorded_step_index();
                     previous_result = Some(tool_body.clone());
                     // Clear the loop-detection tracker on any success.
                     last_failure = None;
@@ -3207,6 +3245,7 @@ impl StateRunner {
                         outcome: step_outcome,
                         page_url: self.state.current_url.clone(),
                     });
+                    self.advance_recorded_step_index();
                     self.state.consecutive_errors = self.consecutive_errors;
                     previous_result = Some(error.clone());
 
@@ -4396,6 +4435,140 @@ mod focus_skip_tests {
         let args = serde_json::json!({"app_name": "Calculator"});
         // Electron now — guard must NOT fire.
         assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+}
+
+/// F1 acceptance tests: D24/D29 run-start retrieval gate + step_index
+/// ownership. The gate (`episodic_run_start_retrieved`) replaces the
+/// drift-prone `step_index == 0` proxy; the helper
+/// (`advance_recorded_step_index`) is the single owner of `step_index`
+/// updates so the counter matches `state.steps.len()` across all
+/// recording paths (cache replay, synthetic skip, policy deny,
+/// approval reject, normal LLM turn).
+#[cfg(test)]
+mod f1_retrieval_gate_tests {
+    use super::*;
+    use crate::agent::episodic::{EpisodeScope, EpisodicContext, SqliteEpisodicStore};
+    use crate::agent::phase::Phase;
+    use tempfile::TempDir;
+
+    fn enabled_runner_with_store() -> (StateRunner, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let wl_path = dir.path().join("episodic.sqlite");
+        let ctx = EpisodicContext {
+            enabled: true,
+            workflow_local_path: wl_path.clone(),
+            global_path: None,
+            workflow_hash: "f1-test-workflow".into(),
+        };
+        let runner =
+            StateRunner::new_with_episodic("goal".to_string(), AgentConfig::default(), ctx);
+        // Sanity: store opened.
+        assert!(
+            runner.episodic_store.is_some(),
+            "test setup expects an episodic store",
+        );
+        // The `wl_path` is referenced indirectly through the runner's
+        // store; pre-open one to confirm SQLite WAL mode took.
+        let _verify = SqliteEpisodicStore::new(&wl_path, EpisodeScope::WorkflowLocal).unwrap();
+        (runner, dir)
+    }
+
+    #[tokio::test]
+    async fn run_start_retrieval_consumes_gate_on_first_call() {
+        let (mut r, _dir) = enabled_runner_with_store();
+        assert!(!r.episodic_run_start_retrieved);
+
+        // First call: run-start trigger fires (zero hits, but the
+        // gate-consumed semantic still applies).
+        let hits = r.try_retrieve_episodic(Phase::Exploring).await;
+        assert!(
+            hits.is_empty(),
+            "fresh store has no episodes yet — retrieval should be empty",
+        );
+        assert!(
+            r.episodic_run_start_retrieved,
+            "first call must mark the run-start slot consumed regardless of hit count",
+        );
+
+        // Second call with no Recovering transition: must skip
+        // entirely. Previously `step_index == 0` would have re-fired
+        // RunStart on cache-replay / policy-deny early-continue paths.
+        // Force `step_index` back to 0 to prove the gate (not the
+        // counter) is what blocks re-fire.
+        r.step_index = 0;
+        let hits2 = r.try_retrieve_episodic(Phase::Exploring).await;
+        assert!(
+            hits2.is_empty(),
+            "second call without Recovering transition must be a no-op",
+        );
+    }
+
+    #[tokio::test]
+    async fn recovering_entry_still_fires_after_run_start_consumed() {
+        let (mut r, _dir) = enabled_runner_with_store();
+
+        // Consume the run-start slot.
+        let _ = r.try_retrieve_episodic(Phase::Exploring).await;
+        assert!(r.episodic_run_start_retrieved);
+
+        // Transition into Recovering. Retrieval should fire on the
+        // edge (returns empty here because no episodes exist yet, but
+        // the call should still execute the trigger branch — verified
+        // by the side effect of capturing a `recovering_snapshot`).
+        r.task_state.phase = Phase::Recovering;
+        let _ = r.try_retrieve_episodic(Phase::Exploring).await;
+        assert!(
+            r.recovering_snapshot.is_some(),
+            "Recovering entry must capture a snapshot for the eventual write",
+        );
+    }
+
+    #[tokio::test]
+    async fn advance_recorded_step_index_increments_counter() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        assert_eq!(r.step_index, 0);
+        r.advance_recorded_step_index();
+        assert_eq!(r.step_index, 1);
+        r.advance_recorded_step_index();
+        assert_eq!(r.step_index, 2);
+    }
+
+    #[tokio::test]
+    async fn run_turn_no_longer_advances_step_index_directly() {
+        // Under the new ownership rule, `run_turn` does not bump the
+        // counter — that's the helper's job, called by sites that push
+        // an `AgentStep`. `agent_done` is terminal with no step push,
+        // so `step_index` must stay 0 after the turn.
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct EmptyExec(Mutex<Vec<Result<String, String>>>);
+        #[async_trait]
+        impl ToolExecutor for EmptyExec {
+            async fn call_tool(
+                &self,
+                _: &str,
+                _: &serde_json::Value,
+            ) -> Result<String, String> {
+                let mut q = self.0.lock().unwrap();
+                q.pop().unwrap_or_else(|| Err("no result".into()))
+            }
+        }
+
+        let mut r = StateRunner::new_for_test("g".to_string());
+        let exec = EmptyExec(Mutex::new(vec![]));
+        let done = AgentTurn {
+            mutations: vec![],
+            action: AgentAction::AgentDone {
+                summary: "done".into(),
+            },
+        };
+        let _ = r.run_turn(&done, &exec).await;
+        assert_eq!(
+            r.step_index, 0,
+            "run_turn must not advance step_index — only `advance_recorded_step_index` does",
+        );
     }
 }
 

@@ -86,7 +86,11 @@ async fn single_step_agent_done_completes_run() {
     let (outcome, warnings, _milestones) = r.run_turn(&agent_done("completed login"), &exec).await;
     assert!(warnings.is_empty());
     assert!(matches!(outcome, TurnOutcome::Done { .. }));
-    assert_eq!(r.step_index, 1);
+    // `step_index` counts recorded AgentSteps (advanced by
+    // `advance_recorded_step_index`, called only by sites that push
+    // onto `state.steps`). `agent_done` is terminal and pushes no
+    // step, so the counter stays at 0.
+    assert_eq!(r.step_index, 0);
 }
 
 #[tokio::test]
@@ -260,7 +264,10 @@ async fn terminal_boundary_record_captures_final_state() {
     );
     let json = serde_json::to_string(&record).unwrap();
     assert!(json.contains("\"boundary_kind\":\"terminal\""));
-    assert_eq!(record.step_index, 1);
+    // `step_index` reflects recorded AgentSteps. `agent_done` is
+    // terminal with no step push, so the boundary record describes
+    // the run as terminating before any step was recorded.
+    assert_eq!(record.step_index, 0);
 }
 
 #[tokio::test]
