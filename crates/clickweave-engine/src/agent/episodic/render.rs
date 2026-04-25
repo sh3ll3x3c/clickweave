@@ -13,8 +13,8 @@ use crate::agent::episodic::types::{EpisodeRecord, EpisodeScope, RetrievedEpisod
 /// subgoals and tool-arg summaries intact (~2 sentences) while bounding
 /// the worst case so an oversized stored field cannot inflate a single
 /// retrieved-recoveries block past a useful share of the prompt budget.
-/// Truncation is applied *after* escaping so the post-escape sequence
-/// stays valid.
+/// Truncation is applied *before* escaping so a boundary cannot land
+/// mid-entity (`&lt;` / `&gt;`) — see `escape_capped`.
 const FIELD_CHAR_CAP: usize = 200;
 
 pub fn render_retrieved_recoveries_block(retrieved: &[RetrievedEpisode]) -> String {
@@ -109,24 +109,26 @@ fn format_pre_state(ep: &EpisodeRecord) -> String {
     parts.join(", ")
 }
 
-/// Escape `<` and `>` so a stored field cannot close the surrounding
-/// `<retrieved_recoveries>` block, then truncate to `FIELD_CHAR_CAP`
-/// chars (UTF-8-safe via `char_indices`). Order matters: cap *after*
-/// escaping so the post-escape `&lt;` / `&gt;` entities are not split
-/// mid-sequence.
+/// Truncate `s` to `FIELD_CHAR_CAP` chars on a UTF-8 boundary, then
+/// escape `<` and `>` so a stored field cannot close the surrounding
+/// `<retrieved_recoveries>` block. Order matters: cap *before* escaping
+/// so the boundary cannot land mid-entity (`&lt;` / `&gt;`). An input
+/// with 199 ordinary chars followed by `<` would otherwise get cut to
+/// `…&` and corrupt the rendered text.
 fn escape_capped(s: &str) -> String {
-    let escaped = s.replace('<', "&lt;").replace('>', "&gt;");
-    if escaped.chars().count() <= FIELD_CHAR_CAP {
-        return escaped;
-    }
-    let cut = escaped
-        .char_indices()
-        .nth(FIELD_CHAR_CAP)
-        .map(|(i, _)| i)
-        .unwrap_or(escaped.len());
-    let mut out = escaped[..cut].to_string();
-    out.push('…');
-    out
+    let truncated = if s.chars().count() <= FIELD_CHAR_CAP {
+        s.to_string()
+    } else {
+        let cut = s
+            .char_indices()
+            .nth(FIELD_CHAR_CAP)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        let mut t = s[..cut].to_string();
+        t.push('…');
+        t
+    };
+    truncated.replace('<', "&lt;").replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -258,7 +260,8 @@ mod tests {
     fn oversized_subgoal_is_truncated_and_marked() {
         // `TaskState::apply` does not bound `PushSubgoal` text, so a
         // verbose stored subgoal could otherwise dominate the prompt
-        // budget when retrieved. Cap is per-field, post-escape.
+        // budget when retrieved. Cap is per-field, applied before
+        // escaping so it cannot split a `&lt;` / `&gt;` entity.
         let mut r = mk_retrieved();
         r.episode.subgoal_text = Some("x".repeat(FIELD_CHAR_CAP * 4));
         let out = render_retrieved_recoveries_block(&[r]);
@@ -270,6 +273,34 @@ mod tests {
             .find(|l| l.contains("subgoal_at_recovery:"))
             .expect("subgoal line present");
         assert!(line.chars().count() < FIELD_CHAR_CAP * 2);
+    }
+
+    #[test]
+    fn bracket_at_cap_boundary_does_not_split_entity() {
+        // Regression: capping after escaping would slice between the
+        // `&` and the `lt;` of a boundary `&lt;` entity, leaving a
+        // dangling `&` in the output. Capping *before* escaping keeps
+        // the entity whole or drops it entirely.
+        let mut r = mk_retrieved();
+        // 199 ordinary chars, then `<` at position 199 (0-indexed) so
+        // the boundary lands exactly on the bracket after escaping.
+        let mut text = "x".repeat(FIELD_CHAR_CAP - 1);
+        text.push('<');
+        text.push_str("rest"); // ensure post-cap content exists
+        r.episode.subgoal_text = Some(text);
+        let out = render_retrieved_recoveries_block(&[r]);
+        // No standalone `&` followed by anything other than a complete
+        // `lt;` / `gt;` entity should appear in the rendered subgoal
+        // line.
+        let line = out
+            .lines()
+            .find(|l| l.contains("subgoal_at_recovery:"))
+            .expect("subgoal line present");
+        // Either the `<` is present as a complete `&lt;` entity or it
+        // is dropped entirely — never a half-entity.
+        assert!(!line.contains("&…"), "found split entity in {line:?}");
+        assert!(!line.contains("&l…"), "found split entity in {line:?}");
+        assert!(!line.contains("&lt…"), "found split entity in {line:?}");
     }
 
     #[test]
