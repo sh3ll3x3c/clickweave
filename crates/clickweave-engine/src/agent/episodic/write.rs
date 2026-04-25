@@ -168,23 +168,25 @@ impl EpisodicWriter {
     /// so this is a real "writes are visible to other connections on
     /// the same DB file" barrier — not a channel-empty heuristic.
     ///
-    /// Bounded at ~1 s so a stuck consumer never blocks the
-    /// run-terminal path indefinitely. A timeout (or a closed channel,
-    /// e.g. if the worker has already exited) silently returns; D32
-    /// keeps episodic best-effort.
+    /// Total wall-clock bound is ~1 s so a stuck consumer never blocks
+    /// the run-terminal path indefinitely. The single timeout wraps
+    /// both the sentinel enqueue and the ack receive, because
+    /// `Sender::send` itself awaits a free permit when the channel is
+    /// at capacity — without the wrapping timeout, a saturated channel
+    /// (rare, but possible if the runner queued a burst right before
+    /// terminal) could block the flush past its bound. A timeout, a
+    /// closed channel (worker already exited), or a dropped ack all
+    /// silently return; D32 keeps episodic best-effort.
     pub async fn flush(&self) {
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        // If the channel is full or closed, there is nothing useful
-        // to wait on — fall back to a short delay and return.
-        if self
-            .tx
-            .send(WriteRequest::Flush { ack: ack_tx })
-            .await
-            .is_err()
-        {
-            return;
-        }
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), ack_rx).await;
+        let tx = self.tx.clone();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async move {
+            if tx.send(WriteRequest::Flush { ack: ack_tx }).await.is_err() {
+                return;
+            }
+            let _ = ack_rx.await;
+        })
+        .await;
     }
 
     /// Test alias for [`Self::flush`]. Kept as a separate entry point
