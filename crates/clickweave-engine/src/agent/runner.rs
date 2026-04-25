@@ -3281,6 +3281,18 @@ impl StateRunner {
             self.write_terminal_record().await;
         }
 
+        // Drain queued episodic writes before handing control back to
+        // the caller. The Tauri run-terminal code path spawns a fresh
+        // `EpisodicWriter` for the promotion pass, which opens a new
+        // connection on the same `episodic.sqlite` file. Without this
+        // barrier, a `DeriveAndInsert` queued seconds earlier may not
+        // yet be committed when the promotion writer's `SELECT … WHERE
+        // last_seen_at >= run_started_at` runs, so a clean run with
+        // one recovery would silently fail to promote.
+        if let Some(writer) = &self.episodic_writer {
+            writer.flush().await;
+        }
+
         Ok((self.state, self.cache))
     }
 }

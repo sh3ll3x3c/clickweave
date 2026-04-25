@@ -43,14 +43,12 @@ const CHANNEL_CAP: usize = 64;
 
 pub struct EpisodicWriter {
     tx: mpsc::Sender<WriteRequest>,
-    /// Held so the consumer task is dropped (and aborts) when the
-    /// writer is dropped. The `JoinHandle` is otherwise unused; the
-    /// task is fire-and-forget.
+    /// Detached on drop. `JoinHandle` does not abort the task on drop
+    /// in tokio; instead, dropping the writer drops `tx`, which closes
+    /// the channel, and the worker exits cleanly after draining the
+    /// remaining messages from `rx`.
     #[allow(dead_code)]
     join: tokio::task::JoinHandle<()>,
-    /// Notified after every drained request, so test helpers can wait
-    /// for the consumer to catch up without polling channel internals.
-    flush: Arc<tokio::sync::Notify>,
 }
 
 impl EpisodicWriter {
@@ -70,7 +68,6 @@ impl EpisodicWriter {
         run_id: uuid::Uuid,
     ) -> Result<Self, EpisodicError> {
         let (tx, mut rx) = mpsc::channel::<WriteRequest>(CHANNEL_CAP);
-        let flush = Arc::new(tokio::sync::Notify::new());
 
         let wl = Arc::new(SqliteEpisodicStore::new(
             &ctx.workflow_local_path,
@@ -81,7 +78,6 @@ impl EpisodicWriter {
             None => None,
         };
 
-        let flush_signal = flush.clone();
         let event_tx_task = event_tx.clone();
         let join = tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
@@ -116,7 +112,6 @@ impl EpisodicWriter {
                         run_started_at,
                     } => {
                         if matches!(terminal_kind, PromotionTerminalKind::SkipPromotion) {
-                            flush_signal.notify_waiters();
                             continue;
                         }
                         if let Some(g) = &global {
@@ -140,13 +135,22 @@ impl EpisodicWriter {
                             }
                         }
                     }
+                    // Barrier sentinel — by the time the worker pops
+                    // this off the channel and reaches this arm, every
+                    // prior message has been fully processed (including
+                    // its SQL commit), so acking here gives the caller
+                    // a real "all writes are visible" signal. The
+                    // receive side may have been dropped already (e.g.
+                    // a flush timed out and went out of scope); the
+                    // ack send is best-effort.
+                    WriteRequest::Flush { ack } => {
+                        let _ = ack.send(());
+                    }
                 }
-                flush_signal.notify_waiters();
             }
-            flush_signal.notify_waiters();
         });
 
-        Ok(Self { tx, join, flush })
+        Ok(Self { tx, join })
     }
 
     /// Best-effort enqueue. Returns `EpisodicError::Backpressure` when
@@ -158,23 +162,29 @@ impl EpisodicWriter {
             .map_err(|_| EpisodicError::Backpressure)
     }
 
-    /// Best-effort flush — block briefly until the consumer signals it
-    /// has finished draining the queue. Bounded loop; safe to time-out
-    /// silently because episodic writes are best-effort by D32.
+    /// Block until every previously-queued request has been fully
+    /// processed, including its SQL commit. Implemented with an
+    /// in-channel `Flush` sentinel that the worker acks via a oneshot,
+    /// so this is a real "writes are visible to other connections on
+    /// the same DB file" barrier — not a channel-empty heuristic.
+    ///
+    /// Bounded at ~1 s so a stuck consumer never blocks the
+    /// run-terminal path indefinitely. A timeout (or a closed channel,
+    /// e.g. if the worker has already exited) silently returns; D32
+    /// keeps episodic best-effort.
     pub async fn flush(&self) {
-        // Wait until the channel is fully drained (capacity == cap).
-        // Cap the wait at ~1 second so a stuck consumer never blocks
-        // the run-terminal path indefinitely.
-        for _ in 0..50 {
-            if self.tx.capacity() == CHANNEL_CAP {
-                return;
-            }
-            // Use the notify so we wake on every drained request;
-            // the timeout guards against a hung consumer.
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_millis(20), self.flush.notified())
-                    .await;
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        // If the channel is full or closed, there is nothing useful
+        // to wait on — fall back to a short delay and return.
+        if self
+            .tx
+            .send(WriteRequest::Flush { ack: ack_tx })
+            .await
+            .is_err()
+        {
+            return;
         }
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), ack_rx).await;
     }
 
     /// Test alias for [`Self::flush`]. Kept as a separate entry point

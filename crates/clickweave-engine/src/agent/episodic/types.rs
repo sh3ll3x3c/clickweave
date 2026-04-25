@@ -217,6 +217,16 @@ pub struct TriggeringError {
 /// The runner constructs at most one of these per `Recovering -> Executing`
 /// transition, so the heap allocation is negligible relative to the SQLite
 /// write the writer task subsequently performs.
+///
+/// `Flush` is a barrier sentinel: the writer task acks via the oneshot
+/// once it has fully processed every prior message. The previous flush
+/// implementation polled `Sender::capacity()`, which returns `CAP` as
+/// soon as the worker pops a message off the channel — *before* the
+/// SQL commit lands. That left a window where a freshly-queued
+/// `DeriveAndInsert` would not yet be visible to a subsequent
+/// promotion pass that opens a fresh `SqliteEpisodicStore` on the same
+/// file, so a clean run with one recovery could silently fail to
+/// promote.
 #[derive(Debug)]
 pub enum WriteRequest {
     DeriveAndInsert {
@@ -232,6 +242,9 @@ pub enum WriteRequest {
         /// old rows or inflate global `occurrence_count` on unrelated
         /// episodes. Required by every PromotePass.
         run_started_at: DateTime<Utc>,
+    },
+    Flush {
+        ack: tokio::sync::oneshot::Sender<()>,
     },
 }
 
