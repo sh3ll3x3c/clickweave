@@ -127,6 +127,22 @@ pub enum AgentEvent {
         boundary_kind: BoundaryKind,
         step_index: usize,
     },
+    /// Emitted after the runner's episodic-retrieval pass returns at
+    /// least one candidate (Spec 2 D24). Triggered on run-start (step 0)
+    /// and on the `Exploring/Executing -> Recovering` phase transition.
+    /// `episode_ids` are the IDs of the retrieved episodes in
+    /// score-descending order; `scope_breakdown_workflow` and
+    /// `scope_breakdown_global` partition `count` across the two
+    /// stores so frontends can show provenance without re-walking
+    /// the payload.
+    EpisodesRetrieved {
+        run_id: Uuid,
+        trigger: crate::agent::episodic::RetrievalTrigger,
+        count: usize,
+        episode_ids: Vec<String>,
+        scope_breakdown_workflow: usize,
+        scope_breakdown_global: usize,
+    },
     /// Emitted by the episodic writer task after a `RecoverySucceeded`
     /// recovery snapshot is persisted to the workflow-local SQLite store
     /// (Spec 2 D30). Carries the `run_id` captured at writer-spawn so

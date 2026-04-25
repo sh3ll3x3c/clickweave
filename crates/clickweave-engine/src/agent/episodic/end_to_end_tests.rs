@@ -409,5 +409,6 @@ fn event_kind(e: &AgentEvent) -> &'static str {
         AgentEvent::BoundaryRecordWritten { .. } => "boundary_record_written",
         AgentEvent::EpisodeWritten { .. } => "episode_written",
         AgentEvent::EpisodePromoted { .. } => "episode_promoted",
+        AgentEvent::EpisodesRetrieved { .. } => "episodes_retrieved",
     }
 }

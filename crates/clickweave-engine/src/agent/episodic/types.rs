@@ -94,6 +94,11 @@ pub struct EpisodeRecord {
 }
 
 /// Per-run episodic wiring constructed by the Tauri layer (D34).
+///
+/// Cheap to clone — three small allocations + a bool. The Tauri command
+/// clones once per worker (runner closure + run-terminal promotion
+/// path) so an explicit `Clone` derive avoids smearing `Arc<…>` over the
+/// boundary type.
 #[derive(Debug, Clone)]
 pub struct EpisodicContext {
     pub enabled: bool,

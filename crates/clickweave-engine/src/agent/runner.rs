@@ -572,6 +572,31 @@ impl StateRunner {
             )
         });
         merged.truncate(self.config.retrieved_episodes_k);
+
+        // Emit `EpisodesRetrieved` whenever the retrieval pass returned
+        // at least one candidate. Frontends use this to surface the
+        // `<retrieved_recoveries>` block before the LLM call lands.
+        if !merged.is_empty() {
+            use crate::agent::episodic::EpisodeScope;
+            let workflow_count = merged
+                .iter()
+                .filter(|r| matches!(r.scope, EpisodeScope::WorkflowLocal))
+                .count();
+            let global_count = merged.len() - workflow_count;
+            let event = AgentEvent::EpisodesRetrieved {
+                run_id: self.run_id,
+                trigger,
+                count: merged.len(),
+                episode_ids: merged
+                    .iter()
+                    .map(|r| r.episode.episode_id.clone())
+                    .collect(),
+                scope_breakdown_workflow: workflow_count,
+                scope_breakdown_global: global_count,
+            };
+            self.emit_event(event).await;
+        }
+
         merged
     }
 

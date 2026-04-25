@@ -94,6 +94,10 @@ pub async fn run_agent_workflow<B, M>(
     anchor_node_id: Option<uuid::Uuid>,
     verification_artifacts_dir: Option<PathBuf>,
     storage: Option<RunStorageHandle>,
+    // Spec 2 episodic-memory wiring. `None` → `EpisodicContext::disabled()`,
+    // preserving the legacy "no episodic" behaviour for tests and
+    // internal callers that don't construct paths.
+    episodic_ctx: Option<crate::agent::episodic::EpisodicContext>,
 ) -> anyhow::Result<(AgentState, AgentCache)>
 where
     B: ChatBackend,
@@ -112,7 +116,13 @@ where
     // stays stable across runs for prefix-cache hits.
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
-    let mut runner = StateRunner::new(goal.clone(), config);
+    // P4: thread the per-run `EpisodicContext` through `new_with_episodic`
+    // so the runner can open the workflow-local + global SQLite stores
+    // before the loop starts. Callers that pass `None` get the disabled
+    // context — episodic stays a no-op for that run.
+    let episodic_ctx =
+        episodic_ctx.unwrap_or_else(crate::agent::episodic::EpisodicContext::disabled);
+    let mut runner = StateRunner::new_with_episodic(goal.clone(), config, episodic_ctx);
     if let Some(c) = cache {
         runner = runner.with_cache(c);
     }
@@ -134,6 +144,10 @@ where
     if let Some(s) = storage {
         runner = runner.with_storage(s);
     }
+    // Spawn the episodic writer last so it captures the live `event_tx`
+    // and `run_id` already seeded by `with_events` / `with_run_id`. The
+    // writer is a no-op when `episodic_active()` is false.
+    runner = runner.with_episodic_writer();
     runner
         .run(llm, mcp, goal, workflow, tools, anchor_node_id)
         .await
