@@ -144,6 +144,17 @@ fn sweep_episodic_workflow_local(runs_root: &Path, retention_days: u64) {
     }
 }
 
+/// Drop rows whose `created_at` is older than `retention_days`. Uses
+/// `datetime(...)` on both sides so SQLite parses the RFC3339 timestamp
+/// correctly regardless of sub-second precision.
+fn delete_rows_older_than(conn: &rusqlite::Connection, retention_days: u64) {
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
+    let _ = conn.execute(
+        "DELETE FROM episodes WHERE datetime(created_at) < datetime(?1)",
+        rusqlite::params![cutoff.to_rfc3339()],
+    );
+}
+
 fn sweep_workflow_local_db(
     db: &Path,
     workflow_dir: &Path,
@@ -152,14 +163,7 @@ fn sweep_workflow_local_db(
     use rusqlite::{Connection, params};
     let conn = Connection::open(db).map_err(|e| e.to_string())?;
 
-    // (b) absolute age cap. We use `datetime(...)` on both sides so
-    // SQLite parses the RFC3339 timestamp correctly regardless of
-    // sub-second precision in `created_at`.
-    let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
-    let _ = conn.execute(
-        "DELETE FROM episodes WHERE datetime(created_at) < datetime(?1)",
-        params![cutoff.to_rfc3339()],
-    );
+    delete_rows_older_than(&conn, retention_days);
 
     // (a) orphan-ref sweep. Rows with an empty refs list are skipped
     // (no way to tell whether their events.jsonl is gone or never
@@ -217,11 +221,7 @@ fn sweep_episodic_global(app_data_dir: &Path, retention_days: u64) {
             return;
         }
     };
-    let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
-    let _ = conn.execute(
-        "DELETE FROM episodes WHERE datetime(created_at) < datetime(?1)",
-        rusqlite::params![cutoff.to_rfc3339()],
-    );
+    delete_rows_older_than(&conn, retention_days);
 }
 
 /// Kick off the expired-trace sweep on a detached OS thread so app
