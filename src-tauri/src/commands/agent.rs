@@ -11,6 +11,17 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 
+/// Resolve the path to the global episodic SQLite store. Pulls the
+/// app-data root from the managed `AppDataDir` state — the same single
+/// source `RunStorage::new_app_data` and the trace-retention sweep use,
+/// so the global store always lands where D36's privacy sweep walks.
+fn app_data_episodic_path(
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, super::error::CommandError> {
+    let base = app.state::<crate::commands::types::AppDataDir>().0.clone();
+    Ok(base.join("episodic.sqlite"))
+}
+
 // ── Request / payload types ─────────────────────────────────────
 
 /// Wire form of a single permission rule. Mirrors
@@ -133,6 +144,21 @@ pub struct AgentRunRequest {
     /// inline above the current goal. Runtime order = chronological.
     #[serde(default)]
     pub prior_turns: Vec<PriorTurnWire>,
+    /// Spec 2 master kill switch for episodic memory on this run.
+    /// `None` = inherit the engine default (`true`); `Some(false)` =
+    /// run with episodic disabled regardless of `EpisodicContext`.
+    #[serde(default)]
+    pub episodic_enabled: Option<bool>,
+    /// Spec 2 retrieval depth — top-k episodes returned per trigger.
+    /// `None` = engine default (2). Clamped to `[1, 10]` at the
+    /// Tauri seam.
+    #[serde(default)]
+    pub retrieved_episodes_k: Option<usize>,
+    /// Spec 2 D35 privacy opt-in: when `true`, recoveries from this
+    /// workflow may be promoted into the global cross-workflow store.
+    /// Default off keeps workflows isolated.
+    #[serde(default)]
+    pub episodic_global_participation: Option<bool>,
 }
 
 /// Wire form of a prior-turn entry (matches
@@ -470,15 +496,66 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                 }),
             );
         }
-        // TODO(Phase 4): emit to frontend as `agent://episode_written` /
-        // `agent://episode_promoted`. Phase 3 only adds the engine-side
-        // emission; the Tauri fan-out + frontend store wiring lands in
-        // Phase 4.
-        AgentEvent::EpisodeWritten { .. } => {
-            tracing::trace!(?event, "episodic event awaiting Phase 4 fan-out");
+        // Spec 2 D33: episodic-memory events. The runner emits
+        // `EpisodesRetrieved` when retrieval surfaces candidates; the
+        // background `EpisodicWriter` task emits `EpisodeWritten`
+        // (insert/merge in the workflow-local store) and `EpisodePromoted`
+        // (run-terminal promotion pass into the global store). All three
+        // payloads carry the run's UUID so the frontend's stale-run
+        // filter (`useAgentEvents::isStale`) drops late events from a
+        // previous run.
+        AgentEvent::EpisodesRetrieved {
+            run_id: event_run_id,
+            trigger,
+            count,
+            episode_ids,
+            scope_breakdown_workflow,
+            scope_breakdown_global,
+        } => {
+            let _ = app.emit(
+                "agent://episodes_retrieved",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "trigger": trigger,
+                    "count": count,
+                    "episode_ids": episode_ids,
+                    "scope_breakdown_workflow": scope_breakdown_workflow,
+                    "scope_breakdown_global": scope_breakdown_global,
+                }),
+            );
         }
-        AgentEvent::EpisodePromoted { .. } => {
-            tracing::trace!(?event, "episodic event awaiting Phase 4 fan-out");
+        AgentEvent::EpisodeWritten {
+            run_id: event_run_id,
+            episode_id,
+            outcome,
+            occurrence_count,
+        } => {
+            let _ = app.emit(
+                "agent://episode_written",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "episode_id": episode_id,
+                    "outcome": outcome,
+                    "occurrence_count": occurrence_count,
+                }),
+            );
+        }
+        AgentEvent::EpisodePromoted {
+            run_id: event_run_id,
+            count,
+            skipped,
+        } => {
+            let _ = app.emit(
+                "agent://episode_promoted",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "count": count,
+                    "skipped": skipped,
+                }),
+            );
         }
     }
 }
@@ -561,6 +638,38 @@ pub async fn run_agent(
     let permission_policy: Option<PermissionPolicy> = request.permissions.map(Into::into);
     let consecutive_destructive_cap = request.consecutive_destructive_cap;
     let allow_focus_window = request.allow_focus_window;
+    let episodic_settings_enabled = request.episodic_enabled.unwrap_or(true);
+    let retrieved_episodes_k_override = request.retrieved_episodes_k;
+    let episodic_global_participation = request.episodic_global_participation.unwrap_or(false);
+
+    // Spec 2 D34: construct the per-run EpisodicContext. The context is
+    // disabled when persistence is off (the privacy kill switch flips
+    // episodic with traces — there's nothing to derive episodes from
+    // without `events.jsonl`) or when the per-run kill switch from the
+    // UI is `false`. The workflow-local SQLite lives next to the rest of
+    // the workflow's runtime state under `RunStorage::base_path()`; the
+    // global store sits at the same `AppDataDir` root the trace-retention
+    // sweep walks, so D36's privacy sweep finds it.
+    let episodic_ctx = if persist_traces && episodic_settings_enabled {
+        let wl_path = storage.lock().unwrap().base_path().join("episodic.sqlite");
+        let global_path = if episodic_global_participation {
+            Some(app_data_episodic_path(&app)?)
+        } else {
+            None
+        };
+        clickweave_engine::agent::episodic::EpisodicContext {
+            enabled: true,
+            workflow_local_path: wl_path,
+            global_path,
+            workflow_hash: request.workflow_id.clone(),
+        }
+    } else {
+        clickweave_engine::agent::episodic::EpisodicContext::disabled()
+    };
+
+    // Capture the run-start timestamp so PromotePass scopes promotion
+    // to episodes touched during this run (P1.M3).
+    let run_start_utc = chrono::Utc::now();
 
     let cancel_token = CancellationToken::new();
     let agent_token = cancel_token.clone();
@@ -569,6 +678,12 @@ pub async fn run_agent(
 
     // Live event channel: agent runner -> Tauri event emitter
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+
+    // P3.H2: clone the event sender BEFORE it moves into `AgentChannels`
+    // so the run-terminal promotion writer can still emit
+    // `EpisodePromoted` with the active run_id even though the runner's
+    // own clone has already been dropped by then.
+    let promotion_event_tx = event_tx.clone();
 
     // Approval channel: agent runner sends requests, we forward to UI and store
     // the oneshot response sender in the handle for `approve_agent_action` to use.
@@ -585,6 +700,9 @@ pub async fn run_agent(
     let task_run_id = run_id.clone();
     let event_run_id = run_id.clone();
     let approval_run_id = run_id.clone();
+    let task_episodic_ctx = episodic_ctx.clone();
+    let promotion_episodic_ctx = episodic_ctx.clone();
+    let promotion_workflow_hash = episodic_ctx.workflow_hash.clone();
 
     // Channels used to signal cleanup when the agent task, event forwarder,
     // and approval forwarder have all finished, preventing stale event leakage.
@@ -654,6 +772,13 @@ pub async fn run_agent(
         }
         if let Some(allow) = allow_focus_window {
             config.allow_focus_window = allow;
+        }
+        // Spec 2 per-run overrides: master kill switch + retrieval depth.
+        // The global-participation flag is encoded in `task_episodic_ctx`
+        // (it gates `EpisodicContext::global_path`), not on `AgentConfig`.
+        config.episodic_enabled = episodic_settings_enabled;
+        if let Some(k) = retrieved_episodes_k_override {
+            config.retrieved_episodes_k = k.clamp(1, 10);
         }
 
         // Begin storage execution and load cross-run state under a single lock.
@@ -732,6 +857,9 @@ pub async fn run_agent(
                 anchor_uuid,
                 verification_artifacts_dir,
                 Some(storage.clone()),
+                // Spec 2 P4: thread the per-run EpisodicContext into the
+                // engine. Disabled context = no episodic stores opened.
+                Some(task_episodic_ctx.clone()),
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
@@ -849,6 +977,48 @@ pub async fn run_agent(
                             "agent://stopped",
                             serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
                         );
+                    }
+                }
+
+                // Spec 2 D31 / Task 4.2: run-terminal promotion pass.
+                // Only fires when episodic is active for this run AND
+                // the operator opted into global-tier sharing. The
+                // terminal kind classifies whether promotion is even
+                // attempted: clean completion → eligible; disagreement,
+                // loop, error, cancellation → SkipPromotion.
+                //
+                // The promotion writer is spawned fresh here (not the
+                // runner's own writer) so it owns its own SQLite handles
+                // and can drain its single PromotePass message
+                // independently of the runner shutdown sequence. We
+                // explicitly flush before the task exits so the
+                // `agent://episode_promoted` event lands before the
+                // `done_tx` cleanup signal closes the event forwarder.
+                if promotion_episodic_ctx.enabled && promotion_episodic_ctx.global_path.is_some() {
+                    use clickweave_engine::agent::episodic::{
+                        EpisodicWriter, PromotionTerminalKind,
+                        types::WriteRequest as EpisodicWriteRequest,
+                    };
+                    let terminal_kind = match &resolved_terminal {
+                        Some(TerminalReason::Completed { .. })
+                        | Some(TerminalReason::DisagreementConfirmed { .. }) => {
+                            PromotionTerminalKind::Clean
+                        }
+                        _ => PromotionTerminalKind::SkipPromotion,
+                    };
+                    if let Ok(writer) = EpisodicWriter::spawn(
+                        promotion_episodic_ctx.clone(),
+                        Some(promotion_event_tx.clone()),
+                        run_uuid,
+                    ) {
+                        let _ = writer
+                            .queue(EpisodicWriteRequest::PromotePass {
+                                workflow_hash: promotion_workflow_hash.clone(),
+                                terminal_kind,
+                                run_started_at: run_start_utc,
+                            })
+                            .await;
+                        writer.flush().await;
                     }
                 }
             }
@@ -1311,6 +1481,9 @@ mod run_agent_smoke_tests {
         "agent://task_state_changed",
         "agent://world_model_changed",
         "agent://boundary_record_written",
+        "agent://episodes_retrieved",
+        "agent://episode_written",
+        "agent://episode_promoted",
     ];
 
     /// Rubric-10 gate (D-PR2): every `AgentEvent` the engine emits
@@ -1448,6 +1621,7 @@ mod run_agent_smoke_tests {
             None,
             None,
             Some(Arc::clone(&storage)),
+            None,
         )
         .await
         .expect("run_agent_workflow ok");
