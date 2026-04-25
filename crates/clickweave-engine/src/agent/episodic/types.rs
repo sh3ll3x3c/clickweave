@@ -65,13 +65,12 @@ pub struct FailureSignature {
 
 /// Full row in the SQLite store (D25, D37).
 ///
-/// Phase 1 deviation: this struct only derives `Serialize`. The plan
-/// requires `Deserialize` too, but `WorldModelSnapshot` and `TaskState`
-/// (Spec 1 types) are serialize-only today. Adding `Deserialize` to those
-/// upstream types would touch files outside Phase 1's scope. Phase 2 must
-/// either round-trip through a serialize-only projection or extend the
-/// upstream derives before the SQLite store reads rows back.
-#[derive(Debug, Clone, Serialize)]
+/// Phase 2 added `Deserialize` to `WorldModelSnapshot` (and its
+/// transitive types) upstream so this record round-trips through SQLite
+/// without an intermediate projection. `TaskState` is intentionally not
+/// part of `EpisodeRecord` (it lives only on `RecoveringEntrySnapshot`,
+/// which is forward-only into the writer), so it stays serialize-only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct EpisodeRecord {
     pub episode_id: String,
@@ -122,6 +121,19 @@ impl EpisodicContext {
 pub enum RetrievalTrigger {
     RunStart,
     RecoveringEntry,
+}
+
+/// Borrowed query bundle passed into `EpisodicStore::retrieve`. Borrows
+/// keep the call site allocation-free; the store clones into owned
+/// strings before crossing the `spawn_blocking` boundary.
+#[derive(Debug, Clone)]
+pub struct RetrievalQuery<'a> {
+    pub trigger: RetrievalTrigger,
+    pub pre_state_signature: &'a PreStateSignature,
+    pub goal: &'a str,
+    pub subgoal_text: Option<&'a str>,
+    pub workflow_hash: &'a str,
+    pub now: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize)]
