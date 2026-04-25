@@ -339,8 +339,21 @@ impl StateRunner {
             return self;
         }
         let event_tx = self.event_tx.clone();
-        match crate::agent::episodic::EpisodicWriter::spawn(
+        // F3 fix: pass the configured store knobs through to the writer
+        // so its workflow-local + global stores honour the same
+        // weights / half-life / per-scope caps the runner-side
+        // retrieval stores were opened with. Prior to this, the writer
+        // opened both stores via `SqliteEpisodicStore::new` which
+        // hard-coded the cap to 500.
+        let store_config = crate::agent::episodic::store::EpisodicStoreConfig {
+            score_weights: self.config.episodic_score_weights.into(),
+            decay_halflife_days: self.config.episodic_decay_halflife_days,
+            max_per_scope_workflow: self.config.episodic_max_per_scope_workflow,
+            max_per_scope_global: self.config.episodic_max_per_scope_global,
+        };
+        match crate::agent::episodic::EpisodicWriter::spawn_with_config(
             self.episodic_ctx.clone(),
+            store_config,
             event_tx,
             self.run_id,
         ) {

@@ -20,9 +20,9 @@ use clickweave_engine::agent::AgentEvent;
 use clickweave_engine::agent::episodic::store::EpisodicStore;
 use clickweave_engine::agent::episodic::{
     CompactAction, Embedder, EpisodeRecord, EpisodeScope, EpisodicContext, EpisodicWriter,
-    FailureSignature, HashedShingleEmbedder, PreStateSignature, PromotionTerminalKind,
-    RecoveringEntrySnapshot, RecoveryActionsHash, SqliteEpisodicStore, TriggeringError,
-    WriteRequest,
+    FailureSignature, HashedShingleEmbedder, InsertOutcome, PreStateSignature,
+    PromotionTerminalKind, RecoveringEntrySnapshot, RecoveryActionsHash, SqliteEpisodicStore,
+    TriggeringError, WriteRequest,
 };
 use clickweave_engine::agent::step_record::{BoundaryKind, StepRecord, WorldModelSnapshot};
 use clickweave_engine::agent::task_state::{Phase, TaskState};
@@ -442,5 +442,235 @@ async fn single_writer_processes_derive_and_insert_then_promote_pass() {
     assert!(
         promoted_seen,
         "EpisodePromoted must be emitted after PromotePass queued on the cloned sender"
+    );
+}
+
+// ── F3+F4 acceptance tests ─────────────────────────────────────────
+//
+// Cover the writer-store config plumbing (F3) and the unified
+// promotion path that routes global writes through
+// `SqliteEpisodicStore::insert` instead of duplicating the SQL (F4).
+//
+// Behavioural invariants exercised:
+//   - Writer-opened workflow + global stores honour the configured
+//     per-scope cap (F3 — was hard-coded to 500 before).
+//   - Default global cap is 2000, not the legacy 500.
+//   - Promotion of a workflow-local row whose
+//     `(pre_state_signature, recovery_actions_hash)` already exists
+//     in global returns the *existing* global ID (not a freshly
+//     minted one), unions `step_record_refs`, and bumps occurrence
+//     count — all of which the old duplicated SQL got wrong.
+
+use clickweave_engine::agent::episodic::store::EpisodicStoreConfig;
+
+#[tokio::test]
+async fn writer_with_config_honours_global_cap_and_prunes() {
+    let dir = tempfile::tempdir().unwrap();
+    let wl_path = dir.path().join("workflow.sqlite");
+    let g_path = dir.path().join("global.sqlite");
+
+    let ctx = EpisodicContext {
+        enabled: true,
+        workflow_local_path: wl_path.clone(),
+        global_path: Some(g_path.clone()),
+        workflow_hash: "promotion-cap-workflow".into(),
+    };
+
+    // Tight global cap (3) so we can prove pruning fires through the
+    // shared insert path. Workflow-local cap stays generous so the
+    // pre-seed step doesn't itself prune.
+    let store_config = EpisodicStoreConfig {
+        max_per_scope_workflow: 100,
+        max_per_scope_global: 3,
+        ..EpisodicStoreConfig::default()
+    };
+
+    // Pre-seed five eligible workflow-local rows (occurrence_count = 2
+    // satisfies `should_promote`). Each row has a distinct signature
+    // and actions_hash so they don't dedup-merge in global.
+    //
+    // `created_at` is set 2h in the past so the global rows the
+    // promotion path inserts (which carry the WL row's `created_at`
+    // via `..record` in the candidate construction) fall outside
+    // the 1h grace window in `prune_lru` and become eligible for
+    // eviction once the configured cap is exceeded.
+    let two_hours_ago = Utc::now() - chrono::Duration::hours(2);
+    {
+        let wl = SqliteEpisodicStore::new(&wl_path, EpisodeScope::WorkflowLocal).unwrap();
+        for i in 0..5 {
+            let mut ep = mk_episode_pre_seeded(
+                EpisodeScope::WorkflowLocal,
+                &format!("sig_{i}"),
+                &format!("hash_{i}"),
+            );
+            ep.workflow_hash = "promotion-cap-workflow".into();
+            ep.occurrence_count = 2;
+            ep.created_at = two_hours_ago;
+            wl.insert(ep).await.expect("seed wl");
+        }
+    }
+
+    let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
+    let writer = EpisodicWriter::spawn_with_config(
+        ctx,
+        store_config.clone(),
+        Some(tx),
+        uuid::Uuid::new_v4(),
+    )
+    .expect("spawn writer with config");
+
+    let run_started_at = Utc::now() - chrono::Duration::minutes(5);
+    writer
+        .queue(WriteRequest::PromotePass {
+            workflow_hash: "promotion-cap-workflow".into(),
+            terminal_kind: PromotionTerminalKind::Clean,
+            run_started_at,
+        })
+        .await
+        .expect("queue promote");
+    writer.flush_for_tests().await;
+
+    // Global must be pruned to its configured cap (3), NOT the legacy
+    // hard-coded 500. The pre-seed inserted 5 candidates; pruning
+    // through the shared `prune_lru` path on each fresh insert keeps
+    // the total under cap.
+    let g = SqliteEpisodicStore::new(&g_path, EpisodeScope::Global).unwrap();
+    let global_rows = g.row_count_for_tests().unwrap();
+    assert!(
+        global_rows <= store_config.max_per_scope_global as u64,
+        "configured global cap ({}) must be respected by writer-opened store; got {}",
+        store_config.max_per_scope_global,
+        global_rows,
+    );
+}
+
+#[tokio::test]
+async fn default_episodic_store_config_has_global_cap_2000() {
+    // Sanity check on the default constants — F3's regression hazard
+    // is silently shipping with a 500 cap because someone defaulted
+    // the wrong number. Pin it.
+    let cfg = EpisodicStoreConfig::default();
+    assert_eq!(cfg.max_per_scope_workflow, 500);
+    assert_eq!(cfg.max_per_scope_global, 2000);
+}
+
+#[tokio::test]
+async fn promotion_dedup_returns_existing_global_id_and_unions_refs() {
+    let dir = tempfile::tempdir().unwrap();
+    let wl_path = dir.path().join("workflow.sqlite");
+    let g_path = dir.path().join("global.sqlite");
+
+    let sig = "sig_dedup_promote";
+    let actions_hash = "hash_dedup_promote";
+
+    // Pre-seed global with a row at the dedup key, with one ref and
+    // `occurrence_count = 1` so the promotion-merge bump to 2 is a
+    // clear signal (the helper defaults to 2 for `should_promote`
+    // gating, which we don't need on the *global* seed).
+    let pre_existing_global_id;
+    {
+        let g = SqliteEpisodicStore::new(&g_path, EpisodeScope::Global).unwrap();
+        let mut ep = mk_episode_pre_seeded(EpisodeScope::Global, sig, actions_hash);
+        ep.step_record_refs = vec!["events_a.jsonl".into()];
+        ep.occurrence_count = 1;
+        let outcome = g.insert(ep).await.expect("seed global");
+        pre_existing_global_id = match outcome {
+            InsertOutcome::Inserted { episode_id } => episode_id,
+            other => panic!("seed should be a fresh insert, got {:?}", other),
+        };
+    }
+
+    // Pre-seed workflow-local with the *same* dedup key and a
+    // *different* ref. Use occurrence_count=2 so the promotion gate
+    // accepts it (and the global-has check is also true).
+    {
+        let wl = SqliteEpisodicStore::new(&wl_path, EpisodeScope::WorkflowLocal).unwrap();
+        let mut ep = mk_episode_pre_seeded(EpisodeScope::WorkflowLocal, sig, actions_hash);
+        ep.workflow_hash = "dedup-workflow".into();
+        ep.occurrence_count = 2;
+        ep.step_record_refs = vec!["events_b.jsonl".into()];
+        wl.insert(ep).await.expect("seed wl");
+    }
+
+    let ctx = EpisodicContext {
+        enabled: true,
+        workflow_local_path: wl_path.clone(),
+        global_path: Some(g_path.clone()),
+        workflow_hash: "dedup-workflow".into(),
+    };
+
+    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let run_id = uuid::Uuid::new_v4();
+    let writer = EpisodicWriter::spawn(ctx, Some(tx), run_id).expect("spawn writer");
+
+    let run_started_at = Utc::now() - chrono::Duration::minutes(5);
+    writer
+        .queue(WriteRequest::PromotePass {
+            workflow_hash: "dedup-workflow".into(),
+            terminal_kind: PromotionTerminalKind::Clean,
+            run_started_at,
+        })
+        .await
+        .expect("queue promote");
+    writer.flush_for_tests().await;
+
+    // Find the EpisodePromoted event and confirm it carries the
+    // pre-existing global ID — *not* a fresh ID.
+    let mut promoted_ids: Vec<String> = Vec::new();
+    while let Ok(Some(evt)) =
+        tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await
+    {
+        if let AgentEvent::EpisodePromoted {
+            promoted_episode_ids,
+            ..
+        } = evt
+        {
+            promoted_ids = promoted_episode_ids;
+            break;
+        }
+    }
+    assert_eq!(
+        promoted_ids,
+        vec![pre_existing_global_id.clone()],
+        "dedup-merge must emit the *existing* global episode_id, not a freshly minted one",
+    );
+
+    // Global row count stays at 1 (no duplicate).
+    let g = SqliteEpisodicStore::new(&g_path, EpisodeScope::Global).unwrap();
+    let row_count = g.row_count_for_tests().unwrap();
+    assert_eq!(row_count, 1, "dedup must not insert a second global row");
+
+    // step_record_refs in the merged global row contains *both*
+    // the pre-existing ref and the workflow-local ref.
+    use clickweave_engine::agent::episodic::store::EpisodicStore;
+    use clickweave_engine::agent::episodic::{
+        PreStateSignature, RetrievalQuery, RetrievalTrigger,
+    };
+    let pre_sig = PreStateSignature(sig.into());
+    let query = RetrievalQuery {
+        trigger: RetrievalTrigger::RunStart,
+        pre_state_signature: &pre_sig,
+        goal: "login",
+        subgoal_text: None,
+        workflow_hash: "dedup-workflow",
+        now: Utc::now(),
+    };
+    let hits = g.retrieve(&query, 10).await.expect("retrieve");
+    assert_eq!(hits.len(), 1, "exactly one global row at this signature");
+    let merged_refs = &hits[0].episode.step_record_refs;
+    assert!(
+        merged_refs.iter().any(|r| r == "events_a.jsonl"),
+        "merged global row must keep the pre-existing ref; got {:?}",
+        merged_refs,
+    );
+    assert!(
+        merged_refs.iter().any(|r| r == "events_b.jsonl"),
+        "merged global row must union the newly promoted ref; got {:?}",
+        merged_refs,
+    );
+    // Occurrence count incremented from 1 to 2.
+    assert_eq!(
+        hits[0].episode.occurrence_count, 2,
+        "merge must bump occurrence_count",
     );
 }

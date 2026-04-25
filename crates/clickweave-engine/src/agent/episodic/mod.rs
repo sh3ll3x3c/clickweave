@@ -20,7 +20,7 @@ pub mod types;
 pub mod write;
 
 pub use embedder::{Embedder, HashedShingleEmbedder};
-pub use store::{EpisodicStore, SqliteEpisodicStore};
+pub use store::{EpisodicStore, EpisodicStoreConfig, SqliteEpisodicStore};
 pub use types::{
     CompactAction, EpisodeRecord, EpisodeScope, EpisodicContext, EpisodicError, FailureSignature,
     InsertOutcome, PreStateSignature, PromotionTerminalKind, RecoveringEntrySnapshot,

@@ -159,6 +159,95 @@ impl SqliteEpisodicStore {
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM episodes", [], |r| r.get(0))?;
         Ok(n as u64)
     }
+
+    /// List every row in this store that was inserted or merged
+    /// during the current run, identified by `workflow_hash` and
+    /// `since` (typically the run-started timestamp). The
+    /// `last_seen_at` column is the run-scoping timestamp because
+    /// both fresh insert (= `created_at`) and merge bump it.
+    ///
+    /// Used by the run-terminal promotion pass (D31) instead of
+    /// the duplicated SQL it used to carry. Routing the eligibility
+    /// scan through one place keeps the workflow-local read shape
+    /// in lock-step with [`row_to_episode`] so promotion reads
+    /// the same fields retrieval does.
+    pub async fn list_run_touched(
+        &self,
+        workflow_hash: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<EpisodeRecord>, EpisodicError> {
+        let conn = self.conn.clone();
+        let workflow_hash = workflow_hash.to_string();
+        tokio::task::spawn_blocking(move || -> Result<Vec<EpisodeRecord>, EpisodicError> {
+            let conn = lock_conn(&conn)?;
+            let sql = format!(
+                "SELECT {EPISODE_SELECT_COLUMNS} FROM episodes \
+                 WHERE workflow_hash = ?1 \
+                   AND datetime(last_seen_at) >= datetime(?2)"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows: Vec<EpisodeRecord> = stmt
+                .query_map(params![workflow_hash, since.to_rfc3339()], row_to_episode)?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+        .await
+        .map_err(join_err)?
+    }
+
+    /// Count rows in this store with the given `pre_state_signature`
+    /// (any scope). Used by the promotion gate's "global has a row
+    /// with this signature already" branch (D31).
+    pub async fn count_with_signature(
+        &self,
+        sig: &PreStateSignature,
+    ) -> Result<u64, EpisodicError> {
+        let conn = self.conn.clone();
+        let sig = sig.0.clone();
+        tokio::task::spawn_blocking(move || -> Result<u64, EpisodicError> {
+            let conn = lock_conn(&conn)?;
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM episodes WHERE pre_state_signature = ?1",
+                    params![sig],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            Ok(n as u64)
+        })
+        .await
+        .map_err(join_err)?
+    }
+}
+
+/// Construction-time configuration for `SqliteEpisodicStore` and the
+/// `EpisodicWriter` that owns one. Aggregates the `AgentConfig` knobs
+/// `StateRunner::new_with_episodic` already feeds into the retrieval
+/// stores so the writer-owned stores can be opened with the *same*
+/// values instead of the back-compat defaults `Self::new` hands out.
+///
+/// F3 fix: prior to this struct, `EpisodicWriter::spawn` opened both
+/// stores via `SqliteEpisodicStore::new`, which hard-coded the
+/// per-scope cap to 500 — a configured 2000-row global cap was
+/// silently ignored on the write side.
+#[derive(Debug, Clone)]
+pub struct EpisodicStoreConfig {
+    pub score_weights: ScoreWeights,
+    pub decay_halflife_days: f32,
+    pub max_per_scope_workflow: usize,
+    pub max_per_scope_global: usize,
+}
+
+impl Default for EpisodicStoreConfig {
+    fn default() -> Self {
+        Self {
+            score_weights: ScoreWeights::default(),
+            decay_halflife_days: 90.0,
+            max_per_scope_workflow: 500,
+            max_per_scope_global: 2000,
+        }
+    }
 }
 
 #[async_trait]

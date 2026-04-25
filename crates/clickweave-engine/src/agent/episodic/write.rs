@@ -28,7 +28,7 @@ use ulid::Ulid;
 
 use crate::agent::episodic::embedder::{Embedder, HashedShingleEmbedder};
 use crate::agent::episodic::promotion::should_promote;
-use crate::agent::episodic::store::{EpisodicStore, SqliteEpisodicStore, join_err, lock_conn};
+use crate::agent::episodic::store::{EpisodicStore, EpisodicStoreConfig, SqliteEpisodicStore};
 use crate::agent::episodic::types::{
     CompactAction, EpisodeRecord, EpisodeScope, EpisodicContext, EpisodicError, FailureSignature,
     InsertOutcome, PromotionTerminalKind, RecoveringEntrySnapshot, RecoveryActionsHash,
@@ -62,19 +62,47 @@ impl EpisodicWriter {
     /// `run_id` is the runner's active-run UUID; it is captured at
     /// spawn time so emitted events pass the frontend's stale-run
     /// filter even after the runner moves on.
+    /// Back-compat constructor for tests / callers that don't carry an
+    /// explicit store config. Production callers go through
+    /// [`Self::spawn_with_config`].
     pub fn spawn(
         ctx: EpisodicContext,
         event_tx: Option<mpsc::Sender<crate::agent::types::AgentEvent>>,
         run_id: uuid::Uuid,
     ) -> Result<Self, EpisodicError> {
+        Self::spawn_with_config(ctx, EpisodicStoreConfig::default(), event_tx, run_id)
+    }
+
+    /// Production constructor (F3 fix). Opens the workflow-local and
+    /// (optional) global stores with the *configured* score weights,
+    /// half-life, and per-scope caps so values from `AgentConfig` are
+    /// honored end to end. The previous `Self::spawn` opened both
+    /// stores via `SqliteEpisodicStore::new`, which hard-coded the
+    /// per-scope cap to 500 — that silently capped the global store
+    /// regardless of `AgentConfig::episodic_max_per_scope_global`.
+    pub fn spawn_with_config(
+        ctx: EpisodicContext,
+        store_config: EpisodicStoreConfig,
+        event_tx: Option<mpsc::Sender<crate::agent::types::AgentEvent>>,
+        run_id: uuid::Uuid,
+    ) -> Result<Self, EpisodicError> {
         let (tx, mut rx) = mpsc::channel::<WriteRequest>(CHANNEL_CAP);
 
-        let wl = Arc::new(SqliteEpisodicStore::new(
+        let wl = Arc::new(SqliteEpisodicStore::new_with_config(
             &ctx.workflow_local_path,
             EpisodeScope::WorkflowLocal,
+            store_config.score_weights,
+            store_config.decay_halflife_days,
+            store_config.max_per_scope_workflow,
         )?);
         let global: Option<Arc<SqliteEpisodicStore>> = match &ctx.global_path {
-            Some(p) => Some(Arc::new(SqliteEpisodicStore::new(p, EpisodeScope::Global)?)),
+            Some(p) => Some(Arc::new(SqliteEpisodicStore::new_with_config(
+                p,
+                EpisodeScope::Global,
+                store_config.score_weights,
+                store_config.decay_halflife_days,
+                store_config.max_per_scope_global,
+            )?)),
             None => None,
         };
 
@@ -357,147 +385,72 @@ async fn promote_matching_episodes(
     workflow_hash: &str,
     run_started_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<(Vec<String>, usize), EpisodicError> {
-    use rusqlite::params;
-    let wl_conn = wl.conn.clone();
-    let g_conn = global.conn.clone();
-    let workflow_hash = workflow_hash.to_string();
+    // F3+F4 fix: route global writes through `SqliteEpisodicStore::insert`
+    // so insert + dedup-merge + step_record_refs union + LRU prune all
+    // share the same code path the workflow-local writes already use.
+    // The previous implementation duplicated the SQL inline, which:
+    //   - bypassed `prune_lru` so a configured global cap could grow
+    //     unbounded,
+    //   - lost provenance refs on dedup-merge (the existing global row's
+    //     `step_record_refs_json` was not unioned with the workflow-local
+    //     row's refs), and
+    //   - returned a freshly-minted `episode_id` to telemetry on a
+    //     dedup-merge even though that row was never actually inserted,
+    //     so `EpisodePromoted::promoted_episode_ids` carried IDs that
+    //     did not resolve in the global store.
+    let touched = wl.list_run_touched(workflow_hash, run_started_at).await?;
 
-    tokio::task::spawn_blocking(move || -> Result<(Vec<String>, usize), EpisodicError> {
-        let mut promoted_ids: Vec<String> = Vec::new();
-        let mut skipped: usize = 0;
-        let wl = lock_conn(&wl_conn)?;
-        let g = lock_conn(&g_conn)?;
+    let mut promoted_ids: Vec<String> = Vec::new();
+    let mut skipped: usize = 0;
 
-        // P1.M3: only episodes touched (inserted or merged) during this
-        // run participate. `last_seen_at` is bumped on both fresh insert
-        // (= `created_at`) and on merge, so it's the run-scoping
-        // timestamp we need.
-        let mut stmt = wl.prepare(
-            "SELECT episode_id, pre_state_signature, occurrence_count
-               FROM episodes
-              WHERE workflow_hash = ?1
-                AND datetime(last_seen_at) >= datetime(?2)",
-        )?;
-        let rows: Vec<(String, String, i64)> = stmt
-            .query_map(params![workflow_hash, run_started_at.to_rfc3339()], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+    for record in touched {
+        let global_has = global
+            .count_with_signature(&record.pre_state_signature)
+            .await
+            .unwrap_or(0)
+            > 0;
 
-        for (ep_id, sig, count) in rows {
-            let global_has: i64 = g
-                .query_row(
-                    "SELECT COUNT(*) FROM episodes WHERE pre_state_signature = ?1",
-                    params![sig],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-
-            if !should_promote(count as u32, global_has > 0) {
-                skipped += 1;
-                continue;
-            }
-
-            // Copy the row into global, flipping scope.
-            let row = wl.query_row(
-                "SELECT workflow_hash, pre_state_signature, goal, subgoal_text,
-                        failure_signature_json, recovery_actions_json, recovery_actions_hash,
-                        outcome_summary, pre_state_snapshot_json, embedding_blob,
-                        embedding_impl_id, occurrence_count, created_at, last_seen_at,
-                        last_retrieved_at, step_record_refs_json
-                   FROM episodes WHERE episode_id = ?1",
-                params![ep_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, String>(8)?,
-                        row.get::<_, Vec<u8>>(9)?,
-                        row.get::<_, String>(10)?,
-                        row.get::<_, i64>(11)?,
-                        row.get::<_, String>(12)?,
-                        row.get::<_, String>(13)?,
-                        row.get::<_, Option<String>>(14)?,
-                        row.get::<_, String>(15)?,
-                    ))
-                },
-            )?;
-
-            let global_episode_id = format!("ep_{}", Ulid::new());
-
-            // INSERT OR IGNORE respects the UNIQUE
-            // (scope, pre_state_signature, recovery_actions_hash)
-            // index; on conflict we bump `occurrence_count`.
-            let inserted = g.execute(
-                "INSERT OR IGNORE INTO episodes (
-                    episode_id, scope, workflow_hash, pre_state_signature, goal,
-                    subgoal_text, failure_signature_json, recovery_actions_json,
-                    recovery_actions_hash, outcome_summary, pre_state_snapshot_json,
-                    embedding_blob, embedding_impl_id, occurrence_count,
-                    created_at, last_seen_at, last_retrieved_at, step_record_refs_json
-                ) VALUES (?1, 'global', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-                params![
-                    global_episode_id,
-                    row.0,
-                    row.1,
-                    row.2,
-                    row.3,
-                    row.4,
-                    row.5,
-                    row.6,
-                    row.7,
-                    row.8,
-                    row.9,
-                    row.10,
-                    row.11,
-                    row.12,
-                    row.13,
-                    row.14,
-                    row.15,
-                ],
-            )?;
-
-            if inserted == 0 {
-                // Dedup hit on global: bump occurrence_count + last_seen_at.
-                // Write `last_seen_at` as RFC3339 to match every other
-                // write path (`SqliteEpisodicStore::insert` /
-                // `update_after_retrieve` use `DateTime::to_rfc3339`).
-                // `row_to_episode` parses `last_seen_at` strictly as
-                // RFC3339 and falls back to `Utc::now()` on failure,
-                // which made merged global rows look freshly seen on
-                // every later retrieval and broke the recency-decay
-                // ordering used by `score_episode`.
-                let now_rfc3339 = chrono::Utc::now().to_rfc3339();
-                let _ = g.execute(
-                    "UPDATE episodes
-                        SET occurrence_count = occurrence_count + 1,
-                            last_seen_at = ?3
-                      WHERE scope = 'global'
-                        AND pre_state_signature = ?1
-                        AND recovery_actions_hash = ?2",
-                    params![row.1, row.6, now_rfc3339],
-                );
-                // Merged into an existing global row — still counts as
-                // promoted for telemetry.
-                promoted_ids.push(global_episode_id);
-            } else {
-                promoted_ids.push(global_episode_id);
-            }
+        if !should_promote(record.occurrence_count, global_has) {
+            skipped += 1;
+            continue;
         }
 
-        Ok((promoted_ids, skipped))
-    })
-    .await
-    .map_err(join_err)?
+        // Build the candidate global row from the workflow-local
+        // record, flipping scope and minting a fresh `episode_id`
+        // candidate. On dedup-merge inside `insert`, the existing
+        // global `episode_id` wins; on fresh insert this candidate
+        // ID lands as-is. Either way, `InsertOutcome` reports the
+        // ID actually present in the global store.
+        let now = chrono::Utc::now();
+        let candidate = EpisodeRecord {
+            episode_id: format!("ep_{}", Ulid::new()),
+            scope: EpisodeScope::Global,
+            // Reset the run-scoped timestamps so the global row's
+            // `last_seen_at` reflects "first seen in global on this
+            // promotion." Carrying `created_at` from the workflow-local
+            // row preserves the rough age signal for decay scoring;
+            // resetting `last_seen_at` to `now` keeps recency consistent
+            // with the freshly-promoted state.
+            occurrence_count: 1,
+            last_seen_at: now,
+            last_retrieved_at: None,
+            ..record
+        };
+
+        match global.insert(candidate).await {
+            Ok(InsertOutcome::Inserted { episode_id })
+            | Ok(InsertOutcome::MergedWithExisting { episode_id, .. }) => {
+                promoted_ids.push(episode_id);
+            }
+            Ok(InsertOutcome::Dropped { .. }) => {
+                skipped += 1;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "episodic: global promotion insert failed");
+                skipped += 1;
+            }
+        }
+    }
+
+    Ok((promoted_ids, skipped))
 }
