@@ -3148,6 +3148,22 @@ impl StateRunner {
                 .len()
                 .saturating_sub(outer_milestones_before);
 
+            // 4''. SubgoalCompleted boundary writes — one StepRecord
+            //      per CompleteSubgoal mutation that successfully
+            //      popped a subgoal. Hoisted above the early-exit
+            //      branches so a turn like `complete_subgoal` +
+            //      skipped `focus_window` still produces the boundary
+            //      record. Without this hoist, mutations would land on
+            //      `task_state` (via 4') but the matching
+            //      `BoundaryKind::SubgoalCompleted` `StepRecord` would
+            //      be silently dropped whenever the action took the
+            //      synthetic-skip / policy-deny / approval-reject
+            //      `continue`.
+            if outer_milestones_appended > 0 {
+                self.write_subgoal_completed_records(outer_milestones_appended, &turn)
+                    .await;
+            }
+
             // 4a'. Synthetic `focus_window` skip. When the MCP surface +
             // app kind lets us suppress the focus-stealing MCP call
             // (Native + full AX toolset, Electron/Chrome with live CDP,
@@ -3398,15 +3414,6 @@ impl StateRunner {
                 self.run_turn(&action_only_turn, &executor).await;
             for w in warnings {
                 tracing::warn!(warning = %w, "state-spine: mutation warning");
-            }
-
-            // 5a. SubgoalCompleted boundary writes — one StepRecord per
-            //     successfully popped subgoal. Use the milestone count
-            //     from step 4' since mutations now apply in the outer
-            //     loop, before the action runs.
-            if outer_milestones_appended > 0 {
-                self.write_subgoal_completed_records(outer_milestones_appended, &turn)
-                    .await;
             }
 
             // 5b. RecoverySucceeded boundary write — a tool success that
