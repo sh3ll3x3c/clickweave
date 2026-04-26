@@ -1000,11 +1000,17 @@ pub async fn run_agent(
                     use clickweave_engine::agent::episodic::{
                         PromotionTerminalKind, types::WriteRequest as EpisodicWriteRequest,
                     };
+                    // Only a clean engine-side completion promotes to the
+                    // global tier. `DisagreementConfirmed` is a Tauri-
+                    // synthesized terminal that resolves a prior VLM
+                    // disagreement after operator review — by that point
+                    // the run already crossed a "is this complete?"
+                    // disagreement and any second-occurrence promotion
+                    // path is the right gate, not first-occurrence.
+                    // Workflow-local rows still land for both kinds; only
+                    // global promotion is gated here.
                     let terminal_kind = match &resolved_terminal {
-                        Some(TerminalReason::Completed { .. })
-                        | Some(TerminalReason::DisagreementConfirmed { .. }) => {
-                            PromotionTerminalKind::Clean
-                        }
+                        Some(TerminalReason::Completed { .. }) => PromotionTerminalKind::Clean,
                         _ => PromotionTerminalKind::SkipPromotion,
                     };
                     // Use `try_send` instead of awaited `send` so a
