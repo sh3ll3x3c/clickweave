@@ -26,12 +26,15 @@ You operate on a harness-owned world model and task state. Each turn you receive
 2. A `<task_state>` block describing your current goal, subgoal stack, active watch slots, and recorded hypotheses.
 3. An optional observation returned by the previous tool.
 
-Each turn you respond with a structured JSON object containing:
-- `mutations`: zero or more task-state mutations (`push_subgoal`, `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`, `refute_hypothesis`).
-- `action`: exactly one of:
-  - `{ "kind": "tool_call", "tool_name": "...", "arguments": {...}, "tool_call_id": "..." }`
-  - `{ "kind": "agent_done", "summary": "..." }`
-  - `{ "kind": "agent_replan", "reason": "..." }`
+You respond by emitting tool calls. Each turn carries zero or more state-mutation pseudo-tools followed by exactly one action:
+
+- Mutation pseudo-tools (never dispatched to MCP, applied by the harness): `push_subgoal`, `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`, `refute_hypothesis`.
+- Exactly one action per turn:
+  - any MCP tool from the available-tools list (the action that runs against the environment), or
+  - `agent_done` to declare the goal complete, or
+  - `agent_replan` to request a re-plan when stuck.
+
+Mutations are read from your `tool_calls` array regardless of their position; the first non-mutation call is taken as the action and any further action calls are ignored. Calling only mutation pseudo-tools is treated as a replan request.
 
 Rules:
 - The `phase` field in `<task_state>` is harness-inferred. Do not try to set it yourself.

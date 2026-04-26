@@ -835,23 +835,26 @@ impl StateRunner {
         }
     }
 
-    /// Queue a `SnapshotStale` event when either `last_native_ax_snapshot`
-    /// or `last_screenshot` has aged past its `ttl_steps`. Called at the
-    /// top of every loop iteration before `observe()` so the apply-events
-    /// pass drops bodies that have aged out without the LLM re-capturing.
+    /// Queue per-snapshot `SnapshotStale` events for any snapshot
+    /// (`last_native_ax_snapshot` or `last_screenshot`) whose own age
+    /// has crossed its `ttl_steps`. Called at the top of every loop
+    /// iteration before `observe()` so the apply-events pass drops
+    /// bodies that have aged out without the LLM re-capturing.
     ///
-    /// The handler in `WorldModel::apply_events` checks each snapshot's
-    /// own `ttl_steps` against the supplied `age_steps`, so passing the
-    /// largest individual age is correct: each field is checked against
-    /// its own TTL independently.
+    /// One event per stale field — never a shared `age_steps` value
+    /// across both fields. A fresh screenshot must not be invalidated
+    /// just because the AX snapshot is stale.
     pub fn queue_snapshot_stale_if_aged(&mut self) {
-        let mut max_age: u32 = 0;
+        use crate::agent::world_model::SnapshotKind;
         if let Some(ax) = &self.world_model.last_native_ax_snapshot
             && let Some(ttl) = ax.ttl_steps
         {
             let age = (self.step_index.saturating_sub(ax.written_at)) as u32;
             if age > ttl {
-                max_age = max_age.max(age);
+                self.queue_invalidation(InvalidationEvent::SnapshotStale {
+                    kind: SnapshotKind::NativeAx,
+                    age_steps: age,
+                });
             }
         }
         if let Some(ss) = &self.world_model.last_screenshot
@@ -859,11 +862,11 @@ impl StateRunner {
         {
             let age = (self.step_index.saturating_sub(ss.written_at)) as u32;
             if age > ttl {
-                max_age = max_age.max(age);
+                self.queue_invalidation(InvalidationEvent::SnapshotStale {
+                    kind: SnapshotKind::Screenshot,
+                    age_steps: age,
+                });
             }
-        }
-        if max_age > 0 {
-            self.queue_invalidation(InvalidationEvent::SnapshotStale { age_steps: max_age });
         }
     }
 
@@ -3107,9 +3110,43 @@ impl StateRunner {
                 .next()
                 .context("No choices in LLM response")?;
 
-            // 4. Parse the LLM response into an AgentTurn. Task 3a.1's
-            // parser maps tool_calls[0] to the action; mutations stay empty.
+            // 4. Parse the LLM response into an AgentTurn carrying any
+            //    `0..N` task-state mutations followed by exactly one
+            //    action.
             let turn = parse_agent_turn(&choice.message)?;
+
+            // 4'. Apply task-state mutations BEFORE any early-exit
+            //     branching. Synthetic focus-skip / live policy-deny /
+            //     live approval-reject all record a step and `continue`
+            //     before `run_turn` would otherwise apply them, so
+            //     mutations would be silently dropped on those paths.
+            //     Applying here guarantees the AgentTurn contract
+            //     ("mutations apply before the action runs") regardless
+            //     of which branch the action takes — and `run_turn`
+            //     receives an action-only turn so it does not
+            //     double-apply.
+            //
+            //     `outer_milestones_appended` counts CompleteSubgoal
+            //     pops that landed in this turn so the
+            //     SubgoalCompleted boundary write below still runs even
+            //     when the action takes an early-exit branch.
+            let outer_milestones_before = self.task_state.milestones.len();
+            if !turn.mutations.is_empty() {
+                let warnings = self.apply_mutations(&turn.mutations);
+                for w in warnings {
+                    tracing::warn!(warning = %w, "state-spine: mutation warning");
+                }
+                self.emit_event(AgentEvent::TaskStateChanged {
+                    run_id: self.run_id,
+                    task_state: self.task_state.clone(),
+                })
+                .await;
+            }
+            let outer_milestones_appended = self
+                .task_state
+                .milestones
+                .len()
+                .saturating_sub(outer_milestones_before);
 
             // 4a'. Synthetic `focus_window` skip. When the MCP surface +
             // app kind lets us suppress the focus-stealing MCP call
@@ -3175,7 +3212,9 @@ impl StateRunner {
                 .await;
                 append_assistant_and_tool_result(
                     &mut messages,
-                    &choice.message,
+                    tool_name,
+                    arguments,
+                    tool_call_id,
                     previous_result.as_deref(),
                 );
                 continue;
@@ -3221,7 +3260,9 @@ impl StateRunner {
                             previous_result = Some(err_msg.clone());
                             append_assistant_and_tool_result(
                                 &mut messages,
-                                &choice.message,
+                                tool_name,
+                                arguments,
+                                tool_call_id,
                                 previous_result.as_deref(),
                             );
 
@@ -3315,7 +3356,9 @@ impl StateRunner {
                                         Some("Replan: user rejected action".to_string());
                                     append_assistant_and_tool_result(
                                         &mut messages,
-                                        &choice.message,
+                                        tool_name,
+                                        arguments,
+                                        tool_call_id,
                                         previous_result.as_deref(),
                                     );
                                     continue;
@@ -3334,26 +3377,35 @@ impl StateRunner {
                 }
             }
 
-            // 5. Apply mutations + dispatch the action via run_turn.
+            // 5. Dispatch the action via run_turn. Mutations were
+            //    already applied at step 4' above, so we forward an
+            //    action-only turn — `run_turn`'s internal
+            //    `apply_mutations` call becomes a no-op on the empty
+            //    vec and `TaskStateChanged` is not emitted twice.
+            //
             //    `previous_errors` captures the error counter from the
-            //    iteration just before the new turn; a drop from >0 to 0
-            //    after `run_turn` signals the `Recovering -> Executing`
-            //    transition that Task 3a.6.5 persists as a
-            //    `BoundaryKind::RecoverySucceeded` record (D8).
+            //    iteration just before the new turn; a drop from >0 to
+            //    0 after `run_turn` signals the
+            //    `Recovering -> Executing` transition persisted as a
+            //    `BoundaryKind::RecoverySucceeded` record.
             let previous_errors = self.consecutive_errors;
             let executor = McpToolExecutor { mcp };
-            let (outcome, warnings, milestones_appended) = self.run_turn(&turn, &executor).await;
+            let action_only_turn = AgentTurn {
+                mutations: Vec::new(),
+                action: turn.action.clone(),
+            };
+            let (outcome, warnings, _run_turn_milestones) =
+                self.run_turn(&action_only_turn, &executor).await;
             for w in warnings {
                 tracing::warn!(warning = %w, "state-spine: mutation warning");
             }
 
-            // 5a. SubgoalCompleted boundary writes — one `StepRecord` per
-            //     successfully popped subgoal (D8). Performed before the
-            //     outcome match so the record reflects the task_state /
-            //     world_model immediately after the mutation burst, matching
-            //     the semantic "the milestone just landed".
-            if milestones_appended > 0 {
-                self.write_subgoal_completed_records(milestones_appended, &turn)
+            // 5a. SubgoalCompleted boundary writes — one StepRecord per
+            //     successfully popped subgoal. Use the milestone count
+            //     from step 4' since mutations now apply in the outer
+            //     loop, before the action runs.
+            if outer_milestones_appended > 0 {
+                self.write_subgoal_completed_records(outer_milestones_appended, &turn)
                     .await;
             }
 
@@ -3692,14 +3744,42 @@ impl StateRunner {
                 }
             }
 
-            // 7. Append the assistant message + tool result onto the
-            // transcript so the next iteration's LLM call sees the
-            // full turn.
-            append_assistant_and_tool_result(
-                &mut messages,
-                &choice.message,
-                previous_result.as_deref(),
-            );
+            // 7. Append the assistant action + its result onto the
+            // transcript so the next iteration's LLM call sees what
+            // ran. Mutation pseudo-tools that may have appeared in the
+            // model's `tool_calls` array are deliberately omitted here:
+            // they are already reflected in the `<task_state>` block
+            // the next turn renders, and including them would invite
+            // the LLM to expect an MCP-shaped tool result for them.
+            // `AgentDone` already broke out of the loop above; that
+            // path leaves no trailing transcript entry.
+            match &turn.action {
+                AgentAction::ToolCall {
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                } => {
+                    append_assistant_and_tool_result(
+                        &mut messages,
+                        tool_name,
+                        arguments,
+                        tool_call_id,
+                        previous_result.as_deref(),
+                    );
+                }
+                AgentAction::AgentReplan { reason } => {
+                    // Surface the replan as a plain assistant message
+                    // rather than a synthetic tool result; the harness
+                    // does not produce a tool_call_id for it and there
+                    // is no MCP body to attach.
+                    messages.push(Message::assistant(format!("replan: {}", reason)));
+                }
+                AgentAction::AgentDone { .. } => {
+                    // `TurnOutcome::Done` already broke above — this
+                    // arm is unreachable in practice but kept exhaustive
+                    // so the matcher does not silently regress.
+                }
+            }
         }
 
         // Post-loop: populate the terminal reason if the loop fell out of
@@ -3766,28 +3846,42 @@ fn openai_tools_to_mcp_tool_list(tools: &[Value]) -> Vec<clickweave_mcp::Tool> {
 /// assistant message (tool_calls only) plus a matching `tool_result`. When
 /// the assistant returned plain text, only the assistant message is
 /// appended.
+/// Append an assistant tool-call + matching tool-result onto the
+/// transcript so the next iteration's LLM call sees what was
+/// dispatched. Synthesises the assistant message from the action's own
+/// `(tool_call_id, tool_name, arguments)` rather than picking
+/// `tool_calls.first()`: when a turn's `tool_calls` array starts with
+/// mutation pseudo-tools (e.g. `push_subgoal` then `cdp_click`), the
+/// "first call" is a mutation, not the action that actually ran, and
+/// attaching the dispatched result to that id breaks action / result
+/// causality from the LLM's point of view. Mutations are already
+/// reflected in `<task_state>` at the next turn; they do not appear in
+/// the transcript here.
+///
+/// The tool-result's `name` is stamped so `context::compact` can
+/// identify stale snapshot-family bodies by the `SNAPSHOT_TOOL_NAMES`
+/// set. Without this stamp, production tool-result messages leave
+/// `name` unset and the snapshot-drop branch never fires for live
+/// runs.
 fn append_assistant_and_tool_result(
     messages: &mut Vec<Message>,
-    assistant: &Message,
+    tool_name: &str,
+    arguments: &Value,
+    tool_call_id: &str,
     previous_result: Option<&str>,
 ) {
-    if let Some(tc) = assistant
-        .tool_calls
-        .as_ref()
-        .and_then(|calls| calls.first())
-    {
-        messages.push(Message::assistant_tool_calls(vec![tc.clone()]));
-        // Stamp the tool-result's `name` from the assistant's tool-call
-        // function name so `context::compact` can identify stale
-        // snapshot-family bodies by the `SNAPSHOT_TOOL_NAMES` set.
-        // Without this, production tool-result messages leave `name`
-        // unset and the snapshot-drop branch never fires for live runs.
-        let mut tool_msg = Message::tool_result(&tc.id, previous_result.unwrap_or("ok"));
-        tool_msg.name = Some(tc.function.name.clone());
-        messages.push(tool_msg);
-    } else if let Some(text) = assistant.content_text() {
-        messages.push(Message::assistant(text));
-    }
+    let tc = clickweave_llm::ToolCall {
+        id: tool_call_id.to_string(),
+        call_type: clickweave_llm::CallType::Function,
+        function: clickweave_llm::FunctionCall {
+            name: tool_name.to_string(),
+            arguments: arguments.clone(),
+        },
+    };
+    messages.push(Message::assistant_tool_calls(vec![tc]));
+    let mut tool_msg = Message::tool_result(tool_call_id, previous_result.unwrap_or("ok"));
+    tool_msg.name = Some(tool_name.to_string());
+    messages.push(tool_msg);
 }
 
 #[cfg(test)]
@@ -4493,7 +4587,7 @@ mod invalidation_wiring_tests {
 
     use super::*;
     use crate::agent::world_model::{
-        AxSnapshotData, Fresh, FreshnessSource, InvalidationEvent, ScreenshotRef,
+        AxSnapshotData, Fresh, FreshnessSource, InvalidationEvent, ScreenshotRef, SnapshotKind,
     };
     use serde_json::json;
 
@@ -4566,7 +4660,7 @@ mod invalidation_wiring_tests {
     }
 
     #[test]
-    fn snapshot_stale_fires_when_ax_age_exceeds_ttl() {
+    fn snapshot_stale_fires_only_for_aged_ax_field() {
         let mut r = runner();
         r.world_model.last_native_ax_snapshot = Some(Fresh {
             value: AxSnapshotData {
@@ -4583,7 +4677,10 @@ mod invalidation_wiring_tests {
         r.queue_snapshot_stale_if_aged();
         assert!(matches!(
             r.pending_events.as_slice(),
-            [InvalidationEvent::SnapshotStale { age_steps: 5 }]
+            [InvalidationEvent::SnapshotStale {
+                kind: SnapshotKind::NativeAx,
+                age_steps: 5,
+            }]
         ));
     }
 
@@ -4602,6 +4699,49 @@ mod invalidation_wiring_tests {
         r.step_index = 5; // age = 2, TTL = 8 → no event.
         r.queue_snapshot_stale_if_aged();
         assert!(r.pending_events.is_empty());
+    }
+
+    #[test]
+    fn stale_ax_does_not_invalidate_fresh_screenshot() {
+        // The bug being prevented: AX captured at step 0 (TTL 2) and
+        // a screenshot captured at step 4 (TTL 4). At step 5, AX is
+        // stale (age 5 > TTL 2) but the screenshot is fresh
+        // (age 1 < TTL 4). A single `SnapshotStale { age_steps = 5 }`
+        // event would have dragged the screenshot down too; the new
+        // shape queues per-kind so apply only clears AX.
+        let mut r = runner();
+        r.world_model.last_native_ax_snapshot = Some(Fresh {
+            value: AxSnapshotData {
+                snapshot_id: "ax-0".into(),
+                element_count: 0,
+                captured_at_step: 0,
+                ax_tree_text: String::new(),
+            },
+            written_at: 0,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        r.world_model.last_screenshot = Some(Fresh {
+            value: ScreenshotRef {
+                screenshot_id: "ss-1".into(),
+                captured_at_step: 4,
+            },
+            written_at: 4,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(4),
+        });
+        r.step_index = 5;
+        r.queue_snapshot_stale_if_aged();
+        let queued = std::mem::take(&mut r.pending_events);
+        r.world_model.apply_events(queued);
+        assert!(
+            r.world_model.last_native_ax_snapshot.is_none(),
+            "stale AX must be cleared"
+        );
+        assert!(
+            r.world_model.last_screenshot.is_some(),
+            "fresh screenshot must survive AX going stale"
+        );
     }
 }
 
