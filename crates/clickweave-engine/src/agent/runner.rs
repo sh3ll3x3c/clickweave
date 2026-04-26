@@ -1038,13 +1038,17 @@ impl StateRunner {
         }
     }
 
-    /// Persist one `BoundaryKind::SubgoalCompleted` record per milestone
-    /// appended during the current turn (D8). Called from
-    /// [`Self::run`] right after `run_turn` reports `milestones_appended >
-    /// 0`. Records the turn's batched mutations as `action_taken` so the
-    /// subgoal summaries are recoverable from `events.jsonl` without a
+    /// Persist one `BoundaryKind::SubgoalCompleted` record per
+    /// milestone appended during the current turn. Called from the
+    /// outer loop in [`Self::run`] right after the mutation apply
+    /// counts a positive `outer_milestones_appended` — before any
+    /// early-exit branch (synthetic focus skip / live policy-deny /
+    /// live approval-reject), so the boundary record fires whether or
+    /// not the action eventually goes through `run_turn`. Records the
+    /// turn's batched mutations as `action_taken` so the subgoal
+    /// summaries are recoverable from `events.jsonl` without a
     /// separate transcript lookup. Emits one
-    /// `AgentEvent::BoundaryRecordWritten` per persisted record (D17).
+    /// `AgentEvent::BoundaryRecordWritten` per persisted record.
     async fn write_subgoal_completed_records(&self, count: usize, turn: &AgentTurn) {
         let action_taken =
             serde_json::to_value(&turn.mutations).unwrap_or_else(|_| serde_json::json!([]));
@@ -1185,11 +1189,13 @@ impl StateRunner {
     /// will wrap this with the LLM loop + compaction + cache replay.
     ///
     /// Return tuple: `(outcome, warnings, milestones_appended)`.
-    /// `milestones_appended` counts the number of `CompleteSubgoal`
-    /// mutations that successfully popped a subgoal off the stack during
-    /// this turn. The control loop in [`StateRunner::run`] uses this count
-    /// to emit one `BoundaryKind::SubgoalCompleted` `StepRecord` per
-    /// appended milestone (Task 3a.6.5 / D8).
+    /// `milestones_appended` counts `CompleteSubgoal` mutations that
+    /// successfully popped a subgoal off the stack during this turn.
+    /// In the live runner the outer loop applies mutations *before*
+    /// calling `run_turn` (so `run_turn` receives an action-only turn
+    /// and the count returned here is `0`); the count is meaningful
+    /// for integration tests that drive `run_turn` directly with
+    /// non-empty mutation batches.
     pub async fn run_turn<E: ToolExecutor + ?Sized>(
         &mut self,
         turn: &AgentTurn,
