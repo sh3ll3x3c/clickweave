@@ -797,11 +797,85 @@ impl StateRunner {
         Some(node_id)
     }
 
+    /// Queue invalidation events that the just-executed tool implies for
+    /// the world model. Pure-observation tools (`take_ax_snapshot`,
+    /// `take_screenshot`, `cdp_find_elements`, etc.) are no-ops here;
+    /// state-transition tools queue the matching event so the next
+    /// `observe()` call drops fields that the tool may have invalidated.
+    ///
+    /// Categories:
+    /// - **Focus shift** (`focus_window`): drops focused-app, window list,
+    ///   element surface, modal/dialog, screenshot, AX snapshot.
+    /// - **App lifecycle** (`launch_app`, `quit_app`): same as focus shift.
+    /// - **CDP navigation** (`cdp_navigate`, `cdp_new_page`,
+    ///   `cdp_select_page`): drops the CDP page state, element surface,
+    ///   and modal/dialog presence.
+    ///
+    /// Snapshot-staleness invalidation is event-driven from a separate
+    /// top-of-loop hook (`queue_snapshot_stale_if_aged`), since it
+    /// depends on the current step counter, not the tool that just ran.
+    pub fn queue_invalidations_for_tool_success(&mut self, tool_name: &str, arguments: &Value) {
+        if FOCUS_CHANGING_TOOLS.contains(&tool_name) {
+            self.queue_invalidation(InvalidationEvent::FocusChanging {
+                tool: tool_name.to_string(),
+            });
+        }
+        if APP_LIFECYCLE_TOOLS.contains(&tool_name) {
+            self.queue_invalidation(InvalidationEvent::AppLifecycle {
+                tool: tool_name.to_string(),
+            });
+        }
+        if CDP_NAVIGATION_TOOLS.contains(&tool_name) {
+            let new_url = arguments
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            self.queue_invalidation(InvalidationEvent::CdpNavigation { new_url });
+        }
+    }
+
+    /// Queue per-snapshot `SnapshotStale` events for any snapshot
+    /// (`last_native_ax_snapshot` or `last_screenshot`) whose own age
+    /// has crossed its `ttl_steps`. Called at the top of every loop
+    /// iteration before `observe()` so the apply-events pass drops
+    /// bodies that have aged out without the LLM re-capturing.
+    ///
+    /// One event per stale field — never a shared `age_steps` value
+    /// across both fields. A fresh screenshot must not be invalidated
+    /// just because the AX snapshot is stale.
+    pub fn queue_snapshot_stale_if_aged(&mut self) {
+        use crate::agent::world_model::SnapshotKind;
+        if let Some(ax) = &self.world_model.last_native_ax_snapshot
+            && let Some(ttl) = ax.ttl_steps
+        {
+            let age = (self.step_index.saturating_sub(ax.written_at)) as u32;
+            if age > ttl {
+                self.queue_invalidation(InvalidationEvent::SnapshotStale {
+                    kind: SnapshotKind::NativeAx,
+                    age_steps: age,
+                });
+            }
+        }
+        if let Some(ss) = &self.world_model.last_screenshot
+            && let Some(ttl) = ss.ttl_steps
+        {
+            let age = (self.step_index.saturating_sub(ss.written_at)) as u32;
+            if age > ttl {
+                self.queue_invalidation(InvalidationEvent::SnapshotStale {
+                    kind: SnapshotKind::Screenshot,
+                    age_steps: age,
+                });
+            }
+        }
+    }
+
     /// After a successful tool call, refresh the world model's identity
     /// fields that the tool just captured. Non-snapshot tools are no-ops.
     pub fn update_continuity_after_tool_success(&mut self, tool_name: &str, body: &str) {
         use crate::agent::world_model::{
-            AxSnapshotData, Fresh, FreshnessSource, ScreenshotRef, parse_ax_snapshot,
+            AxSnapshotData, Fresh, FreshnessSource, ObservedElement, ScreenshotRef,
+            parse_ax_snapshot, parse_ocr_matches,
         };
         match tool_name {
             "take_ax_snapshot" => {
@@ -821,6 +895,21 @@ impl StateRunner {
                     source: FreshnessSource::DirectObservation,
                     ttl_steps: Some(8),
                 });
+                // Mirror parsed AX elements into the source-agnostic
+                // element surface so the renderer prints them alongside
+                // (or instead of) CDP elements. Native-only paths
+                // depend on this — without it the LLM never sees the
+                // a-prefixed uid vocabulary in `<world_model>`.
+                if !parsed.is_empty() {
+                    let observed: Vec<ObservedElement> =
+                        parsed.into_iter().map(ObservedElement::Ax).collect();
+                    self.world_model.elements = Some(Fresh {
+                        value: observed,
+                        written_at: self.step_index,
+                        source: FreshnessSource::DirectObservation,
+                        ttl_steps: Some(8),
+                    });
+                }
             }
             "take_screenshot" => {
                 let id = serde_json::from_str::<serde_json::Value>(body)
@@ -840,6 +929,25 @@ impl StateRunner {
                     source: FreshnessSource::DirectObservation,
                     ttl_steps: Some(8),
                 });
+            }
+            "find_text" => {
+                // OCR results from `find_text` populate the
+                // source-agnostic element surface as `ObservedElement::Ocr`
+                // when the response is parseable. Parse failures are
+                // tolerated silently — `find_text` has multiple legacy
+                // body shapes, so a non-OCR-shaped body is normal.
+                if let Ok(matches) = parse_ocr_matches(body)
+                    && !matches.is_empty()
+                {
+                    let observed: Vec<ObservedElement> =
+                        matches.into_iter().map(ObservedElement::Ocr).collect();
+                    self.world_model.elements = Some(Fresh {
+                        value: observed,
+                        written_at: self.step_index,
+                        source: FreshnessSource::DirectObservation,
+                        ttl_steps: Some(2),
+                    });
+                }
             }
             _ => {}
         }
@@ -930,13 +1038,17 @@ impl StateRunner {
         }
     }
 
-    /// Persist one `BoundaryKind::SubgoalCompleted` record per milestone
-    /// appended during the current turn (D8). Called from
-    /// [`Self::run`] right after `run_turn` reports `milestones_appended >
-    /// 0`. Records the turn's batched mutations as `action_taken` so the
-    /// subgoal summaries are recoverable from `events.jsonl` without a
+    /// Persist one `BoundaryKind::SubgoalCompleted` record per
+    /// milestone appended during the current turn. Called from the
+    /// outer loop in [`Self::run`] right after the mutation apply
+    /// counts a positive `outer_milestones_appended` — before any
+    /// early-exit branch (synthetic focus skip / live policy-deny /
+    /// live approval-reject), so the boundary record fires whether or
+    /// not the action eventually goes through `run_turn`. Records the
+    /// turn's batched mutations as `action_taken` so the subgoal
+    /// summaries are recoverable from `events.jsonl` without a
     /// separate transcript lookup. Emits one
-    /// `AgentEvent::BoundaryRecordWritten` per persisted record (D17).
+    /// `AgentEvent::BoundaryRecordWritten` per persisted record.
     async fn write_subgoal_completed_records(&self, count: usize, turn: &AgentTurn) {
         let action_taken =
             serde_json::to_value(&turn.mutations).unwrap_or_else(|_| serde_json::json!([]));
@@ -1077,11 +1189,13 @@ impl StateRunner {
     /// will wrap this with the LLM loop + compaction + cache replay.
     ///
     /// Return tuple: `(outcome, warnings, milestones_appended)`.
-    /// `milestones_appended` counts the number of `CompleteSubgoal`
-    /// mutations that successfully popped a subgoal off the stack during
-    /// this turn. The control loop in [`StateRunner::run`] uses this count
-    /// to emit one `BoundaryKind::SubgoalCompleted` `StepRecord` per
-    /// appended milestone (Task 3a.6.5 / D8).
+    /// `milestones_appended` counts `CompleteSubgoal` mutations that
+    /// successfully popped a subgoal off the stack during this turn.
+    /// In the live runner the outer loop applies mutations *before*
+    /// calling `run_turn` (so `run_turn` receives an action-only turn
+    /// and the count returned here is `0`); the count is meaningful
+    /// for integration tests that drive `run_turn` directly with
+    /// non-empty mutation batches.
     pub async fn run_turn<E: ToolExecutor + ?Sized>(
         &mut self,
         turn: &AgentTurn,
@@ -1142,6 +1256,7 @@ impl StateRunner {
             } => match executor.call_tool(tool_name, arguments).await {
                 Ok(body) => {
                     self.update_continuity_after_tool_success(tool_name, &body);
+                    self.queue_invalidations_for_tool_success(tool_name, arguments);
                     self.consecutive_errors = 0;
                     TurnOutcome::ToolSuccess {
                         tool_name: tool_name.clone(),
@@ -1189,6 +1304,33 @@ impl StateRunner {
     /// actually executed.
     pub(crate) fn advance_recorded_step_index(&mut self) {
         self.step_index += 1;
+    }
+
+    /// Emit a per-step `WorldModelChanged` event for an early-exit step
+    /// path that recorded an `AgentStep` without going through
+    /// `run_turn`. Cache-replay branches (Continue / Break), live
+    /// policy-deny, live approval-reject, and the synthetic
+    /// `focus_window` skip all record steps but skip `run_turn`
+    /// entirely; without this hook, the `turn_pre_signatures` baseline
+    /// would be carried into the next iteration and the
+    /// `WorldModelChanged` diff would span multiple recorded steps.
+    ///
+    /// Consumes the current baseline (top-of-loop snapshot) and
+    /// re-seeds it with the post-step signatures so the next iteration
+    /// sees a fresh baseline keyed to the just-recorded step.
+    pub(crate) async fn emit_world_model_changed_for_recorded_step(&mut self) {
+        let pre_signatures = self
+            .turn_pre_signatures
+            .take()
+            .unwrap_or_else(|| self.world_model.field_signatures());
+        let post_signatures = self.world_model.field_signatures();
+        let diff = diff_world_model_signatures(&pre_signatures, &post_signatures);
+        self.emit_event(AgentEvent::WorldModelChanged {
+            run_id: self.run_id,
+            diff,
+        })
+        .await;
+        self.turn_pre_signatures = Some(post_signatures);
     }
 
     /// Record a permission-policy denial as the current "last failure"
@@ -1368,6 +1510,19 @@ const STATE_TRANSITION_TOOLS: &[&str] = &[
     "cdp_connect",
     "cdp_disconnect",
 ];
+
+/// Tools whose successful dispatch shifts which window has keyboard /
+/// element focus. `observe()` drains a `FocusChanging` event for each.
+const FOCUS_CHANGING_TOOLS: &[&str] = &["focus_window", "launch_app", "quit_app"];
+
+/// Tools that cross an app-process boundary (start or end an app).
+/// In addition to focus, these invalidate window list, screenshot, and
+/// AX-snapshot continuity records.
+const APP_LIFECYCLE_TOOLS: &[&str] = &["launch_app", "quit_app"];
+
+/// Tools whose success implies a navigation in the active CDP page,
+/// invalidating page state and the element surface.
+const CDP_NAVIGATION_TOOLS: &[&str] = &["cdp_navigate", "cdp_new_page", "cdp_select_page"];
 
 /// True when the tool is observation-only — either hardcoded in
 /// [`OBSERVATION_TOOLS`] or annotated with `readOnlyHint = true`. The
@@ -2287,6 +2442,7 @@ impl StateRunner {
                 };
                 self.state.steps.push(step);
                 self.advance_recorded_step_index();
+                self.emit_world_model_changed_for_recorded_step().await;
                 // A denied tool is the recovery-trigger event. Capture
                 // it as the last failure so the next `Recovering`-entry
                 // snapshot has a real `(failed_tool, error_kind)` pair.
@@ -2329,6 +2485,7 @@ impl StateRunner {
                         };
                         self.state.steps.push(step);
                         self.advance_recorded_step_index();
+                        self.emit_world_model_changed_for_recorded_step().await;
                         *previous_result = Some("Replan: user rejected cached action".to_string());
                         return ReplayResult::Continue;
                     }
@@ -2401,6 +2558,17 @@ impl StateRunner {
                 self.maybe_cdp_connect(&cached_tool, &cached_args, &result_text, mcp)
                     .await;
 
+                // Continuity + invalidation parity with the live
+                // ToolSuccess branch: a cached take_ax_snapshot /
+                // take_screenshot must also refresh
+                // `last_native_ax_snapshot` / `last_screenshot`, and a
+                // cached focus / lifecycle / navigation tool must queue
+                // the matching invalidation event so the next observe
+                // drops the stale fields. Without this the cache replay
+                // path silently lies about world-model freshness.
+                self.update_continuity_after_tool_success(&cached_tool, &result_text);
+                self.queue_invalidations_for_tool_success(&cached_tool, &cached_args);
+
                 let step = AgentStep {
                     index: step_index,
                     elements: elements.to_vec(),
@@ -2410,6 +2578,7 @@ impl StateRunner {
                 };
                 self.state.steps.push(step);
                 self.advance_recorded_step_index();
+                self.emit_world_model_changed_for_recorded_step().await;
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 *last_failure = None;
@@ -2458,56 +2627,96 @@ impl StateRunner {
     }
 }
 
-/// Parse a raw LLM response `Message` into an `AgentTurn`.
+/// Parse a raw LLM response `Message` into an `AgentTurn` carrying
+/// `0..N` task-state mutations followed by exactly one action.
 ///
-/// The state-spine wire format is "0..N mutations + 1 action", but real
-/// backends return the action via OpenAI-style `tool_calls`. Task 3a.1
-/// implements a minimum parser: the **first** `tool_calls[0]` is mapped to
-/// an `AgentAction`; mutations stay empty (the harness-owned state mutation
-/// path for real LLM output is covered by a later task). Pseudo-tool names
-/// `agent_done` / `agent_replan` dispatch to the matching `AgentAction`
-/// variant; everything else becomes `AgentAction::ToolCall`.
+/// We accept the turn via OpenAI-style `tool_calls`, which the LLM
+/// emits as an ordered array. Each call is classified by name:
 ///
-/// Text-only replies (no `tool_calls`) map to `AgentAction::AgentReplan`
-/// with the assistant's raw text as the reason — the LLM "forgot" to call a
-/// tool, so re-observe on the next iteration with the text as context
-/// instead of aborting the run.
+/// - **Mutation pseudo-tools** (`push_subgoal`, `complete_subgoal`,
+///   `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`,
+///   `refute_hypothesis`) parse into `TaskStateMutation` values
+///   regardless of position. Malformed args produce a per-call warning
+///   but never abort the turn — a single bad mutation cannot poison
+///   the action.
+/// - **Action pseudo-tools** (`agent_done`, `agent_replan`) and any
+///   other tool name become an `AgentAction`. The first action-shaped
+///   call wins; subsequent action calls are dropped, since exactly one
+///   action runs per turn. Mutations after the action are still
+///   preserved — apply order is enforced by `apply_mutations`, not by
+///   tool-call order.
 ///
-/// `TODO(task-3a.2)`: extend to read a structured `{ mutations, action }`
-/// JSON envelope when the prompt spine asks the LLM for one.
+/// If only mutations are present (the LLM forgot to choose an action),
+/// the result is an `AgentReplan` with a self-describing reason so the
+/// next turn re-observes instead of aborting.
+///
+/// Text-only replies (no `tool_calls`) also map to
+/// `AgentAction::AgentReplan` with the assistant's raw text as the
+/// reason — matches the legacy "no tool call" recovery hook.
 pub fn parse_agent_turn(message: &Message) -> anyhow::Result<AgentTurn> {
-    if let Some(tool_call) = message.tool_calls.as_ref().and_then(|tcs| tcs.first()) {
-        let name = &tool_call.function.name;
-        let args = tool_call.function.arguments.clone();
+    use crate::agent::prompt::is_mutation_tool_name;
 
-        let action = match name.as_str() {
-            "agent_done" => {
-                let summary = args
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Goal completed")
-                    .to_string();
-                AgentAction::AgentDone { summary }
-            }
-            "agent_replan" => {
-                let reason = args
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Unknown reason")
-                    .to_string();
-                AgentAction::AgentReplan { reason }
-            }
-            _ => AgentAction::ToolCall {
-                tool_name: name.clone(),
-                arguments: args,
-                tool_call_id: tool_call.id.clone(),
-            },
-        };
+    if let Some(tool_calls) = message.tool_calls.as_ref()
+        && !tool_calls.is_empty()
+    {
+        let mut mutations: Vec<TaskStateMutation> = Vec::new();
+        let mut action: Option<AgentAction> = None;
 
-        return Ok(AgentTurn {
-            mutations: Vec::new(),
-            action,
+        for tc in tool_calls {
+            let name = tc.function.name.as_str();
+            let args = &tc.function.arguments;
+
+            if is_mutation_tool_name(name) {
+                match parse_mutation_call(name, args) {
+                    Ok(m) => mutations.push(m),
+                    Err(reason) => tracing::warn!(
+                        tool = name,
+                        error = %reason,
+                        "state-spine: dropping malformed mutation pseudo-tool call"
+                    ),
+                }
+                continue;
+            }
+
+            // Action — keep only the first one; exactly one action runs per turn.
+            if action.is_some() {
+                tracing::warn!(
+                    tool = name,
+                    "state-spine: ignoring extra action call after first action was claimed"
+                );
+                continue;
+            }
+
+            action = Some(match name {
+                "agent_done" => {
+                    let summary = args
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Goal completed")
+                        .to_string();
+                    AgentAction::AgentDone { summary }
+                }
+                "agent_replan" => {
+                    let reason = args
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Unknown reason")
+                        .to_string();
+                    AgentAction::AgentReplan { reason }
+                }
+                _ => AgentAction::ToolCall {
+                    tool_name: name.to_string(),
+                    arguments: args.clone(),
+                    tool_call_id: tc.id.clone(),
+                },
+            });
+        }
+
+        let action = action.unwrap_or_else(|| AgentAction::AgentReplan {
+            reason: "LLM emitted only state mutations and no action — re-observing".to_string(),
         });
+
+        return Ok(AgentTurn { mutations, action });
     }
 
     // Text-only response: treat as a replan request so the run re-observes
@@ -2521,6 +2730,65 @@ pub fn parse_agent_turn(message: &Message) -> anyhow::Result<AgentTurn> {
         mutations: Vec::new(),
         action: AgentAction::AgentReplan { reason },
     })
+}
+
+/// Parse a single mutation-shaped tool call (`push_subgoal`,
+/// `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`,
+/// `record_hypothesis`, `refute_hypothesis`) into a `TaskStateMutation`.
+///
+/// Returns a human-readable reason on malformed arguments so the caller
+/// can log per-call instead of aborting the whole turn. The strict
+/// enforcement (e.g. "watch slot not set") happens later in
+/// `TaskState::apply` and surfaces via `apply_mutations`'s warnings vec.
+fn parse_mutation_call(name: &str, args: &Value) -> Result<TaskStateMutation, String> {
+    use crate::agent::task_state::WatchSlotName;
+
+    fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+        args.get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("missing required string field `{}`", key))
+    }
+
+    // Defer enum-tag validation to serde — `WatchSlotName` already
+    // declares `#[serde(rename_all = "snake_case")]`, so the same
+    // strings the pseudo-tool schema lists are accepted here without
+    // a hand-maintained match arm.
+    fn watch_slot_name(args: &Value) -> Result<WatchSlotName, String> {
+        let raw = args
+            .get("name")
+            .ok_or_else(|| "missing required string field `name`".to_string())?;
+        serde_json::from_value::<WatchSlotName>(raw.clone())
+            .map_err(|e| format!("invalid watch slot name: {}", e))
+    }
+
+    match name {
+        "push_subgoal" => Ok(TaskStateMutation::PushSubgoal {
+            text: required_str(args, "text")?.to_string(),
+        }),
+        "complete_subgoal" => Ok(TaskStateMutation::CompleteSubgoal {
+            summary: required_str(args, "summary")?.to_string(),
+        }),
+        "set_watch_slot" => Ok(TaskStateMutation::SetWatchSlot {
+            name: watch_slot_name(args)?,
+            note: required_str(args, "note")?.to_string(),
+        }),
+        "clear_watch_slot" => Ok(TaskStateMutation::ClearWatchSlot {
+            name: watch_slot_name(args)?,
+        }),
+        "record_hypothesis" => Ok(TaskStateMutation::RecordHypothesis {
+            text: required_str(args, "text")?.to_string(),
+        }),
+        "refute_hypothesis" => {
+            let idx = args
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "missing required non-negative integer field `index`".to_string())?;
+            Ok(TaskStateMutation::RefuteHypothesis {
+                index: idx as usize,
+            })
+        }
+        _ => Err(format!("not a mutation pseudo-tool: `{}`", name)),
+    }
 }
 
 /// Adapter that turns any `&dyn Mcp` into the `ToolExecutor` trait expected
@@ -2652,16 +2920,17 @@ impl StateRunner {
 
         let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
 
-        // Add the pseudo-tools so the LLM sees the full action vocabulary.
-        // Seed once per run and never mutate — mid-run tool-list changes
-        // invalidate every prior prompt-cache prefix.
+        // Add the pseudo-tools so the LLM sees the full state-spine
+        // vocabulary: six task-state mutations plus the two action
+        // pseudo-tools. Seeded once per run and never mutated — mid-run
+        // tool-list changes invalidate every prior prompt-cache prefix.
+        // The MCP tool set is unchanged: pseudo-tools do not dispatch
+        // against `Mcp`; `parse_agent_turn` recognises them and routes
+        // them into `AgentTurn.{mutations, action}` directly.
         let tools: Vec<Value> = mcp_tools
             .iter()
             .cloned()
-            .chain([
-                crate::agent::prompt::agent_done_tool(),
-                crate::agent::prompt::agent_replan_tool(),
-            ])
+            .chain(crate::agent::prompt::pseudo_tools())
             .collect();
 
         // Annotations index is seeded once per run so the cache-replay
@@ -2702,13 +2971,14 @@ impl StateRunner {
 
             // Mirror the observation into the world model so the state
             // block renderer can print the interactive-element surface
-            // and the current CDP page context. Without this the
-            // renderer's `wm.elements` / `wm.cdp_page` branches never
-            // fire and the LLM loses its per-turn uid/label vocabulary
-            // and page URL. CDP-only: native AX elements are surfaced
-            // through the `take_ax_snapshot` tool-result body (no
-            // runner plumbing), and OCR / AX trees are published by
-            // dedicated paths.
+            // and the current CDP page context. The element surface is
+            // source-agnostic: CDP results from `fetch_elements` write
+            // here as `ObservedElement::Cdp`; native AX results from
+            // `take_ax_snapshot` and OCR results from `find_text` are
+            // mirrored by `update_continuity_after_tool_success` as
+            // `ObservedElement::Ax` and `ObservedElement::Ocr`
+            // respectively, so that path is preserved across turns
+            // where CDP is not the active discovery surface.
             {
                 use crate::agent::transition::page_fingerprint;
                 use crate::agent::world_model::{
@@ -2717,15 +2987,27 @@ impl StateRunner {
                 let observed: Vec<ObservedElement> =
                     elements.iter().cloned().map(ObservedElement::Cdp).collect();
                 if !observed.is_empty() {
+                    // Fresh CDP observation overwrites whatever was
+                    // there — CDP is the most recent discovery signal.
                     self.world_model.elements = Some(Fresh {
                         value: observed,
                         written_at: self.step_index,
                         source: FreshnessSource::DirectObservation,
                         ttl_steps: Some(2),
                     });
-                } else {
-                    // No elements this turn — drop the stale cache so
-                    // the renderer does not print last turn's surface.
+                } else if matches!(
+                    self.world_model
+                        .elements
+                        .as_ref()
+                        .and_then(|f| f.value.first()),
+                    Some(ObservedElement::Cdp(_))
+                ) {
+                    // Last turn's CDP cache has nothing to refresh it —
+                    // drop it so the renderer does not print stale CDP
+                    // elements. Non-CDP element sources (AX from
+                    // `take_ax_snapshot`, OCR from `find_text`) are
+                    // left intact and age out via the snapshot-stale
+                    // event when their TTL expires.
                     self.world_model.elements = None;
                 }
                 // `fetch_elements` writes the response `page_url` into
@@ -2750,19 +3032,26 @@ impl StateRunner {
                 }
             }
 
-            // Spec 2: re-infer phase from current consecutive-error
-            // counter BEFORE the cache gate / retrieval / render. The
-            // outer-loop top hasn't run `observe()` yet — `run_turn`'s
-            // internal observe runs AFTER mutations on the prior iteration,
-            // so this idempotent re-observe surfaces phase transitions
-            // (Executing -> Recovering) that the previous turn's error
-            // already triggered. Capturing `prev_phase_at_top` first gives
-            // us the "phase as it was at end of last iteration" needed
-            // for transition detection.
+            // Top-of-loop observe — unconditional. Drains pending
+            // invalidation events queued by the prior iteration's
+            // dispatch (focus shift, navigation, app lifecycle, tool
+            // failure) and re-infers `phase` so the cache-replay gate,
+            // episodic retrieval, and prompt render all see the
+            // post-event state. `run_turn` runs another `observe()`
+            // after dispatch; the two passes are idempotent — events
+            // are drained once per queue-and-observe cycle, so a second
+            // call with no pending events is a no-op for invalidation
+            // and just re-runs phase inference.
+            //
+            // `prev_phase_at_top` is captured *before* the observe so
+            // the `Exploring/Executing -> Recovering` transition is
+            // detectable here for episodic retrieval triggers.
             let prev_phase_at_top = self.task_state.phase;
-            if self.episodic_active() {
-                self.observe();
-            }
+            // Surface snapshot staleness as an invalidation event so
+            // `observe()` drops AX / screenshot bodies that have aged
+            // past their TTL even when no other event arrived.
+            self.queue_snapshot_stale_if_aged();
+            self.observe();
 
             // 1a. Cache-replay gate. `is_replay_eligible` enforces D17
             // (Phase::Exploring, empty subgoal stack, no watch slots);
@@ -2827,9 +3116,59 @@ impl StateRunner {
                 .next()
                 .context("No choices in LLM response")?;
 
-            // 4. Parse the LLM response into an AgentTurn. Task 3a.1's
-            // parser maps tool_calls[0] to the action; mutations stay empty.
+            // 4. Parse the LLM response into an AgentTurn carrying any
+            //    `0..N` task-state mutations followed by exactly one
+            //    action.
             let turn = parse_agent_turn(&choice.message)?;
+
+            // 4'. Apply task-state mutations BEFORE any early-exit
+            //     branching. Synthetic focus-skip / live policy-deny /
+            //     live approval-reject all record a step and `continue`
+            //     before `run_turn` would otherwise apply them, so
+            //     mutations would be silently dropped on those paths.
+            //     Applying here guarantees the AgentTurn contract
+            //     ("mutations apply before the action runs") regardless
+            //     of which branch the action takes — and `run_turn`
+            //     receives an action-only turn so it does not
+            //     double-apply.
+            //
+            //     `outer_milestones_appended` counts CompleteSubgoal
+            //     pops that landed in this turn so the
+            //     SubgoalCompleted boundary write below still runs even
+            //     when the action takes an early-exit branch.
+            let outer_milestones_before = self.task_state.milestones.len();
+            if !turn.mutations.is_empty() {
+                let warnings = self.apply_mutations(&turn.mutations);
+                for w in warnings {
+                    tracing::warn!(warning = %w, "state-spine: mutation warning");
+                }
+                self.emit_event(AgentEvent::TaskStateChanged {
+                    run_id: self.run_id,
+                    task_state: self.task_state.clone(),
+                })
+                .await;
+            }
+            let outer_milestones_appended = self
+                .task_state
+                .milestones
+                .len()
+                .saturating_sub(outer_milestones_before);
+
+            // 4''. SubgoalCompleted boundary writes — one StepRecord
+            //      per CompleteSubgoal mutation that successfully
+            //      popped a subgoal. Hoisted above the early-exit
+            //      branches so a turn like `complete_subgoal` +
+            //      skipped `focus_window` still produces the boundary
+            //      record. Without this hoist, mutations would land on
+            //      `task_state` (via 4') but the matching
+            //      `BoundaryKind::SubgoalCompleted` `StepRecord` would
+            //      be silently dropped whenever the action took the
+            //      synthetic-skip / policy-deny / approval-reject
+            //      `continue`.
+            if outer_milestones_appended > 0 {
+                self.write_subgoal_completed_records(outer_milestones_appended, &turn)
+                    .await;
+            }
 
             // 4a'. Synthetic `focus_window` skip. When the MCP surface +
             // app kind lets us suppress the focus-stealing MCP call
@@ -2878,6 +3217,7 @@ impl StateRunner {
                     page_url: self.state.current_url.clone(),
                 });
                 self.advance_recorded_step_index();
+                self.emit_world_model_changed_for_recorded_step().await;
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 last_failure = None;
@@ -2894,7 +3234,9 @@ impl StateRunner {
                 .await;
                 append_assistant_and_tool_result(
                     &mut messages,
-                    &choice.message,
+                    tool_name,
+                    arguments,
+                    tool_call_id,
                     previous_result.as_deref(),
                 );
                 continue;
@@ -2931,6 +3273,7 @@ impl StateRunner {
                                 page_url: self.state.current_url.clone(),
                             });
                             self.advance_recorded_step_index();
+                            self.emit_world_model_changed_for_recorded_step().await;
                             // Shared with the cached-deny branch — see
                             // `record_policy_deny_failure` for rationale.
                             self.record_policy_deny_failure(tool_name);
@@ -2939,7 +3282,9 @@ impl StateRunner {
                             previous_result = Some(err_msg.clone());
                             append_assistant_and_tool_result(
                                 &mut messages,
-                                &choice.message,
+                                tool_name,
+                                arguments,
+                                tool_call_id,
                                 previous_result.as_deref(),
                             );
 
@@ -3028,11 +3373,14 @@ impl StateRunner {
                                         page_url: self.state.current_url.clone(),
                                     });
                                     self.advance_recorded_step_index();
+                                    self.emit_world_model_changed_for_recorded_step().await;
                                     previous_result =
                                         Some("Replan: user rejected action".to_string());
                                     append_assistant_and_tool_result(
                                         &mut messages,
-                                        &choice.message,
+                                        tool_name,
+                                        arguments,
+                                        tool_call_id,
                                         previous_result.as_deref(),
                                     );
                                     continue;
@@ -3051,27 +3399,27 @@ impl StateRunner {
                 }
             }
 
-            // 5. Apply mutations + dispatch the action via run_turn.
+            // 5. Dispatch the action via run_turn. Mutations were
+            //    already applied at step 4' above, so we forward an
+            //    action-only turn — `run_turn`'s internal
+            //    `apply_mutations` call becomes a no-op on the empty
+            //    vec and `TaskStateChanged` is not emitted twice.
+            //
             //    `previous_errors` captures the error counter from the
-            //    iteration just before the new turn; a drop from >0 to 0
-            //    after `run_turn` signals the `Recovering -> Executing`
-            //    transition that Task 3a.6.5 persists as a
-            //    `BoundaryKind::RecoverySucceeded` record (D8).
+            //    iteration just before the new turn; a drop from >0 to
+            //    0 after `run_turn` signals the
+            //    `Recovering -> Executing` transition persisted as a
+            //    `BoundaryKind::RecoverySucceeded` record.
             let previous_errors = self.consecutive_errors;
             let executor = McpToolExecutor { mcp };
-            let (outcome, warnings, milestones_appended) = self.run_turn(&turn, &executor).await;
+            let action_only_turn = AgentTurn {
+                mutations: Vec::new(),
+                action: turn.action.clone(),
+            };
+            let (outcome, warnings, _run_turn_milestones) =
+                self.run_turn(&action_only_turn, &executor).await;
             for w in warnings {
                 tracing::warn!(warning = %w, "state-spine: mutation warning");
-            }
-
-            // 5a. SubgoalCompleted boundary writes — one `StepRecord` per
-            //     successfully popped subgoal (D8). Performed before the
-            //     outcome match so the record reflects the task_state /
-            //     world_model immediately after the mutation burst, matching
-            //     the semantic "the milestone just landed".
-            if milestones_appended > 0 {
-                self.write_subgoal_completed_records(milestones_appended, &turn)
-                    .await;
             }
 
             // 5b. RecoverySucceeded boundary write — a tool success that
@@ -3409,14 +3757,42 @@ impl StateRunner {
                 }
             }
 
-            // 7. Append the assistant message + tool result onto the
-            // transcript so the next iteration's LLM call sees the
-            // full turn.
-            append_assistant_and_tool_result(
-                &mut messages,
-                &choice.message,
-                previous_result.as_deref(),
-            );
+            // 7. Append the assistant action + its result onto the
+            // transcript so the next iteration's LLM call sees what
+            // ran. Mutation pseudo-tools that may have appeared in the
+            // model's `tool_calls` array are deliberately omitted here:
+            // they are already reflected in the `<task_state>` block
+            // the next turn renders, and including them would invite
+            // the LLM to expect an MCP-shaped tool result for them.
+            // `AgentDone` already broke out of the loop above; that
+            // path leaves no trailing transcript entry.
+            match &turn.action {
+                AgentAction::ToolCall {
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                } => {
+                    append_assistant_and_tool_result(
+                        &mut messages,
+                        tool_name,
+                        arguments,
+                        tool_call_id,
+                        previous_result.as_deref(),
+                    );
+                }
+                AgentAction::AgentReplan { reason } => {
+                    // Surface the replan as a plain assistant message
+                    // rather than a synthetic tool result; the harness
+                    // does not produce a tool_call_id for it and there
+                    // is no MCP body to attach.
+                    messages.push(Message::assistant(format!("replan: {}", reason)));
+                }
+                AgentAction::AgentDone { .. } => {
+                    // `TurnOutcome::Done` already broke above — this
+                    // arm is unreachable in practice but kept exhaustive
+                    // so the matcher does not silently regress.
+                }
+            }
         }
 
         // Post-loop: populate the terminal reason if the loop fell out of
@@ -3483,28 +3859,42 @@ fn openai_tools_to_mcp_tool_list(tools: &[Value]) -> Vec<clickweave_mcp::Tool> {
 /// assistant message (tool_calls only) plus a matching `tool_result`. When
 /// the assistant returned plain text, only the assistant message is
 /// appended.
+/// Append an assistant tool-call + matching tool-result onto the
+/// transcript so the next iteration's LLM call sees what was
+/// dispatched. Synthesises the assistant message from the action's own
+/// `(tool_call_id, tool_name, arguments)` rather than picking
+/// `tool_calls.first()`: when a turn's `tool_calls` array starts with
+/// mutation pseudo-tools (e.g. `push_subgoal` then `cdp_click`), the
+/// "first call" is a mutation, not the action that actually ran, and
+/// attaching the dispatched result to that id breaks action / result
+/// causality from the LLM's point of view. Mutations are already
+/// reflected in `<task_state>` at the next turn; they do not appear in
+/// the transcript here.
+///
+/// The tool-result's `name` is stamped so `context::compact` can
+/// identify stale snapshot-family bodies by the `SNAPSHOT_TOOL_NAMES`
+/// set. Without this stamp, production tool-result messages leave
+/// `name` unset and the snapshot-drop branch never fires for live
+/// runs.
 fn append_assistant_and_tool_result(
     messages: &mut Vec<Message>,
-    assistant: &Message,
+    tool_name: &str,
+    arguments: &Value,
+    tool_call_id: &str,
     previous_result: Option<&str>,
 ) {
-    if let Some(tc) = assistant
-        .tool_calls
-        .as_ref()
-        .and_then(|calls| calls.first())
-    {
-        messages.push(Message::assistant_tool_calls(vec![tc.clone()]));
-        // Stamp the tool-result's `name` from the assistant's tool-call
-        // function name so `context::compact` can identify stale
-        // snapshot-family bodies by the `SNAPSHOT_TOOL_NAMES` set.
-        // Without this, production tool-result messages leave `name`
-        // unset and the snapshot-drop branch never fires for live runs.
-        let mut tool_msg = Message::tool_result(&tc.id, previous_result.unwrap_or("ok"));
-        tool_msg.name = Some(tc.function.name.clone());
-        messages.push(tool_msg);
-    } else if let Some(text) = assistant.content_text() {
-        messages.push(Message::assistant(text));
-    }
+    let tc = clickweave_llm::ToolCall {
+        id: tool_call_id.to_string(),
+        call_type: clickweave_llm::CallType::Function,
+        function: clickweave_llm::FunctionCall {
+            name: tool_name.to_string(),
+            arguments: arguments.clone(),
+        },
+    };
+    messages.push(Message::assistant_tool_calls(vec![tc]));
+    let mut tool_msg = Message::tool_result(tool_call_id, previous_result.unwrap_or("ok"));
+    tool_msg.name = Some(tool_name.to_string());
+    messages.push(tool_msg);
 }
 
 #[cfg(test)]
@@ -4027,6 +4417,398 @@ mod agent_turn_parsing_tests {
         }"#;
         let turn: AgentTurn = serde_json::from_str(json).unwrap();
         assert!(matches!(turn.action, AgentAction::ToolCall { .. }));
+    }
+}
+
+#[cfg(test)]
+mod parse_agent_turn_tool_calls_tests {
+    //! Tests for the live `parse_agent_turn(&Message)` parser that
+    //! consumes OpenAI-shaped `tool_calls`. Distinct from the JSON
+    //! envelope tests above, which exercise the `serde::Deserialize`
+    //! path for `AgentTurn`.
+
+    use super::*;
+    use crate::agent::task_state::WatchSlotName;
+    use clickweave_llm::{CallType, FunctionCall, Message, ToolCall};
+    use serde_json::json;
+
+    fn tc(id: &str, name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            call_type: CallType::Function,
+            function: FunctionCall {
+                name: name.to_string(),
+                arguments: args,
+            },
+        }
+    }
+
+    #[test]
+    fn maps_mcp_tool_call_to_tool_call_action_with_no_mutations() {
+        let msg = Message::assistant_tool_calls(vec![tc("tc1", "cdp_click", json!({"uid": "d5"}))]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert!(turn.mutations.is_empty());
+        match turn.action {
+            AgentAction::ToolCall { tool_name, .. } => assert_eq!(tool_name, "cdp_click"),
+            _ => panic!("expected tool_call"),
+        }
+    }
+
+    #[test]
+    fn maps_agent_done_pseudo_tool_to_agent_done_action() {
+        let msg = Message::assistant_tool_calls(vec![tc(
+            "tc1",
+            "agent_done",
+            json!({"summary": "logged in"}),
+        )]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        match turn.action {
+            AgentAction::AgentDone { summary } => assert_eq!(summary, "logged in"),
+            _ => panic!("expected agent_done"),
+        }
+    }
+
+    #[test]
+    fn collects_mutations_then_takes_first_action_call() {
+        let msg = Message::assistant_tool_calls(vec![
+            tc("m1", "push_subgoal", json!({"text": "open login"})),
+            tc(
+                "m2",
+                "record_hypothesis",
+                json!({"text": "form has 2 fields"}),
+            ),
+            tc("a1", "cdp_find_elements", json!({})),
+            // Extra action calls after the first action are dropped.
+            tc("a2", "cdp_click", json!({"uid": "d2"})),
+        ]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert_eq!(turn.mutations.len(), 2);
+        assert!(matches!(
+            turn.mutations[0],
+            TaskStateMutation::PushSubgoal { .. }
+        ));
+        assert!(matches!(
+            turn.mutations[1],
+            TaskStateMutation::RecordHypothesis { .. }
+        ));
+        match turn.action {
+            AgentAction::ToolCall { tool_name, .. } => assert_eq!(tool_name, "cdp_find_elements"),
+            _ => panic!("expected first action to win"),
+        }
+    }
+
+    #[test]
+    fn mutations_after_action_are_still_collected() {
+        // Apply order is `apply_mutations` -> action; tool-call array
+        // ordering is irrelevant. A mutation emitted after the action
+        // is still picked up so the parser is robust to LLM sloppiness.
+        let msg = Message::assistant_tool_calls(vec![
+            tc("a1", "agent_done", json!({"summary": "done"})),
+            tc("m1", "push_subgoal", json!({"text": "noted"})),
+        ]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert_eq!(turn.mutations.len(), 1);
+        assert!(matches!(turn.action, AgentAction::AgentDone { .. }));
+    }
+
+    #[test]
+    fn only_mutations_synthesizes_agent_replan() {
+        // The LLM emitted state mutations but no action — surface as a
+        // replan so the next turn re-observes instead of aborting.
+        let msg = Message::assistant_tool_calls(vec![tc(
+            "m1",
+            "push_subgoal",
+            json!({"text": "explore"}),
+        )]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert_eq!(turn.mutations.len(), 1);
+        assert!(matches!(turn.action, AgentAction::AgentReplan { .. }));
+    }
+
+    #[test]
+    fn malformed_mutation_is_dropped_without_aborting_turn() {
+        // `set_watch_slot` requires both `name` and `note`; a missing
+        // field drops just that mutation while letting subsequent
+        // mutations and the action through.
+        let msg = Message::assistant_tool_calls(vec![
+            tc("m_bad", "set_watch_slot", json!({"name": "pending_modal"})),
+            tc(
+                "m_good",
+                "set_watch_slot",
+                json!({"name": "pending_auth", "note": "captcha shown"}),
+            ),
+            tc("a1", "agent_replan", json!({"reason": "auth required"})),
+        ]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert_eq!(turn.mutations.len(), 1);
+        match &turn.mutations[0] {
+            TaskStateMutation::SetWatchSlot { name, .. } => {
+                assert_eq!(*name, WatchSlotName::PendingAuth)
+            }
+            _ => panic!("expected set_watch_slot for pending_auth"),
+        }
+        assert!(matches!(turn.action, AgentAction::AgentReplan { .. }));
+    }
+
+    #[test]
+    fn refute_hypothesis_parses_index() {
+        let msg = Message::assistant_tool_calls(vec![
+            tc("m1", "refute_hypothesis", json!({"index": 3})),
+            tc("a1", "agent_replan", json!({"reason": "wrong"})),
+        ]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert!(matches!(
+            turn.mutations[0],
+            TaskStateMutation::RefuteHypothesis { index: 3 }
+        ));
+    }
+
+    #[test]
+    fn unknown_watch_slot_name_drops_mutation() {
+        let msg = Message::assistant_tool_calls(vec![
+            tc(
+                "m1",
+                "set_watch_slot",
+                json!({"name": "made_up_slot", "note": "x"}),
+            ),
+            tc("a1", "agent_replan", json!({"reason": "ok"})),
+        ]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert!(turn.mutations.is_empty());
+    }
+
+    #[test]
+    fn empty_tool_calls_array_falls_back_to_text_replan() {
+        // `assistant_tool_calls(vec![])` with no content emits a replan
+        // with the no-call sentinel reason, mirroring text-only output.
+        let msg = Message::assistant_tool_calls(vec![]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        match turn.action {
+            AgentAction::AgentReplan { reason } => {
+                assert!(reason.contains("no tool call") || reason.is_empty());
+            }
+            _ => panic!("expected agent_replan fallback"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod invalidation_wiring_tests {
+    //! Direct tests for `queue_invalidations_for_tool_success` and
+    //! `queue_snapshot_stale_if_aged` — both fire pending events that
+    //! `observe()` drains.
+
+    use super::*;
+    use crate::agent::world_model::{
+        AxSnapshotData, Fresh, FreshnessSource, InvalidationEvent, ScreenshotRef, SnapshotKind,
+    };
+    use serde_json::json;
+
+    fn runner() -> StateRunner {
+        StateRunner::new_for_test("test goal".to_string())
+    }
+
+    #[test]
+    fn focus_window_queues_focus_changing() {
+        let mut r = runner();
+        r.queue_invalidations_for_tool_success("focus_window", &json!({"app_name": "Safari"}));
+        assert!(matches!(
+            r.pending_events.as_slice(),
+            [InvalidationEvent::FocusChanging { tool }] if tool == "focus_window"
+        ));
+    }
+
+    #[test]
+    fn launch_app_queues_focus_and_lifecycle() {
+        let mut r = runner();
+        r.queue_invalidations_for_tool_success("launch_app", &json!({"app_name": "Mail"}));
+        assert_eq!(r.pending_events.len(), 2);
+        assert!(matches!(
+            r.pending_events[0],
+            InvalidationEvent::FocusChanging { .. }
+        ));
+        assert!(matches!(
+            r.pending_events[1],
+            InvalidationEvent::AppLifecycle { .. }
+        ));
+    }
+
+    #[test]
+    fn quit_app_queues_focus_and_lifecycle() {
+        let mut r = runner();
+        r.queue_invalidations_for_tool_success("quit_app", &json!({"app_name": "Mail"}));
+        assert_eq!(r.pending_events.len(), 2);
+    }
+
+    #[test]
+    fn cdp_navigate_queues_navigation_with_url() {
+        let mut r = runner();
+        r.queue_invalidations_for_tool_success(
+            "cdp_navigate",
+            &json!({"url": "https://example.com/login"}),
+        );
+        match r.pending_events.as_slice() {
+            [InvalidationEvent::CdpNavigation { new_url }] => {
+                assert_eq!(new_url, "https://example.com/login");
+            }
+            _ => panic!("expected CdpNavigation event"),
+        }
+    }
+
+    #[test]
+    fn cdp_select_page_queues_navigation_even_without_url() {
+        let mut r = runner();
+        r.queue_invalidations_for_tool_success("cdp_select_page", &json!({"page_index": 1}));
+        assert!(matches!(
+            r.pending_events.as_slice(),
+            [InvalidationEvent::CdpNavigation { new_url }] if new_url.is_empty()
+        ));
+    }
+
+    #[test]
+    fn unrelated_tool_queues_nothing() {
+        let mut r = runner();
+        r.queue_invalidations_for_tool_success("cdp_click", &json!({"uid": "d1"}));
+        assert!(r.pending_events.is_empty());
+    }
+
+    #[test]
+    fn snapshot_stale_fires_only_for_aged_ax_field() {
+        let mut r = runner();
+        r.world_model.last_native_ax_snapshot = Some(Fresh {
+            value: AxSnapshotData {
+                snapshot_id: "ax-0".into(),
+                element_count: 0,
+                captured_at_step: 0,
+                ax_tree_text: String::new(),
+            },
+            written_at: 0,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        r.step_index = 5; // age = 5, TTL = 2 → should fire.
+        r.queue_snapshot_stale_if_aged();
+        assert!(matches!(
+            r.pending_events.as_slice(),
+            [InvalidationEvent::SnapshotStale {
+                kind: SnapshotKind::NativeAx,
+                age_steps: 5,
+            }]
+        ));
+    }
+
+    #[test]
+    fn snapshot_stale_no_op_when_within_ttl() {
+        let mut r = runner();
+        r.world_model.last_screenshot = Some(Fresh {
+            value: ScreenshotRef {
+                screenshot_id: "ss-0".into(),
+                captured_at_step: 0,
+            },
+            written_at: 3,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(8),
+        });
+        r.step_index = 5; // age = 2, TTL = 8 → no event.
+        r.queue_snapshot_stale_if_aged();
+        assert!(r.pending_events.is_empty());
+    }
+
+    #[test]
+    fn stale_ax_does_not_invalidate_fresh_screenshot() {
+        // The bug being prevented: AX captured at step 0 (TTL 2) and
+        // a screenshot captured at step 4 (TTL 4). At step 5, AX is
+        // stale (age 5 > TTL 2) but the screenshot is fresh
+        // (age 1 < TTL 4). A single `SnapshotStale { age_steps = 5 }`
+        // event would have dragged the screenshot down too; the new
+        // shape queues per-kind so apply only clears AX.
+        let mut r = runner();
+        r.world_model.last_native_ax_snapshot = Some(Fresh {
+            value: AxSnapshotData {
+                snapshot_id: "ax-0".into(),
+                element_count: 0,
+                captured_at_step: 0,
+                ax_tree_text: String::new(),
+            },
+            written_at: 0,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        r.world_model.last_screenshot = Some(Fresh {
+            value: ScreenshotRef {
+                screenshot_id: "ss-1".into(),
+                captured_at_step: 4,
+            },
+            written_at: 4,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(4),
+        });
+        r.step_index = 5;
+        r.queue_snapshot_stale_if_aged();
+        let queued = std::mem::take(&mut r.pending_events);
+        r.world_model.apply_events(queued);
+        assert!(
+            r.world_model.last_native_ax_snapshot.is_none(),
+            "stale AX must be cleared"
+        );
+        assert!(
+            r.world_model.last_screenshot.is_some(),
+            "fresh screenshot must survive AX going stale"
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_agnostic_elements_tests {
+    //! `update_continuity_after_tool_success` mirrors AX and OCR
+    //! results into the source-agnostic `world_model.elements` field
+    //! so the renderer can print them uniformly.
+
+    use super::*;
+    use crate::agent::world_model::ObservedElement;
+
+    fn runner() -> StateRunner {
+        StateRunner::new_for_test("test goal".to_string())
+    }
+
+    #[test]
+    fn take_ax_snapshot_populates_elements_with_ax_variants() {
+        let mut r = runner();
+        let body = "uid=a1g3 button \"Login\"\n  uid=a2g3 textbox \"Email\"\n";
+        r.update_continuity_after_tool_success("take_ax_snapshot", body);
+        let els = r.world_model.elements.as_ref().expect("elements populated");
+        assert!(!els.value.is_empty(), "expected parsed AX elements");
+        assert!(
+            els.value
+                .iter()
+                .all(|e| matches!(e, ObservedElement::Ax(_))),
+            "all elements must be Ax-variant"
+        );
+    }
+
+    #[test]
+    fn take_ax_snapshot_with_empty_body_does_not_overwrite_elements() {
+        let mut r = runner();
+        // Pre-populate a CDP elements surface; an empty AX snapshot
+        // should not clobber it (no `Ax` elements parsed).
+        let cdp_match = clickweave_core::cdp::CdpFindElementMatch {
+            uid: "d1".into(),
+            role: "button".into(),
+            label: "OK".into(),
+            tag: "button".into(),
+            disabled: false,
+            parent_role: None,
+            parent_name: None,
+        };
+        r.world_model.elements = Some(crate::agent::world_model::Fresh {
+            value: vec![ObservedElement::Cdp(cdp_match.clone())],
+            written_at: 0,
+            source: crate::agent::world_model::FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        r.update_continuity_after_tool_success("take_ax_snapshot", "");
+        let els = r.world_model.elements.as_ref().unwrap();
+        assert!(matches!(els.value.first(), Some(ObservedElement::Cdp(_))));
     }
 }
 

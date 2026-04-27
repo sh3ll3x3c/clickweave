@@ -26,12 +26,15 @@ You operate on a harness-owned world model and task state. Each turn you receive
 2. A `<task_state>` block describing your current goal, subgoal stack, active watch slots, and recorded hypotheses.
 3. An optional observation returned by the previous tool.
 
-Each turn you respond with a structured JSON object containing:
-- `mutations`: zero or more task-state mutations (`push_subgoal`, `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`, `refute_hypothesis`).
-- `action`: exactly one of:
-  - `{ "kind": "tool_call", "tool_name": "...", "arguments": {...}, "tool_call_id": "..." }`
-  - `{ "kind": "agent_done", "summary": "..." }`
-  - `{ "kind": "agent_replan", "reason": "..." }`
+You respond by emitting tool calls. Each turn carries zero or more state-mutation pseudo-tools followed by exactly one action:
+
+- Mutation pseudo-tools (never dispatched to MCP, applied by the harness): `push_subgoal`, `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`, `refute_hypothesis`.
+- Exactly one action per turn:
+  - any MCP tool from the available-tools list (the action that runs against the environment), or
+  - `agent_done` to declare the goal complete, or
+  - `agent_replan` to request a re-plan when stuck.
+
+Mutations are read from your `tool_calls` array regardless of their position; the first non-mutation call is taken as the action and any further action calls are ignored. Calling only mutation pseudo-tools is treated as a replan request.
 
 Rules:
 - The `phase` field in `<task_state>` is harness-inferred. Do not try to set it yourself.
@@ -157,6 +160,177 @@ pub fn agent_replan_tool() -> Value {
             }
         }
     })
+}
+
+// --- Task-state mutation pseudo-tools ---
+//
+// These describe the `AgentTurn.mutations` surface to the LLM via the
+// OpenAI tool-calling API. They never dispatch to MCP —
+// `parse_agent_turn` recognises their names and routes their arguments
+// into `TaskStateMutation` values that the harness applies before the
+// turn's action runs. The MCP tool list is unchanged by their presence.
+
+pub fn push_subgoal_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "push_subgoal",
+            "description": "Push a new subgoal onto the task-state stack. The new subgoal becomes the active focus until you call complete_subgoal. Mutation only — does not dispatch to MCP.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Short description of the subgoal."
+                    }
+                },
+                "required": ["text"]
+            }
+        }
+    })
+}
+
+pub fn complete_subgoal_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "complete_subgoal",
+            "description": "Pop the top of the subgoal stack as completed and record a milestone summary. Mutation only — does not dispatch to MCP.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "What was accomplished for this subgoal."
+                    }
+                },
+                "required": ["summary"]
+            }
+        }
+    })
+}
+
+pub fn set_watch_slot_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "set_watch_slot",
+            "description": "Mark a background concern (modal, auth, focus shift) so the harness will not replay cached actions while it is active. Mutation only — does not dispatch to MCP.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": ["pending_modal", "pending_auth", "pending_focus_shift"],
+                        "description": "Which watch slot to set."
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Operator-readable note about the concern."
+                    }
+                },
+                "required": ["name", "note"]
+            }
+        }
+    })
+}
+
+pub fn clear_watch_slot_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "clear_watch_slot",
+            "description": "Clear a previously-set watch slot once the background concern has been resolved. Mutation only — does not dispatch to MCP.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": ["pending_modal", "pending_auth", "pending_focus_shift"],
+                        "description": "Which watch slot to clear."
+                    }
+                },
+                "required": ["name"]
+            }
+        }
+    })
+}
+
+pub fn record_hypothesis_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "record_hypothesis",
+            "description": "Record a hypothesis you are about to test (rolling ring buffer, oldest evicted). Mutation only — does not dispatch to MCP.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The hypothesis under evaluation."
+                    }
+                },
+                "required": ["text"]
+            }
+        }
+    })
+}
+
+pub fn refute_hypothesis_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "refute_hypothesis",
+            "description": "Mark a previously-recorded hypothesis as refuted. Index is the position in the current <task_state> hypotheses list. Mutation only — does not dispatch to MCP.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Index of the hypothesis to refute."
+                    }
+                },
+                "required": ["index"]
+            }
+        }
+    })
+}
+
+/// All harness-local pseudo-tools that the LLM may emit in a turn.
+///
+/// Order is intentional: the action pseudo-tools (`agent_done`,
+/// `agent_replan`) come last so the LLM-facing tool list ends with the
+/// "terminate the loop" choices, while the mutations cluster together at
+/// the start of the pseudo-tool block.
+pub fn pseudo_tools() -> Vec<Value> {
+    vec![
+        push_subgoal_tool(),
+        complete_subgoal_tool(),
+        set_watch_slot_tool(),
+        clear_watch_slot_tool(),
+        record_hypothesis_tool(),
+        refute_hypothesis_tool(),
+        agent_done_tool(),
+        agent_replan_tool(),
+    ]
+}
+
+/// Names of the pseudo-tools that map to `TaskStateMutation` rather than
+/// `AgentAction`. Used by `parse_agent_turn` to route a tool call into
+/// `mutations` instead of `action`. Kept as a small `&'static [&'static str]`
+/// so the parser can match on it without rebuilding a HashSet per call.
+pub const MUTATION_TOOL_NAMES: &[&str] = &[
+    "push_subgoal",
+    "complete_subgoal",
+    "set_watch_slot",
+    "clear_watch_slot",
+    "record_hypothesis",
+    "refute_hypothesis",
+];
+
+pub fn is_mutation_tool_name(name: &str) -> bool {
+    MUTATION_TOOL_NAMES.contains(&name)
 }
 
 #[cfg(test)]

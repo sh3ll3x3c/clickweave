@@ -128,13 +128,38 @@ pub struct WorldModel {
     pub uncertainty: UncertaintyScore,
 }
 
+/// Which snapshot field a [`InvalidationEvent::SnapshotStale`] event
+/// applies to. Lets `apply_events` clear only the field whose own age
+/// crossed its TTL, rather than dragging both fields out together
+/// because one of them was stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotKind {
+    NativeAx,
+    Screenshot,
+}
+
 #[derive(Debug, Clone)]
 pub enum InvalidationEvent {
-    FocusChanging { tool: String },
-    CdpNavigation { new_url: String },
-    AppLifecycle { tool: String },
-    ToolFailed { tool: String },
-    SnapshotStale { age_steps: u32 },
+    FocusChanging {
+        tool: String,
+    },
+    CdpNavigation {
+        new_url: String,
+    },
+    AppLifecycle {
+        tool: String,
+    },
+    ToolFailed {
+        tool: String,
+    },
+    /// One field's snapshot has aged past its `ttl_steps`. `kind`
+    /// names which field — handlers must only invalidate that field
+    /// even if the other field's TTL would also be exceeded by
+    /// `age_steps`. Queue one event per stale snapshot.
+    SnapshotStale {
+        kind: SnapshotKind,
+        age_steps: u32,
+    },
 }
 
 /// Signals passed into `WorldModel::recompute_uncertainty`. Collected by
@@ -283,20 +308,24 @@ impl WorldModel {
                 InvalidationEvent::ToolFailed { tool } => {
                     self.bump_uncertainty(0.15, format!("tool_failed: {}", tool));
                 }
-                InvalidationEvent::SnapshotStale { age_steps } => {
-                    if let Some(ref ax) = self.last_native_ax_snapshot
-                        && let Some(ttl) = ax.ttl_steps
-                        && age_steps > ttl
-                    {
-                        self.last_native_ax_snapshot = None;
+                InvalidationEvent::SnapshotStale { kind, age_steps } => match kind {
+                    SnapshotKind::NativeAx => {
+                        if let Some(ref ax) = self.last_native_ax_snapshot
+                            && let Some(ttl) = ax.ttl_steps
+                            && age_steps > ttl
+                        {
+                            self.last_native_ax_snapshot = None;
+                        }
                     }
-                    if let Some(ref s) = self.last_screenshot
-                        && let Some(ttl) = s.ttl_steps
-                        && age_steps > ttl
-                    {
-                        self.last_screenshot = None;
+                    SnapshotKind::Screenshot => {
+                        if let Some(ref s) = self.last_screenshot
+                            && let Some(ttl) = s.ttl_steps
+                            && age_steps > ttl
+                        {
+                            self.last_screenshot = None;
+                        }
                     }
-                }
+                },
             }
         }
     }
@@ -664,7 +693,10 @@ mod tests {
             source: FreshnessSource::DirectObservation,
             ttl_steps: Some(3),
         });
-        wm.apply_events(vec![InvalidationEvent::SnapshotStale { age_steps: 4 }]);
+        wm.apply_events(vec![InvalidationEvent::SnapshotStale {
+            kind: SnapshotKind::NativeAx,
+            age_steps: 4,
+        }]);
         assert!(wm.last_native_ax_snapshot.is_none());
     }
 
