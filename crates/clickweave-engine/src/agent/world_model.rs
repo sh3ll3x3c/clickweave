@@ -172,6 +172,18 @@ pub struct UncertaintySignals {
 }
 
 impl WorldModel {
+    /// Kind of the currently-focused app, or `None` if no focus has been
+    /// observed yet. Encapsulates the `focused_app -> Fresh -> value -> kind`
+    /// field chain so callers don't have to.
+    pub fn focused_app_kind(&self) -> Option<AppKind> {
+        self.focused_app.as_ref().map(|f| f.value.kind)
+    }
+
+    /// Whether a CDP page is currently attached to the focused app.
+    pub fn is_cdp_attached(&self) -> bool {
+        self.cdp_page.is_some()
+    }
+
     /// Additively bump the uncertainty score (capped at 1.0) and append a
     /// short reason string. Shared by `apply_events` and
     /// `refresh_invalid_fields` so the cap + reason-append logic has one

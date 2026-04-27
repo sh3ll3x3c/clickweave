@@ -1807,6 +1807,18 @@ impl StateRunner {
             .insert(app_name.to_string(), kind.to_string());
     }
 
+    /// Compute the per-turn `<tools_in_scope>` subset from the current
+    /// world-model state. No focused app yet → empty `Vec` → caller
+    /// renders no block, so the LLM falls back to the system prompt's
+    /// full `Available tools:` listing.
+    fn compute_tools_in_scope(&self, advertised_tool_names: &[String]) -> Vec<String> {
+        crate::agent::prompt::tools_in_scope(
+            self.world_model.focused_app_kind(),
+            self.world_model.is_cdp_attached(),
+            advertised_tool_names,
+        )
+    }
+
     /// True when `(tool_name, result_text)` identifies a runner-skipped
     /// `focus_window` — one of the synthetic successes that
     /// [`Self::should_skip_focus_window`] emits. Post-step bookkeeping
@@ -3006,12 +3018,28 @@ impl StateRunner {
         let tool_list_for_prompt = openai_tools_to_mcp_tool_list(&mcp_tools);
         let system_text = build_system_prompt(&tool_list_for_prompt);
 
+        // Stable list of advertised MCP tool names for the per-turn
+        // `<tools_in_scope>` filter. Computed once per run since `mcp_tools`
+        // is itself stable across the loop (mid-run mutations would
+        // invalidate the prompt-cache prefix).
+        let advertised_tool_names: Vec<String> = tool_list_for_prompt
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+
         // `goal` already carries the prior-turn log + variant-context
         // composed by `build_goal_block` at the Tauri seam. Feed it
         // straight into the user turn so messages[1] is the single
         // run-specific slot.
-        let initial_user =
-            build_user_turn_message(&self.world_model, &self.task_state, 0, &goal, &[]);
+        let initial_scope = self.compute_tools_in_scope(&advertised_tool_names);
+        let initial_user = build_user_turn_message(
+            &self.world_model,
+            &self.task_state,
+            0,
+            &goal,
+            &[],
+            &initial_scope,
+        );
 
         let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
 
@@ -3197,12 +3225,14 @@ impl StateRunner {
             // the previous tool body as the observation, then compact the
             // history before the LLM call.
             let step_obs = previous_result.clone().unwrap_or_default();
+            let step_scope = self.compute_tools_in_scope(&advertised_tool_names);
             let step_msg = build_user_turn_message(
                 &self.world_model,
                 &self.task_state,
                 self.step_index,
                 &step_obs,
                 &retrieved,
+                &step_scope,
             );
             messages.push(Message::user(step_msg));
             messages = compact(messages, &budget);
