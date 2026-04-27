@@ -1524,6 +1524,13 @@ const APP_LIFECYCLE_TOOLS: &[&str] = &["launch_app", "quit_app"];
 /// invalidating page state and the element surface.
 const CDP_NAVIGATION_TOOLS: &[&str] = &["cdp_navigate", "cdp_new_page", "cdp_select_page"];
 
+/// Number of consecutive successful dispatches of the same
+/// `(tool_name, arguments)` tuple — over non-observation tools — that
+/// trigger a no-progress nudge. The first repeat that crosses the
+/// threshold injects the nudge; subsequent repeats keep injecting it
+/// until the LLM picks a different action and the counter resets.
+const REPEAT_ACTION_THRESHOLD: u32 = 3;
+
 /// True when the tool is observation-only — either hardcoded in
 /// [`OBSERVATION_TOOLS`] or annotated with `readOnlyHint = true`. The
 /// `CONFIRMABLE_TOOLS` carve-out (`launch_app` / `quit_app` / `cdp_connect`)
@@ -2948,6 +2955,16 @@ impl StateRunner {
         // error)` from the last failing live call. Carried here so the
         // cache-replay success path can clear it (parity with legacy).
         let mut last_failure: Option<(String, Value, String)> = None;
+        // No-progress detector for non-observation, non-failing tool calls.
+        // When the same `(tool_name, arguments)` lands as a successful
+        // dispatch `REPEAT_ACTION_THRESHOLD` turns in a row, we prepend a
+        // nudge to `previous_result` so the LLM sees an explicit "you are
+        // repeating yourself" hint as the observation for its next turn.
+        // The failing-call path already aborts on identical-error repeats
+        // via `last_failure` above; this covers the other half — successful
+        // calls that don't actually advance the world.
+        let mut last_action: Option<(String, Value)> = None;
+        let mut last_action_count: u32 = 0;
 
         for _step_index in 0..self.config.max_steps {
             if self.state.completed {
@@ -3629,6 +3646,51 @@ impl StateRunner {
                     // an is-synthetic guard here.
                     self.maybe_cdp_connect(&tool_name, &tool_arguments, &tool_body, mcp)
                         .await;
+
+                    // Repeat-action loop detection. Observation-only tools
+                    // are exempt — repeating `take_screenshot` /
+                    // `take_ax_snapshot` between actions is a normal
+                    // observation pattern, not a bug. Action tools that
+                    // succeed with the identical `(tool_name, arguments)`
+                    // tuple `REPEAT_ACTION_THRESHOLD` turns in a row get
+                    // a no-progress nudge prepended to `previous_result`,
+                    // which is what the next iteration renders as
+                    // `<observation>`. The mirror failing-call detector
+                    // lives in the `ToolError` arm below as `last_failure`.
+                    if !is_observation_tool(&tool_name, &annotations_by_tool) {
+                        let same = matches!(
+                            last_action.as_ref(),
+                            Some((prev_tool, prev_args))
+                                if prev_tool == &tool_name && prev_args == &tool_arguments
+                        );
+                        if same {
+                            last_action_count = last_action_count.saturating_add(1);
+                        } else {
+                            last_action = Some((tool_name.clone(), tool_arguments.clone()));
+                            last_action_count = 1;
+                        }
+                        if last_action_count >= REPEAT_ACTION_THRESHOLD {
+                            let nudge = format!(
+                                "[NO-PROGRESS NUDGE] You have issued `{tool}` with the same arguments {n} turns in a row, but the world model is not advancing. Stop repeating this call. Either (1) switch dispatch family — if `<world_model>` has a `cdp_page` block, use `cdp_*` tools (e.g. `cdp_find_elements`, `cdp_take_dom_snapshot`, `cdp_evaluate_script`); if it has an AX tree, take a fresh `take_ax_snapshot` and use `ax_*` tools — or (2) push a narrower subgoal via `push_subgoal` and try a different tactic, or (3) emit `agent_replan`.\n\nPrevious tool body:\n{body}",
+                                tool = tool_name,
+                                n = last_action_count,
+                                body = tool_body,
+                            );
+                            warn!(
+                                tool = %tool_name,
+                                count = last_action_count,
+                                "state-spine: repeat-action threshold reached — injecting no-progress nudge"
+                            );
+                            self.emit_event(AgentEvent::Warning {
+                                message: format!(
+                                    "no-progress: `{}` repeated {} turns in a row",
+                                    tool_name, last_action_count
+                                ),
+                            })
+                            .await;
+                            previous_result = Some(nudge);
+                        }
+                    }
                 }
                 TurnOutcome::ToolError { tool_name, error } => {
                     let (command, step_outcome, tool_arguments) = match &turn.action {
@@ -3690,6 +3752,11 @@ impl StateRunner {
                         break;
                     }
                     last_failure = Some((tool_name, tool_arguments, error));
+                    // A failing dispatch should not contribute to the
+                    // success-side repeat detector — failures already
+                    // have their own `last_failure` loop guard above.
+                    last_action = None;
+                    last_action_count = 0;
 
                     // Recovery strategy: `Abort` halts with MaxErrorsReached;
                     // `Continue` falls through to the next iteration which
@@ -3754,6 +3821,11 @@ impl StateRunner {
                     // for the next turn so the LLM sees why it was asked
                     // to replan.
                     previous_result = Some(format!("replan: {}", reason));
+                    // Replan signals an explicit tactic change — clear
+                    // the success-side repeat tracker so the next action
+                    // starts a fresh count.
+                    last_action = None;
+                    last_action_count = 0;
                 }
             }
 

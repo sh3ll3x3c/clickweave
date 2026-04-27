@@ -39,9 +39,19 @@ Mutations are read from your `tool_calls` array regardless of their position; th
 Rules:
 - The `phase` field in `<task_state>` is harness-inferred. Do not try to set it yourself.
 - Uid prefixes signal dispatch family: `a<N>` -> native AX (use `ax_click`/`ax_set_value`/`ax_select`); `d<N>` -> CDP (use `cdp_click`/`cdp_fill`).
-- Prefer `cdp_find_elements` for targeted CDP discovery; use `cdp_take_dom_snapshot` only when you need the full page structure.
-- When CDP is unavailable (native apps), use `take_ax_snapshot` and native action tools.
 - Observation-only tools do not require approval; destructive tools may require approval from the operator.
+
+Dispatch family selection — keyed on `<world_model>`:
+- If `<world_model>` contains a `cdp_page` block, the app is browser- or Electron-backed and CDP is the primary dispatch family. Use CDP tools for everything: `cdp_find_elements` / `cdp_take_dom_snapshot` for discovery, `cdp_click` / `cdp_fill` / `cdp_press_key` / `cdp_evaluate_script` for action, `cdp_navigate` / `cdp_select_page` for page control. Coordinate primitives (`click` at (x,y), `type_text`, `press_key`) are forbidden when a `cdp_page` is attached — they bypass the page's event loop, steal focus, and produce no `d<N>` uids the next turn can target.
+- If the visible element surface is too small to see your target (e.g. a sidebar, file tree, or panel that wasn't auto-fetched), call `cdp_take_dom_snapshot` once to widen it, or `cdp_evaluate_script` with a small JS expression to query the DOM directly. Do NOT fall back to coordinate clicks "to make something happen" — that path produces no observable progress for the next turn.
+- If `<world_model>` has no `cdp_page` (native macOS app), use `take_ax_snapshot` and `ax_*` tools. CRITICAL: snapshots are session-stateful — `take_ax_snapshot` immediately before every `ax_click` / `ax_set_value` / `ax_select`; if a dispatch returns `snapshot_expired`, take a fresh snapshot.
+- Coordinate primitives (`click` at raw x,y, raw `type_text`, raw `press_key`) are last-resort: only use them when neither a `cdp_page` nor an AX tree is available, or when targeting OS-level chrome that lives outside both surfaces.
+
+When stuck — use the mutation pseudo-tools:
+- If the same action produced no observable change for the last turn or two, do NOT repeat it. Repeating the same `(tool_name, arguments)` 3 times in a row is a bug pattern; the harness will surface a no-progress nudge and you must change tactic.
+- Push a subgoal (`push_subgoal`) to scope the next attempt narrowly ("locate the file-explorer panel", "open the command palette"), and `complete_subgoal` once the observation confirms it.
+- Record what you tried and why it didn't work as a refuted hypothesis (`record_hypothesis` then `refute_hypothesis`) so the harness's recovery layer can see the dead end.
+- If you genuinely cannot make progress with the current plan, emit `agent_replan` rather than dispatching another speculative action.
 "#;
 
 /// Build the stable system prompt for the state-spine runner.
@@ -356,6 +366,39 @@ mod state_spine_prompt_tests {
         let tools: Vec<Tool> = vec![];
         let s = build_system_prompt(&tools);
         assert!(!s.contains("Variant context"));
+    }
+
+    #[test]
+    fn system_prompt_promotes_cdp_for_attached_pages() {
+        // The CDP block must (a) condition on `cdp_page` being attached
+        // and (b) forbid coordinate primitives in that case. Without
+        // both, the LLM falls back to `click(x, y)` on Electron apps —
+        // see the Obsidian Vault7 regression that motivated this rule.
+        let tools: Vec<Tool> = vec![];
+        let s = build_system_prompt(&tools);
+        assert!(s.contains("cdp_page"));
+        assert!(
+            s.to_lowercase().contains("forbidden")
+                || s.to_lowercase().contains("last-resort")
+                || s.to_lowercase().contains("avoid"),
+            "CDP block must explicitly discourage coordinate primitives when CDP is attached"
+        );
+        assert!(
+            s.contains("cdp_find_elements") && s.contains("cdp_evaluate_script"),
+            "CDP block must spell out the discovery + action recipe"
+        );
+    }
+
+    #[test]
+    fn system_prompt_promotes_mutation_pseudo_tools_when_stuck() {
+        // The "when stuck" rule must bind repeated identical actions to
+        // mutation pseudo-tools so the LLM has a structured escape hatch
+        // beyond simply firing the same tool again.
+        let tools: Vec<Tool> = vec![];
+        let s = build_system_prompt(&tools);
+        assert!(s.contains("push_subgoal"));
+        assert!(s.contains("record_hypothesis") || s.contains("refute_hypothesis"));
+        assert!(s.contains("agent_replan"));
     }
 
     #[test]
