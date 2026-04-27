@@ -3884,15 +3884,13 @@ mod state_spine_event_contract_tests {
     }
 }
 
-// Repeat-action loop detection: a successful non-observation tool dispatched
-// with the same `(tool_name, arguments)` for `REPEAT_ACTION_THRESHOLD` (=3)
-// consecutive turns must surface an `AgentEvent::Warning` carrying the
-// "no-progress" marker. Mirror of the failing-call detector that already
-// fires `TerminalReason::LoopDetected` on identical-error repeats.
+// Repeat-action loop detection: identical successful non-observation calls
+// for `REPEAT_ACTION_THRESHOLD` consecutive turns must emit an
+// `AgentEvent::Warning` carrying `NO_PROGRESS_WARNING_PREFIX`.
 #[cfg(test)]
 mod repeat_action_loop_detection_tests {
     use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
-    use crate::agent::runner::StateRunner;
+    use crate::agent::runner::{NO_PROGRESS_WARNING_PREFIX, StateRunner};
     use crate::agent::types::{AgentConfig, AgentEvent};
     use crate::executor::Mcp;
     use tokio::sync::mpsc;
@@ -3913,22 +3911,23 @@ mod repeat_action_loop_detection_tests {
         }
     }
 
-    #[tokio::test]
-    async fn three_identical_action_calls_emit_no_progress_warning() {
-        // Same `cdp_click({"uid":"1_0"})` four times — the 3rd call
-        // crosses the threshold and the 4th continues to nudge.
-        let same = || llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"}));
-        let llm = ScriptedLlm::new(vec![
-            same(),
-            same(),
-            same(),
-            same(),
-            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
-        ]);
-        let mcp = StaticMcp::with_tools(&["cdp_click"]).with_reply("cdp_click", "clicked");
+    fn count_no_progress(events: &[AgentEvent]) -> usize {
+        events
+            .iter()
+            .filter(|ev| {
+                matches!(ev, AgentEvent::Warning { message } if message.starts_with(NO_PROGRESS_WARNING_PREFIX))
+            })
+            .count()
+    }
 
+    async fn run_scenario(
+        scripted: Vec<clickweave_llm::ChatResponse>,
+        mcp: StaticMcp,
+        max_steps: usize,
+    ) -> Vec<AgentEvent> {
+        let llm = ScriptedLlm::new(scripted);
         let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
-        let runner = StateRunner::new("goal".to_string(), cfg(8)).with_events(event_tx);
+        let runner = StateRunner::new("goal".to_string(), cfg(max_steps)).with_events(event_tx);
         let tools = mcp.tools_as_openai();
         let _ = runner
             .run(
@@ -3941,112 +3940,88 @@ mod repeat_action_loop_detection_tests {
             )
             .await
             .expect("run ok");
+        drain_events(&mut event_rx)
+    }
 
-        let events = drain_events(&mut event_rx);
-        let no_progress: Vec<_> = events
-            .iter()
-            .filter_map(|ev| match ev {
-                AgentEvent::Warning { message } if message.contains("no-progress") => Some(message),
-                _ => None,
-            })
-            .collect();
+    #[tokio::test]
+    async fn three_identical_action_calls_emit_no_progress_warning() {
+        let same = || llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let mcp = StaticMcp::with_tools(&["cdp_click"]).with_reply("cdp_click", "clicked");
+        let events = run_scenario(
+            vec![
+                same(),
+                same(),
+                same(),
+                same(),
+                llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+            ],
+            mcp,
+            8,
+        )
+        .await;
+
         assert!(
-            no_progress.len() >= 2,
+            count_no_progress(&events) >= 2,
             "third and fourth identical successful action must each emit a \
-             no-progress warning; got {} warnings, all events={:?}",
-            no_progress.len(),
+             no-progress warning; events={:?}",
             events,
         );
     }
 
     #[tokio::test]
     async fn divergent_action_resets_repeat_counter() {
-        // Two `cdp_click({"uid":"1_0"})` then a different `cdp_click({"uid":"2_0"})`
-        // then two more of the first variant — the counter resets after
-        // the divergent call so no nudge fires.
-        let llm = ScriptedLlm::new(vec![
-            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
-            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
-            llm_reply_tool("cdp_click", serde_json::json!({"uid": "2_0"})),
-            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
-            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
-            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
-        ]);
         let mcp = StaticMcp::with_tools(&["cdp_click"]).with_reply("cdp_click", "clicked");
+        let events = run_scenario(
+            vec![
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "2_0"})),
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+                llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+            ],
+            mcp,
+            10,
+        )
+        .await;
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
-        let runner = StateRunner::new("goal".to_string(), cfg(10)).with_events(event_tx);
-        let tools = mcp.tools_as_openai();
-        let _ = runner
-            .run(
-                &llm,
-                &mcp,
-                "goal".to_string(),
-                clickweave_core::Workflow::default(),
-                tools,
-                None,
-            )
-            .await
-            .expect("run ok");
-
-        let events = drain_events(&mut event_rx);
-        let no_progress = events.iter().any(
-            |ev| matches!(ev, AgentEvent::Warning { message } if message.contains("no-progress")),
-        );
-        assert!(
-            !no_progress,
-            "divergent intermediate call must reset the repeat counter; \
-             events={:?}",
+        assert_eq!(
+            count_no_progress(&events),
+            0,
+            "divergent intermediate call must reset the repeat counter; events={:?}",
             events,
         );
     }
 
     #[tokio::test]
     async fn repeated_observation_tool_does_not_emit_warning() {
-        // Three identical observation calls (`cdp_find_elements`) must
-        // not trigger the nudge — repeated observation between actions
-        // is a normal pattern, not a bug.
         let obs = || {
             llm_reply_tool(
                 "cdp_find_elements",
                 serde_json::json!({"query": "", "max_results": 300}),
             )
         };
-        let llm = ScriptedLlm::new(vec![
-            obs(),
-            obs(),
-            obs(),
-            obs(),
-            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
-        ]);
         let mcp = StaticMcp::with_tools(&["cdp_find_elements"]).with_reply(
             "cdp_find_elements",
             r#"{"page_url":"about:blank","source":"cdp","matches":[]}"#,
         );
+        let events = run_scenario(
+            vec![
+                obs(),
+                obs(),
+                obs(),
+                obs(),
+                llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+            ],
+            mcp,
+            8,
+        )
+        .await;
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
-        let runner = StateRunner::new("goal".to_string(), cfg(8)).with_events(event_tx);
-        let tools = mcp.tools_as_openai();
-        let _ = runner
-            .run(
-                &llm,
-                &mcp,
-                "goal".to_string(),
-                clickweave_core::Workflow::default(),
-                tools,
-                None,
-            )
-            .await
-            .expect("run ok");
-
-        let events = drain_events(&mut event_rx);
-        let no_progress = events.iter().any(
-            |ev| matches!(ev, AgentEvent::Warning { message } if message.contains("no-progress")),
-        );
-        assert!(
-            !no_progress,
-            "observation-only tools are exempt from the repeat-action \
-             detector; events={:?}",
+        assert_eq!(
+            count_no_progress(&events),
+            0,
+            "observation-only tools must be exempt; events={:?}",
             events,
         );
     }
