@@ -2536,6 +2536,8 @@ impl StateRunner {
                     });
                     return ReplayResult::Break;
                 }
+                // Denied cached dispatch breaks the streak; mirror of the live policy-deny path.
+                *last_action = None;
                 return ReplayResult::Continue;
             }
             if matches!(policy_action, PermissionAction::Ask) {
@@ -2563,6 +2565,8 @@ impl StateRunner {
                         self.advance_recorded_step_index();
                         self.emit_world_model_changed_for_recorded_step().await;
                         *previous_result = Some("Replan: user rejected cached action".to_string());
+                        // Rejected cached dispatch breaks the streak.
+                        *last_action = None;
                         return ReplayResult::Continue;
                     }
                     Some(ApprovalResult::Unavailable) => {
@@ -3324,6 +3328,23 @@ impl StateRunner {
                 // same way the live ToolSuccess path does.
                 self.clear_last_failure_tracking();
                 previous_result = Some(skip_body.clone());
+                // Synthetic skip is a successful dispatch from the LLM's
+                // view — feed it through the same streak detector so a
+                // run that keeps emitting `focus_window` against an
+                // already-attached CDP target gets a no-progress nudge
+                // instead of silent skips forever.
+                if let Some(nudge) = self
+                    .track_repeat_action(
+                        tool_name,
+                        arguments,
+                        &skip_body,
+                        &annotations_by_tool,
+                        &mut last_action,
+                    )
+                    .await
+                {
+                    previous_result = Some(nudge);
+                }
                 self.emit_event(AgentEvent::StepCompleted {
                     step_index: step_idx_for_event,
                     tool_name: "focus_window".to_string(),
@@ -3436,6 +3457,11 @@ impl StateRunner {
                                     });
                                 break;
                             }
+                            // Denied dispatch breaks the success streak — the
+                            // intended action did not run, so any prior
+                            // `last_action` no longer represents a consecutive
+                            // chain.
+                            last_action = None;
                             continue;
                         }
                         PermissionAction::Allow => {
@@ -3481,6 +3507,8 @@ impl StateRunner {
                                         tool_call_id,
                                         previous_result.as_deref(),
                                     );
+                                    // Rejected dispatch breaks the streak.
+                                    last_action = None;
                                     continue;
                                 }
                                 Some(ApprovalResult::Unavailable) => {

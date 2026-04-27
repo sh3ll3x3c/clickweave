@@ -4047,6 +4047,73 @@ mod repeat_action_loop_detection_tests {
         );
     }
 
+    /// Regression: a non-dispatched action between identical successful
+    /// dispatches must break the streak. Without this, two cdp_click(A)
+    /// calls + a denied cdp_fill + another cdp_click(A) would still trip
+    /// the threshold even though the click was not actually emitted three
+    /// turns in a row.
+    #[tokio::test]
+    async fn denied_intervening_action_resets_repeat_counter() {
+        use crate::agent::permissions::{PermissionAction, PermissionPolicy, PermissionRule};
+
+        let click = || llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let fill = || llm_reply_tool("cdp_fill", serde_json::json!({"uid": "1_0", "value": "x"}));
+        let mcp = StaticMcp::with_tools(&["cdp_click", "cdp_fill"])
+            .with_reply("cdp_click", "clicked")
+            .with_reply("cdp_fill", "filled");
+
+        // Deny `cdp_fill` so the middle turn takes the policy-deny early-exit
+        // path that records an error step + `continue`s without invoking
+        // `run_turn`.
+        let policy = PermissionPolicy {
+            rules: vec![PermissionRule {
+                tool_pattern: "cdp_fill".to_string(),
+                args_pattern: None,
+                action: PermissionAction::Deny,
+            }],
+            ..PermissionPolicy::default()
+        };
+
+        let cfg_with_room = AgentConfig {
+            max_steps: 8,
+            use_cache: false,
+            // Allow several errors in a row so the deny doesn't terminate the run.
+            max_consecutive_errors: 5,
+            ..AgentConfig::default()
+        };
+        let llm = ScriptedLlm::new(vec![
+            click(),
+            click(),
+            fill(),
+            click(),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+        let runner = StateRunner::new("goal".to_string(), cfg_with_room)
+            .with_events(event_tx)
+            .with_permissions(policy);
+        let tools = mcp.tools_as_openai();
+        let _ = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                tools,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        assert_eq!(
+            count_no_progress(&events),
+            0,
+            "denied intermediate dispatch must reset the streak; events={:?}",
+            events,
+        );
+    }
+
     #[tokio::test]
     async fn repeated_observation_tool_does_not_emit_warning() {
         let obs = || {
