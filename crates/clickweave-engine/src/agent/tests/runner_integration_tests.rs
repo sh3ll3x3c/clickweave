@@ -3993,6 +3993,60 @@ mod repeat_action_loop_detection_tests {
         );
     }
 
+    /// Cache-replay parity. With `use_cache` enabled, identical successful
+    /// dispatches that interleave a live call and a cache replay must
+    /// still trip the detector. The cache-replay branch in
+    /// `try_replay_cache` must bump `last_action` the same way the live
+    /// `ToolSuccess` arm does.
+    #[tokio::test]
+    async fn cache_replayed_repeat_emits_no_progress_warning() {
+        // Stable element fingerprint so the cache key is identical
+        // every turn. The first cdp_click runs live and writes the
+        // cache; the second hits the cache and replays; the third
+        // falls through to the LLM (branch 2: same key) and runs live
+        // again. With the fix, all three contribute to the same streak
+        // so the third dispatch crosses REPEAT_ACTION_THRESHOLD = 3.
+        let same = || llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let mcp = StaticMcp::with_tools(&["cdp_find_elements", "cdp_click"])
+            .with_reply(
+                "cdp_find_elements",
+                r#"{"page_url":"about:blank","source":"cdp","matches":[{"uid":"1_0","role":"button","label":"Submit","tag":"button","disabled":false,"parent_role":null,"parent_name":null}]}"#,
+            )
+            .with_reply("cdp_click", "clicked");
+
+        let cfg_with_cache = AgentConfig {
+            max_steps: 8,
+            use_cache: true,
+            ..AgentConfig::default()
+        };
+        let llm = ScriptedLlm::new(vec![
+            same(),
+            same(),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+        let runner = StateRunner::new("goal".to_string(), cfg_with_cache).with_events(event_tx);
+        let tools = mcp.tools_as_openai();
+        let _ = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                tools,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        assert!(
+            count_no_progress(&events) >= 1,
+            "cached dispatches must contribute to the repeat-action streak; events={:?}",
+            events,
+        );
+    }
+
     #[tokio::test]
     async fn repeated_observation_tool_does_not_emit_warning() {
         let obs = || {

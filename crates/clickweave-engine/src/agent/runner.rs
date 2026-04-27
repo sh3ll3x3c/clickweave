@@ -1355,6 +1355,56 @@ impl StateRunner {
         self.last_failed_tool_name = None;
         self.last_failed_error_kind = None;
     }
+
+    /// Bump the success-side repeat-action tracker for one dispatched
+    /// non-observation tool call. Returns the no-progress nudge string
+    /// when the streak crosses [`REPEAT_ACTION_THRESHOLD`], `None`
+    /// otherwise. Caller installs the nudge into `previous_result` so
+    /// the next turn renders it as the observation; the warning event
+    /// is emitted here.
+    ///
+    /// Shared between the live `ToolSuccess` arm and the cache-replay
+    /// success branch so cached dispatches contribute to the same
+    /// streak count as live dispatches.
+    async fn track_repeat_action(
+        &mut self,
+        tool_name: &str,
+        tool_arguments: &Value,
+        tool_body: &str,
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+        last_action: &mut Option<(String, Value, u32)>,
+    ) -> Option<String> {
+        if is_observation_tool(tool_name, annotations_by_tool) {
+            return None;
+        }
+        let same_as_last = matches!(
+            last_action.as_ref(),
+            Some((prev_tool, prev_args, _))
+                if prev_tool == tool_name && prev_args == tool_arguments
+        );
+        let count = if same_as_last {
+            last_action.as_ref().map(|(_, _, n)| *n).unwrap_or(0) + 1
+        } else {
+            1
+        };
+        *last_action = Some((tool_name.to_string(), tool_arguments.clone(), count));
+        if count < REPEAT_ACTION_THRESHOLD {
+            return None;
+        }
+        warn!(
+            tool = %tool_name,
+            count,
+            "state-spine: repeat-action threshold reached — injecting no-progress nudge"
+        );
+        self.emit_event(AgentEvent::Warning {
+            message: format!(
+                "{}: `{}` repeated {} turns in a row",
+                NO_PROGRESS_WARNING_PREFIX, tool_name, count
+            ),
+        })
+        .await;
+        Some(build_no_progress_nudge(tool_name, count, tool_body))
+    }
 }
 
 /// Control signal returned from [`StateRunner::try_replay_cache`].
@@ -1544,7 +1594,7 @@ pub(crate) const NO_PROGRESS_WARNING_PREFIX: &str = "no-progress";
 /// stays out of the inner loop and can be exercised independently.
 fn build_no_progress_nudge(tool: &str, count: u32, prev_body: &str) -> String {
     format!(
-        "{prefix} You have issued `{tool}` with the same arguments {count} turns in a row, but the world model is not advancing. Stop repeating this call. Either (1) switch dispatch family — if `<world_model>` has a `cdp_page` block, use `cdp_*` tools (e.g. `cdp_find_elements`, `cdp_take_dom_snapshot`, `cdp_evaluate_script`); if it has an AX tree, take a fresh `take_ax_snapshot` and use `ax_*` tools — or (2) push a narrower subgoal via `push_subgoal` and try a different tactic, or (3) emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
+        "{prefix} You have issued `{tool}` with the same arguments {count} turns in a row, but the world model is not advancing. Stop repeating this call. Either (1) switch dispatch family — if `<world_model>` has a `cdp_page` block, use `cdp_*` tools (e.g. `cdp_find_elements`, `cdp_take_dom_snapshot`, `cdp_type_text`, `cdp_evaluate_script`); if it has an AX tree, take a fresh `take_ax_snapshot` and use `ax_*` tools — or (2) push a narrower subgoal via `push_subgoal` and try a different tactic, or (3) emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
         prefix = NO_PROGRESS_NUDGE_PREFIX,
     )
 }
@@ -2377,6 +2427,7 @@ impl StateRunner {
         previous_result: &mut Option<String>,
         last_cache_key: &mut Option<String>,
         last_failure: &mut Option<(String, Value, String)>,
+        last_action: &mut Option<(String, Value, u32)>,
     ) -> ReplayResult {
         // Branch 1: cache disabled or nothing to fingerprint.
         if !self.config.use_cache || elements.is_empty() {
@@ -2612,7 +2663,22 @@ impl StateRunner {
                 // `Recovering`-entry snapshot after the agent has
                 // demonstrably recovered via cache replay.
                 self.clear_last_failure_tracking();
-                *previous_result = Some(result_text);
+
+                // Cached successful dispatches must contribute to the
+                // same repeat-action streak as live dispatches, otherwise
+                // an LLM looping on a cacheable action would alternate
+                // live / cached and never trip the threshold via the
+                // live arm alone.
+                let nudge = self
+                    .track_repeat_action(
+                        &cached_tool,
+                        &cached_args,
+                        &result_text,
+                        annotations_by_tool,
+                        last_action,
+                    )
+                    .await;
+                *previous_result = Some(nudge.unwrap_or(result_text));
                 *last_cache_key = Some(current_key);
 
                 // Destructive-cap accounting: the cached replay counts toward
@@ -3101,6 +3167,7 @@ impl StateRunner {
                         &mut previous_result,
                         &mut last_cache_key,
                         &mut last_failure,
+                        &mut last_action,
                     )
                     .await;
                 match replay {
@@ -3661,37 +3728,17 @@ impl StateRunner {
                     self.maybe_cdp_connect(&tool_name, &tool_arguments, &tool_body, mcp)
                         .await;
 
-                    // Observation-only tools are exempt — repeating them
-                    // between actions is a normal pattern, not a bug.
-                    if !is_observation_tool(&tool_name, &annotations_by_tool) {
-                        let same_as_last = matches!(
-                            last_action.as_ref(),
-                            Some((prev_tool, prev_args, _))
-                                if prev_tool == &tool_name && prev_args == &tool_arguments
-                        );
-                        let count = if same_as_last {
-                            last_action.as_ref().map(|(_, _, n)| *n).unwrap_or(0) + 1
-                        } else {
-                            1
-                        };
-                        last_action = Some((tool_name.clone(), tool_arguments.clone(), count));
-
-                        if count >= REPEAT_ACTION_THRESHOLD {
-                            warn!(
-                                tool = %tool_name,
-                                count,
-                                "state-spine: repeat-action threshold reached — injecting no-progress nudge"
-                            );
-                            self.emit_event(AgentEvent::Warning {
-                                message: format!(
-                                    "{}: `{}` repeated {} turns in a row",
-                                    NO_PROGRESS_WARNING_PREFIX, tool_name, count
-                                ),
-                            })
-                            .await;
-                            previous_result =
-                                Some(build_no_progress_nudge(&tool_name, count, &tool_body));
-                        }
+                    if let Some(nudge) = self
+                        .track_repeat_action(
+                            &tool_name,
+                            &tool_arguments,
+                            &tool_body,
+                            &annotations_by_tool,
+                            &mut last_action,
+                        )
+                        .await
+                    {
+                        previous_result = Some(nudge);
                     }
                 }
                 TurnOutcome::ToolError { tool_name, error } => {

@@ -42,7 +42,7 @@ Rules:
 - Observation-only tools do not require approval; destructive tools may require approval from the operator.
 
 Dispatch family selection — keyed on `<world_model>`:
-- If `<world_model>` contains a `cdp_page` block, the app is browser- or Electron-backed and CDP is the primary dispatch family. Use CDP tools for everything: `cdp_find_elements` / `cdp_take_dom_snapshot` for discovery, `cdp_click` / `cdp_fill` / `cdp_press_key` / `cdp_evaluate_script` for action, `cdp_navigate` / `cdp_select_page` for page control. Coordinate primitives (`click` at (x,y), `type_text`, `press_key`) are forbidden when a `cdp_page` is attached — they bypass the page's event loop, steal focus, and produce no `d<N>` uids the next turn can target.
+- If `<world_model>` contains a `cdp_page` block, the app is browser- or Electron-backed and CDP is the primary dispatch family. Use CDP tools for everything: `cdp_find_elements` / `cdp_take_dom_snapshot` for discovery, `cdp_click` / `cdp_fill` / `cdp_type_text` / `cdp_press_key` / `cdp_evaluate_script` for action, `cdp_navigate` / `cdp_select_page` for page control. Coordinate primitives (`click` at (x,y), `type_text`, `press_key`) are forbidden when a `cdp_page` is attached — they bypass the page's event loop, steal focus, and produce no `d<N>` uids the next turn can target.
 - If the visible element surface is too small to see your target (e.g. a sidebar, file tree, or panel that wasn't auto-fetched), call `cdp_take_dom_snapshot` once to widen it, or `cdp_evaluate_script` with a small JS expression to query the DOM directly. Do NOT fall back to coordinate clicks "to make something happen" — that path produces no observable progress for the next turn.
 - If `<world_model>` has no `cdp_page` (native macOS app), use `take_ax_snapshot` and `ax_*` tools. CRITICAL: snapshots are session-stateful — `take_ax_snapshot` immediately before every `ax_click` / `ax_set_value` / `ax_select`; if a dispatch returns `snapshot_expired`, take a fresh snapshot.
 - Coordinate primitives (`click` at raw x,y, raw `type_text`, raw `press_key`) are last-resort: only use them when neither a `cdp_page` nor an AX tree is available, or when targeting OS-level chrome that lives outside both surfaces.
@@ -384,8 +384,10 @@ mod state_spine_prompt_tests {
             "CDP block must explicitly discourage coordinate primitives when CDP is attached"
         );
         assert!(
-            s.contains("cdp_find_elements") && s.contains("cdp_evaluate_script"),
-            "CDP block must spell out the discovery + action recipe"
+            s.contains("cdp_find_elements")
+                && s.contains("cdp_evaluate_script")
+                && s.contains("cdp_type_text"),
+            "CDP block must spell out the discovery + action recipe (incl. typing analogue)"
         );
     }
 
