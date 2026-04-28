@@ -2392,19 +2392,33 @@ impl StateRunner {
             .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
             .await
         {
-            self.emit_event(AgentEvent::CdpConnected {
-                app_name: app_name.clone(),
-                port: cdp_port,
-            })
-            .await;
-            // Refresh the client-side tool cache so observation gates
-            // see CDP tools surfaced post-connect.
-            if let Err(e) = mcp.refresh_server_tool_list().await {
-                warn!(
-                    error = %e,
-                    "state-spine: post-CDP-connect tool-cache refresh failed",
-                );
-            }
+            self.finalize_cdp_connected(&app_name, cdp_port, mcp).await;
+        }
+    }
+
+    /// Post-`auto_connect_cdp` housekeeping shared between the
+    /// `maybe_cdp_connect` post-tool path and the dispatch-site
+    /// `CdpAttachable` synthetic-skip path. Emits the `CdpConnected`
+    /// event so the UI surfaces the connect, then refreshes the
+    /// client-side tool cache so observation gates (notably
+    /// `fetch_elements`'s `cdp_find_elements` lookup) see the CDP tools
+    /// the server surfaced post-connect.
+    async fn finalize_cdp_connected<M: Mcp + ?Sized>(
+        &self,
+        app_name: &str,
+        cdp_port: u16,
+        mcp: &M,
+    ) {
+        self.emit_event(AgentEvent::CdpConnected {
+            app_name: app_name.to_string(),
+            port: cdp_port,
+        })
+        .await;
+        if let Err(e) = mcp.refresh_server_tool_list().await {
+            warn!(
+                error = %e,
+                "state-spine: post-CDP-connect tool-cache refresh failed",
+            );
         }
     }
 
@@ -3550,6 +3564,31 @@ impl StateRunner {
                 // observation outcome — clear failure tracking the
                 // same way the live ToolSuccess path does.
                 self.clear_last_failure_tracking();
+                // CdpAttachable promised "auto-connect will fire" in the
+                // skip message. The post-tool `maybe_cdp_connect` hook
+                // only runs on real ToolSuccess, so without this call
+                // the LLM would wait forever for a `cdp_page` that is
+                // never attempted. Drive `auto_connect_cdp` directly
+                // here using the kind hint from `known_app_kinds` (the
+                // very predicate that authorized the skip). On success
+                // the helper marks `cdp_state` connected and clears
+                // `cdp_connect_status`; on failure the terminal paths
+                // record the failure reason. The actual
+                // `world_model.cdp_page` write happens at the next
+                // turn's `fetch_elements` mirror — that's why the
+                // finalizer refreshes the MCP tool cache here, so the
+                // next turn's observation gate sees `cdp_find_elements`.
+                if matches!(reason, FocusSkipReason::CdpAttachable)
+                    && let Some(app_name) = arguments.get("app_name").and_then(|v| v.as_str())
+                {
+                    let kind_hint = self.known_app_kinds.get(app_name).cloned();
+                    if let Some(cdp_port) = self
+                        .auto_connect_cdp(app_name, kind_hint.as_deref(), mcp)
+                        .await
+                    {
+                        self.finalize_cdp_connected(app_name, cdp_port, mcp).await;
+                    }
+                }
                 previous_result = Some(skip_body.clone());
                 // Synthetic skip is a successful dispatch from the LLM's
                 // view — feed it through the same streak detector so a
@@ -6236,5 +6275,14 @@ pub(crate) mod test_support {
         runner
             .maybe_cdp_connect(tool_name, arguments, result_text, mcp)
             .await;
+    }
+
+    pub(crate) async fn call_finalize_cdp_connected<M: Mcp + ?Sized>(
+        runner: &StateRunner,
+        app_name: &str,
+        cdp_port: u16,
+        mcp: &M,
+    ) {
+        runner.finalize_cdp_connected(app_name, cdp_port, mcp).await;
     }
 }

@@ -119,9 +119,12 @@ pub struct AgentRunRequest {
     #[serde(default)]
     pub consecutive_destructive_cap: Option<usize>,
     /// Permit `focus_window` MCP calls. When `Some(false)` the runner
-    /// suppresses every `focus_window` call with a synthetic skip,
-    /// regardless of app kind or CDP state — useful for background-run
-    /// policies. `None` leaves the engine default (`true`) in place.
+    /// suppresses every `focus_window` call with a synthetic skip
+    /// regardless of app kind or CDP state. When `Some(true)` the
+    /// runner permits `focus_window` and the AX/CDP-scoped guards in
+    /// `runner.rs` decide per-call whether the focus is redundant.
+    /// `None` leaves the engine default (`false`) in place — runs
+    /// operate in the background unless explicitly opted in.
     #[serde(default)]
     pub allow_focus_window: Option<bool>,
     /// Privacy kill switch: when false, the run is entirely in-memory.
