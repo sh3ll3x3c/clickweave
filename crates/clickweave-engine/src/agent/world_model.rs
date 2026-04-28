@@ -125,6 +125,16 @@ pub struct WorldModel {
     pub dialog_present: Option<Fresh<bool>>,
     pub last_screenshot: Option<Fresh<ScreenshotRef>>,
     pub last_native_ax_snapshot: Option<Fresh<AxSnapshotData>>,
+    /// Most recent permanent failure from the post-tool CDP auto-connect
+    /// hook. Populated when `auto_connect_cdp` exhausts its retries (or
+    /// can't even probe the app); cleared by `on_cdp_connected` on
+    /// success, on focus changes, and on `quit_app` of the focused
+    /// target. The state block renders this alongside `cdp_page` so the
+    /// LLM can distinguish "auto-connect still hasn't fired" from
+    /// "auto-connect tried and failed permanently" — without the
+    /// distinction, both states look identical (no `cdp_page`) and the
+    /// LLM keeps waiting for a connection that will never come.
+    pub cdp_connect_status: Option<Fresh<String>>,
     pub uncertainty: UncertaintyScore,
 }
 
@@ -257,6 +267,10 @@ impl WorldModel {
                 self.window_list.as_ref().map(|f| f.written_at),
             ),
             ("cdp_page", self.cdp_page.as_ref().map(|f| f.written_at)),
+            (
+                "cdp_connect_status",
+                self.cdp_connect_status.as_ref().map(|f| f.written_at),
+            ),
             ("elements", self.elements.as_ref().map(|f| f.written_at)),
             (
                 "modal_present",

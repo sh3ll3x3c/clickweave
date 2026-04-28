@@ -34,6 +34,13 @@ pub fn render_step_input_with_cap(
         let _ = writeln!(out, "  url: {}", page.value.url);
         let _ = writeln!(out, "  fingerprint: {}", page.value.page_fingerprint);
     }
+    if let Some(status) = &wm.cdp_connect_status {
+        let _ = writeln!(
+            out,
+            "cdp_connect_status: {} [fresh@{}]",
+            status.value, status.written_at
+        );
+    }
     if let Some(m) = &wm.modal_present {
         let _ = writeln!(out, "modal_present: {}", m.value);
     }
@@ -189,6 +196,33 @@ mod tests {
         let out = render_step_input(&wm, &ts, 3);
         assert!(out.contains("focused_app: Chrome"));
         assert!(out.contains("url: https://example.com/"));
+    }
+
+    #[test]
+    fn renders_cdp_connect_status_when_set() {
+        // The status block is the LLM's signal that auto-connect
+        // failed permanently (vs. "in flight"). Without this rendering
+        // the field would be invisible to the agent.
+        let mut wm = WorldModel::default();
+        wm.cdp_connect_status = Some(Fresh {
+            value: "cdp_connect failed after retries on port 9222 for Signal: timeout".to_string(),
+            written_at: 4,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: None,
+        });
+        let ts = TaskState::new("g".to_string());
+        let out = render_step_input(&wm, &ts, 5);
+        assert!(out.contains("cdp_connect_status:"));
+        assert!(out.contains("cdp_connect failed after retries"));
+        assert!(out.contains("[fresh@4]"));
+    }
+
+    #[test]
+    fn omits_cdp_connect_status_block_when_unset() {
+        let wm = WorldModel::default();
+        let ts = TaskState::new("g".to_string());
+        let out = render_step_input(&wm, &ts, 1);
+        assert!(!out.contains("cdp_connect_status"));
     }
 
     #[test]

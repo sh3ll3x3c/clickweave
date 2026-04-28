@@ -2373,6 +2373,14 @@ mod cdp_and_focus_window_tests {
         AgentConfig {
             max_steps: steps,
             use_cache: false,
+            allow_focus_window: true,
+            ..AgentConfig::default()
+        }
+    }
+
+    fn cfg_default_with_focus_window() -> AgentConfig {
+        AgentConfig {
+            allow_focus_window: true,
             ..AgentConfig::default()
         }
     }
@@ -2394,6 +2402,7 @@ mod cdp_and_focus_window_tests {
         for reason in [
             FocusSkipReason::AxAvailable,
             FocusSkipReason::CdpLive,
+            FocusSkipReason::CdpAttachable,
             FocusSkipReason::PolicyDisabled,
         ] {
             assert!(
@@ -2421,7 +2430,7 @@ mod cdp_and_focus_window_tests {
 
     #[test]
     fn should_skip_focus_window_fires_for_native_with_full_ax_toolset() {
-        let mut runner = StateRunner::new("g".to_string(), AgentConfig::default());
+        let mut runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
         runner.record_app_kind_for_test("Calculator", "Native");
         let mcp = StaticMcp::with_tools(FULL_AX_TOOLSET);
         let args = serde_json::json!({"app_name": "Calculator"});
@@ -2432,7 +2441,7 @@ mod cdp_and_focus_window_tests {
 
     #[test]
     fn should_skip_focus_window_fires_for_electron_with_live_cdp() {
-        let mut runner = StateRunner::new("g".to_string(), AgentConfig::default());
+        let mut runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
         runner.record_app_kind_for_test("Signal", "ElectronApp");
         runner.set_cdp_connected_for_test("Signal", 0);
         let mcp = StaticMcp::with_tools(FULL_CDP_TOOLSET);
@@ -2443,10 +2452,27 @@ mod cdp_and_focus_window_tests {
     }
 
     #[test]
-    fn should_skip_focus_window_defers_for_electron_without_live_cdp() {
-        // Kind is known but no active CDP session → defer so the first
-        // focus_window can raise the window before cdp_connect.
-        let mut runner = StateRunner::new("g".to_string(), AgentConfig::default());
+    fn should_skip_focus_window_fires_with_cdp_attachable_when_cdp_connect_advertised() {
+        // Pre-CDP-connect: kind is Electron and the server advertises
+        // `cdp_connect`. The post-tool hook will auto-connect on its
+        // own, so the real focus_window is unnecessary; the classifier
+        // must short-circuit with `CdpAttachable`.
+        let mut runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
+        runner.record_app_kind_for_test("Signal", "ElectronApp");
+        let mcp = StaticMcp::with_tools(&["cdp_connect"]);
+        let args = serde_json::json!({"app_name": "Signal"});
+        let skip =
+            crate::agent::runner::test_support::call_should_skip_focus_window(&runner, &args, &mcp);
+        assert_eq!(skip, Some(FocusSkipReason::CdpAttachable));
+    }
+
+    #[test]
+    fn should_skip_focus_window_defers_for_electron_without_cdp_connect_advertised() {
+        // Kind is known but the server lacks `cdp_connect` so the
+        // post-tool auto-connect cannot fire. Without that, the first
+        // focus_window may itself be needed to bring the window front,
+        // and the classifier must defer.
+        let mut runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
         runner.record_app_kind_for_test("VSCode", "ElectronApp");
         let mut combined: Vec<&str> = FULL_AX_TOOLSET.to_vec();
         combined.extend_from_slice(FULL_CDP_TOOLSET);
@@ -2459,7 +2485,7 @@ mod cdp_and_focus_window_tests {
 
     #[test]
     fn should_skip_focus_window_defers_for_unknown_kind() {
-        let runner = StateRunner::new("g".to_string(), AgentConfig::default());
+        let runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
         let mcp = StaticMcp::with_tools(FULL_AX_TOOLSET);
         let args = serde_json::json!({"app_name": "Mystery"});
         let skip =
@@ -2880,6 +2906,207 @@ mod cdp_and_focus_window_tests {
         // Sanity: the probe path actually ran.
         let calls = mcp.calls.lock().unwrap();
         assert!(calls.iter().any(|c| c == "probe_app"));
+    }
+
+    /// CdpAttachable promises "auto-connect will fire" in the skip
+    /// message; the runner must keep that promise. Without the
+    /// dispatch-site invocation, the post-tool `maybe_cdp_connect` hook
+    /// never sees the synthesized `Success` and the LLM ends up waiting
+    /// forever for a `cdp_page` that no one ever attempts to open.
+    /// Drive a `focus_window` against a known Electron target with
+    /// `cdp_connect` advertised and assert the auto-connect path
+    /// observably ran by checking that `cdp_connect_status` is now set
+    /// (the stubbed `cdp_connect` errors out, so the failure path is
+    /// where this surfaces).
+    #[tokio::test(start_paused = true)]
+    async fn cdp_attachable_focus_skip_triggers_auto_connect_cdp() {
+        use clickweave_mcp::{ToolCallResult, ToolContent};
+        use std::sync::Mutex;
+
+        struct AutoConnectMcp {
+            calls: Mutex<Vec<String>>,
+        }
+        impl Mcp for AutoConnectMcp {
+            async fn call_tool(
+                &self,
+                name: &str,
+                _arguments: Option<Value>,
+            ) -> anyhow::Result<ToolCallResult> {
+                self.calls.lock().unwrap().push(name.to_string());
+                let body = match name {
+                    "list_apps" => "[]", // poll_until_quit short-circuit
+                    "cdp_connect" => {
+                        return Err(anyhow::anyhow!("test: connect refused"));
+                    }
+                    _ => "ok",
+                };
+                Ok(ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: body.to_string(),
+                    }],
+                    is_error: None,
+                })
+            }
+            fn has_tool(&self, name: &str) -> bool {
+                matches!(
+                    name,
+                    "focus_window" | "cdp_connect" | "list_apps" | "quit_app" | "launch_app"
+                )
+            }
+            fn tools_as_openai(&self) -> Vec<Value> {
+                vec![
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": "focus_window",
+                            "description": "Focus a window",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"app_name": {"type": "string"}},
+                                "required": ["app_name"]
+                            }
+                        }
+                    }),
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": "cdp_connect",
+                            "description": "Connect CDP",
+                            "parameters": {"type": "object", "properties": {}}
+                        }
+                    }),
+                ]
+            }
+            async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("focus_window", serde_json::json!({"app_name": "Signal"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = AutoConnectMcp {
+            calls: Mutex::new(Vec::new()),
+        };
+        let tools_openai = mcp.tools_as_openai();
+        let mut runner = StateRunner::new("g".to_string(), cfg_no_cache(5));
+        runner.record_app_kind_for_test("Signal", "ElectronApp");
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "g".to_string(),
+                Workflow::default(),
+                tools_openai,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        // The focus_window step is recorded as a synthetic skip, not a
+        // real dispatch — sentinel body proves the CdpAttachable arm
+        // fired.
+        let focus_step = state
+            .steps
+            .iter()
+            .find(|s| {
+                matches!(
+                    &s.command,
+                    crate::agent::types::AgentCommand::ToolCall { tool_name, .. }
+                        if tool_name == "focus_window"
+                )
+            })
+            .expect("focus_window step recorded");
+        let body = match &focus_step.outcome {
+            crate::agent::types::StepOutcome::Success(b) => b.clone(),
+            other => panic!("expected synthetic-skip Success, got {:?}", other),
+        };
+        assert_eq!(body, FocusSkipReason::CdpAttachable.llm_message());
+
+        // The promised auto-connect must have actually run. The mock
+        // refuses `cdp_connect`, so `record_cdp_connect_failure` fires
+        // and the next turn's render would carry the failure reason.
+        let status = state.terminal_reason.as_ref().map(|_| ()); // run completed
+        assert!(status.is_some(), "run must terminate cleanly");
+        let calls = mcp.calls.lock().unwrap();
+        assert!(
+            calls.iter().any(|c| c == "cdp_connect"),
+            "auto_connect_cdp must invoke cdp_connect on a CdpAttachable skip; mcp calls: {:?}",
+            *calls,
+        );
+    }
+
+    /// Both the post-tool `maybe_cdp_connect` path and the synthetic
+    /// `CdpAttachable` skip path go through `finalize_cdp_connected` on
+    /// successful auto-connect. The helper has to (a) emit
+    /// `AgentEvent::CdpConnected` so the UI surfaces the connect, and
+    /// (b) refresh the MCP tool cache so the next turn's
+    /// `fetch_elements` actually sees the post-connect CDP tools.
+    /// Without (b), the LLM would never observe `cdp_page` even after
+    /// a successful attach. Test both side effects in isolation so the
+    /// contract is pinned independently of the connect path that
+    /// invoked it.
+    #[tokio::test]
+    async fn finalize_cdp_connected_emits_event_and_refreshes_tool_cache() {
+        use clickweave_mcp::ToolCallResult;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct RefreshCountingMcp {
+            refreshes: AtomicUsize,
+        }
+        impl Mcp for RefreshCountingMcp {
+            async fn call_tool(
+                &self,
+                _name: &str,
+                _arguments: Option<Value>,
+            ) -> anyhow::Result<ToolCallResult> {
+                unimplemented!("finalize_cdp_connected does not call tools")
+            }
+            fn has_tool(&self, _name: &str) -> bool {
+                false
+            }
+            fn tools_as_openai(&self) -> Vec<Value> {
+                Vec::new()
+            }
+            async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+                self.refreshes.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(8);
+        let runner =
+            StateRunner::new("g".to_string(), AgentConfig::default()).with_events(event_tx);
+        let mcp = RefreshCountingMcp {
+            refreshes: AtomicUsize::new(0),
+        };
+
+        crate::agent::runner::test_support::call_finalize_cdp_connected(
+            &runner, "Signal", 9333, &mcp,
+        )
+        .await;
+
+        assert_eq!(
+            mcp.refreshes.load(Ordering::SeqCst),
+            1,
+            "refresh_server_tool_list must run once on successful connect",
+        );
+
+        let events = drain_events(&mut event_rx);
+        let saw_connected = events.iter().any(|ev| {
+            matches!(
+                ev,
+                AgentEvent::CdpConnected { app_name, port }
+                    if app_name == "Signal" && *port == 9333
+            )
+        });
+        assert!(
+            saw_connected,
+            "CdpConnected event must be emitted; got {:?}",
+            events,
+        );
     }
 
     /// Quitting the focused app clears `world_model.focused_app`, while

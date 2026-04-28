@@ -243,15 +243,15 @@ pub struct AgentConfig {
     pub consecutive_destructive_cap: usize,
     /// Whether the agent is allowed to execute `focus_window` at all.
     ///
-    /// Defaults to `true` (existing behavior — `focus_window` runs normally
-    /// unless one of the AX / CDP-scoped guards in `runner.rs`
-    /// suppresses it). When set to `false`, every `focus_window` call is
-    /// suppressed unconditionally at the dispatch site — no probe for app
-    /// kind, no CDP-connected check — so the run is guaranteed not to
-    /// steal foreground from the user. This is the "run this workflow in
-    /// the background" policy: when the LLM would otherwise fall back to
-    /// coordinate-based tools that genuinely need focus, the returned
-    /// skip message nudges it toward AX / CDP dispatch instead.
+    /// Defaults to `false` — runs operate in the background by default and
+    /// never steal foreground from the user. Every `focus_window` call is
+    /// suppressed unconditionally at the dispatch site (the synthetic skip
+    /// message nudges the LLM toward AX / CDP dispatch instead). Operators
+    /// who genuinely need focus-stealing for OS-chrome work — e.g.
+    /// menubar / dock / Spotlight — can opt in by setting this to `true`,
+    /// at which point the AX / CDP-scoped guards in `runner.rs` decide
+    /// per-call whether the focus is redundant and should be suppressed
+    /// anyway.
     pub allow_focus_window: bool,
     /// Maximum elements to render in the state block (D19).
     /// Defaults to 300 to match `cdp_find_elements { max_results: 300 }`.
@@ -321,7 +321,7 @@ impl Default for AgentConfig {
             build_workflow: true,
             use_cache: true,
             consecutive_destructive_cap: DEFAULT_CONSECUTIVE_DESTRUCTIVE_CAP,
-            allow_focus_window: true,
+            allow_focus_window: false,
             state_block_max_elements: 300,
             recent_n: 6,
             uncertainty_threshold: 0.75,

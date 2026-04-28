@@ -430,7 +430,16 @@ impl StateRunner {
 
     #[cfg(test)]
     pub fn new_for_test(goal: String) -> Self {
-        Self::new(goal, AgentConfig::default())
+        // Test fixtures historically assumed the legacy `allow_focus_window =
+        // true` default — flipping the production default to `false` would
+        // otherwise force every focus-window unit test to opt back in. The
+        // production-default behavior is covered explicitly by
+        // `default_config_disables_focus_window_via_policy` below.
+        let config = AgentConfig {
+            allow_focus_window: true,
+            ..AgentConfig::default()
+        };
+        Self::new(goal, config)
     }
 
     /// Borrow the current CDP bookkeeping. Used by `verify_completion`
@@ -1456,13 +1465,23 @@ pub(crate) enum FocusSkipReason {
     /// Electron / Chrome target with a live CDP session and the minimum
     /// CDP dispatch toolset — CDP operates on backgrounded windows.
     CdpLive,
+    /// Electron / Chrome target where CDP isn't live yet but the MCP
+    /// server advertises `cdp_connect`. The post-tool hook's
+    /// `auto_connect_cdp` will fire on its own; the real `focus_window`
+    /// is unnecessary and would only steal foreground in the meantime.
+    CdpAttachable,
     /// Operator flipped [`AgentConfig::allow_focus_window`] to `false`;
     /// every focus_window is dropped regardless of kind or toolset.
     PolicyDisabled,
 }
 
 impl FocusSkipReason {
-    const ALL: [Self; 3] = [Self::AxAvailable, Self::CdpLive, Self::PolicyDisabled];
+    const ALL: [Self; 4] = [
+        Self::AxAvailable,
+        Self::CdpLive,
+        Self::CdpAttachable,
+        Self::PolicyDisabled,
+    ];
 
     /// Result text returned to the LLM in the synthetic
     /// `StepOutcome::Success`. Must not drift from the strings the tests
@@ -1473,6 +1492,10 @@ impl FocusSkipReason {
                 "skipped focus_window: AX tools available; window focus not required"
             }
             Self::CdpLive => "skipped focus_window: CDP already live; focus not required",
+            Self::CdpAttachable => {
+                "focus_window skipped: CDP-attachable target; auto-connect will fire. \
+                 Use cdp_* tools after the connection lands."
+            }
             Self::PolicyDisabled => {
                 "focus_window skipped: agent policy disallows focus changes. Use AX dispatch \
                  (ax_click/ax_set_value/ax_select) or CDP (cdp_click/cdp_fill) instead — \
@@ -1486,6 +1509,7 @@ impl FocusSkipReason {
         match self {
             Self::AxAvailable => "skipped: AX dispatch available",
             Self::CdpLive => "skipped: CDP already live; focus not required",
+            Self::CdpAttachable => "skipped: CDP-attachable target; auto-connect will fire",
             Self::PolicyDisabled => "skipped: focus_window disabled by agent policy",
         }
     }
@@ -1520,6 +1544,20 @@ const CDP_DISPATCH_TOOLSET: &[&str] = &["cdp_find_elements", "cdp_click"];
 /// True when every member of `toolset` is advertised by `mcp`.
 fn mcp_has_toolset<M: Mcp + ?Sized>(mcp: &M, toolset: &[&str]) -> bool {
     toolset.iter().all(|name| mcp.has_tool(name))
+}
+
+/// Coordinate-based primitives that move the cursor and steal focus.
+/// `coordinate_primitive_blocked` rejects these when a structured
+/// surface (CDP page or Native AX dispatch) is wired for the focused
+/// app. Mirrors the `Coordinate` arm of
+/// [`crate::agent::prompt::classify_tool_family`] but kept narrower:
+/// `find_text` / `find_image` / `element_at_point` are coordinate
+/// *observations*, not actions, so they pass through.
+fn is_coordinate_primitive(name: &str) -> bool {
+    matches!(
+        name,
+        "click" | "type_text" | "press_key" | "move_mouse" | "scroll" | "drag"
+    )
 }
 
 /// Observation tools whose cached entries are stale on read. Mirrors
@@ -1859,6 +1897,63 @@ impl StateRunner {
             {
                 Some(FocusSkipReason::CdpLive)
             }
+            // Pre-CDP-connect: kind is Electron/Chrome and the server
+            // can attach via `cdp_connect`. The post-tool hook's
+            // `auto_connect_cdp` will discover the debug port (or
+            // quit + relaunch with one) on its own, so a preceding
+            // `focus_window` is unnecessary and only steals foreground.
+            Some("ElectronApp" | "ChromeBrowser") if mcp.has_tool("cdp_connect") => {
+                Some(FocusSkipReason::CdpAttachable)
+            }
+            _ => None,
+        }
+    }
+
+    /// Reject a coordinate-primitive tool (`click` / `type_text` /
+    /// `press_key` / `move_mouse` / `scroll` / `drag`) when a structured
+    /// surface is wired for the current focused app: a live CDP page, or
+    /// a Native focus with the full AX dispatch toolset advertised.
+    ///
+    /// Defense-in-depth behind the per-turn `<tools_in_scope>` filter:
+    /// the filter narrows the LLM's *advertised* tool list, but this
+    /// guard rejects the *dispatched* call so a wrong-family choice
+    /// (cached replay from a different state, malformed turn, future
+    /// LLM regression) cannot reach MCP. Returns `Some(reason)` when the
+    /// dispatch must be blocked; `None` otherwise.
+    fn coordinate_primitive_blocked<M: Mcp + ?Sized>(
+        &self,
+        tool_name: &str,
+        mcp: &M,
+    ) -> Option<String> {
+        use crate::agent::world_model::AppKind;
+        if !is_coordinate_primitive(tool_name) {
+            return None;
+        }
+        let Some(kind) = self.world_model.focused_app_kind() else {
+            // Without a known focused-app kind we cannot tell which
+            // structured surface (if any) is wired — defer to legacy
+            // behavior.
+            return None;
+        };
+        match kind {
+            AppKind::ElectronApp | AppKind::ChromeBrowser
+                if self.world_model.cdp_page.is_some() =>
+            {
+                Some(format!(
+                    "coordinate primitive `{tool_name}` blocked: focused app is \
+                     CDP-backed and a `cdp_page` is live in <world_model>. Coordinate \
+                     clicks bypass the page's event loop and steal foreground. Use \
+                     `cdp_click` / `cdp_fill` / `cdp_type_text` / `cdp_press_key` \
+                     against the `d<N>` uids in the elements list, or \
+                     `cdp_evaluate_script` for JS-driven action."
+                ))
+            }
+            AppKind::Native if mcp_has_toolset(mcp, AX_DISPATCH_TOOLSET) => Some(format!(
+                "coordinate primitive `{tool_name}` blocked: focused app is Native and \
+                 AX dispatch is wired. Coordinate primitives steal focus and produce \
+                 no `a<N>` uids the next turn can target. Call `take_ax_snapshot` then \
+                 `ax_click` / `ax_set_value` / `ax_select` against the `a<N>` uids."
+            )),
             _ => None,
         }
     }
@@ -1974,8 +2069,28 @@ impl StateRunner {
     /// legacy `AgentRunner::on_cdp_connected`.
     async fn on_cdp_connected<M: Mcp + ?Sized>(&mut self, app_name: &str, _port: u16, mcp: &M) {
         self.cdp_state.set_connected(app_name, 0);
+        // Successful connect supersedes any prior failure status — clear
+        // it so the next turn's render does not show a stale error
+        // alongside the now-live `cdp_page`.
+        self.world_model.cdp_connect_status = None;
         crate::cdp_lifecycle::snapshot_selected_page_url(mcp, &mut self.cdp_state, app_name, 0)
             .await;
+    }
+
+    /// Record a permanent `auto_connect_cdp` failure on the world model.
+    /// Called from each terminal error path in `auto_connect_cdp` so the
+    /// next turn's state block surfaces the reason — without this, the
+    /// LLM cannot distinguish "auto-connect hasn't fired yet" (no
+    /// `cdp_page`, no status) from "auto-connect tried and failed" (no
+    /// `cdp_page`, status present) and may keep waiting forever.
+    fn record_cdp_connect_failure(&mut self, reason: String) {
+        use crate::agent::world_model::{Fresh, FreshnessSource};
+        self.world_model.cdp_connect_status = Some(Fresh {
+            value: reason,
+            written_at: self.step_index,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: None,
+        });
     }
 
     /// After a successful `launch_app` / `focus_window`, probe the app
@@ -2032,6 +2147,9 @@ impl StateRunner {
                     })
                     .await;
                     debug!(app = app_name, error = %e, "state-spine: probe_app failed, skipping CDP");
+                    self.record_cdp_connect_failure(format!(
+                        "probe_app failed for {app_name}: {e}",
+                    ));
                     return None;
                 }
             };
@@ -2147,6 +2265,9 @@ impl StateRunner {
                     "state-spine fallback relaunch (debug-port launch failed)",
                 )
                 .await;
+                self.record_cdp_connect_failure(format!(
+                    "relaunch with debug port {port} failed for {app_name}: {err}",
+                ));
                 return None;
             }
         }
@@ -2181,6 +2302,9 @@ impl StateRunner {
                     summary: format!("Auto: CDP connect failed on port {}", port),
                 })
                 .await;
+                self.record_cdp_connect_failure(format!(
+                    "cdp_connect failed after retries on port {port} for {app_name}: {last_err}",
+                ));
                 None
             }
         }
@@ -2212,6 +2336,10 @@ impl StateRunner {
                     .is_some_and(|f| f.value.name == name)
                 {
                     self.world_model.focused_app = None;
+                    // Status was bound to the now-departed focused app;
+                    // a quit_app result should not leave its failure
+                    // reason hanging on the next turn's render.
+                    self.world_model.cdp_connect_status = None;
                 }
             }
             return;
@@ -2253,23 +2381,44 @@ impl StateRunner {
                 ttl_steps: None,
             });
         }
+        // Clear any prior auto-connect status before the next attempt.
+        // Without this, a successful focus to a different app would keep
+        // showing the previous app's failure reason; auto_connect_cdp
+        // either succeeds (cleared in `on_cdp_connected`), fails (set
+        // in this attempt's terminal path), or short-circuits (no new
+        // status is appropriate, so the old one must not survive).
+        self.world_model.cdp_connect_status = None;
         if let Some(cdp_port) = self
             .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
             .await
         {
-            self.emit_event(AgentEvent::CdpConnected {
-                app_name: app_name.clone(),
-                port: cdp_port,
-            })
-            .await;
-            // Refresh the client-side tool cache so observation gates
-            // see CDP tools surfaced post-connect.
-            if let Err(e) = mcp.refresh_server_tool_list().await {
-                warn!(
-                    error = %e,
-                    "state-spine: post-CDP-connect tool-cache refresh failed",
-                );
-            }
+            self.finalize_cdp_connected(&app_name, cdp_port, mcp).await;
+        }
+    }
+
+    /// Post-`auto_connect_cdp` housekeeping shared between the
+    /// `maybe_cdp_connect` post-tool path and the dispatch-site
+    /// `CdpAttachable` synthetic-skip path. Emits the `CdpConnected`
+    /// event so the UI surfaces the connect, then refreshes the
+    /// client-side tool cache so observation gates (notably
+    /// `fetch_elements`'s `cdp_find_elements` lookup) see the CDP tools
+    /// the server surfaced post-connect.
+    async fn finalize_cdp_connected<M: Mcp + ?Sized>(
+        &self,
+        app_name: &str,
+        cdp_port: u16,
+        mcp: &M,
+    ) {
+        self.emit_event(AgentEvent::CdpConnected {
+            app_name: app_name.to_string(),
+            port: cdp_port,
+        })
+        .await;
+        if let Err(e) = mcp.refresh_server_tool_list().await {
+            warn!(
+                error = %e,
+                "state-spine: post-CDP-connect tool-cache refresh failed",
+            );
         }
     }
 
@@ -3415,6 +3564,31 @@ impl StateRunner {
                 // observation outcome — clear failure tracking the
                 // same way the live ToolSuccess path does.
                 self.clear_last_failure_tracking();
+                // CdpAttachable promised "auto-connect will fire" in the
+                // skip message. The post-tool `maybe_cdp_connect` hook
+                // only runs on real ToolSuccess, so without this call
+                // the LLM would wait forever for a `cdp_page` that is
+                // never attempted. Drive `auto_connect_cdp` directly
+                // here using the kind hint from `known_app_kinds` (the
+                // very predicate that authorized the skip). On success
+                // the helper marks `cdp_state` connected and clears
+                // `cdp_connect_status`; on failure the terminal paths
+                // record the failure reason. The actual
+                // `world_model.cdp_page` write happens at the next
+                // turn's `fetch_elements` mirror — that's why the
+                // finalizer refreshes the MCP tool cache here, so the
+                // next turn's observation gate sees `cdp_find_elements`.
+                if matches!(reason, FocusSkipReason::CdpAttachable)
+                    && let Some(app_name) = arguments.get("app_name").and_then(|v| v.as_str())
+                {
+                    let kind_hint = self.known_app_kinds.get(app_name).cloned();
+                    if let Some(cdp_port) = self
+                        .auto_connect_cdp(app_name, kind_hint.as_deref(), mcp)
+                        .await
+                    {
+                        self.finalize_cdp_connected(app_name, cdp_port, mcp).await;
+                    }
+                }
                 previous_result = Some(skip_body.clone());
                 // Synthetic skip is a successful dispatch from the LLM's
                 // view — feed it through the same streak detector so a
@@ -3446,6 +3620,98 @@ impl StateRunner {
                     tool_call_id,
                     previous_result.as_deref(),
                 );
+                continue;
+            }
+
+            // 4a-bis. Coordinate-primitive guard. Defense-in-depth
+            // behind the per-turn `<tools_in_scope>` filter: the filter
+            // narrows the LLM-facing tool list, but a wrong-family
+            // dispatch can still reach this point via cached replay
+            // from a different state or a malformed turn. When a
+            // structured surface is wired (CDP page attached, or
+            // Native focus + AX dispatch toolset), reject the
+            // coordinate primitive with a synthetic `StepOutcome::Error`
+            // so it never hits MCP.
+            if let AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                tool_call_id,
+            } = &turn.action
+                && let Some(err_msg) = self.coordinate_primitive_blocked(tool_name, mcp)
+            {
+                warn!(
+                    tool = %tool_name,
+                    "state-spine: coordinate primitive blocked by structured-surface guard"
+                );
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: tool_name.clone(),
+                    summary: "blocked: structured surface wired (CDP/AX)".to_string(),
+                })
+                .await;
+                let step_idx_for_event = self.state.steps.len();
+                self.state.steps.push(AgentStep {
+                    index: step_idx_for_event,
+                    elements: elements.clone(),
+                    command: AgentCommand::ToolCall {
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                    },
+                    outcome: StepOutcome::Error(err_msg.clone()),
+                    page_url: self.state.current_url.clone(),
+                });
+                self.advance_recorded_step_index();
+                self.emit_world_model_changed_for_recorded_step().await;
+                self.state.consecutive_errors += 1;
+                self.consecutive_errors = self.state.consecutive_errors;
+                previous_result = Some(err_msg.clone());
+                append_assistant_and_tool_result(
+                    &mut messages,
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                    previous_result.as_deref(),
+                );
+                self.emit_event(AgentEvent::StepFailed {
+                    step_index: step_idx_for_event,
+                    tool_name: tool_name.clone(),
+                    error: err_msg.clone(),
+                })
+                .await;
+                let looped = matches!(
+                    last_failure.as_ref(),
+                    Some((prev_tool, prev_args, prev_err))
+                        if prev_tool == tool_name
+                            && prev_args == arguments
+                            && prev_err == &err_msg
+                );
+                if looped {
+                    warn!(
+                        tool = %tool_name,
+                        "state-spine: identical coordinate-primitive block repeated — aborting"
+                    );
+                    self.state.terminal_reason = Some(TerminalReason::LoopDetected {
+                        tool_name: tool_name.clone(),
+                        error: err_msg.clone(),
+                    });
+                    break;
+                }
+                last_failure = Some((tool_name.clone(), arguments.clone(), err_msg.clone()));
+                let action = recovery_strategy(
+                    self.state.consecutive_errors,
+                    self.config.max_consecutive_errors,
+                );
+                if matches!(action, RecoveryAction::Abort) {
+                    warn!(
+                        errors = self.state.consecutive_errors,
+                        "state-spine: too many consecutive coordinate-primitive blocks — aborting"
+                    );
+                    self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
+                        consecutive_errors: self.state.consecutive_errors,
+                    });
+                    break;
+                }
+                last_action = None;
                 continue;
             }
 
@@ -5484,16 +5750,30 @@ mod focus_skip_tests {
             Some(FocusSkipReason::PolicyDisabled),
         );
 
-        // 4. Default config still behaves as before — sanity check the
-        // feature is truly opt-in and the unknown-kind defer path is
-        // preserved.
-        let default_runner = StateRunner::new_for_test("test-goal".to_string());
+        // 4. `new_for_test` opts allow_focus_window back in so the
+        //    unit tests in this module exercise the kind/toolset
+        //    branches without per-test opt-in; an unseeded fixture
+        //    runner must defer on unknown kind.
+        let test_default_runner = StateRunner::new_for_test("test-goal".to_string());
         assert!(
-            default_runner
+            test_default_runner
                 .should_skip_focus_window(&args_named, &mcp_empty)
                 .is_none(),
-            "default policy (allow_focus_window=true) must preserve the \
-             existing defer-for-unknown-kind behavior",
+        );
+    }
+
+    #[test]
+    fn default_config_disables_focus_window_via_policy() {
+        // Pins the production-default contract: `AgentConfig::default()`
+        // must suppress every focus_window unconditionally. `new_for_test`
+        // overrides this for the rest of the suite (see above).
+        let runner = StateRunner::new("test-goal".to_string(), AgentConfig::default());
+        let mcp = ToolsetStub::with(&[]);
+        let args = serde_json::json!({"app_name": "AnyApp"});
+        assert_eq!(
+            runner.should_skip_focus_window(&args, &mcp),
+            Some(FocusSkipReason::PolicyDisabled),
+            "AgentConfig::default() must suppress focus_window unconditionally",
         );
     }
 
@@ -5510,6 +5790,295 @@ mod focus_skip_tests {
         let args = serde_json::json!({"app_name": "Calculator"});
         // Electron now — guard must NOT fire.
         assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+
+    #[test]
+    fn should_skip_focus_window_fires_cdp_attachable_for_electron_pre_connect() {
+        // Pre-CDP-connect contract: kind is Electron / Chrome and the
+        // server advertises `cdp_connect`. The post-tool hook will
+        // auto-connect on its own — the real focus_window is
+        // unnecessary and would only steal foreground in the meantime.
+        for kind in ["ElectronApp", "ChromeBrowser"] {
+            let runner = runner_with_kind("VSCode", kind);
+            let mcp = ToolsetStub::with(&["cdp_connect"]);
+            let args = serde_json::json!({"app_name": "VSCode"});
+            assert_eq!(
+                runner.should_skip_focus_window(&args, &mcp),
+                Some(FocusSkipReason::CdpAttachable),
+                "kind={kind} with cdp_connect advertised must trigger CdpAttachable",
+            );
+        }
+    }
+
+    #[test]
+    fn should_skip_focus_window_defers_for_electron_when_cdp_connect_missing() {
+        // CDP-attachable arm requires the server to actually advertise
+        // `cdp_connect`. Without it the post-tool hook cannot fire, so
+        // the first focus_window may itself be needed to bring the
+        // window front and the classifier must defer.
+        let runner = runner_with_kind("VSCode", "ElectronApp");
+        // FULL_CDP_TOOLSET does NOT include cdp_connect by design —
+        // it is the dispatch toolset, not the lifecycle one.
+        let mcp = ToolsetStub::with(FULL_CDP_TOOLSET);
+        let args = serde_json::json!({"app_name": "VSCode"});
+        assert!(runner.should_skip_focus_window(&args, &mcp).is_none());
+    }
+
+    #[test]
+    fn cdp_live_takes_precedence_over_cdp_attachable_for_same_app() {
+        // When the session is live AND the server advertises
+        // `cdp_connect`, the more specific `CdpLive` arm must fire —
+        // the agent has the dispatch toolset, not just the connect
+        // primitive. Order matters in the match: CdpLive first.
+        let runner = runner_with_kind_and_cdp("Signal", "ElectronApp");
+        // Both CDP dispatch AND cdp_connect advertised.
+        let mcp = ToolsetStub::with(&["cdp_find_elements", "cdp_click", "cdp_connect"]);
+        let args = serde_json::json!({"app_name": "Signal"});
+        assert_eq!(
+            runner.should_skip_focus_window(&args, &mcp),
+            Some(FocusSkipReason::CdpLive),
+        );
+    }
+}
+
+/// Coordinate-primitive guard: defense-in-depth check that a wrong-family
+/// dispatch (`click` / `type_text` / `press_key` / `move_mouse` / `scroll`
+/// / `drag`) is rejected at the harness layer when a structured surface
+/// (`cdp_page` for CDP-backed apps, `take_ax_snapshot` + AX dispatch for
+/// Native) is wired for the focused app. Sits behind the per-turn
+/// `<tools_in_scope>` filter — these tests pin the predicate alone; the
+/// dispatch-site behaviour (synthetic StepOutcome::Error, StepFailed
+/// event, recovery_strategy interaction) is covered by the integration
+/// suite.
+#[cfg(test)]
+mod coordinate_primitive_guard_tests {
+    use super::*;
+    use crate::agent::world_model::{AppKind, CdpPageState, FocusedApp, Fresh, FreshnessSource};
+    use clickweave_mcp::ToolCallResult;
+
+    struct ToolsetStub {
+        tools: Vec<String>,
+    }
+
+    impl ToolsetStub {
+        fn with(tools: &[&str]) -> Self {
+            Self {
+                tools: tools.iter().map(|s| s.to_string()).collect(),
+            }
+        }
+    }
+
+    impl crate::executor::Mcp for ToolsetStub {
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<Value>,
+        ) -> anyhow::Result<ToolCallResult> {
+            unimplemented!("coordinate guard predicate does not dispatch tools")
+        }
+        fn has_tool(&self, name: &str) -> bool {
+            self.tools.iter().any(|t| t == name)
+        }
+        fn tools_as_openai(&self) -> Vec<Value> {
+            Vec::new()
+        }
+        async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    const AX_TOOLSET: &[&str] = &["take_ax_snapshot", "ax_click", "ax_set_value", "ax_select"];
+
+    fn focused(name: &str, kind: AppKind) -> Fresh<FocusedApp> {
+        Fresh {
+            value: FocusedApp {
+                name: name.to_string(),
+                kind,
+                pid: 1,
+            },
+            written_at: 0,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: None,
+        }
+    }
+
+    fn cdp_page(url: &str) -> Fresh<CdpPageState> {
+        Fresh {
+            value: CdpPageState {
+                url: url.to_string(),
+                page_fingerprint: "fp".to_string(),
+            },
+            written_at: 0,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: None,
+        }
+    }
+
+    #[test]
+    fn blocks_click_when_cdp_page_live_and_focus_is_electron() {
+        let mut runner = StateRunner::new_for_test("g".to_string());
+        runner.world_model.focused_app = Some(focused("Signal", AppKind::ElectronApp));
+        runner.world_model.cdp_page = Some(cdp_page("https://signal/"));
+        let mcp = ToolsetStub::with(&[]);
+        let blocked = runner.coordinate_primitive_blocked("click", &mcp);
+        assert!(blocked.is_some(), "click must be blocked under live CDP");
+        let msg = blocked.unwrap();
+        assert!(msg.contains("cdp_page"));
+        assert!(msg.contains("cdp_click"));
+    }
+
+    #[test]
+    fn blocks_each_coordinate_primitive_under_cdp() {
+        let mut runner = StateRunner::new_for_test("g".to_string());
+        runner.world_model.focused_app = Some(focused("Signal", AppKind::ElectronApp));
+        runner.world_model.cdp_page = Some(cdp_page("https://signal/"));
+        let mcp = ToolsetStub::with(&[]);
+        for tool in [
+            "click",
+            "type_text",
+            "press_key",
+            "move_mouse",
+            "scroll",
+            "drag",
+        ] {
+            assert!(
+                runner.coordinate_primitive_blocked(tool, &mcp).is_some(),
+                "{tool} must be blocked when CDP is wired",
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_block_observation_or_structured_tools_under_cdp() {
+        let mut runner = StateRunner::new_for_test("g".to_string());
+        runner.world_model.focused_app = Some(focused("Signal", AppKind::ElectronApp));
+        runner.world_model.cdp_page = Some(cdp_page("https://signal/"));
+        let mcp = ToolsetStub::with(&[]);
+        for tool in [
+            "find_text",
+            "find_image",
+            "element_at_point",
+            "cdp_click",
+            "ax_click",
+            "take_screenshot",
+        ] {
+            assert!(
+                runner.coordinate_primitive_blocked(tool, &mcp).is_none(),
+                "{tool} must NOT be blocked — only coordinate primitives are",
+            );
+        }
+    }
+
+    #[test]
+    fn blocks_click_when_focus_is_native_and_ax_dispatch_wired() {
+        let mut runner = StateRunner::new_for_test("g".to_string());
+        runner.world_model.focused_app = Some(focused("Calculator", AppKind::Native));
+        let mcp = ToolsetStub::with(AX_TOOLSET);
+        let blocked = runner.coordinate_primitive_blocked("click", &mcp);
+        assert!(blocked.is_some(), "click must be blocked under AX dispatch");
+        let msg = blocked.unwrap();
+        assert!(msg.contains("Native"));
+        assert!(msg.contains("ax_click"));
+    }
+
+    #[test]
+    fn defers_when_focus_is_native_but_ax_toolset_partial() {
+        let mut runner = StateRunner::new_for_test("g".to_string());
+        runner.world_model.focused_app = Some(focused("Calculator", AppKind::Native));
+        // Missing ax_set_value — partial toolset means agent cannot
+        // drive via AX, so coordinate primitives remain a valid path.
+        let mcp = ToolsetStub::with(&["take_ax_snapshot", "ax_click"]);
+        assert!(runner.coordinate_primitive_blocked("click", &mcp).is_none());
+    }
+
+    #[test]
+    fn defers_when_no_focused_app() {
+        let runner = StateRunner::new_for_test("g".to_string());
+        // No focused_app set — caller has not yet observed which surface
+        // is wired, so we cannot tell which family the agent should be
+        // using and must fall through.
+        let mcp = ToolsetStub::with(AX_TOOLSET);
+        assert!(runner.coordinate_primitive_blocked("click", &mcp).is_none());
+    }
+
+    #[test]
+    fn defers_for_electron_focus_without_cdp_page() {
+        // Electron is focused but no cdp_page yet (auto-connect hasn't
+        // attached). Coordinate primitives are not yet redundant — the
+        // agent may need them to bring the window front. Guard defers.
+        let mut runner = StateRunner::new_for_test("g".to_string());
+        runner.world_model.focused_app = Some(focused("Signal", AppKind::ElectronApp));
+        let mcp = ToolsetStub::with(&["cdp_connect"]);
+        assert!(runner.coordinate_primitive_blocked("click", &mcp).is_none());
+    }
+
+    #[test]
+    fn is_coordinate_primitive_includes_actions_excludes_observations() {
+        for name in [
+            "click",
+            "type_text",
+            "press_key",
+            "move_mouse",
+            "scroll",
+            "drag",
+        ] {
+            assert!(is_coordinate_primitive(name), "{name} is a coord primitive");
+        }
+        for name in [
+            "find_text",
+            "find_image",
+            "element_at_point",
+            "take_screenshot",
+            "ax_click",
+            "cdp_click",
+            "launch_app",
+        ] {
+            assert!(
+                !is_coordinate_primitive(name),
+                "{name} must NOT be classified as a coordinate primitive",
+            );
+        }
+    }
+}
+
+/// CDP auto-connect status field (`world_model.cdp_connect_status`).
+/// The runner sets this whenever `auto_connect_cdp` exhausts retries
+/// and clears it on success or focus change. Without the field, the
+/// LLM cannot tell "auto-connect hasn't fired yet" (no cdp_page, no
+/// status) from "auto-connect tried and failed permanently" (no
+/// cdp_page, status present).
+#[cfg(test)]
+mod cdp_connect_status_tests {
+    use super::*;
+
+    #[test]
+    fn record_cdp_connect_failure_writes_fresh_status() {
+        let mut runner = StateRunner::new_for_test("g".to_string());
+        assert!(runner.world_model.cdp_connect_status.is_none());
+        runner.record_cdp_connect_failure("probe_app failed for X: y".to_string());
+        let status = runner
+            .world_model
+            .cdp_connect_status
+            .as_ref()
+            .expect("status set");
+        assert_eq!(status.value, "probe_app failed for X: y");
+        assert_eq!(status.written_at, runner.step_index);
+    }
+
+    #[test]
+    fn second_failure_overwrites_first() {
+        let mut runner = StateRunner::new_for_test("g".to_string());
+        runner.record_cdp_connect_failure("first".to_string());
+        runner.record_cdp_connect_failure("second".to_string());
+        assert_eq!(
+            runner
+                .world_model
+                .cdp_connect_status
+                .as_ref()
+                .unwrap()
+                .value,
+            "second",
+        );
     }
 }
 
@@ -5706,5 +6275,14 @@ pub(crate) mod test_support {
         runner
             .maybe_cdp_connect(tool_name, arguments, result_text, mcp)
             .await;
+    }
+
+    pub(crate) async fn call_finalize_cdp_connected<M: Mcp + ?Sized>(
+        runner: &StateRunner,
+        app_name: &str,
+        cdp_port: u16,
+        mcp: &M,
+    ) {
+        runner.finalize_cdp_connected(app_name, cdp_port, mcp).await;
     }
 }
