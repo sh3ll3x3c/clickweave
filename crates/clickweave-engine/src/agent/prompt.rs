@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::agent::render::render_step_input;
 use crate::agent::task_state::TaskState;
-use crate::agent::world_model::WorldModel;
+use crate::agent::world_model::{AppKind, WorldModel};
 
 const SYSTEM_PROMPT_HEADER: &str = r#"You are Clickweave, an agent that automates desktop and browser workflows via MCP tools.
 
@@ -39,9 +39,20 @@ Mutations are read from your `tool_calls` array regardless of their position; th
 Rules:
 - The `phase` field in `<task_state>` is harness-inferred. Do not try to set it yourself.
 - Uid prefixes signal dispatch family: `a<N>` -> native AX (use `ax_click`/`ax_set_value`/`ax_select`); `d<N>` -> CDP (use `cdp_click`/`cdp_fill`).
-- Prefer `cdp_find_elements` for targeted CDP discovery; use `cdp_take_dom_snapshot` only when you need the full page structure.
-- When CDP is unavailable (native apps), use `take_ax_snapshot` and native action tools.
 - Observation-only tools do not require approval; destructive tools may require approval from the operator.
+
+Dispatch family selection — keyed on `<world_model>`:
+- If `<world_model>` contains a `cdp_page` block, the app is browser- or Electron-backed and CDP is the primary dispatch family. Use CDP tools for everything: `cdp_find_elements` / `cdp_take_dom_snapshot` for discovery, `cdp_click` / `cdp_fill` / `cdp_type_text` / `cdp_press_key` / `cdp_evaluate_script` for action, `cdp_navigate` / `cdp_select_page` for page control. Coordinate primitives (`click` at (x,y), `type_text`, `press_key`) are forbidden when a `cdp_page` is attached — they bypass the page's event loop, steal focus, and produce no `d<N>` uids the next turn can target.
+- If the visible element surface is too small to see your target (e.g. a sidebar, file tree, or panel that wasn't auto-fetched), call `cdp_take_dom_snapshot` once to widen it, or `cdp_evaluate_script` with a small JS expression to query the DOM directly. Do NOT fall back to coordinate clicks "to make something happen" — that path produces no observable progress for the next turn.
+- If `<world_model>` has no `cdp_page` (native macOS app), use `take_ax_snapshot` and `ax_*` tools. CRITICAL: snapshots are session-stateful — `take_ax_snapshot` immediately before every `ax_click` / `ax_set_value` / `ax_select`; if a dispatch returns `snapshot_expired`, take a fresh snapshot.
+- Coordinate primitives (`click` at raw x,y, raw `type_text`, raw `press_key`) are last-resort: only use them when neither a `cdp_page` nor an AX tree is available, or when targeting OS-level chrome that lives outside both surfaces.
+- Each turn's user message includes a `<tools_in_scope>` block listing the MCP tools that fit the current dispatch family. Prefer tools from this block as your action; tools outside it are wrong-family for the current `<world_model>` state. The pseudo-tools (`push_subgoal`, `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`, `refute_hypothesis`, `agent_done`, `agent_replan`) are always in scope and are not listed in the block.
+
+When stuck — use the mutation pseudo-tools:
+- If the same action produced no observable change for the last turn or two, do NOT repeat it. Repeating the same `(tool_name, arguments)` 3 times in a row is a bug pattern; the harness will surface a no-progress nudge and you must change tactic.
+- Push a subgoal (`push_subgoal`) to scope the next attempt narrowly ("locate the file-explorer panel", "open the command palette"), and `complete_subgoal` once the observation confirms it.
+- Record what you tried and why it didn't work as a refuted hypothesis (`record_hypothesis` then `refute_hypothesis`) so the harness's recovery layer can see the dead end.
+- If you genuinely cannot make progress with the current plan, emit `agent_replan` rather than dispatching another speculative action.
 "#;
 
 /// Build the stable system prompt for the state-spine runner.
@@ -67,6 +78,120 @@ pub fn build_system_prompt(tools: &[Tool]) -> String {
     out
 }
 
+/// Dispatch family a tool belongs to. Used by [`tools_in_scope`] to narrow
+/// the per-turn `<tools_in_scope>` block based on the world-model state.
+///
+/// Classification is by tool name only — the MCP server keeps advertising
+/// the full set, this enum lets the engine bias the LLM toward the right
+/// family without changing what MCP exposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchFamily {
+    /// CDP-backed (`cdp_*`) — focus-preserving, requires a live CDP page.
+    Cdp,
+    /// macOS AX-backed (`ax_*`, `take_ax_snapshot`) — focus-preserving.
+    Ax,
+    /// Coordinate primitives (`click(x,y)`, `type_text`, `press_key`,
+    /// `find_text`, `find_image`, etc.). Move the cursor and steal focus.
+    Coordinate,
+    /// Tools that don't dispatch a UI action — observation, app control,
+    /// snapshots. Always in scope regardless of focused-app kind.
+    Universal,
+}
+
+/// Classify a tool by name into its dispatch family. Conservative: tools
+/// not on the explicit coordinate list fall through to `Universal` so a
+/// new MCP tool added in the future doesn't get hidden by accident.
+pub fn classify_tool_family(name: &str) -> DispatchFamily {
+    if name.starts_with("cdp_") {
+        return DispatchFamily::Cdp;
+    }
+    if name.starts_with("ax_") || name == "take_ax_snapshot" {
+        return DispatchFamily::Ax;
+    }
+    match name {
+        "click"
+        | "type_text"
+        | "press_key"
+        | "move_mouse"
+        | "scroll"
+        | "drag"
+        | "find_text"
+        | "find_image"
+        | "element_at_point"
+        | "start_hover_tracking" => DispatchFamily::Coordinate,
+        _ => DispatchFamily::Universal,
+    }
+}
+
+/// Compute the subset of advertised MCP tool names the LLM should prefer
+/// for the current world-model state.
+///
+/// Modes (focused_kind takes priority over `cdp_page_attached` so a stale
+/// CDP page surviving an app switch doesn't push the wrong family for the
+/// new focused app):
+/// - `Electron` / `Chrome` focused + `cdp_page` attached → `Universal` + `Cdp`.
+/// - `Electron` / `Chrome` focused, no `cdp_page` → `Universal` + `cdp_connect`.
+///   The LLM calls `cdp_connect` or waits one turn for the harness's auto-connect.
+/// - `Native` focused → `Universal` + `Ax`. Any `cdp_page` is treated as stale
+///   and ignored — its binding is to a previously-focused CDP-capable app.
+/// - No focused app yet → empty `Vec`. Callers render no block, so the LLM
+///   sees the full `Available tools:` listing from the system prompt.
+pub fn tools_in_scope(
+    focused_kind: Option<AppKind>,
+    cdp_page_attached: bool,
+    all_tool_names: &[String],
+) -> Vec<String> {
+    match focused_kind {
+        Some(AppKind::ElectronApp | AppKind::ChromeBrowser) if cdp_page_attached => all_tool_names
+            .iter()
+            .filter(|n| {
+                matches!(
+                    classify_tool_family(n),
+                    DispatchFamily::Cdp | DispatchFamily::Universal
+                )
+            })
+            .cloned()
+            .collect(),
+        Some(AppKind::ElectronApp | AppKind::ChromeBrowser) => all_tool_names
+            .iter()
+            .filter(|n| {
+                matches!(classify_tool_family(n), DispatchFamily::Universal) || *n == "cdp_connect"
+            })
+            .cloned()
+            .collect(),
+        Some(AppKind::Native) => all_tool_names
+            .iter()
+            .filter(|n| {
+                matches!(
+                    classify_tool_family(n),
+                    DispatchFamily::Ax | DispatchFamily::Universal
+                )
+            })
+            .cloned()
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Render a `<tools_in_scope>` block listing the active subset by name.
+/// Empty input → empty string so the caller can splice without branching.
+pub fn render_tools_in_scope_block(names: &[String]) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    let body_estimate: usize = names.iter().map(|n| n.len() + 3).sum();
+    let mut out =
+        String::with_capacity(body_estimate + "<tools_in_scope>\n</tools_in_scope>\n".len());
+    out.push_str("<tools_in_scope>\n");
+    for n in names {
+        out.push_str("- ");
+        out.push_str(n);
+        out.push('\n');
+    }
+    out.push_str("</tools_in_scope>\n");
+    out
+}
+
 /// Build the per-turn user message. State block first (above the observation),
 /// so the LLM reads world + task state before reacting to the observation.
 ///
@@ -74,12 +199,16 @@ pub fn build_system_prompt(tools: &[Tool]) -> String {
 /// non-empty, a `<retrieved_recoveries>` sibling block is spliced in
 /// after the state block and before the observation so the LLM sees
 /// remembered recoveries before reacting to the new observation (D23).
+///
+/// `tools_in_scope_names` is the per-turn dispatch-family-narrowed subset
+/// of advertised MCP tools (see [`tools_in_scope`]). Empty = no block.
 pub fn build_user_turn_message(
     wm: &WorldModel,
     ts: &TaskState,
     current_step: usize,
     observation_text: &str,
     retrieved: &[crate::agent::episodic::RetrievedEpisode],
+    tools_in_scope_names: &[String],
 ) -> String {
     let mut out = render_step_input(wm, ts, current_step);
 
@@ -88,6 +217,11 @@ pub fn build_user_turn_message(
     if !recoveries_block.is_empty() {
         out.push_str(&recoveries_block);
         out.push('\n');
+    }
+
+    let scope_block = render_tools_in_scope_block(tools_in_scope_names);
+    if !scope_block.is_empty() {
+        out.push_str(&scope_block);
     }
 
     if !observation_text.is_empty() {
@@ -359,6 +493,41 @@ mod state_spine_prompt_tests {
     }
 
     #[test]
+    fn system_prompt_promotes_cdp_for_attached_pages() {
+        // The CDP block must (a) condition on `cdp_page` being attached
+        // and (b) forbid coordinate primitives in that case. Without
+        // both, the LLM falls back to `click(x, y)` on Electron apps —
+        // see the Obsidian Vault7 regression that motivated this rule.
+        let tools: Vec<Tool> = vec![];
+        let s = build_system_prompt(&tools);
+        assert!(s.contains("cdp_page"));
+        assert!(
+            s.to_lowercase().contains("forbidden")
+                || s.to_lowercase().contains("last-resort")
+                || s.to_lowercase().contains("avoid"),
+            "CDP block must explicitly discourage coordinate primitives when CDP is attached"
+        );
+        assert!(
+            s.contains("cdp_find_elements")
+                && s.contains("cdp_evaluate_script")
+                && s.contains("cdp_type_text"),
+            "CDP block must spell out the discovery + action recipe (incl. typing analogue)"
+        );
+    }
+
+    #[test]
+    fn system_prompt_promotes_mutation_pseudo_tools_when_stuck() {
+        // The "when stuck" rule must bind repeated identical actions to
+        // mutation pseudo-tools so the LLM has a structured escape hatch
+        // beyond simply firing the same tool again.
+        let tools: Vec<Tool> = vec![];
+        let s = build_system_prompt(&tools);
+        assert!(s.contains("push_subgoal"));
+        assert!(s.contains("record_hypothesis") || s.contains("refute_hypothesis"));
+        assert!(s.contains("agent_replan"));
+    }
+
+    #[test]
     fn system_prompt_lists_tools_with_descriptions() {
         let tools = vec![
             Tool {
@@ -383,7 +552,7 @@ mod state_spine_prompt_tests {
     fn user_turn_contains_state_block_and_observation() {
         let wm = WorldModel::default();
         let ts = TaskState::new("ship it".to_string());
-        let out = build_user_turn_message(&wm, &ts, 3, "observation text here", &[]);
+        let out = build_user_turn_message(&wm, &ts, 3, "observation text here", &[], &[]);
         assert!(out.contains("<world_model>"));
         assert!(out.contains("<task_state>"));
         assert!(out.contains("observation text here"));
@@ -400,9 +569,181 @@ mod state_spine_prompt_tests {
     fn user_turn_without_observation_omits_observation_tag() {
         let wm = WorldModel::default();
         let ts = TaskState::new("ship it".to_string());
-        let out = build_user_turn_message(&wm, &ts, 0, "", &[]);
+        let out = build_user_turn_message(&wm, &ts, 0, "", &[], &[]);
         assert!(out.contains("<world_model>"));
         assert!(!out.contains("<observation>"));
+    }
+
+    #[test]
+    fn user_turn_renders_tools_in_scope_block_above_observation() {
+        let wm = WorldModel::default();
+        let ts = TaskState::new("ship it".to_string());
+        let scope = vec!["cdp_click".to_string(), "cdp_find_elements".to_string()];
+        let out = build_user_turn_message(&wm, &ts, 1, "obs", &[], &scope);
+        assert!(out.contains("<tools_in_scope>"));
+        assert!(out.contains("- cdp_click"));
+        assert!(out.contains("- cdp_find_elements"));
+        let scope_end = out.find("</tools_in_scope>").unwrap();
+        let obs_start = out.find("obs").unwrap();
+        assert!(
+            scope_end < obs_start,
+            "tools_in_scope block must precede the observation"
+        );
+    }
+
+    #[test]
+    fn user_turn_omits_tools_in_scope_block_when_empty() {
+        let wm = WorldModel::default();
+        let ts = TaskState::new("ship it".to_string());
+        let out = build_user_turn_message(&wm, &ts, 0, "obs", &[], &[]);
+        assert!(!out.contains("<tools_in_scope>"));
+    }
+
+    #[test]
+    fn classify_tool_family_buckets_known_prefixes() {
+        assert_eq!(classify_tool_family("cdp_click"), DispatchFamily::Cdp);
+        assert_eq!(
+            classify_tool_family("cdp_take_dom_snapshot"),
+            DispatchFamily::Cdp
+        );
+        assert_eq!(classify_tool_family("ax_click"), DispatchFamily::Ax);
+        assert_eq!(classify_tool_family("take_ax_snapshot"), DispatchFamily::Ax);
+        assert_eq!(classify_tool_family("click"), DispatchFamily::Coordinate);
+        assert_eq!(
+            classify_tool_family("type_text"),
+            DispatchFamily::Coordinate
+        );
+        assert_eq!(
+            classify_tool_family("find_text"),
+            DispatchFamily::Coordinate
+        );
+        // App-control / observation falls through to Universal.
+        assert_eq!(
+            classify_tool_family("focus_window"),
+            DispatchFamily::Universal
+        );
+        assert_eq!(
+            classify_tool_family("take_screenshot"),
+            DispatchFamily::Universal
+        );
+        assert_eq!(
+            classify_tool_family("launch_app"),
+            DispatchFamily::Universal
+        );
+    }
+
+    fn names(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn tools_in_scope_keeps_cdp_and_universal_when_cdp_page_attached() {
+        let all = names(&[
+            "cdp_click",
+            "cdp_find_elements",
+            "ax_click",
+            "click",
+            "find_text",
+            "take_screenshot",
+            "focus_window",
+        ]);
+        let scope = tools_in_scope(Some(AppKind::ElectronApp), true, &all);
+        assert!(scope.iter().any(|n| n == "cdp_click"));
+        assert!(scope.iter().any(|n| n == "cdp_find_elements"));
+        assert!(scope.iter().any(|n| n == "take_screenshot"));
+        assert!(scope.iter().any(|n| n == "focus_window"));
+        // Wrong-family tools must be filtered out so the LLM is not tempted.
+        assert!(!scope.iter().any(|n| n == "ax_click"));
+        assert!(!scope.iter().any(|n| n == "click"));
+        assert!(!scope.iter().any(|n| n == "find_text"));
+    }
+
+    #[test]
+    fn tools_in_scope_pre_connect_electron_only_exposes_cdp_connect() {
+        // Electron focused but `cdp_connect` hasn't run yet: the LLM
+        // must see only `cdp_connect` (plus universal) so it cannot
+        // fall back to coordinate primitives or AX in the meantime.
+        let all = names(&[
+            "cdp_click",
+            "cdp_connect",
+            "ax_click",
+            "click",
+            "take_screenshot",
+        ]);
+        let scope = tools_in_scope(Some(AppKind::ElectronApp), false, &all);
+        assert!(scope.iter().any(|n| n == "cdp_connect"));
+        assert!(scope.iter().any(|n| n == "take_screenshot"));
+        assert!(!scope.iter().any(|n| n == "cdp_click"));
+        assert!(!scope.iter().any(|n| n == "ax_click"));
+        assert!(!scope.iter().any(|n| n == "click"));
+    }
+
+    #[test]
+    fn tools_in_scope_native_keeps_ax_and_universal() {
+        let all = names(&[
+            "cdp_click",
+            "ax_click",
+            "ax_set_value",
+            "take_ax_snapshot",
+            "click",
+            "find_text",
+            "take_screenshot",
+        ]);
+        let scope = tools_in_scope(Some(AppKind::Native), false, &all);
+        assert!(scope.iter().any(|n| n == "ax_click"));
+        assert!(scope.iter().any(|n| n == "ax_set_value"));
+        assert!(scope.iter().any(|n| n == "take_ax_snapshot"));
+        assert!(scope.iter().any(|n| n == "take_screenshot"));
+        assert!(!scope.iter().any(|n| n == "cdp_click"));
+        assert!(!scope.iter().any(|n| n == "click"));
+        assert!(!scope.iter().any(|n| n == "find_text"));
+    }
+
+    #[test]
+    fn tools_in_scope_native_ignores_stale_cdp_page() {
+        // When the focused app is Native but a `cdp_page` from a prior
+        // CDP-capable app still happens to be set, the filter must not
+        // be tricked into the CDP arm — that would expose the wrong
+        // family for the new focused app and hide AX tools.
+        let all = names(&[
+            "cdp_click",
+            "ax_click",
+            "ax_set_value",
+            "take_ax_snapshot",
+            "click",
+            "take_screenshot",
+        ]);
+        let scope = tools_in_scope(Some(AppKind::Native), true, &all);
+        assert!(scope.iter().any(|n| n == "ax_click"));
+        assert!(scope.iter().any(|n| n == "take_ax_snapshot"));
+        assert!(!scope.iter().any(|n| n == "cdp_click"));
+        assert!(!scope.iter().any(|n| n == "click"));
+    }
+
+    #[test]
+    fn tools_in_scope_returns_empty_when_no_focused_app() {
+        // Empty Vec signals "no filter" — `render_tools_in_scope_block`
+        // emits no block, so the LLM falls back to the system prompt's
+        // full `Available tools:` listing.
+        let all = names(&["cdp_click", "ax_click", "click"]);
+        let scope = tools_in_scope(None, false, &all);
+        assert!(scope.is_empty());
+    }
+
+    #[test]
+    fn render_tools_in_scope_block_returns_empty_for_empty_input() {
+        assert_eq!(render_tools_in_scope_block(&[]), "");
+    }
+
+    #[test]
+    fn system_prompt_documents_tools_in_scope_block() {
+        // The header must explain the per-turn block so the LLM knows
+        // to prefer the narrowed list. Without this the cache-stable
+        // `Available tools:` listing remains the dominant signal.
+        let tools: Vec<Tool> = vec![];
+        let s = build_system_prompt(&tools);
+        assert!(s.contains("<tools_in_scope>"));
+        assert!(s.to_lowercase().contains("prefer"));
     }
 
     #[test]

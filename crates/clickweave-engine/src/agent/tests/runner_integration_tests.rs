@@ -2366,6 +2366,7 @@ mod cdp_and_focus_window_tests {
     use crate::agent::types::{AgentConfig, AgentEvent, TerminalReason};
     use crate::executor::Mcp;
     use clickweave_core::Workflow;
+    use serde_json::Value;
     use tokio::sync::mpsc;
 
     fn cfg_no_cache(steps: usize) -> AgentConfig {
@@ -2750,6 +2751,176 @@ mod cdp_and_focus_window_tests {
         )
         .await;
         assert!(runner.cdp_state_for_test().connected_app.is_some());
+    }
+
+    /// `maybe_cdp_connect` after a successful `focus_window` must mirror
+    /// the (name, kind, pid) into `world_model.focused_app` so the
+    /// per-turn `<tools_in_scope>` filter can route to the correct
+    /// dispatch family. The MCP here advertises no `cdp_connect`, so
+    /// `auto_connect_cdp` short-circuits and the write happens
+    /// independently of CDP success.
+    #[tokio::test]
+    async fn maybe_cdp_connect_writes_world_model_focused_app_for_focus_window() {
+        use crate::agent::world_model::AppKind;
+        let mcp = StaticMcp::with_tools(&[]);
+        let mut runner = StateRunner::new("g".to_string(), AgentConfig::default());
+        assert!(runner.world_model.focused_app.is_none());
+
+        let result_text = serde_json::json!({
+            "app_name": "Signal",
+            "pid": 16024,
+            "kind": "ElectronApp"
+        })
+        .to_string();
+        crate::agent::runner::test_support::call_maybe_cdp_connect(
+            &mut runner,
+            "focus_window",
+            &serde_json::json!({"app_name": "Signal"}),
+            &result_text,
+            &mcp,
+        )
+        .await;
+
+        let focused = runner
+            .world_model
+            .focused_app
+            .as_ref()
+            .expect("focused_app must be populated after focus_window");
+        assert_eq!(focused.value.name, "Signal");
+        assert_eq!(focused.value.kind, AppKind::ElectronApp);
+        assert_eq!(focused.value.pid, 16024);
+    }
+
+    /// Unstructured `launch_app` / `focus_window` responses (plain text,
+    /// no `kind` field) leave `kind_hint = None`, so `maybe_cdp_connect`
+    /// initially writes `focused_app.kind = Native` (the default). When
+    /// `auto_connect_cdp`'s `probe_app` then discovers the app is
+    /// Electron / Chrome, the runner must upgrade
+    /// `world_model.focused_app.kind` to match — otherwise the next turn's
+    /// `<tools_in_scope>` filter sees `Some(Native) + cdp_attached` and
+    /// routes to the AX arm even though CDP is live.
+    ///
+    /// `start_paused = true` makes `tokio::time::sleep` advance virtual
+    /// time so the production quit/relaunch poll intervals and
+    /// `connect_with_retries` backoff don't add wall-clock seconds to
+    /// the lib test suite — the kind upgrade we're verifying happens
+    /// before the relaunch path runs.
+    #[tokio::test(start_paused = true)]
+    async fn auto_connect_cdp_probe_upgrades_focused_app_kind_after_unstructured_launch() {
+        use crate::agent::world_model::AppKind;
+        use clickweave_mcp::{ToolCallResult, ToolContent};
+        use std::sync::Mutex;
+
+        struct ProbingMcp {
+            calls: Mutex<Vec<String>>,
+        }
+        impl Mcp for ProbingMcp {
+            async fn call_tool(
+                &self,
+                name: &str,
+                _arguments: Option<Value>,
+            ) -> anyhow::Result<ToolCallResult> {
+                self.calls.lock().unwrap().push(name.to_string());
+                let body = match name {
+                    "probe_app" => "App kind: ElectronApp",
+                    "cdp_connect" => {
+                        // Force auto_connect_cdp to bail before the
+                        // ephemeral-port relaunch path; the kind upgrade
+                        // we're testing happens BEFORE the connect attempt.
+                        return Err(anyhow::anyhow!("test: connect skipped"));
+                    }
+                    _ => "ok",
+                };
+                Ok(ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: body.to_string(),
+                    }],
+                    is_error: None,
+                })
+            }
+            fn has_tool(&self, name: &str) -> bool {
+                matches!(name, "probe_app" | "cdp_connect")
+            }
+            fn tools_as_openai(&self) -> Vec<Value> {
+                Vec::new()
+            }
+            async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mcp = ProbingMcp {
+            calls: Mutex::new(Vec::new()),
+        };
+        let mut runner = StateRunner::new("g".to_string(), AgentConfig::default());
+
+        // Plain-text launch_app response: no structured kind field, so
+        // resolve_cdp_target falls back to (app_name, None) and
+        // maybe_cdp_connect writes kind = Native by default.
+        crate::agent::runner::test_support::call_maybe_cdp_connect(
+            &mut runner,
+            "launch_app",
+            &serde_json::json!({"app_name": "Signal"}),
+            "Window opened successfully",
+            &mcp,
+        )
+        .await;
+
+        let focused = runner
+            .world_model
+            .focused_app
+            .as_ref()
+            .expect("focused_app must be populated");
+        assert_eq!(focused.value.name, "Signal");
+        assert_eq!(
+            focused.value.kind,
+            AppKind::ElectronApp,
+            "probe_app discovered ElectronApp; runner must upgrade focused_app.kind from the Native default"
+        );
+        // Sanity: the probe path actually ran.
+        let calls = mcp.calls.lock().unwrap();
+        assert!(calls.iter().any(|c| c == "probe_app"));
+    }
+
+    /// Quitting the focused app clears `world_model.focused_app`, while
+    /// quitting an unrelated app leaves it intact.
+    #[tokio::test]
+    async fn maybe_cdp_connect_clears_focused_app_only_on_matching_quit() {
+        use crate::agent::world_model::{AppKind, FocusedApp, Fresh, FreshnessSource};
+        let mcp = StaticMcp::with_tools(&[]);
+        let mut runner = StateRunner::new("g".to_string(), AgentConfig::default());
+        runner.world_model.focused_app = Some(Fresh {
+            value: FocusedApp {
+                name: "Signal".to_string(),
+                kind: AppKind::ElectronApp,
+                pid: 16024,
+            },
+            written_at: 0,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: None,
+        });
+
+        // quit_app for an unrelated app — focused_app survives.
+        crate::agent::runner::test_support::call_maybe_cdp_connect(
+            &mut runner,
+            "quit_app",
+            &serde_json::json!({"app_name": "Other"}),
+            "ok",
+            &mcp,
+        )
+        .await;
+        assert!(runner.world_model.focused_app.is_some());
+
+        // quit_app for the focused app — cleared.
+        crate::agent::runner::test_support::call_maybe_cdp_connect(
+            &mut runner,
+            "quit_app",
+            &serde_json::json!({"app_name": "Signal"}),
+            "ok",
+            &mcp,
+        )
+        .await;
+        assert!(runner.world_model.focused_app.is_none());
     }
 }
 
@@ -3880,6 +4051,270 @@ mod state_spine_event_contract_tests {
             task_state_events[0].1.subgoal_stack.len(),
             1,
             "task_state payload must reflect the post-mutation stack depth",
+        );
+    }
+}
+
+// Repeat-action loop detection: identical successful non-observation calls
+// for `REPEAT_ACTION_THRESHOLD` consecutive turns must emit an
+// `AgentEvent::Warning` carrying `NO_PROGRESS_WARNING_PREFIX`.
+#[cfg(test)]
+mod repeat_action_loop_detection_tests {
+    use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use crate::agent::runner::{NO_PROGRESS_WARNING_PREFIX, StateRunner};
+    use crate::agent::types::{AgentConfig, AgentEvent};
+    use crate::executor::Mcp;
+    use tokio::sync::mpsc;
+
+    fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    fn cfg(steps: usize) -> AgentConfig {
+        AgentConfig {
+            max_steps: steps,
+            use_cache: false,
+            ..AgentConfig::default()
+        }
+    }
+
+    fn count_no_progress(events: &[AgentEvent]) -> usize {
+        events
+            .iter()
+            .filter(|ev| {
+                matches!(ev, AgentEvent::Warning { message } if message.starts_with(NO_PROGRESS_WARNING_PREFIX))
+            })
+            .count()
+    }
+
+    async fn run_scenario(
+        scripted: Vec<clickweave_llm::ChatResponse>,
+        mcp: StaticMcp,
+        max_steps: usize,
+    ) -> Vec<AgentEvent> {
+        let llm = ScriptedLlm::new(scripted);
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+        let runner = StateRunner::new("goal".to_string(), cfg(max_steps)).with_events(event_tx);
+        let tools = mcp.tools_as_openai();
+        let _ = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                tools,
+                None,
+            )
+            .await
+            .expect("run ok");
+        drain_events(&mut event_rx)
+    }
+
+    #[tokio::test]
+    async fn three_identical_action_calls_emit_no_progress_warning() {
+        let same = || llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let mcp = StaticMcp::with_tools(&["cdp_click"]).with_reply("cdp_click", "clicked");
+        let events = run_scenario(
+            vec![
+                same(),
+                same(),
+                same(),
+                same(),
+                llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+            ],
+            mcp,
+            8,
+        )
+        .await;
+
+        assert!(
+            count_no_progress(&events) >= 2,
+            "third and fourth identical successful action must each emit a \
+             no-progress warning; events={:?}",
+            events,
+        );
+    }
+
+    #[tokio::test]
+    async fn divergent_action_resets_repeat_counter() {
+        let mcp = StaticMcp::with_tools(&["cdp_click"]).with_reply("cdp_click", "clicked");
+        let events = run_scenario(
+            vec![
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "2_0"})),
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+                llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+                llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+            ],
+            mcp,
+            10,
+        )
+        .await;
+
+        assert_eq!(
+            count_no_progress(&events),
+            0,
+            "divergent intermediate call must reset the repeat counter; events={:?}",
+            events,
+        );
+    }
+
+    /// Cache-replay parity. With `use_cache` enabled, identical successful
+    /// dispatches that interleave a live call and a cache replay must
+    /// still trip the detector. The cache-replay branch in
+    /// `try_replay_cache` must bump `last_action` the same way the live
+    /// `ToolSuccess` arm does.
+    #[tokio::test]
+    async fn cache_replayed_repeat_emits_no_progress_warning() {
+        // Stable element fingerprint so the cache key is identical
+        // every turn. The first cdp_click runs live and writes the
+        // cache; the second hits the cache and replays; the third
+        // falls through to the LLM (branch 2: same key) and runs live
+        // again. With the fix, all three contribute to the same streak
+        // so the third dispatch crosses REPEAT_ACTION_THRESHOLD = 3.
+        let same = || llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let mcp = StaticMcp::with_tools(&["cdp_find_elements", "cdp_click"])
+            .with_reply(
+                "cdp_find_elements",
+                r#"{"page_url":"about:blank","source":"cdp","matches":[{"uid":"1_0","role":"button","label":"Submit","tag":"button","disabled":false,"parent_role":null,"parent_name":null}]}"#,
+            )
+            .with_reply("cdp_click", "clicked");
+
+        let cfg_with_cache = AgentConfig {
+            max_steps: 8,
+            use_cache: true,
+            ..AgentConfig::default()
+        };
+        let llm = ScriptedLlm::new(vec![
+            same(),
+            same(),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+        let runner = StateRunner::new("goal".to_string(), cfg_with_cache).with_events(event_tx);
+        let tools = mcp.tools_as_openai();
+        let _ = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                tools,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        assert!(
+            count_no_progress(&events) >= 1,
+            "cached dispatches must contribute to the repeat-action streak; events={:?}",
+            events,
+        );
+    }
+
+    /// Regression: a non-dispatched action between identical successful
+    /// dispatches must break the streak. Without this, two cdp_click(A)
+    /// calls + a denied cdp_fill + another cdp_click(A) would still trip
+    /// the threshold even though the click was not actually emitted three
+    /// turns in a row.
+    #[tokio::test]
+    async fn denied_intervening_action_resets_repeat_counter() {
+        use crate::agent::permissions::{PermissionAction, PermissionPolicy, PermissionRule};
+
+        let click = || llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let fill = || llm_reply_tool("cdp_fill", serde_json::json!({"uid": "1_0", "value": "x"}));
+        let mcp = StaticMcp::with_tools(&["cdp_click", "cdp_fill"])
+            .with_reply("cdp_click", "clicked")
+            .with_reply("cdp_fill", "filled");
+
+        // Deny `cdp_fill` so the middle turn takes the policy-deny early-exit
+        // path that records an error step + `continue`s without invoking
+        // `run_turn`.
+        let policy = PermissionPolicy {
+            rules: vec![PermissionRule {
+                tool_pattern: "cdp_fill".to_string(),
+                args_pattern: None,
+                action: PermissionAction::Deny,
+            }],
+            ..PermissionPolicy::default()
+        };
+
+        let cfg_with_room = AgentConfig {
+            max_steps: 8,
+            use_cache: false,
+            // Allow several errors in a row so the deny doesn't terminate the run.
+            max_consecutive_errors: 5,
+            ..AgentConfig::default()
+        };
+        let llm = ScriptedLlm::new(vec![
+            click(),
+            click(),
+            fill(),
+            click(),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+        let runner = StateRunner::new("goal".to_string(), cfg_with_room)
+            .with_events(event_tx)
+            .with_permissions(policy);
+        let tools = mcp.tools_as_openai();
+        let _ = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                tools,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        assert_eq!(
+            count_no_progress(&events),
+            0,
+            "denied intermediate dispatch must reset the streak; events={:?}",
+            events,
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_observation_tool_does_not_emit_warning() {
+        let obs = || {
+            llm_reply_tool(
+                "cdp_find_elements",
+                serde_json::json!({"query": "", "max_results": 300}),
+            )
+        };
+        let mcp = StaticMcp::with_tools(&["cdp_find_elements"]).with_reply(
+            "cdp_find_elements",
+            r#"{"page_url":"about:blank","source":"cdp","matches":[]}"#,
+        );
+        let events = run_scenario(
+            vec![
+                obs(),
+                obs(),
+                obs(),
+                obs(),
+                llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+            ],
+            mcp,
+            8,
+        )
+        .await;
+
+        assert_eq!(
+            count_no_progress(&events),
+            0,
+            "observation-only tools must be exempt; events={:?}",
+            events,
         );
     }
 }

@@ -1355,6 +1355,56 @@ impl StateRunner {
         self.last_failed_tool_name = None;
         self.last_failed_error_kind = None;
     }
+
+    /// Bump the success-side repeat-action tracker for one dispatched
+    /// non-observation tool call. Returns the no-progress nudge string
+    /// when the streak crosses [`REPEAT_ACTION_THRESHOLD`], `None`
+    /// otherwise. Caller installs the nudge into `previous_result` so
+    /// the next turn renders it as the observation; the warning event
+    /// is emitted here.
+    ///
+    /// Shared between the live `ToolSuccess` arm and the cache-replay
+    /// success branch so cached dispatches contribute to the same
+    /// streak count as live dispatches.
+    async fn track_repeat_action(
+        &mut self,
+        tool_name: &str,
+        tool_arguments: &Value,
+        tool_body: &str,
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+        last_action: &mut Option<(String, Value, u32)>,
+    ) -> Option<String> {
+        if is_observation_tool(tool_name, annotations_by_tool) {
+            return None;
+        }
+        let same_as_last = matches!(
+            last_action.as_ref(),
+            Some((prev_tool, prev_args, _))
+                if prev_tool == tool_name && prev_args == tool_arguments
+        );
+        let count = if same_as_last {
+            last_action.as_ref().map(|(_, _, n)| *n).unwrap_or(0) + 1
+        } else {
+            1
+        };
+        *last_action = Some((tool_name.to_string(), tool_arguments.clone(), count));
+        if count < REPEAT_ACTION_THRESHOLD {
+            return None;
+        }
+        warn!(
+            tool = %tool_name,
+            count,
+            "state-spine: repeat-action threshold reached — injecting no-progress nudge"
+        );
+        self.emit_event(AgentEvent::Warning {
+            message: format!(
+                "{}: `{}` repeated {} turns in a row",
+                NO_PROGRESS_WARNING_PREFIX, tool_name, count
+            ),
+        })
+        .await;
+        Some(build_no_progress_nudge(tool_name, count, tool_body))
+    }
 }
 
 /// Control signal returned from [`StateRunner::try_replay_cache`].
@@ -1523,6 +1573,31 @@ const APP_LIFECYCLE_TOOLS: &[&str] = &["launch_app", "quit_app"];
 /// Tools whose success implies a navigation in the active CDP page,
 /// invalidating page state and the element surface.
 const CDP_NAVIGATION_TOOLS: &[&str] = &["cdp_navigate", "cdp_new_page", "cdp_select_page"];
+
+/// Number of consecutive successful dispatches of the same
+/// `(tool_name, arguments)` tuple — over non-observation tools — that
+/// trigger a no-progress nudge. The first repeat that crosses the
+/// threshold injects the nudge; subsequent repeats keep injecting it
+/// until the LLM picks a different action and the counter resets.
+const REPEAT_ACTION_THRESHOLD: u32 = 3;
+
+/// Prefix on the synthetic observation injected back to the LLM when
+/// the repeat-action detector fires. Anchors the test assertion that
+/// the nudge actually reached `previous_result`.
+pub(crate) const NO_PROGRESS_NUDGE_PREFIX: &str = "[NO-PROGRESS NUDGE]";
+
+/// Prefix on the `AgentEvent::Warning` message emitted alongside the
+/// nudge. Anchors the test assertion that subscribers see the event.
+pub(crate) const NO_PROGRESS_WARNING_PREFIX: &str = "no-progress";
+
+/// Build the no-progress nudge body. Pure function so the prompt copy
+/// stays out of the inner loop and can be exercised independently.
+fn build_no_progress_nudge(tool: &str, count: u32, prev_body: &str) -> String {
+    format!(
+        "{prefix} You have issued `{tool}` with the same arguments {count} turns in a row, but the world model is not advancing. Stop repeating this call. Either (1) switch dispatch family — if `<world_model>` has a `cdp_page` block, use `cdp_*` tools (e.g. `cdp_find_elements`, `cdp_take_dom_snapshot`, `cdp_type_text`, `cdp_evaluate_script`); if it has an AX tree, take a fresh `take_ax_snapshot` and use `ax_*` tools — or (2) push a narrower subgoal via `push_subgoal` and try a different tactic, or (3) emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
+        prefix = NO_PROGRESS_NUDGE_PREFIX,
+    )
+}
 
 /// True when the tool is observation-only — either hardcoded in
 /// [`OBSERVATION_TOOLS`] or annotated with `readOnlyHint = true`. The
@@ -1730,6 +1805,18 @@ impl StateRunner {
     fn record_app_kind(&mut self, app_name: &str, kind: &str) {
         self.known_app_kinds
             .insert(app_name.to_string(), kind.to_string());
+    }
+
+    /// Compute the per-turn `<tools_in_scope>` subset from the current
+    /// world-model state. No focused app yet → empty `Vec` → caller
+    /// renders no block, so the LLM falls back to the system prompt's
+    /// full `Available tools:` listing.
+    fn compute_tools_in_scope(&self, advertised_tool_names: &[String]) -> Vec<String> {
+        crate::agent::prompt::tools_in_scope(
+            self.world_model.focused_app_kind(),
+            self.world_model.is_cdp_attached(),
+            advertised_tool_names,
+        )
     }
 
     /// True when `(tool_name, result_text)` identifies a runner-skipped
@@ -1949,12 +2036,34 @@ impl StateRunner {
                 }
             };
 
-            if !probe_text.contains("ElectronApp") && !probe_text.contains("ChromeBrowser") {
+            // Identify the discovered kind so we can update
+            // `known_app_kinds` + `world_model.focused_app.kind` from the
+            // probe result. Without this, the unstructured launch_app /
+            // focus_window path leaves focused_app.kind = Native (the
+            // maybe_cdp_connect default for kind_hint = None) even after
+            // CDP attaches, which would route the per-turn filter to the
+            // AX arm despite a live `cdp_page`.
+            let discovered_kind = if probe_text.contains("ChromeBrowser") {
+                "ChromeBrowser"
+            } else if probe_text.contains("ElectronApp") {
+                "ElectronApp"
+            } else {
                 debug!(
                     app = app_name,
                     "state-spine: not an Electron/Chrome app, skipping CDP"
                 );
                 return None;
+            };
+            self.record_app_kind(app_name, discovered_kind);
+            if let Some(f) = self.world_model.focused_app.as_mut()
+                && f.value.name == app_name
+            {
+                use crate::agent::world_model::AppKind;
+                f.value.kind = match discovered_kind {
+                    "ChromeBrowser" => AppKind::ChromeBrowser,
+                    "ElectronApp" => AppKind::ElectronApp,
+                    _ => unreachable!("discovered_kind is constrained above"),
+                };
             }
         }
 
@@ -2090,11 +2199,20 @@ impl StateRunner {
         mcp: &M,
     ) {
         if tool_name != "launch_app" && tool_name != "focus_window" {
-            // Keep CDP state in lock-step with the underlying process.
+            // Keep CDP state and `world_model.focused_app` in lock-step
+            // with the underlying process.
             if tool_name == "quit_app"
                 && let Some(name) = arguments.get("app_name").and_then(Value::as_str)
             {
                 self.cdp_state.mark_app_quit(name);
+                if self
+                    .world_model
+                    .focused_app
+                    .as_ref()
+                    .is_some_and(|f| f.value.name == name)
+                {
+                    self.world_model.focused_app = None;
+                }
             }
             return;
         }
@@ -2107,6 +2225,33 @@ impl StateRunner {
         // present even when CDP is skipped (Native short-circuit).
         if let Some(kind) = kind_hint.as_deref() {
             self.record_app_kind(&app_name, kind);
+        }
+        // Mirror the focus into `world_model.focused_app` so the per-turn
+        // `<tools_in_scope>` filter sees the current focus state across
+        // turns. Runs whether or not CDP attaches — the AX / pre-connect
+        // arms key on focused-app kind alone.
+        {
+            use crate::agent::world_model::{AppKind, FocusedApp, Fresh, FreshnessSource};
+            let kind = match kind_hint.as_deref() {
+                Some("ElectronApp") | Some("electron_app") => AppKind::ElectronApp,
+                Some("ChromeBrowser") | Some("chrome_browser") => AppKind::ChromeBrowser,
+                _ => AppKind::Native,
+            };
+            let pid = serde_json::from_str::<Value>(result_text)
+                .ok()
+                .and_then(|v| v.get("pid").and_then(Value::as_i64))
+                .map(|p| p as i32)
+                .unwrap_or(0);
+            self.world_model.focused_app = Some(Fresh {
+                value: FocusedApp {
+                    name: app_name.clone(),
+                    kind,
+                    pid,
+                },
+                written_at: self.step_index,
+                source: FreshnessSource::DirectObservation,
+                ttl_steps: None,
+            });
         }
         if let Some(cdp_port) = self
             .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
@@ -2352,6 +2497,7 @@ impl StateRunner {
         previous_result: &mut Option<String>,
         last_cache_key: &mut Option<String>,
         last_failure: &mut Option<(String, Value, String)>,
+        last_action: &mut Option<(String, Value, u32)>,
     ) -> ReplayResult {
         // Branch 1: cache disabled or nothing to fingerprint.
         if !self.config.use_cache || elements.is_empty() {
@@ -2460,6 +2606,8 @@ impl StateRunner {
                     });
                     return ReplayResult::Break;
                 }
+                // Denied cached dispatch breaks the streak; mirror of the live policy-deny path.
+                *last_action = None;
                 return ReplayResult::Continue;
             }
             if matches!(policy_action, PermissionAction::Ask) {
@@ -2487,6 +2635,8 @@ impl StateRunner {
                         self.advance_recorded_step_index();
                         self.emit_world_model_changed_for_recorded_step().await;
                         *previous_result = Some("Replan: user rejected cached action".to_string());
+                        // Rejected cached dispatch breaks the streak.
+                        *last_action = None;
                         return ReplayResult::Continue;
                     }
                     Some(ApprovalResult::Unavailable) => {
@@ -2587,7 +2737,22 @@ impl StateRunner {
                 // `Recovering`-entry snapshot after the agent has
                 // demonstrably recovered via cache replay.
                 self.clear_last_failure_tracking();
-                *previous_result = Some(result_text);
+
+                // Cached successful dispatches must contribute to the
+                // same repeat-action streak as live dispatches, otherwise
+                // an LLM looping on a cacheable action would alternate
+                // live / cached and never trip the threshold via the
+                // live arm alone.
+                let nudge = self
+                    .track_repeat_action(
+                        &cached_tool,
+                        &cached_args,
+                        &result_text,
+                        annotations_by_tool,
+                        last_action,
+                    )
+                    .await;
+                *previous_result = Some(nudge.unwrap_or(result_text));
                 *last_cache_key = Some(current_key);
 
                 // Destructive-cap accounting: the cached replay counts toward
@@ -2911,12 +3076,28 @@ impl StateRunner {
         let tool_list_for_prompt = openai_tools_to_mcp_tool_list(&mcp_tools);
         let system_text = build_system_prompt(&tool_list_for_prompt);
 
+        // Stable list of advertised MCP tool names for the per-turn
+        // `<tools_in_scope>` filter. Computed once per run since `mcp_tools`
+        // is itself stable across the loop (mid-run mutations would
+        // invalidate the prompt-cache prefix).
+        let advertised_tool_names: Vec<String> = tool_list_for_prompt
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+
         // `goal` already carries the prior-turn log + variant-context
         // composed by `build_goal_block` at the Tauri seam. Feed it
         // straight into the user turn so messages[1] is the single
         // run-specific slot.
-        let initial_user =
-            build_user_turn_message(&self.world_model, &self.task_state, 0, &goal, &[]);
+        let initial_scope = self.compute_tools_in_scope(&advertised_tool_names);
+        let initial_user = build_user_turn_message(
+            &self.world_model,
+            &self.task_state,
+            0,
+            &goal,
+            &[],
+            &initial_scope,
+        );
 
         let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
 
@@ -2948,6 +3129,12 @@ impl StateRunner {
         // error)` from the last failing live call. Carried here so the
         // cache-replay success path can clear it (parity with legacy).
         let mut last_failure: Option<(String, Value, String)> = None;
+        // No-progress detector for the success path. Failures already
+        // abort on identical-error repeats via `last_failure` above;
+        // this covers successful calls that don't advance the world.
+        // Tuple `(tool, args, count)` is one slot so count cannot drift
+        // out of sync with the key it counts.
+        let mut last_action: Option<(String, Value, u32)> = None;
 
         for _step_index in 0..self.config.max_steps {
             if self.state.completed {
@@ -3070,6 +3257,7 @@ impl StateRunner {
                         &mut previous_result,
                         &mut last_cache_key,
                         &mut last_failure,
+                        &mut last_action,
                     )
                     .await;
                 match replay {
@@ -3095,12 +3283,14 @@ impl StateRunner {
             // the previous tool body as the observation, then compact the
             // history before the LLM call.
             let step_obs = previous_result.clone().unwrap_or_default();
+            let step_scope = self.compute_tools_in_scope(&advertised_tool_names);
             let step_msg = build_user_turn_message(
                 &self.world_model,
                 &self.task_state,
                 self.step_index,
                 &step_obs,
                 &retrieved,
+                &step_scope,
             );
             messages.push(Message::user(step_msg));
             messages = compact(messages, &budget);
@@ -3226,6 +3416,23 @@ impl StateRunner {
                 // same way the live ToolSuccess path does.
                 self.clear_last_failure_tracking();
                 previous_result = Some(skip_body.clone());
+                // Synthetic skip is a successful dispatch from the LLM's
+                // view — feed it through the same streak detector so a
+                // run that keeps emitting `focus_window` against an
+                // already-attached CDP target gets a no-progress nudge
+                // instead of silent skips forever.
+                if let Some(nudge) = self
+                    .track_repeat_action(
+                        tool_name,
+                        arguments,
+                        &skip_body,
+                        &annotations_by_tool,
+                        &mut last_action,
+                    )
+                    .await
+                {
+                    previous_result = Some(nudge);
+                }
                 self.emit_event(AgentEvent::StepCompleted {
                     step_index: step_idx_for_event,
                     tool_name: "focus_window".to_string(),
@@ -3338,6 +3545,11 @@ impl StateRunner {
                                     });
                                 break;
                             }
+                            // Denied dispatch breaks the success streak — the
+                            // intended action did not run, so any prior
+                            // `last_action` no longer represents a consecutive
+                            // chain.
+                            last_action = None;
                             continue;
                         }
                         PermissionAction::Allow => {
@@ -3383,6 +3595,8 @@ impl StateRunner {
                                         tool_call_id,
                                         previous_result.as_deref(),
                                     );
+                                    // Rejected dispatch breaks the streak.
+                                    last_action = None;
                                     continue;
                                 }
                                 Some(ApprovalResult::Unavailable) => {
@@ -3629,6 +3843,19 @@ impl StateRunner {
                     // an is-synthetic guard here.
                     self.maybe_cdp_connect(&tool_name, &tool_arguments, &tool_body, mcp)
                         .await;
+
+                    if let Some(nudge) = self
+                        .track_repeat_action(
+                            &tool_name,
+                            &tool_arguments,
+                            &tool_body,
+                            &annotations_by_tool,
+                            &mut last_action,
+                        )
+                        .await
+                    {
+                        previous_result = Some(nudge);
+                    }
                 }
                 TurnOutcome::ToolError { tool_name, error } => {
                     let (command, step_outcome, tool_arguments) = match &turn.action {
@@ -3690,6 +3917,8 @@ impl StateRunner {
                         break;
                     }
                     last_failure = Some((tool_name, tool_arguments, error));
+                    // Failures use `last_failure`; clear the success-side tracker.
+                    last_action = None;
 
                     // Recovery strategy: `Abort` halts with MaxErrorsReached;
                     // `Continue` falls through to the next iteration which
@@ -3754,6 +3983,8 @@ impl StateRunner {
                     // for the next turn so the LLM sees why it was asked
                     // to replan.
                     previous_result = Some(format!("replan: {}", reason));
+                    // Replan = explicit tactic change; reset the streak.
+                    last_action = None;
                 }
             }
 
