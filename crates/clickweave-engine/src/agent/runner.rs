@@ -2036,12 +2036,34 @@ impl StateRunner {
                 }
             };
 
-            if !probe_text.contains("ElectronApp") && !probe_text.contains("ChromeBrowser") {
+            // Identify the discovered kind so we can update
+            // `known_app_kinds` + `world_model.focused_app.kind` from the
+            // probe result. Without this, the unstructured launch_app /
+            // focus_window path leaves focused_app.kind = Native (the
+            // maybe_cdp_connect default for kind_hint = None) even after
+            // CDP attaches, which would route the per-turn filter to the
+            // AX arm despite a live `cdp_page`.
+            let discovered_kind = if probe_text.contains("ChromeBrowser") {
+                "ChromeBrowser"
+            } else if probe_text.contains("ElectronApp") {
+                "ElectronApp"
+            } else {
                 debug!(
                     app = app_name,
                     "state-spine: not an Electron/Chrome app, skipping CDP"
                 );
                 return None;
+            };
+            self.record_app_kind(app_name, discovered_kind);
+            if let Some(f) = self.world_model.focused_app.as_mut()
+                && f.value.name == app_name
+            {
+                use crate::agent::world_model::AppKind;
+                f.value.kind = match discovered_kind {
+                    "ChromeBrowser" => AppKind::ChromeBrowser,
+                    "ElectronApp" => AppKind::ElectronApp,
+                    _ => unreachable!("discovered_kind is constrained above"),
+                };
             }
         }
 
@@ -2177,11 +2199,20 @@ impl StateRunner {
         mcp: &M,
     ) {
         if tool_name != "launch_app" && tool_name != "focus_window" {
-            // Keep CDP state in lock-step with the underlying process.
+            // Keep CDP state and `world_model.focused_app` in lock-step
+            // with the underlying process.
             if tool_name == "quit_app"
                 && let Some(name) = arguments.get("app_name").and_then(Value::as_str)
             {
                 self.cdp_state.mark_app_quit(name);
+                if self
+                    .world_model
+                    .focused_app
+                    .as_ref()
+                    .is_some_and(|f| f.value.name == name)
+                {
+                    self.world_model.focused_app = None;
+                }
             }
             return;
         }
@@ -2194,6 +2225,33 @@ impl StateRunner {
         // present even when CDP is skipped (Native short-circuit).
         if let Some(kind) = kind_hint.as_deref() {
             self.record_app_kind(&app_name, kind);
+        }
+        // Mirror the focus into `world_model.focused_app` so the per-turn
+        // `<tools_in_scope>` filter sees the current focus state across
+        // turns. Runs whether or not CDP attaches — the AX / pre-connect
+        // arms key on focused-app kind alone.
+        {
+            use crate::agent::world_model::{AppKind, FocusedApp, Fresh, FreshnessSource};
+            let kind = match kind_hint.as_deref() {
+                Some("ElectronApp") | Some("electron_app") => AppKind::ElectronApp,
+                Some("ChromeBrowser") | Some("chrome_browser") => AppKind::ChromeBrowser,
+                _ => AppKind::Native,
+            };
+            let pid = serde_json::from_str::<Value>(result_text)
+                .ok()
+                .and_then(|v| v.get("pid").and_then(Value::as_i64))
+                .map(|p| p as i32)
+                .unwrap_or(0);
+            self.world_model.focused_app = Some(Fresh {
+                value: FocusedApp {
+                    name: app_name.clone(),
+                    kind,
+                    pid,
+                },
+                written_at: self.step_index,
+                source: FreshnessSource::DirectObservation,
+                ttl_steps: None,
+            });
         }
         if let Some(cdp_port) = self
             .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)

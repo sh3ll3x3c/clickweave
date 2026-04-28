@@ -302,7 +302,15 @@ impl WorldModel {
             match e {
                 InvalidationEvent::FocusChanging { .. }
                 | InvalidationEvent::AppLifecycle { .. } => {
-                    self.focused_app = None;
+                    // `focused_app` is intentionally NOT cleared here.
+                    // The post-tool hook (`StateRunner::maybe_cdp_connect`)
+                    // is the live runner's source of truth for the current
+                    // focus: it writes the new value after a successful
+                    // focus_window/launch_app and clears it on quit_app of
+                    // the focused target. Clearing here would erase that
+                    // write between the dispatch turn and the next
+                    // observe, leaving the per-turn `<tools_in_scope>`
+                    // filter blind to the focused-app kind.
                     self.window_list = None;
                     self.elements = None;
                     self.modal_present = None;
@@ -654,15 +662,30 @@ mod tests {
     }
 
     #[test]
-    fn apply_events_focus_changing_invalidates_focused_app() {
+    fn apply_events_focus_changing_preserves_focused_app() {
+        // Contract: `focused_app` survives FocusChanging / AppLifecycle
+        // because the runner's post-tool hook is the live source of truth
+        // (it writes the new value after a successful focus_window /
+        // launch_app and clears it on quit_app). Other app-bound fields
+        // are still invalidated.
         let mut wm = WorldModel::default();
         wm.focused_app = Some(fresh_focused_app(1));
+        wm.window_list = Some(Fresh {
+            value: Vec::new(),
+            written_at: 1,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: None,
+        });
         wm.apply_events(vec![InvalidationEvent::FocusChanging {
             tool: "launch_app".to_string(),
         }]);
         assert!(
-            wm.focused_app.is_none(),
-            "focused_app should be invalidated"
+            wm.focused_app.is_some(),
+            "focused_app must survive FocusChanging — post-tool hook owns the write"
+        );
+        assert!(
+            wm.window_list.is_none(),
+            "window_list is still invalidated by FocusChanging"
         );
     }
 

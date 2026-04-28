@@ -126,24 +126,23 @@ pub fn classify_tool_family(name: &str) -> DispatchFamily {
 /// Compute the subset of advertised MCP tool names the LLM should prefer
 /// for the current world-model state.
 ///
-/// Modes:
-/// - `cdp_page` attached → `Universal` + `Cdp`. Coordinate primitives and
-///   AX tools are hidden because they bypass the page event loop.
-/// - `ElectronApp` / `ChromeBrowser` focused, no `cdp_page` → `Universal`
-///   plus `cdp_connect` only. The LLM either calls `cdp_connect` itself or
-///   waits one turn for the harness's auto-connect path.
-/// - `Native` focused → `Universal` + `Ax`. CDP and coordinate primitives
-///   are hidden — AX is focus-preserving and the right family.
-/// - No focused app yet → returns an empty `Vec`. Callers render no block,
-///   so the LLM sees the full `Available tools:` listing from the system
-///   prompt.
+/// Modes (focused_kind takes priority over `cdp_page_attached` so a stale
+/// CDP page surviving an app switch doesn't push the wrong family for the
+/// new focused app):
+/// - `Electron` / `Chrome` focused + `cdp_page` attached → `Universal` + `Cdp`.
+/// - `Electron` / `Chrome` focused, no `cdp_page` → `Universal` + `cdp_connect`.
+///   The LLM calls `cdp_connect` or waits one turn for the harness's auto-connect.
+/// - `Native` focused → `Universal` + `Ax`. Any `cdp_page` is treated as stale
+///   and ignored — its binding is to a previously-focused CDP-capable app.
+/// - No focused app yet → empty `Vec`. Callers render no block, so the LLM
+///   sees the full `Available tools:` listing from the system prompt.
 pub fn tools_in_scope(
     focused_kind: Option<AppKind>,
     cdp_page_attached: bool,
     all_tool_names: &[String],
 ) -> Vec<String> {
-    if cdp_page_attached {
-        return all_tool_names
+    match focused_kind {
+        Some(AppKind::ElectronApp | AppKind::ChromeBrowser) if cdp_page_attached => all_tool_names
             .iter()
             .filter(|n| {
                 matches!(
@@ -152,9 +151,7 @@ pub fn tools_in_scope(
                 )
             })
             .cloned()
-            .collect();
-    }
-    match focused_kind {
+            .collect(),
         Some(AppKind::ElectronApp | AppKind::ChromeBrowser) => all_tool_names
             .iter()
             .filter(|n| {
@@ -700,6 +697,27 @@ mod state_spine_prompt_tests {
         assert!(!scope.iter().any(|n| n == "cdp_click"));
         assert!(!scope.iter().any(|n| n == "click"));
         assert!(!scope.iter().any(|n| n == "find_text"));
+    }
+
+    #[test]
+    fn tools_in_scope_native_ignores_stale_cdp_page() {
+        // When the focused app is Native but a `cdp_page` from a prior
+        // CDP-capable app still happens to be set, the filter must not
+        // be tricked into the CDP arm — that would expose the wrong
+        // family for the new focused app and hide AX tools.
+        let all = names(&[
+            "cdp_click",
+            "ax_click",
+            "ax_set_value",
+            "take_ax_snapshot",
+            "click",
+            "take_screenshot",
+        ]);
+        let scope = tools_in_scope(Some(AppKind::Native), true, &all);
+        assert!(scope.iter().any(|n| n == "ax_click"));
+        assert!(scope.iter().any(|n| n == "take_ax_snapshot"));
+        assert!(!scope.iter().any(|n| n == "cdp_click"));
+        assert!(!scope.iter().any(|n| n == "click"));
     }
 
     #[test]
