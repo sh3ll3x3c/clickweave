@@ -128,7 +128,8 @@ pub struct WorldModel {
     /// Most recent permanent failure from the post-tool CDP auto-connect
     /// hook. Populated when `auto_connect_cdp` exhausts its retries (or
     /// can't even probe the app); cleared by `on_cdp_connected` on
-    /// success. The state block renders this alongside `cdp_page` so the
+    /// success, on focus changes, and on `quit_app` of the focused
+    /// target. The state block renders this alongside `cdp_page` so the
     /// LLM can distinguish "auto-connect still hasn't fired" from
     /// "auto-connect tried and failed permanently" — without the
     /// distinction, both states look identical (no `cdp_page`) and the

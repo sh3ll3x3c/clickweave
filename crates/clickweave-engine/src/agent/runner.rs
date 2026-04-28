@@ -3588,14 +3588,11 @@ impl StateRunner {
             // behind the per-turn `<tools_in_scope>` filter: the filter
             // narrows the LLM-facing tool list, but a wrong-family
             // dispatch can still reach this point via cached replay
-            // from a different state, a malformed turn, or a future LLM
-            // regression. When a structured surface is wired (CDP page
-            // attached, or Native focus + AX dispatch toolset), reject
-            // the coordinate primitive at the harness layer with a
-            // synthetic `StepOutcome::Error` so it never hits MCP. The
-            // recovery layer learns from the structured failure
-            // signature, and the loop-detection / recovery_strategy
-            // logic mirrors the policy-deny branch above.
+            // from a different state or a malformed turn. When a
+            // structured surface is wired (CDP page attached, or
+            // Native focus + AX dispatch toolset), reject the
+            // coordinate primitive with a synthetic `StepOutcome::Error`
+            // so it never hits MCP.
             if let AgentAction::ToolCall {
                 tool_name,
                 arguments,
@@ -5714,32 +5711,23 @@ mod focus_skip_tests {
             Some(FocusSkipReason::PolicyDisabled),
         );
 
-        // 4. The opt-in test fixture (`new_for_test`) sets
-        //    `allow_focus_window = true` so the unit tests in this
-        //    module can exercise the kind / toolset branches without
-        //    having to opt in per-test. That means a `new_for_test`
-        //    runner with no kind recorded must defer (no skip) — the
-        //    PolicyDisabled short-circuit only fires for the
-        //    `false`-configured `runner` above.
+        // 4. `new_for_test` opts allow_focus_window back in so the
+        //    unit tests in this module exercise the kind/toolset
+        //    branches without per-test opt-in; an unseeded fixture
+        //    runner must defer on unknown kind.
         let test_default_runner = StateRunner::new_for_test("test-goal".to_string());
         assert!(
             test_default_runner
                 .should_skip_focus_window(&args_named, &mcp_empty)
                 .is_none(),
-            "test fixture (allow_focus_window=true via new_for_test) must defer \
-             on unknown kind",
         );
     }
 
     #[test]
     fn default_config_disables_focus_window_via_policy() {
-        // Production default is now `allow_focus_window = false` —
-        // every focus_window is suppressed at the dispatch site so
-        // runs operate in the background unless an operator opts in.
-        // `new_for_test` has its own opt-in (see above) so the bulk
-        // of the test suite remains semantically unchanged; this
-        // test pins the production-default contract via the raw
-        // `AgentConfig::default()`.
+        // Pins the production-default contract: `AgentConfig::default()`
+        // must suppress every focus_window unconditionally. `new_for_test`
+        // overrides this for the rest of the suite (see above).
         let runner = StateRunner::new("test-goal".to_string(), AgentConfig::default());
         let mcp = ToolsetStub::with(&[]);
         let args = serde_json::json!({"app_name": "AnyApp"});
@@ -5986,8 +5974,7 @@ mod coordinate_primitive_guard_tests {
     }
 
     #[test]
-    fn is_coordinate_primitive_classifies_correctly() {
-        // Action primitives are blocked-eligible.
+    fn is_coordinate_primitive_includes_actions_excludes_observations() {
         for name in [
             "click",
             "type_text",
@@ -5998,7 +5985,6 @@ mod coordinate_primitive_guard_tests {
         ] {
             assert!(is_coordinate_primitive(name), "{name} is a coord primitive");
         }
-        // Observations and structured tools are not.
         for name in [
             "find_text",
             "find_image",
