@@ -2373,6 +2373,14 @@ mod cdp_and_focus_window_tests {
         AgentConfig {
             max_steps: steps,
             use_cache: false,
+            allow_focus_window: true,
+            ..AgentConfig::default()
+        }
+    }
+
+    fn cfg_default_with_focus_window() -> AgentConfig {
+        AgentConfig {
+            allow_focus_window: true,
             ..AgentConfig::default()
         }
     }
@@ -2394,6 +2402,7 @@ mod cdp_and_focus_window_tests {
         for reason in [
             FocusSkipReason::AxAvailable,
             FocusSkipReason::CdpLive,
+            FocusSkipReason::CdpAttachable,
             FocusSkipReason::PolicyDisabled,
         ] {
             assert!(
@@ -2421,7 +2430,7 @@ mod cdp_and_focus_window_tests {
 
     #[test]
     fn should_skip_focus_window_fires_for_native_with_full_ax_toolset() {
-        let mut runner = StateRunner::new("g".to_string(), AgentConfig::default());
+        let mut runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
         runner.record_app_kind_for_test("Calculator", "Native");
         let mcp = StaticMcp::with_tools(FULL_AX_TOOLSET);
         let args = serde_json::json!({"app_name": "Calculator"});
@@ -2432,7 +2441,7 @@ mod cdp_and_focus_window_tests {
 
     #[test]
     fn should_skip_focus_window_fires_for_electron_with_live_cdp() {
-        let mut runner = StateRunner::new("g".to_string(), AgentConfig::default());
+        let mut runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
         runner.record_app_kind_for_test("Signal", "ElectronApp");
         runner.set_cdp_connected_for_test("Signal", 0);
         let mcp = StaticMcp::with_tools(FULL_CDP_TOOLSET);
@@ -2443,10 +2452,27 @@ mod cdp_and_focus_window_tests {
     }
 
     #[test]
-    fn should_skip_focus_window_defers_for_electron_without_live_cdp() {
-        // Kind is known but no active CDP session → defer so the first
-        // focus_window can raise the window before cdp_connect.
-        let mut runner = StateRunner::new("g".to_string(), AgentConfig::default());
+    fn should_skip_focus_window_fires_with_cdp_attachable_when_cdp_connect_advertised() {
+        // Pre-CDP-connect: kind is Electron and the server advertises
+        // `cdp_connect`. The post-tool hook will auto-connect on its
+        // own, so the real focus_window is unnecessary; the classifier
+        // must short-circuit with `CdpAttachable`.
+        let mut runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
+        runner.record_app_kind_for_test("Signal", "ElectronApp");
+        let mcp = StaticMcp::with_tools(&["cdp_connect"]);
+        let args = serde_json::json!({"app_name": "Signal"});
+        let skip =
+            crate::agent::runner::test_support::call_should_skip_focus_window(&runner, &args, &mcp);
+        assert_eq!(skip, Some(FocusSkipReason::CdpAttachable));
+    }
+
+    #[test]
+    fn should_skip_focus_window_defers_for_electron_without_cdp_connect_advertised() {
+        // Kind is known but the server lacks `cdp_connect` so the
+        // post-tool auto-connect cannot fire. Without that, the first
+        // focus_window may itself be needed to bring the window front,
+        // and the classifier must defer.
+        let mut runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
         runner.record_app_kind_for_test("VSCode", "ElectronApp");
         let mut combined: Vec<&str> = FULL_AX_TOOLSET.to_vec();
         combined.extend_from_slice(FULL_CDP_TOOLSET);
@@ -2459,7 +2485,7 @@ mod cdp_and_focus_window_tests {
 
     #[test]
     fn should_skip_focus_window_defers_for_unknown_kind() {
-        let runner = StateRunner::new("g".to_string(), AgentConfig::default());
+        let runner = StateRunner::new("g".to_string(), cfg_default_with_focus_window());
         let mcp = StaticMcp::with_tools(FULL_AX_TOOLSET);
         let args = serde_json::json!({"app_name": "Mystery"});
         let skip =

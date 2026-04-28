@@ -652,6 +652,10 @@ async fn focus_window_after_native_launch_is_suppressed_with_ax_toolset() {
         max_steps: 5,
         build_workflow: true,
         use_cache: false,
+        // Opt in so the test exercises the AxAvailable kind/toolset
+        // branch instead of being short-circuited by the production
+        // `allow_focus_window = false` default.
+        allow_focus_window: true,
         ..Default::default()
     };
 
@@ -814,6 +818,10 @@ async fn focus_window_still_runs_when_app_kind_is_unknown() {
         max_steps: 5,
         build_workflow: true,
         use_cache: false,
+        // Opt in so the unknown-kind defer path runs; the production
+        // `allow_focus_window = false` default would short-circuit
+        // every focus_window before this branch had a chance.
+        allow_focus_window: true,
         ..Default::default()
     };
 
@@ -940,6 +948,10 @@ async fn focus_window_after_cdp_connected_is_suppressed_for_electron_target() {
         max_steps: 5,
         build_workflow: true,
         use_cache: false,
+        // Opt in so the test exercises the CdpLive kind/toolset
+        // branch instead of the production-default PolicyDisabled
+        // short-circuit.
+        allow_focus_window: true,
         ..Default::default()
     };
 
