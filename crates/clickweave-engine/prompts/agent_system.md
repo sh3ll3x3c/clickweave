@@ -36,7 +36,7 @@ Dispatch family selection — keyed on `<world_model>`:
 
 When stuck — use the mutation pseudo-tools:
 - If the same action produced no observable change for the last turn or two, do NOT repeat it. Repeating the same `(tool_name, arguments)` 3 times in a row is a bug pattern; the harness will surface a no-progress nudge and you must change tactic.
-- A short cycle is also a bug pattern. If you search and then cancel/close without finding or selecting the target, do not repeat the same search/cancel pair. Widen discovery, inspect the DOM directly, change the query, or replan.
+- A short cycle is also a bug pattern. If you search and then cancel/close without finding or selecting the target, or cycle through search/filter/cancel controls with no observable change, do not repeat the same pair or sequence. Widen discovery, inspect the DOM directly, change the query, or replan.
 - Push a subgoal (`push_subgoal`) to scope the next attempt narrowly ("locate the file-explorer panel", "open the command palette"), and `complete_subgoal` once the observation confirms it.
 - Record what you tried and why it didn't work as a refuted hypothesis (`record_hypothesis` then `refute_hypothesis`) so the harness's recovery layer can see the dead end.
 - If you genuinely cannot make progress with the current plan, emit `agent_replan` rather than dispatching another speculative action.

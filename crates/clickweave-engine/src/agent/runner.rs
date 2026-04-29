@@ -35,7 +35,7 @@ use crate::agent::types::{
     AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest, RunnerOutput,
     StepOutcome, TerminalReason, WorldModelDiff,
 };
-use crate::agent::world_model::{InvalidationEvent, WorldModel};
+use crate::agent::world_model::{InvalidationEvent, ObservedElement, WorldModel};
 use crate::executor::Mcp;
 
 /// The one action an `AgentTurn` must carry (D10).
@@ -1737,24 +1737,20 @@ impl StateRunner {
             count,
         });
         if count < REPEAT_ACTION_THRESHOLD {
-            if let Some((first_tool, second_tool)) = detect_two_action_cycle(recent_actions) {
+            if let Some(cycle) = detect_repeated_action_cycle(recent_actions) {
+                let cycle_summary = cycle.join(" -> ");
                 warn!(
-                    first_tool = %first_tool,
-                    second_tool = %second_tool,
-                    "state-spine: repeated two-action cycle detected — injecting no-progress nudge"
+                    cycle = %cycle_summary,
+                    "state-spine: repeated action cycle detected — injecting no-progress nudge"
                 );
                 self.emit_event(AgentEvent::Warning {
                     message: format!(
-                        "{}: repeated action cycle `{}` -> `{}`",
-                        NO_PROGRESS_WARNING_PREFIX, first_tool, second_tool
+                        "{}: repeated action cycle `{}`",
+                        NO_PROGRESS_WARNING_PREFIX, cycle_summary
                     ),
                 })
                 .await;
-                return Some(build_action_cycle_nudge(
-                    &first_tool,
-                    &second_tool,
-                    tool_body,
-                ));
+                return Some(build_action_cycle_nudge(&cycle_summary, tool_body));
             }
             return None;
         }
@@ -2006,10 +2002,10 @@ const CDP_NAVIGATION_TOOLS: &[&str] = &["cdp_navigate", "cdp_new_page", "cdp_sel
 /// until the LLM picks a different action and the counter resets.
 const REPEAT_ACTION_THRESHOLD: u32 = 3;
 
-/// Sliding window used to detect short successful action cycles such as
-/// search -> cancel -> search -> cancel. Observation tools are excluded
-/// before they reach this window.
-const ACTION_CYCLE_WINDOW: usize = 4;
+/// Largest repeated action-cycle body to detect. Observation tools are
+/// excluded before they reach this window.
+const ACTION_CYCLE_MAX_PATTERN_LEN: usize = 3;
+const ACTION_CYCLE_WINDOW: usize = ACTION_CYCLE_MAX_PATTERN_LEN * 2;
 
 /// Prefix on the synthetic observation injected back to the LLM when
 /// the repeat-action detector fires. Anchors the test assertion that
@@ -2061,18 +2057,19 @@ fn stable_no_progress_context_signature(world_model: &WorldModel) -> String {
         .cdp_page
         .as_ref()
         .map(|fresh| fresh.value.url.as_str());
-    let cdp_page_fingerprint = world_model
-        .cdp_page
+    let element_surface = world_model
+        .elements
         .as_ref()
-        .map(|fresh| fresh.value.page_fingerprint.as_str());
+        .map(|fresh| stable_element_surface_signature(&fresh.value));
+    let cdp_page_fingerprint = world_model.cdp_page.as_ref().and_then(|fresh| {
+        element_surface
+            .is_none()
+            .then_some(fresh.value.page_fingerprint.as_str())
+    });
     let cdp_connect_status = world_model
         .cdp_connect_status
         .as_ref()
         .map(|fresh| fresh.value.as_str());
-    let element_surface = world_model
-        .elements
-        .as_ref()
-        .map(|fresh| hashed_json_signature(&fresh.value));
     let modal_present = world_model.modal_present.as_ref().map(|fresh| fresh.value);
     let dialog_present = world_model.dialog_present.as_ref().map(|fresh| fresh.value);
     let signature = serde_json::json!({
@@ -2088,24 +2085,70 @@ fn stable_no_progress_context_signature(world_model: &WorldModel) -> String {
     blake3::hash(&bytes).to_hex().to_string()
 }
 
-fn hashed_json_signature<T: Serialize>(value: &T) -> String {
-    let bytes = serde_json::to_vec(value).unwrap_or_default();
+fn stable_element_surface_signature(elements: &[ObservedElement]) -> String {
+    let mut stable_entries: Vec<Value> = elements.iter().map(stable_observed_element_key).collect();
+    stable_entries.sort_by_key(|entry| serde_json::to_string(entry).unwrap_or_default());
+    let bytes = serde_json::to_vec(&stable_entries).unwrap_or_default();
     blake3::hash(&bytes).to_hex()[..16].to_string()
 }
 
-fn detect_two_action_cycle(
-    recent_actions: &VecDeque<ActionProgressSignature>,
-) -> Option<(String, String)> {
-    if recent_actions.len() < ACTION_CYCLE_WINDOW {
-        return None;
+fn stable_observed_element_key(element: &ObservedElement) -> Value {
+    match element {
+        ObservedElement::Cdp(el) => serde_json::json!({
+            "source": "cdp",
+            "role": &el.role,
+            "label": &el.label,
+            "tag": &el.tag,
+            "disabled": el.disabled,
+            "parent_role": &el.parent_role,
+            "parent_name": &el.parent_name,
+        }),
+        ObservedElement::Ax(el) => serde_json::json!({
+            "source": "ax",
+            "role": &el.role,
+            "name": &el.name,
+            "value": &el.value,
+            "depth": el.depth,
+            "focused": el.focused,
+            "disabled": el.disabled,
+            "parent_name": &el.parent_name,
+        }),
+        ObservedElement::Ocr(el) => serde_json::json!({
+            "source": "ocr",
+            "text": &el.text,
+            "x_bin": el.x.div_euclid(10),
+            "y_bin": el.y.div_euclid(10),
+            "width_bin": el.width.div_euclid(10),
+            "height_bin": el.height.div_euclid(10),
+        }),
     }
-    let len = recent_actions.len();
-    let first = &recent_actions[len - 4];
-    let second = &recent_actions[len - 3];
-    let third = &recent_actions[len - 2];
-    let fourth = &recent_actions[len - 1];
-    (first == third && second == fourth && first != second)
-        .then(|| (first.tool_name.clone(), second.tool_name.clone()))
+}
+
+fn detect_repeated_action_cycle(
+    recent_actions: &VecDeque<ActionProgressSignature>,
+) -> Option<Vec<String>> {
+    for pattern_len in 2..=ACTION_CYCLE_MAX_PATTERN_LEN {
+        let needed = pattern_len * 2;
+        if recent_actions.len() < needed {
+            continue;
+        }
+        let len = recent_actions.len();
+        let first: Vec<_> = recent_actions
+            .iter()
+            .skip(len - needed)
+            .take(pattern_len)
+            .collect();
+        let second: Vec<_> = recent_actions
+            .iter()
+            .skip(len - pattern_len)
+            .take(pattern_len)
+            .collect();
+        let has_distinct_actions = first.iter().skip(1).any(|sig| *sig != first[0]);
+        if has_distinct_actions && first == second {
+            return Some(first.iter().map(|sig| sig.tool_name.clone()).collect());
+        }
+    }
+    None
 }
 
 /// Build the no-progress nudge body. Pure function so the prompt copy
@@ -2117,9 +2160,9 @@ fn build_no_progress_nudge(tool: &str, count: u32, prev_body: &str) -> String {
     )
 }
 
-fn build_action_cycle_nudge(first_tool: &str, second_tool: &str, prev_body: &str) -> String {
+fn build_action_cycle_nudge(cycle_summary: &str, prev_body: &str) -> String {
     format!(
-        "{prefix} You are in a repeated two-action cycle in the same stable app/page context: `{first_tool}` -> `{second_tool}` -> `{first_tool}` -> `{second_tool}`. The task is not advancing. Do not run the same pair again. Widen or change discovery with `cdp_take_dom_snapshot`/`cdp_evaluate_script`, verify the active context, or emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
+        "{prefix} You are in a repeated action cycle in the same stable app/page context: `{cycle_summary}`. The task is not advancing. Do not run the same cycle again. Widen or change discovery with `cdp_take_dom_snapshot`/`cdp_evaluate_script`, verify the active context, or emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
         prefix = NO_PROGRESS_NUDGE_PREFIX,
     )
 }
@@ -5846,7 +5889,8 @@ mod parse_agent_turn_tool_calls_tests {
 #[cfg(test)]
 mod no_progress_guard_tests {
     use super::*;
-    use crate::agent::world_model::{CdpPageState, Fresh, FreshnessSource};
+    use crate::agent::world_model::{CdpPageState, Fresh, FreshnessSource, OcrMatch};
+    use clickweave_core::cdp::CdpFindElementMatch;
     use serde_json::json;
 
     fn sig(
@@ -5879,8 +5923,37 @@ mod no_progress_guard_tests {
         ]);
 
         assert_eq!(
-            detect_two_action_cycle(&recent),
-            Some(("cdp_fill".to_string(), "cdp_click".to_string()))
+            detect_repeated_action_cycle(&recent),
+            Some(vec!["cdp_fill".to_string(), "cdp_click".to_string()])
+        );
+    }
+
+    #[test]
+    fn detects_three_action_cycle_in_same_stable_context() {
+        let recent = VecDeque::from(vec![
+            sig(
+                "cdp_fill",
+                json!({"uid": "d-search", "value": "synthetic"}),
+                "ctx",
+            ),
+            sig("cdp_click", json!({"uid": "d-filter"}), "ctx"),
+            sig("cdp_click", json!({"uid": "d-cancel"}), "ctx"),
+            sig(
+                "cdp_fill",
+                json!({"uid": "d-search", "value": "synthetic"}),
+                "ctx",
+            ),
+            sig("cdp_click", json!({"uid": "d-filter"}), "ctx"),
+            sig("cdp_click", json!({"uid": "d-cancel"}), "ctx"),
+        ]);
+
+        assert_eq!(
+            detect_repeated_action_cycle(&recent),
+            Some(vec![
+                "cdp_fill".to_string(),
+                "cdp_click".to_string(),
+                "cdp_click".to_string(),
+            ])
         );
     }
 
@@ -5901,11 +5974,11 @@ mod no_progress_guard_tests {
             sig("cdp_click", json!({"uid": "d2"}), "ctx-b"),
         ]);
 
-        assert_eq!(detect_two_action_cycle(&recent), None);
+        assert_eq!(detect_repeated_action_cycle(&recent), None);
     }
 
     #[test]
-    fn stable_context_changes_when_page_fingerprint_changes() {
+    fn stable_context_falls_back_to_page_fingerprint_without_elements() {
         let mut wm = WorldModel::default();
         wm.cdp_page = Some(Fresh {
             value: CdpPageState {
@@ -5924,6 +5997,112 @@ mod no_progress_guard_tests {
         assert_ne!(
             before, after,
             "CDP element-surface progress must reset no-progress tracking"
+        );
+    }
+
+    fn cdp(uid: &str, role: &str, label: &str, tag: &str) -> ObservedElement {
+        ObservedElement::Cdp(CdpFindElementMatch {
+            uid: uid.to_string(),
+            role: role.to_string(),
+            label: label.to_string(),
+            tag: tag.to_string(),
+            disabled: false,
+            parent_role: None,
+            parent_name: None,
+        })
+    }
+
+    fn wm_with_cdp_elements(page_fingerprint: &str, elements: Vec<ObservedElement>) -> WorldModel {
+        let mut wm = WorldModel::default();
+        wm.cdp_page = Some(Fresh {
+            value: CdpPageState {
+                url: "app://synthetic/page".to_string(),
+                page_fingerprint: page_fingerprint.to_string(),
+            },
+            written_at: 1,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        wm.elements = Some(Fresh {
+            value: elements,
+            written_at: 1,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        wm
+    }
+
+    #[test]
+    fn stable_context_ignores_cdp_order_and_uid_churn_when_elements_exist() {
+        let before = wm_with_cdp_elements(
+            "count=2;hash=uid-a",
+            vec![
+                cdp("d1", "textbox", "Search synthetic channels", "input"),
+                cdp("d2", "button", "Cancel search", "button"),
+            ],
+        );
+        let after = wm_with_cdp_elements(
+            "count=2;hash=uid-b",
+            vec![
+                cdp("d9", "button", "Cancel search", "button"),
+                cdp("d8", "textbox", "Search synthetic channels", "input"),
+            ],
+        );
+
+        assert_eq!(
+            stable_no_progress_context_signature(&before),
+            stable_no_progress_context_signature(&after),
+            "element order, uid churn, and derived page-fingerprint churn must not look like progress"
+        );
+    }
+
+    #[test]
+    fn stable_context_changes_when_semantic_element_surface_changes() {
+        let before = wm_with_cdp_elements(
+            "count=1;hash=a",
+            vec![cdp("d1", "button", "Open synthetic item", "button")],
+        );
+        let after = wm_with_cdp_elements(
+            "count=1;hash=b",
+            vec![cdp("d1", "button", "Synthetic item open", "button")],
+        );
+
+        assert_ne!(
+            stable_no_progress_context_signature(&before),
+            stable_no_progress_context_signature(&after),
+            "semantic element changes must still reset no-progress tracking"
+        );
+    }
+
+    #[test]
+    fn stable_context_ignores_ocr_confidence_jitter() {
+        let mut before = WorldModel::default();
+        before.elements = Some(Fresh {
+            value: vec![ObservedElement::Ocr(OcrMatch {
+                text: "Synthetic status".to_string(),
+                x: 101,
+                y: 202,
+                width: 98,
+                height: 19,
+                confidence: 0.91,
+            })],
+            written_at: 1,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        let mut after = before.clone();
+        if let Some(elements) = after.elements.as_mut()
+            && let Some(ObservedElement::Ocr(match_)) = elements.value.first_mut()
+        {
+            match_.x = 104;
+            match_.y = 206;
+            match_.confidence = 0.73;
+        }
+
+        assert_eq!(
+            stable_no_progress_context_signature(&before),
+            stable_no_progress_context_signature(&after),
+            "small OCR coordinate jitter and confidence changes must not reset the guard"
         );
     }
 

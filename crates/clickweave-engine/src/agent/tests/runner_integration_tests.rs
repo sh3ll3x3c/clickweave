@@ -4205,6 +4205,41 @@ mod repeat_action_loop_detection_tests {
         );
     }
 
+    #[tokio::test]
+    async fn three_action_cycle_emits_no_progress_warning() {
+        let fill = || {
+            llm_reply_tool(
+                "cdp_fill",
+                serde_json::json!({"uid": "d-search", "value": "synthetic-channel"}),
+            )
+        };
+        let filter = || llm_reply_tool("cdp_click", serde_json::json!({"uid": "d-filter"}));
+        let cancel = || llm_reply_tool("cdp_click", serde_json::json!({"uid": "d-cancel"}));
+        let mcp = StaticMcp::with_tools(&["cdp_fill", "cdp_click"])
+            .with_reply("cdp_fill", "filled synthetic field")
+            .with_reply("cdp_click", "clicked synthetic control");
+        let events = run_scenario(
+            vec![
+                fill(),
+                filter(),
+                cancel(),
+                fill(),
+                filter(),
+                cancel(),
+                llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+            ],
+            mcp,
+            10,
+        )
+        .await;
+
+        assert!(
+            count_no_progress(&events) >= 1,
+            "repeated three-action cycle must emit a no-progress warning; events={:?}",
+            events,
+        );
+    }
+
     /// Identical successful live dispatches must trip the no-progress
     /// detector once they cross the repeat threshold.
     #[tokio::test]
