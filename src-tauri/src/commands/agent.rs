@@ -560,6 +560,57 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                 }),
             );
         }
+        AgentEvent::SkillInvoked {
+            run_id: event_run_id,
+            skill_id,
+            version,
+            parameter_count,
+        } => {
+            let _ = app.emit(
+                "agent://skill_invoked",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "skill_id": skill_id,
+                    "version": version,
+                    "parameter_count": parameter_count,
+                }),
+            );
+        }
+        AgentEvent::SkillExtracted {
+            run_id: event_run_id,
+            skill_id,
+            version,
+            state,
+            scope,
+        } => {
+            let _ = app.emit(
+                "agent://skill_extracted",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "skill_id": skill_id,
+                    "version": version,
+                    "state": state,
+                    "scope": scope,
+                }),
+            );
+        }
+        AgentEvent::SkillConfirmed {
+            run_id: event_run_id,
+            skill_id,
+            version,
+        } => {
+            let _ = app.emit(
+                "agent://skill_confirmed",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "skill_id": skill_id,
+                    "version": version,
+                }),
+            );
+        }
     }
 }
 

@@ -55,6 +55,15 @@ pub enum AgentAction {
     AgentReplan {
         reason: String,
     },
+    /// Replay a procedural skill listed in the previous turn's
+    /// `<applicable_skills>` block. The harness expands the skill's
+    /// recorded action sketch through the same dispatch helper as live
+    /// tool calls so the safety surface is identical.
+    InvokeSkill {
+        skill_id: String,
+        version: u32,
+        parameters: serde_json::Value,
+    },
 }
 
 /// Batched single-pass agent output: task-state mutations followed by one
@@ -1271,7 +1280,7 @@ impl StateRunner {
                     &milestone.text,
                     &self.world_model,
                 );
-                if let Err(err) = crate::agent::skills::extractor::maybe_extract_skill(
+                match crate::agent::skills::extractor::maybe_extract_skill(
                     &milestone,
                     &action_sequence,
                     pre_state_sig,
@@ -1286,7 +1295,36 @@ impl StateRunner {
                 )
                 .await
                 {
-                    tracing::warn!(?err, "skills: extraction failed; continuing");
+                    Ok(crate::agent::skills::MaybeExtracted::Inserted {
+                        skill_id,
+                        version,
+                        ..
+                    })
+                    | Ok(crate::agent::skills::MaybeExtracted::Merged {
+                        skill_id, version, ..
+                    }) => {
+                        let (state, scope) = self
+                            .skill_index
+                            .read()
+                            .get(&skill_id, version)
+                            .map(|s| (s.state, s.scope))
+                            .unwrap_or((
+                                crate::agent::skills::SkillState::Draft,
+                                crate::agent::skills::SkillScope::ProjectLocal,
+                            ));
+                        self.emit_event(AgentEvent::SkillExtracted {
+                            run_id: self.run_id,
+                            skill_id,
+                            version,
+                            state,
+                            scope,
+                        })
+                        .await;
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        tracing::warn!(?err, "skills: extraction failed; continuing");
+                    }
                 }
             }
         }
@@ -1511,6 +1549,34 @@ impl StateRunner {
                 self.last_replan_step = Some(self.step_index);
                 TurnOutcome::Replan {
                     reason: reason.clone(),
+                }
+            }
+            AgentAction::InvokeSkill {
+                skill_id,
+                version,
+                parameters,
+            } => {
+                // Phase 4: validate the skill exists + parameter
+                // shape + emit `SkillInvoked`. The per-step expansion
+                // (Task 4.3 follow-up) hasn't landed yet, so this arm
+                // returns a replan that names the resolved skill so
+                // the next LLM turn has a clear breadcrumb. Errors at
+                // lookup / validation time produce an `InvalidArgs`-
+                // shaped replan instead of panicking so a malformed
+                // `invoke_skill` call can't take the run down.
+                match self
+                    .dispatch_skill(skill_id, *version, parameters.clone())
+                    .await
+                {
+                    Ok(frame) => TurnOutcome::Replan {
+                        reason: format!(
+                            "skill {}@v{} resolved with {} parameter(s); replay engine pending — falling back to LLM",
+                            frame.skill.id,
+                            frame.skill.version,
+                            frame.params.as_object().map(|m| m.len()).unwrap_or(0),
+                        ),
+                    },
+                    Err(reason) => TurnOutcome::Replan { reason },
                 }
             }
         };
@@ -1983,6 +2049,67 @@ pub(crate) fn diff_world_model_signatures(
 }
 
 impl StateRunner {
+    /// Look up the named skill, validate parameters against its
+    /// schema, and emit `AgentEvent::SkillInvoked`. Returns the live
+    /// [`SkillFrame`] on success or a human-readable replan reason on
+    /// failure (unknown skill, draft skill, invalid parameters).
+    ///
+    /// Phase 4 lands the lookup-and-validate half of `dispatch_skill`.
+    /// The per-step expansion through the live dispatch helper —
+    /// including sub-skill recursion, the `Loop` arm, and the
+    /// LLM-fallback path on divergence — is staged for the follow-up
+    /// pass. See the Phase 4 deferred-items list in the handoff for
+    /// the resume seam. Until that lands, the outer-loop
+    /// `AgentAction::InvokeSkill` arm degrades to a replan whose reason
+    /// names the skill that was about to run, so a live invocation
+    /// produces a clear bail-out rather than a silent no-op.
+    pub(crate) async fn dispatch_skill(
+        &mut self,
+        skill_id: &str,
+        version: u32,
+        parameters: serde_json::Value,
+    ) -> Result<crate::agent::skills::SkillFrame, String> {
+        use crate::agent::skills::replay::{SkillFrame, validate_parameters};
+        use crate::agent::skills::types::SkillState;
+
+        let skill = match self.skill_index.read().get(skill_id, version) {
+            Some(s) if !matches!(s.state, SkillState::Draft) => s,
+            Some(_) => {
+                return Err(format!(
+                    "skill {skill_id}@v{version} is in draft state and cannot be invoked"
+                ));
+            }
+            None => {
+                return Err(format!("unknown skill: {skill_id}@v{version}"));
+            }
+        };
+
+        let validated_params = match validate_parameters(&parameters, &skill.parameter_schema) {
+            Ok(p) => p,
+            Err(e) => return Err(format!("invalid skill parameters: {e}")),
+        };
+
+        let parameter_count = validated_params
+            .as_object()
+            .map(|m| m.len() as u32)
+            .unwrap_or(0);
+        self.emit_event(AgentEvent::SkillInvoked {
+            run_id: self.run_id,
+            skill_id: skill_id.to_string(),
+            version,
+            parameter_count,
+        })
+        .await;
+
+        // Stamp `last_invoked_at` so the index reflects the attempt
+        // even when the per-step expansion hasn't landed yet.
+        self.skill_index
+            .write()
+            .mark_invoked(skill_id, version, chrono::Utc::now());
+
+        Ok(SkillFrame::new(skill, validated_params))
+    }
+
     /// Best-effort send of an [`AgentEvent`] through the configured
     /// channel. No-op when the channel is unset or closed — event
     /// emission must never fail the run.
@@ -3238,6 +3365,31 @@ pub fn parse_agent_turn(message: &Message) -> anyhow::Result<AgentTurn> {
                         .unwrap_or("Unknown reason")
                         .to_string();
                     AgentAction::AgentReplan { reason }
+                }
+                "invoke_skill" => {
+                    let skill_id = args
+                        .get("skill_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let version = args.get("version").and_then(Value::as_u64);
+                    match (skill_id, version) {
+                        (Some(skill_id), Some(version)) => {
+                            let parameters = args.get("parameters").cloned().unwrap_or(Value::Null);
+                            AgentAction::InvokeSkill {
+                                skill_id,
+                                version: version as u32,
+                                parameters,
+                            }
+                        }
+                        _ => {
+                            tracing::warn!(
+                                "state-spine: invoke_skill missing required fields — replanning"
+                            );
+                            AgentAction::AgentReplan {
+                                reason: "invoke_skill missing required fields".to_string(),
+                            }
+                        }
+                    }
                 }
                 _ => AgentAction::ToolCall {
                     tool_name: name.to_string(),
@@ -4622,6 +4774,12 @@ impl StateRunner {
                     // arm is unreachable in practice but kept exhaustive
                     // so the matcher does not silently regress.
                 }
+                AgentAction::InvokeSkill { .. } => {
+                    // The replay engine appends its own per-step entries
+                    // through `dispatch_tool_call_through_helper`. The
+                    // outer transcript site has nothing to add for the
+                    // synthetic invoke_skill call itself.
+                }
             }
         }
 
@@ -5296,6 +5454,46 @@ mod parse_agent_turn_tool_calls_tests {
             AgentAction::AgentDone { summary } => assert_eq!(summary, "logged in"),
             _ => panic!("expected agent_done"),
         }
+    }
+
+    #[test]
+    fn maps_invoke_skill_pseudo_tool_to_invoke_skill_action() {
+        let msg = Message::assistant_tool_calls(vec![tc(
+            "tc1",
+            "invoke_skill",
+            json!({
+                "skill_id": "open_settings",
+                "version": 2,
+                "parameters": {"app": "Notes"}
+            }),
+        )]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        match turn.action {
+            AgentAction::InvokeSkill {
+                skill_id,
+                version,
+                parameters,
+            } => {
+                assert_eq!(skill_id, "open_settings");
+                assert_eq!(version, 2);
+                assert_eq!(parameters, json!({"app": "Notes"}));
+            }
+            other => panic!("expected invoke_skill, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn invoke_skill_missing_required_fields_replans() {
+        // Missing `version` — the parser cannot fabricate a sensible
+        // default, so degrades to a replan instead of dispatching a
+        // skill that won't resolve.
+        let msg = Message::assistant_tool_calls(vec![tc(
+            "tc1",
+            "invoke_skill",
+            json!({"skill_id": "open_settings"}),
+        )]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert!(matches!(turn.action, AgentAction::AgentReplan { .. }));
     }
 
     #[test]
@@ -6683,5 +6881,180 @@ pub(crate) mod test_support {
         mcp: &M,
     ) {
         runner.finalize_cdp_connected(app_name, cdp_port, mcp).await;
+    }
+}
+
+#[cfg(test)]
+mod dispatch_skill_tests {
+    //! Phase 4 lookup-and-validate coverage for `StateRunner::dispatch_skill`.
+    //! The per-step expansion (Task 4.3+) is deferred; these tests pin
+    //! the foundation so the resume seam stays stable.
+
+    use super::*;
+    use crate::agent::skills::types::{
+        ApplicabilityHints, ApplicabilitySignature, ExpectedWorldModelDelta, OutcomePredicate,
+        ParameterSlot, ProvenanceEntry, Skill, SkillState, SkillStats, SubgoalSignature,
+    };
+    use crate::agent::skills::{ActionSketchStep, SkillIndex, SkillScope};
+    use chrono::Utc;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
+
+    fn make_skill(id: &str, version: u32, state: SkillState, schema: Vec<ParameterSlot>) -> Skill {
+        let now = Utc::now();
+        Skill {
+            id: id.to_string(),
+            version,
+            state,
+            scope: SkillScope::ProjectLocal,
+            name: format!("Skill {id}"),
+            description: "test skill".to_string(),
+            tags: vec![],
+            subgoal_text: "open the file".to_string(),
+            subgoal_signature: SubgoalSignature("sg".to_string()),
+            applicability: ApplicabilityHints {
+                apps: vec![],
+                hosts: vec![],
+                signature: ApplicabilitySignature("app".to_string()),
+            },
+            parameter_schema: schema,
+            action_sketch: vec![ActionSketchStep::ToolCall {
+                tool: "noop".to_string(),
+                args: serde_json::json!({}),
+                captures_pre: vec![],
+                captures: vec![],
+                expected_world_model_delta: ExpectedWorldModelDelta::default(),
+            }],
+            outputs: vec![],
+            outcome_predicate: OutcomePredicate::SubgoalCompleted {
+                post_state_world_model_signature: None,
+            },
+            provenance: vec![ProvenanceEntry {
+                run_id: uuid::Uuid::new_v4().to_string(),
+                step_index: 0,
+                completed_at: now,
+                workflow_hash: "h".to_string(),
+            }],
+            stats: SkillStats {
+                occurrence_count: 1,
+                success_rate: 0.5,
+                last_seen_at: Some(now),
+                last_invoked_at: None,
+            },
+            edited_by_user: false,
+            created_at: now,
+            updated_at: now,
+            produced_node_ids: vec![],
+            body: "# Test\n".to_string(),
+        }
+    }
+
+    fn slot(name: &str, type_tag: &str, default: Option<serde_json::Value>) -> ParameterSlot {
+        ParameterSlot {
+            name: name.to_string(),
+            type_tag: type_tag.to_string(),
+            description: None,
+            default,
+            enum_values: None,
+        }
+    }
+
+    fn fresh_runner_with_skill(
+        skill: Option<Skill>,
+    ) -> (StateRunner, mpsc::Receiver<AgentEvent>, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let mut runner = StateRunner::new_for_test_with_skills(
+            "test goal".to_string(),
+            tmp.path().to_path_buf(),
+        );
+        let embedder = Arc::new(crate::agent::episodic::HashedShingleEmbedder::default());
+        let mut index = SkillIndex::empty(embedder);
+        if let Some(s) = skill {
+            index.upsert(s);
+        }
+        runner.skill_index = Arc::new(parking_lot::RwLock::new(index));
+        let (tx, rx) = mpsc::channel(16);
+        runner.event_tx = Some(tx);
+        (runner, rx, tmp)
+    }
+
+    #[tokio::test]
+    async fn unknown_id_yields_replan_naming_the_id() {
+        let (mut runner, _rx, _tmp) = fresh_runner_with_skill(None);
+        let err = runner
+            .dispatch_skill("never_extracted", 1, serde_json::json!({}))
+            .await
+            .expect_err("missing skill must fail");
+        assert!(err.contains("never_extracted"), "reason: {err}");
+    }
+
+    #[tokio::test]
+    async fn draft_state_is_rejected() {
+        let skill = make_skill("draftish", 1, SkillState::Draft, vec![]);
+        let (mut runner, _rx, _tmp) = fresh_runner_with_skill(Some(skill));
+        let err = runner
+            .dispatch_skill("draftish", 1, serde_json::json!({}))
+            .await
+            .expect_err("draft must not invoke");
+        assert!(err.contains("draft"), "reason: {err}");
+    }
+
+    #[tokio::test]
+    async fn invalid_parameters_yield_replan() {
+        let skill = make_skill(
+            "needs_count",
+            1,
+            SkillState::Confirmed,
+            vec![slot("count", "integer", None)],
+        );
+        let (mut runner, _rx, _tmp) = fresh_runner_with_skill(Some(skill));
+        let err = runner
+            .dispatch_skill("needs_count", 1, serde_json::json!({}))
+            .await
+            .expect_err("missing required field must fail");
+        assert!(err.contains("count"), "reason: {err}");
+    }
+
+    #[tokio::test]
+    async fn confirmed_emits_invoked_event_and_marks_invoked() {
+        let skill = make_skill(
+            "confirm_ok",
+            2,
+            SkillState::Confirmed,
+            vec![slot("name", "string", None)],
+        );
+        let (mut runner, mut rx, _tmp) = fresh_runner_with_skill(Some(skill));
+        let frame = runner
+            .dispatch_skill("confirm_ok", 2, serde_json::json!({"name": "x"}))
+            .await
+            .expect("confirmed skill should resolve");
+        assert_eq!(frame.skill.id, "confirm_ok");
+        assert_eq!(frame.skill.version, 2);
+        assert_eq!(frame.next_step, 0);
+
+        let stamped = runner
+            .skill_index
+            .read()
+            .get("confirm_ok", 2)
+            .unwrap()
+            .stats
+            .last_invoked_at;
+        assert!(stamped.is_some());
+
+        let event = rx.try_recv().expect("SkillInvoked must be emitted");
+        match event {
+            AgentEvent::SkillInvoked {
+                skill_id,
+                version,
+                parameter_count,
+                ..
+            } => {
+                assert_eq!(skill_id, "confirm_ok");
+                assert_eq!(version, 2);
+                assert_eq!(parameter_count, 1);
+            }
+            other => panic!("expected SkillInvoked, got {:?}", other),
+        }
     }
 }

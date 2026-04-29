@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::agent::skills::{SkillScope, SkillState};
 use crate::agent::step_record::BoundaryKind;
 use crate::agent::task_state::TaskState;
 
@@ -177,6 +178,39 @@ pub enum AgentEvent {
         run_id: Uuid,
         promoted_episode_ids: Vec<String>,
         skipped_count: usize,
+    },
+    /// Emitted by the runner each time the LLM picks `invoke_skill`
+    /// from the offered `<applicable_skills>` block and the runner
+    /// has resolved the target to a confirmed/promoted on-disk skill.
+    /// Carries the `(skill_id, version)` pair plus the validated
+    /// parameter count (the parameters themselves stay off the wire so
+    /// frontends can render a count chip without size-cap concerns).
+    SkillInvoked {
+        run_id: Uuid,
+        skill_id: String,
+        version: u32,
+        parameter_count: u32,
+    },
+    /// Emitted by the runner after the extractor inserts or merges a
+    /// skill at a `CompleteSubgoal` boundary. Frontends use this to
+    /// refresh the Skills panel index without polling. `state` and
+    /// `scope` echo the skill's on-disk fields so a panel slice can
+    /// place the entry in the correct bucket without an extra read.
+    SkillExtracted {
+        run_id: Uuid,
+        skill_id: String,
+        version: u32,
+        state: SkillState,
+        scope: SkillScope,
+    },
+    /// Emitted by the Tauri command layer after a user accepts an LLM
+    /// refinement proposal and `confirm_skill_proposal` flips a draft
+    /// skill to `Confirmed`. Frontends use this to move a skill from
+    /// the Drafts bucket to the Confirmed bucket.
+    SkillConfirmed {
+        run_id: Uuid,
+        skill_id: String,
+        version: u32,
     },
 }
 

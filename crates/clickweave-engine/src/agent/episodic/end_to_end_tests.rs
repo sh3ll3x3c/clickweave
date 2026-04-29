@@ -410,5 +410,8 @@ fn event_kind(e: &AgentEvent) -> &'static str {
         AgentEvent::EpisodeWritten { .. } => "episode_written",
         AgentEvent::EpisodePromoted { .. } => "episode_promoted",
         AgentEvent::EpisodesRetrieved { .. } => "episodes_retrieved",
+        AgentEvent::SkillInvoked { .. } => "skill_invoked",
+        AgentEvent::SkillExtracted { .. } => "skill_extracted",
+        AgentEvent::SkillConfirmed { .. } => "skill_confirmed",
     }
 }

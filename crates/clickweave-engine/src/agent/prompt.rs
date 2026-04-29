@@ -32,7 +32,8 @@ You respond by emitting tool calls. Each turn carries zero or more state-mutatio
 - Exactly one action per turn:
   - any MCP tool from the available-tools list (the action that runs against the environment), or
   - `agent_done` to declare the goal complete, or
-  - `agent_replan` to request a re-plan when stuck.
+  - `agent_replan` to request a re-plan when stuck, or
+  - `invoke_skill` to replay a procedural skill listed in `<applicable_skills>` (when one is offered for the active subgoal).
 
 Mutations are read from your `tool_calls` array regardless of their position; the first non-mutation call is taken as the action and any further action calls are ignored. Calling only mutation pseudo-tools is treated as a replan request.
 
@@ -466,12 +467,40 @@ pub fn refute_hypothesis_tool() -> Value {
     })
 }
 
+/// Tool definition for the invoke_skill pseudo-tool (Spec 3 Phase 4).
+///
+/// Replays a procedural skill listed in the previous turn's
+/// `<applicable_skills>` block. The harness expands the skill's recorded
+/// action sketch through the same dispatch helper as live tool calls so
+/// the safety surface (permission policy, coordinate-primitive guard,
+/// consecutive-destructive cap) is identical.
+pub fn invoke_skill_tool() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "invoke_skill",
+            "description": "Invoke a procedural skill listed in <applicable_skills>. The harness expands and dispatches the skill's recorded steps. parameters must validate against the skill's parameter_schema.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id": { "type": "string" },
+                    "version":  { "type": "integer" },
+                    "parameters": { "type": "object" }
+                },
+                "required": ["skill_id", "version", "parameters"]
+            }
+        }
+    })
+}
+
 /// All harness-local pseudo-tools that the LLM may emit in a turn.
 ///
 /// Order is intentional: the action pseudo-tools (`agent_done`,
 /// `agent_replan`) come last so the LLM-facing tool list ends with the
 /// "terminate the loop" choices, while the mutations cluster together at
-/// the start of the pseudo-tool block.
+/// the start of the pseudo-tool block. `invoke_skill` is appended after
+/// `agent_replan` so the tool-list prefix stays stable for prompt-cache
+/// compatibility across runs that toggle the skills layer.
 pub fn pseudo_tools() -> Vec<Value> {
     vec![
         push_subgoal_tool(),
@@ -482,6 +511,7 @@ pub fn pseudo_tools() -> Vec<Value> {
         refute_hypothesis_tool(),
         agent_done_tool(),
         agent_replan_tool(),
+        invoke_skill_tool(),
     ]
 }
 
@@ -880,5 +910,35 @@ mod state_spine_prompt_tests {
             .as_array()
             .unwrap();
         assert!(required.iter().any(|r| r == "reason"));
+    }
+
+    #[test]
+    fn pseudo_tools_appends_invoke_skill_at_end() {
+        // Stable trailing position keeps the system-prompt prefix
+        // identical for runs that toggle the skills layer, so the
+        // shared LLM prompt-cache prefix is preserved.
+        let tools = pseudo_tools();
+        let last = tools.last().expect("at least one pseudo-tool");
+        let name = last
+            .get("function")
+            .and_then(|f| f.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        assert_eq!(name, "invoke_skill");
+    }
+
+    #[test]
+    fn invoke_skill_tool_requires_skill_id_version_parameters() {
+        let v = invoke_skill_tool();
+        let required = v
+            .get("function")
+            .and_then(|f| f.get("parameters"))
+            .and_then(|p| p.get("required"))
+            .and_then(Value::as_array)
+            .unwrap();
+        let names: Vec<&str> = required.iter().filter_map(Value::as_str).collect();
+        assert!(names.contains(&"skill_id"));
+        assert!(names.contains(&"version"));
+        assert!(names.contains(&"parameters"));
     }
 }
