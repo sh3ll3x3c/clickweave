@@ -69,6 +69,7 @@ The command also reads `CLICKWEAVE_EVAL_AGENT_BASE_URL`,
 - `synthetic_ax_snapshot_expired` checks fresh AX snapshot recovery after `snapshot_expired`.
 - `synthetic_no_progress_replan` checks structured probing followed by `agent_replan` when a target is absent.
 - `synthetic_search_cancel_loop_recovery` checks that a missing CDP target does not devolve into a repeated search/cancel action cycle.
+- `synthetic_three_step_loop_recovery` checks that a missing CDP target does not devolve into a longer search/filter/cancel action cycle.
 - `synthetic_applicable_skill_invocation` checks `invoke_skill` selection when a synthetic `<applicable_skills>` block is surfaced.
 
 Deterministic scoring distinguishes runner auto-actions from model-selected
