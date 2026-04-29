@@ -63,6 +63,7 @@ The command also reads `CLICKWEAVE_EVAL_AGENT_BASE_URL`,
 ## Scenarios
 
 - `synthetic_electron_pre_cdp` checks launch -> auto-CDP attach -> CDP click, and forbids manual reconnects after attach.
+- `synthetic_wrong_cdp_port_runtime_owned` checks that the model does not manually connect to a guessed debug port when CDP acquisition should be app-scoped and runtime-owned.
 - `synthetic_cdp_widen_surface` checks DOM widening via `cdp_take_dom_snapshot` or `cdp_evaluate_script` when visible CDP elements are insufficient.
 - `synthetic_native_ax_required` checks native AX snapshot plus AX dispatch.
 - `synthetic_ax_snapshot_expired` checks fresh AX snapshot recovery after `snapshot_expired`.

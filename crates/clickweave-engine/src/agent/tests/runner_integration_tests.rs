@@ -1790,6 +1790,270 @@ mod cdp_and_focus_window_tests {
         ));
     }
 
+    /// Under the no-focus policy, a no-args `launch_app` for an
+    /// already-running app must be treated like a background-safe
+    /// observation, not dispatched to MCP. Native-devtools foregrounds
+    /// already-running apps for this call shape.
+    #[tokio::test]
+    async fn no_focus_launch_app_skip_bypasses_foregrounding_mcp_dispatch() {
+        use clickweave_mcp::{ToolCallResult, ToolContent};
+        use std::sync::Mutex;
+
+        struct RunningAppMcp {
+            calls: Mutex<Vec<String>>,
+            app_name: String,
+        }
+
+        impl Mcp for RunningAppMcp {
+            async fn call_tool(
+                &self,
+                name: &str,
+                _arguments: Option<Value>,
+            ) -> anyhow::Result<ToolCallResult> {
+                self.calls.lock().unwrap().push(name.to_string());
+                let text = match name {
+                    "list_apps" => serde_json::json!([{
+                        "name": self.app_name.clone(),
+                        "pid": 1234,
+                        "kind": "Native"
+                    }])
+                    .to_string(),
+                    "launch_app" => "REAL launch_app body (should not appear)".to_string(),
+                    _ => "ok".to_string(),
+                };
+                Ok(ToolCallResult {
+                    content: vec![ToolContent::Text { text }],
+                    is_error: None,
+                })
+            }
+
+            fn has_tool(&self, name: &str) -> bool {
+                matches!(name, "launch_app" | "list_apps")
+            }
+
+            fn tools_as_openai(&self) -> Vec<Value> {
+                vec![
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": "launch_app",
+                            "description": "Launch an app",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"app_name": {"type": "string"}},
+                                "required": ["app_name"]
+                            }
+                        }
+                    }),
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": "list_apps",
+                            "description": "List running apps",
+                            "parameters": {"type": "object", "properties": {}}
+                        }
+                    }),
+                ]
+            }
+
+            async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let app_name = "AlreadyRunningApp";
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("launch_app", serde_json::json!({"app_name": app_name})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = RunningAppMcp {
+            calls: Mutex::new(Vec::new()),
+            app_name: app_name.to_string(),
+        };
+        let tools_openai = mcp.tools_as_openai();
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
+        let runner = StateRunner::new(
+            "goal".to_string(),
+            AgentConfig {
+                max_steps: 5,
+                allow_focus_window: false,
+                ..AgentConfig::default()
+            },
+        )
+        .with_events(event_tx);
+
+        let state = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                tools_openai,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let calls = mcp.calls.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            ["list_apps"],
+            "guard must not dispatch the foregrounding launch_app call"
+        );
+        let launch_step = state
+            .steps
+            .iter()
+            .find(|s| {
+                matches!(
+                    &s.command,
+                    crate::agent::types::AgentCommand::ToolCall { tool_name, .. }
+                        if tool_name == "launch_app"
+                )
+            })
+            .expect("launch_app step recorded");
+        let body = match &launch_step.outcome {
+            crate::agent::types::StepOutcome::Success(b) => b.clone(),
+            other => panic!("expected synthetic launch_app Success, got {:?}", other),
+        };
+        assert!(
+            body.contains("launch_app skipped"),
+            "synthetic body should explain the skip: {body}"
+        );
+        assert!(
+            state.workflow.nodes.is_empty(),
+            "synthetic skip must not materialize a workflow node"
+        );
+        let events = drain_events(&mut event_rx);
+        assert!(
+            !events
+                .iter()
+                .any(|ev| matches!(ev, AgentEvent::NodeAdded { .. })),
+            "synthetic skip must not emit NodeAdded; got {:?}",
+            events
+        );
+        assert!(matches!(
+            state.terminal_reason,
+            Some(TerminalReason::Completed { .. })
+        ));
+    }
+
+    /// If the target is absent, `launch_app` still needs to run, but it
+    /// should be sent as a background launch under the no-focus policy.
+    #[tokio::test]
+    async fn no_focus_launch_app_dispatch_sets_background_true() {
+        use clickweave_mcp::{ToolCallResult, ToolContent};
+        use std::sync::Mutex;
+
+        struct LaunchArgsMcp {
+            calls: Mutex<Vec<(String, Option<Value>)>>,
+        }
+
+        impl Mcp for LaunchArgsMcp {
+            async fn call_tool(
+                &self,
+                name: &str,
+                arguments: Option<Value>,
+            ) -> anyhow::Result<ToolCallResult> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((name.to_string(), arguments));
+                let text = match name {
+                    "list_apps" => "[]".to_string(),
+                    "launch_app" => {
+                        r#"{"app_name":"AbsentApp","kind":"Native","pid":2345}"#.to_string()
+                    }
+                    _ => "ok".to_string(),
+                };
+                Ok(ToolCallResult {
+                    content: vec![ToolContent::Text { text }],
+                    is_error: None,
+                })
+            }
+
+            fn has_tool(&self, name: &str) -> bool {
+                matches!(name, "launch_app" | "list_apps")
+            }
+
+            fn tools_as_openai(&self) -> Vec<Value> {
+                vec![
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": "launch_app",
+                            "description": "Launch an app",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "app_name": {"type": "string"},
+                                    "background": {"type": "boolean"}
+                                },
+                                "required": ["app_name"]
+                            }
+                        }
+                    }),
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": "list_apps",
+                            "description": "List running apps",
+                            "parameters": {"type": "object", "properties": {}}
+                        }
+                    }),
+                ]
+            }
+
+            async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("launch_app", serde_json::json!({"app_name": "AbsentApp"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = LaunchArgsMcp {
+            calls: Mutex::new(Vec::new()),
+        };
+        let tools_openai = mcp.tools_as_openai();
+        let runner = StateRunner::new(
+            "goal".to_string(),
+            AgentConfig {
+                max_steps: 5,
+                allow_focus_window: false,
+                ..AgentConfig::default()
+            },
+        );
+
+        let state = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                tools_openai,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let calls = mcp.calls.lock().unwrap();
+        let launch_args = calls
+            .iter()
+            .find_map(|(name, args)| (name == "launch_app").then_some(args.as_ref()))
+            .flatten()
+            .expect("launch_app dispatched");
+        assert_eq!(
+            launch_args.get("background").and_then(Value::as_bool),
+            Some(true),
+            "no-focus launch_app must dispatch in background: {launch_args}"
+        );
+        assert!(matches!(
+            state.terminal_reason,
+            Some(TerminalReason::Completed { .. })
+        ));
+    }
+
     /// Synthetic focus_window skip must leave `cdp_state` untouched — the
     /// post-tool hook keys on `is_synthetic_focus_skip` on the live path
     /// (we short-circuit before dispatch, so `maybe_cdp_connect` never
@@ -2229,6 +2493,222 @@ mod cdp_and_focus_window_tests {
             calls.iter().any(|c| c == "cdp_connect"),
             "auto_connect_cdp must invoke cdp_connect on a CdpAttachable skip; mcp calls: {:?}",
             *calls,
+        );
+    }
+
+    /// The global no-focus policy must not suppress the background-safe
+    /// CDP acquisition path. If an Electron/Chrome target is policy-skipped,
+    /// the runner should still attach to that app by reusing or creating an
+    /// app-scoped debug port.
+    #[tokio::test(start_paused = true)]
+    async fn policy_disabled_focus_skip_still_triggers_auto_connect_cdp() {
+        use clickweave_mcp::{ToolCallResult, ToolContent};
+        use std::sync::Mutex;
+
+        struct AutoConnectMcp {
+            calls: Mutex<Vec<String>>,
+        }
+        impl Mcp for AutoConnectMcp {
+            async fn call_tool(
+                &self,
+                name: &str,
+                _arguments: Option<Value>,
+            ) -> anyhow::Result<ToolCallResult> {
+                self.calls.lock().unwrap().push(name.to_string());
+                let body = match name {
+                    "list_apps" => "[]",
+                    "cdp_connect" => {
+                        return Err(anyhow::anyhow!("test: connect refused"));
+                    }
+                    _ => "ok",
+                };
+                Ok(ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: body.to_string(),
+                    }],
+                    is_error: None,
+                })
+            }
+            fn has_tool(&self, name: &str) -> bool {
+                matches!(
+                    name,
+                    "focus_window" | "cdp_connect" | "list_apps" | "quit_app" | "launch_app"
+                )
+            }
+            fn tools_as_openai(&self) -> Vec<Value> {
+                vec![
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": "focus_window",
+                            "description": "Focus a window",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"app_name": {"type": "string"}},
+                                "required": ["app_name"]
+                            }
+                        }
+                    }),
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": "cdp_connect",
+                            "description": "Connect CDP",
+                            "parameters": {"type": "object", "properties": {}}
+                        }
+                    }),
+                ]
+            }
+            async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let app_name = "SyntheticElectronPolicyApp";
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("focus_window", serde_json::json!({"app_name": app_name})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = AutoConnectMcp {
+            calls: Mutex::new(Vec::new()),
+        };
+        let tools_openai = mcp.tools_as_openai();
+        let mut runner = StateRunner::new(
+            "g".to_string(),
+            AgentConfig {
+                max_steps: 5,
+                allow_focus_window: false,
+                ..AgentConfig::default()
+            },
+        );
+        runner.record_app_kind_for_test(app_name, "ElectronApp");
+
+        let state = runner
+            .run(
+                &llm,
+                &mcp,
+                "g".to_string(),
+                Workflow::default(),
+                tools_openai,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let focus_step = state
+            .steps
+            .iter()
+            .find(|s| {
+                matches!(
+                    &s.command,
+                    crate::agent::types::AgentCommand::ToolCall { tool_name, .. }
+                        if tool_name == "focus_window"
+                )
+            })
+            .expect("focus_window step recorded");
+        let body = match &focus_step.outcome {
+            crate::agent::types::StepOutcome::Success(b) => b.clone(),
+            other => panic!("expected policy-skip Success, got {:?}", other),
+        };
+        assert_eq!(body, FocusSkipReason::PolicyDisabled.llm_message());
+
+        let calls = mcp.calls.lock().unwrap();
+        assert!(
+            calls.iter().any(|c| c == "cdp_connect"),
+            "policy-disabled Electron skip must still invoke auto_connect_cdp; mcp calls: {:?}",
+            *calls,
+        );
+    }
+
+    /// Raw `cdp_connect` from the model is blocked before MCP dispatch so a
+    /// guessed port cannot attach to an unrelated Electron/Chrome app.
+    #[tokio::test]
+    async fn raw_cdp_connect_tool_call_is_blocked_before_mcp_dispatch() {
+        use clickweave_mcp::{ToolCallResult, ToolContent};
+        use std::sync::Mutex;
+
+        struct RecordingMcp {
+            calls: Mutex<Vec<String>>,
+        }
+        impl Mcp for RecordingMcp {
+            async fn call_tool(
+                &self,
+                name: &str,
+                _arguments: Option<Value>,
+            ) -> anyhow::Result<ToolCallResult> {
+                self.calls.lock().unwrap().push(name.to_string());
+                Ok(ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: "should not be called".to_string(),
+                    }],
+                    is_error: None,
+                })
+            }
+            fn has_tool(&self, name: &str) -> bool {
+                name == "cdp_connect"
+            }
+            fn tools_as_openai(&self) -> Vec<Value> {
+                vec![serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": "cdp_connect",
+                        "description": "Connect CDP",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"port": {"type": "integer"}},
+                            "required": ["port"]
+                        }
+                    }
+                })]
+            }
+            async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_connect", serde_json::json!({"port": 9222})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "stopped"})),
+        ]);
+        let mcp = RecordingMcp {
+            calls: Mutex::new(Vec::new()),
+        };
+        let tools_openai = mcp.tools_as_openai();
+        let runner = StateRunner::new("g".to_string(), cfg_with_focus_steps(3));
+
+        let state = runner
+            .run(
+                &llm,
+                &mcp,
+                "g".to_string(),
+                Workflow::default(),
+                tools_openai,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let cdp_step = state
+            .steps
+            .iter()
+            .find(|s| {
+                matches!(
+                    &s.command,
+                    crate::agent::types::AgentCommand::ToolCall { tool_name, .. }
+                        if tool_name == "cdp_connect"
+                )
+            })
+            .expect("cdp_connect step recorded");
+        match &cdp_step.outcome {
+            crate::agent::types::StepOutcome::Error(body) => {
+                assert!(body.contains("raw cdp_connect blocked"));
+                assert!(body.contains("9222"));
+            }
+            other => panic!("expected raw cdp_connect block error, got {:?}", other),
+        }
+        assert!(
+            mcp.calls.lock().unwrap().is_empty(),
+            "raw cdp_connect must not reach MCP",
         );
     }
 

@@ -15,7 +15,7 @@
 use clickweave_mcp::Tool;
 use serde_json::{Value, json};
 
-use crate::agent::render::render_step_input;
+use crate::agent::render::{DEFAULT_MAX_ELEMENTS, render_step_input_with_cap};
 use crate::agent::task_state::TaskState;
 use crate::agent::world_model::{AppKind, WorldModel};
 
@@ -182,15 +182,16 @@ pub fn build_user_turn_message(
     retrieved: &[crate::agent::episodic::RetrievedEpisode],
     tools_in_scope_names: &[String],
 ) -> String {
-    build_user_turn_message_with_skills(
+    build_user_turn_message_from_input(UserTurnMessageInput {
         wm,
         ts,
         current_step,
         observation_text,
         retrieved,
-        &[],
+        applicable_skills: &[],
         tools_in_scope_names,
-    )
+        max_elements: DEFAULT_MAX_ELEMENTS,
+    })
 }
 
 /// Spec 3 variant of [`build_user_turn_message`] that also splices an
@@ -207,32 +208,57 @@ pub fn build_user_turn_message_with_skills(
     applicable_skills: &[crate::agent::skills::RetrievedSkill],
     tools_in_scope_names: &[String],
 ) -> String {
-    let mut out = render_step_input(wm, ts, current_step);
+    build_user_turn_message_from_input(UserTurnMessageInput {
+        wm,
+        ts,
+        current_step,
+        observation_text,
+        retrieved,
+        applicable_skills,
+        tools_in_scope_names,
+        max_elements: DEFAULT_MAX_ELEMENTS,
+    })
+}
+
+pub(crate) struct UserTurnMessageInput<'a> {
+    pub wm: &'a WorldModel,
+    pub ts: &'a TaskState,
+    pub current_step: usize,
+    pub observation_text: &'a str,
+    pub retrieved: &'a [crate::agent::episodic::RetrievedEpisode],
+    pub applicable_skills: &'a [crate::agent::skills::RetrievedSkill],
+    pub tools_in_scope_names: &'a [String],
+    pub max_elements: usize,
+}
+
+pub(crate) fn build_user_turn_message_from_input(input: UserTurnMessageInput<'_>) -> String {
+    let mut out =
+        render_step_input_with_cap(input.wm, input.ts, input.current_step, input.max_elements);
 
     let recoveries_block =
-        crate::agent::episodic::render::render_retrieved_recoveries_block(retrieved);
+        crate::agent::episodic::render::render_retrieved_recoveries_block(input.retrieved);
     if !recoveries_block.is_empty() {
         out.push_str(&recoveries_block);
         out.push('\n');
     }
 
-    if !applicable_skills.is_empty() {
+    if !input.applicable_skills.is_empty() {
         let skills_block =
-            crate::agent::skills::render::render_applicable_skills_block(applicable_skills);
+            crate::agent::skills::render::render_applicable_skills_block(input.applicable_skills);
         if !skills_block.is_empty() {
             out.push_str(&skills_block);
             out.push('\n');
         }
     }
 
-    let scope_block = render_tools_in_scope_block(tools_in_scope_names);
+    let scope_block = render_tools_in_scope_block(input.tools_in_scope_names);
     if !scope_block.is_empty() {
         out.push_str(&scope_block);
     }
 
-    if !observation_text.is_empty() {
+    if !input.observation_text.is_empty() {
         out.push_str("\n<observation>\n");
-        out.push_str(observation_text);
+        out.push_str(input.observation_text);
         out.push_str("\n</observation>\n");
     }
     out

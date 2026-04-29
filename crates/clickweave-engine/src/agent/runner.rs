@@ -1764,6 +1764,13 @@ pub(crate) enum FocusSkipReason {
     PolicyDisabled,
 }
 
+#[derive(Debug, Clone)]
+struct RunningAppInfo {
+    name: String,
+    pid: Option<i32>,
+    kind: Option<String>,
+}
+
 impl FocusSkipReason {
     const ALL: [Self; 4] = [
         Self::AxAvailable,
@@ -1808,6 +1815,44 @@ impl FocusSkipReason {
     /// to CDP auto-connect and workflow-node creation.
     pub(crate) fn from_llm_message(text: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|r| r.llm_message() == text)
+    }
+}
+
+/// True when a model-authored `launch_app` call has no launch-only
+/// arguments. Native-devtools brings an already-running app to the
+/// foreground in this shape, so the no-focus policy must verify the
+/// process state before dispatching it.
+fn launch_app_has_launch_only_args(arguments: &Value) -> bool {
+    match arguments.get("args") {
+        Some(Value::Array(args)) => !args.is_empty(),
+        Some(Value::String(args)) => !args.trim().is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => true,
+    }
+}
+
+fn force_background_launch_app(action: &mut AgentAction, allow_focus_window: bool) {
+    if allow_focus_window {
+        return;
+    }
+    let AgentAction::ToolCall {
+        tool_name,
+        arguments,
+        ..
+    } = action
+    else {
+        return;
+    };
+    if tool_name != "launch_app"
+        || arguments
+            .get("background")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return;
+    }
+    if let Value::Object(map) = arguments {
+        map.insert("background".to_string(), Value::Bool(true));
     }
 }
 
@@ -2299,6 +2344,168 @@ impl StateRunner {
             Some("ElectronApp" | "ChromeBrowser") if mcp.has_tool("cdp_connect") => {
                 Some(FocusSkipReason::CdpAttachable)
             }
+            _ => None,
+        }
+    }
+
+    /// Return the app target whose CDP session should be acquired after a
+    /// synthetic `focus_window` skip. `CdpAttachable` always promises this
+    /// path. `PolicyDisabled` also needs it for background Electron/Chrome
+    /// work: suppressing the focus steal must not suppress the app-scoped
+    /// CDP lifecycle that would otherwise attach to the target.
+    fn cdp_target_for_skipped_focus_window<M: Mcp + ?Sized>(
+        &self,
+        reason: FocusSkipReason,
+        arguments: &Value,
+        mcp: &M,
+    ) -> Option<(String, Option<String>)> {
+        if !mcp.has_tool("cdp_connect") {
+            return None;
+        }
+        let app_name = arguments.get("app_name").and_then(Value::as_str)?;
+        if self.cdp_state.is_connected_to(app_name, 0) {
+            return None;
+        }
+        let kind_hint = self.known_app_kinds.get(app_name).cloned();
+        match reason {
+            FocusSkipReason::CdpAttachable => Some((app_name.to_string(), kind_hint)),
+            FocusSkipReason::PolicyDisabled => match kind_hint.as_deref() {
+                Some("Native") => None,
+                Some("ElectronApp" | "ChromeBrowser" | "electron_app" | "chrome_browser") => {
+                    Some((app_name.to_string(), kind_hint))
+                }
+                // Unknown kind: let `auto_connect_cdp` probe. Native apps
+                // short-circuit there; Electron/Chrome targets get an
+                // app-scoped debug session without a foreground focus steal.
+                None => Some((app_name.to_string(), None)),
+                Some(_) => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Under the no-focus policy, suppress a no-args `launch_app` when
+    /// the target process is already running. Native-devtools treats that
+    /// shape as "bring the app to the front"; for CDP-capable apps the
+    /// runner can attach in the background instead.
+    async fn running_app_for_no_focus_launch<M: Mcp + ?Sized>(
+        &self,
+        arguments: &Value,
+        mcp: &M,
+    ) -> Option<RunningAppInfo> {
+        if self.config.allow_focus_window || !mcp.has_tool("list_apps") {
+            return None;
+        }
+        if launch_app_has_launch_only_args(arguments) {
+            return None;
+        }
+        let app_name = arguments.get("app_name").and_then(Value::as_str)?;
+        if app_name.trim().is_empty() {
+            return None;
+        }
+
+        let list_args = serde_json::json!({
+            "app_name": app_name,
+            "user_apps_only": true,
+        });
+        match mcp.call_tool("list_apps", Some(list_args)).await {
+            Ok(result) if result.is_error != Some(true) => {
+                let text = extract_result_text(&result);
+                let entries: Vec<Value> = match serde_json::from_str(&text) {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        debug!(
+                            app = app_name,
+                            error = %e,
+                            "state-spine: list_apps parse failed during no-focus launch guard"
+                        );
+                        return None;
+                    }
+                };
+                entries.into_iter().find_map(|entry| {
+                    let name = entry.get("name").and_then(Value::as_str)?;
+                    if !name.eq_ignore_ascii_case(app_name) {
+                        return None;
+                    }
+                    let pid = entry
+                        .get("pid")
+                        .and_then(Value::as_i64)
+                        .and_then(|pid| i32::try_from(pid).ok());
+                    let kind = entry
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .filter(|kind| !kind.trim().is_empty())
+                        .map(str::to_string);
+                    Some(RunningAppInfo {
+                        name: name.to_string(),
+                        pid,
+                        kind,
+                    })
+                })
+            }
+            Ok(result) => {
+                debug!(
+                    app = app_name,
+                    error = %extract_result_text(&result),
+                    "state-spine: list_apps returned error during no-focus launch guard"
+                );
+                None
+            }
+            Err(e) => {
+                debug!(
+                    app = app_name,
+                    error = %e,
+                    "state-spine: list_apps failed during no-focus launch guard"
+                );
+                None
+            }
+        }
+    }
+
+    fn skipped_launch_result_text(info: &RunningAppInfo) -> String {
+        let mut body = serde_json::Map::new();
+        body.insert("app_name".to_string(), Value::String(info.name.clone()));
+        body.insert(
+            "message".to_string(),
+            Value::String(
+                "launch_app skipped: app is already running; foreground focus not required"
+                    .to_string(),
+            ),
+        );
+        if let Some(pid) = info.pid {
+            body.insert("pid".to_string(), Value::Number(pid.into()));
+        }
+        if let Some(kind) = &info.kind {
+            body.insert("kind".to_string(), Value::String(kind.clone()));
+        }
+        Value::Object(body).to_string()
+    }
+
+    /// Block raw model-authored CDP lifecycle operations. The agent runner
+    /// owns app-scoped CDP acquisition so the model cannot attach to an
+    /// unrelated app listening on a guessed port like 9222.
+    fn raw_cdp_lifecycle_blocked(tool_name: &str, arguments: &Value) -> Option<String> {
+        match tool_name {
+            "cdp_connect" => {
+                let port = arguments
+                    .get("port")
+                    .and_then(Value::as_u64)
+                    .map(|p| format!(" Requested port was {p}."))
+                    .unwrap_or_default();
+                Some(format!(
+                    "raw cdp_connect blocked: CDP connection lifecycle is runtime-managed. \
+                     Do not guess debug ports.{port} Use launch_app or focus_window for the \
+                     target Electron/Chrome app; the runner will reuse an existing \
+                     --remote-debugging-port or relaunch that app with an ephemeral debug port, \
+                     then attach CDP."
+                ))
+            }
+            "cdp_disconnect" => Some(
+                "raw cdp_disconnect blocked: CDP connection lifecycle is runtime-managed. \
+                 The runner disconnects or reattaches when the target app changes; choose the \
+                 next app action or agent_replan instead."
+                    .to_string(),
+            ),
             _ => None,
         }
     }
@@ -3346,8 +3553,8 @@ impl StateRunner {
     {
         use crate::agent::context::{CompactBudget, compact};
         use crate::agent::prompt::{
-            build_system_prompt, build_system_prompt_with_header, build_user_turn_message,
-            build_user_turn_message_with_skills,
+            UserTurnMessageInput, build_system_prompt, build_system_prompt_with_header,
+            build_user_turn_message_from_input,
         };
 
         // Reset the visible state tuple to match the freshly-provided
@@ -3387,14 +3594,16 @@ impl StateRunner {
         // straight into the user turn so messages[1] is the single
         // run-specific slot.
         let initial_scope = self.compute_tools_in_scope(&advertised_tool_names);
-        let initial_user = build_user_turn_message(
-            &self.world_model,
-            &self.task_state,
-            0,
-            &goal,
-            &[],
-            &initial_scope,
-        );
+        let initial_user = build_user_turn_message_from_input(UserTurnMessageInput {
+            wm: &self.world_model,
+            ts: &self.task_state,
+            current_step: 0,
+            observation_text: &goal,
+            retrieved: &[],
+            applicable_skills: &[],
+            tools_in_scope_names: &initial_scope,
+            max_elements: self.config.state_block_max_elements,
+        });
 
         let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
 
@@ -3416,7 +3625,10 @@ impl StateRunner {
         // / `destructive_hint` view.
         let annotations_by_tool = build_annotations_index(&mcp_tools);
 
-        let budget = CompactBudget::default();
+        let budget = CompactBudget {
+            recent_n: self.config.recent_n,
+            ..CompactBudget::default()
+        };
         let mut previous_result: Option<String> = None;
         // Loop detection: `(tool_name, arguments, error)` from the last
         // failing live call.
@@ -3569,15 +3781,16 @@ impl StateRunner {
             // the block surfaces in the next user turn after the
             // `push_subgoal` that produced it, then disappears.
             let applicable = std::mem::take(&mut self.pending_applicable_skills);
-            let step_msg = build_user_turn_message_with_skills(
-                &self.world_model,
-                &self.task_state,
-                self.step_index,
-                &step_obs,
-                &retrieved,
-                &applicable,
-                &step_scope,
-            );
+            let step_msg = build_user_turn_message_from_input(UserTurnMessageInput {
+                wm: &self.world_model,
+                ts: &self.task_state,
+                current_step: self.step_index,
+                observation_text: &step_obs,
+                retrieved: &retrieved,
+                applicable_skills: &applicable,
+                tools_in_scope_names: &step_scope,
+                max_elements: self.config.state_block_max_elements,
+            });
             messages.push(Message::user(step_msg));
             messages = compact(messages, &budget);
 
@@ -3709,6 +3922,82 @@ impl StateRunner {
                 };
             }
 
+            // 4a. Synthetic `launch_app` skip for the no-focus policy.
+            // A no-args launch of an already-running app is a focus
+            // change in native-devtools. When background operation is
+            // required, treat that as a successful app-state observation
+            // and let the CDP lifecycle helper attach without sending the
+            // foregrounding MCP call.
+            if let AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                tool_call_id,
+            } = &turn.action
+                && tool_name == "launch_app"
+                && let Some(running) = self.running_app_for_no_focus_launch(arguments, mcp).await
+            {
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "launch_app".to_string(),
+                    summary: "skipped: app already running; focus changes disabled".to_string(),
+                })
+                .await;
+                let skip_body = Self::skipped_launch_result_text(&running);
+                debug!(
+                    tool = "launch_app",
+                    app = running.name,
+                    "state-spine: suppressing launch_app for already-running app",
+                );
+                let step_idx_for_event = self.state.steps.len();
+                self.state.steps.push(AgentStep {
+                    index: step_idx_for_event,
+                    elements: elements.clone(),
+                    command: AgentCommand::ToolCall {
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                    },
+                    outcome: StepOutcome::Success(skip_body.clone()),
+                    page_url: self.state.current_url.clone(),
+                });
+                self.advance_recorded_step_index();
+                self.emit_world_model_changed_for_recorded_step().await;
+                self.state.consecutive_errors = 0;
+                self.consecutive_errors = 0;
+                last_failure = None;
+                self.clear_last_failure_tracking();
+                self.maybe_cdp_connect(tool_name, arguments, &skip_body, mcp)
+                    .await;
+                previous_result = Some(skip_body.clone());
+                if let Some(nudge) = self
+                    .track_repeat_action(
+                        tool_name,
+                        arguments,
+                        &skip_body,
+                        &annotations_by_tool,
+                        &mut last_action,
+                    )
+                    .await
+                {
+                    previous_result = Some(nudge);
+                }
+                self.emit_event(AgentEvent::StepCompleted {
+                    step_index: step_idx_for_event,
+                    tool_name: "launch_app".to_string(),
+                    summary: crate::agent::prompt::truncate_summary(&skip_body, 120),
+                })
+                .await;
+                append_assistant_and_tool_result(
+                    &mut messages,
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                    previous_result.as_deref(),
+                );
+                continue;
+            }
+
+            force_background_launch_app(&mut turn.action, self.config.allow_focus_window);
+
             // 4a'. Synthetic `focus_window` skip. When the MCP surface +
             // app kind lets us suppress the focus-stealing MCP call
             // (Native + full AX toolset, Electron/Chrome with live CDP,
@@ -3764,30 +4053,23 @@ impl StateRunner {
                 // observation outcome — clear failure tracking the
                 // same way the live ToolSuccess path does.
                 self.clear_last_failure_tracking();
-                // CdpAttachable promised "auto-connect will fire" in the
-                // skip message. The post-tool `maybe_cdp_connect` hook
-                // only runs on real ToolSuccess, so without this call
-                // the LLM would wait forever for a `cdp_page` that is
-                // never attempted. Drive `auto_connect_cdp` directly
-                // here using the kind hint from `known_app_kinds` (the
-                // very predicate that authorized the skip). On success
-                // the helper marks `cdp_state` connected and clears
-                // `cdp_connect_status`; on failure the terminal paths
-                // record the failure reason. The actual
+                // `CdpAttachable` and the no-focus policy both require
+                // app-scoped CDP acquisition. The post-tool
+                // `maybe_cdp_connect` hook only runs on real ToolSuccess,
+                // so synthetic skips must drive `auto_connect_cdp`
+                // directly. On success the helper marks `cdp_state`
+                // connected and clears `cdp_connect_status`; on failure
+                // terminal paths record the reason. The actual
                 // `world_model.cdp_page` write happens at the next
-                // turn's `fetch_elements` mirror — that's why the
-                // finalizer refreshes the MCP tool cache here, so the
-                // next turn's observation gate sees `cdp_find_elements`.
-                if matches!(reason, FocusSkipReason::CdpAttachable)
-                    && let Some(app_name) = arguments.get("app_name").and_then(|v| v.as_str())
-                {
-                    let kind_hint = self.known_app_kinds.get(app_name).cloned();
-                    if let Some(cdp_port) = self
-                        .auto_connect_cdp(app_name, kind_hint.as_deref(), mcp)
+                // turn's `fetch_elements` mirror, so the finalizer
+                // refreshes the MCP tool cache here.
+                if let Some((app_name, kind_hint)) =
+                    self.cdp_target_for_skipped_focus_window(reason, arguments, mcp)
+                    && let Some(cdp_port) = self
+                        .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
                         .await
-                    {
-                        self.finalize_cdp_connected(app_name, cdp_port, mcp).await;
-                    }
+                {
+                    self.finalize_cdp_connected(&app_name, cdp_port, mcp).await;
                 }
                 previous_result = Some(skip_body.clone());
                 // Synthetic skip is a successful dispatch from the LLM's
@@ -3820,6 +4102,95 @@ impl StateRunner {
                     tool_call_id,
                     previous_result.as_deref(),
                 );
+                continue;
+            }
+
+            // 4a-bis. Raw CDP lifecycle guard. The runner owns CDP
+            // acquisition/release at app scope; a model-authored
+            // `cdp_connect({"port": 9222})` can attach to any app
+            // listening on that port, which is exactly the failure mode
+            // this guard blocks. Surface a synthetic error and keep MCP
+            // untouched.
+            if let AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                tool_call_id,
+            } = &turn.action
+                && let Some(err_msg) = Self::raw_cdp_lifecycle_blocked(tool_name, arguments)
+            {
+                warn!(
+                    tool = %tool_name,
+                    "state-spine: raw CDP lifecycle tool blocked"
+                );
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: tool_name.clone(),
+                    summary: "blocked: CDP lifecycle is runtime-managed".to_string(),
+                })
+                .await;
+                let step_idx_for_event = self.state.steps.len();
+                self.state.steps.push(AgentStep {
+                    index: step_idx_for_event,
+                    elements: elements.clone(),
+                    command: AgentCommand::ToolCall {
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                    },
+                    outcome: StepOutcome::Error(err_msg.clone()),
+                    page_url: self.state.current_url.clone(),
+                });
+                self.advance_recorded_step_index();
+                self.emit_world_model_changed_for_recorded_step().await;
+                self.state.consecutive_errors += 1;
+                self.consecutive_errors = self.state.consecutive_errors;
+                previous_result = Some(err_msg.clone());
+                append_assistant_and_tool_result(
+                    &mut messages,
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                    previous_result.as_deref(),
+                );
+                self.emit_event(AgentEvent::StepFailed {
+                    step_index: step_idx_for_event,
+                    tool_name: tool_name.clone(),
+                    error: err_msg.clone(),
+                })
+                .await;
+                let looped = matches!(
+                    last_failure.as_ref(),
+                    Some((prev_tool, prev_args, prev_err))
+                        if prev_tool == tool_name
+                            && prev_args == arguments
+                            && prev_err == &err_msg
+                );
+                if looped {
+                    warn!(
+                        tool = %tool_name,
+                        "state-spine: identical raw CDP lifecycle block repeated — aborting"
+                    );
+                    self.state.terminal_reason = Some(TerminalReason::LoopDetected {
+                        tool_name: tool_name.clone(),
+                        error: err_msg.clone(),
+                    });
+                    break;
+                }
+                last_failure = Some((tool_name.clone(), arguments.clone(), err_msg.clone()));
+                let action = recovery_strategy(
+                    self.state.consecutive_errors,
+                    self.config.max_consecutive_errors,
+                );
+                if matches!(action, RecoveryAction::Abort) {
+                    warn!(
+                        errors = self.state.consecutive_errors,
+                        "state-spine: too many consecutive raw CDP lifecycle blocks — aborting"
+                    );
+                    self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
+                        consecutive_errors: self.state.consecutive_errors,
+                    });
+                    break;
+                }
+                last_action = None;
                 continue;
             }
 
