@@ -283,6 +283,19 @@ pub struct AgentConfig {
     /// merge — bumps in-workflow recoveries above global ones at equal
     /// raw score (D21).
     pub episodic_workflow_priority_multiplier: f32,
+
+    // Spec 3 procedural-skills fields ----------------------------------
+    /// Master kill-switch for the procedural-skills layer. When false,
+    /// extraction, retrieval, and replay all become no-ops regardless of
+    /// other state.
+    pub skills_enabled: bool,
+    /// Top-k applicable skills surfaced into the next user turn after a
+    /// `push_subgoal` mutation (default 2).
+    pub applicable_skills_k: usize,
+    /// Whether the run reads from / writes to the opt-in global skill
+    /// store (off by default — keeps cross-project skill exposure
+    /// deliberate).
+    pub skills_global_participation: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -333,6 +346,9 @@ impl Default for AgentConfig {
             episodic_score_weights: EpisodicScoreWeights::default(),
             episodic_global_cap_per_retrieval: 1,
             episodic_workflow_priority_multiplier: 1.3,
+            skills_enabled: true,
+            applicable_skills_k: 2,
+            skills_global_participation: false,
         }
     }
 }

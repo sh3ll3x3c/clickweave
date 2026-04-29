@@ -33,10 +33,12 @@ pub mod watcher;
 pub mod watcher_consumer;
 
 pub use index::SkillIndex;
+pub use replay::SkillFrame;
 pub use store::SkillStore;
 pub use types::{
     ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, BindingRef, CaptureClause,
-    CaptureSource, LoopPredicate, MaybeExtracted, OutcomePredicate, OutputDeclaration,
-    ParameterSlot, ProvenanceEntry, RecordedStep, RetrievedSkill, Skill, SkillContext, SkillError,
-    SkillRefinementProposal, SkillScope, SkillState, SkillStats, SubgoalSignature,
+    CaptureSource, ExpectedWorldModelDelta, LoopPredicate, MaybeExtracted, OutcomePredicate,
+    OutputDeclaration, ParameterSlot, ProvenanceEntry, RecordedStep, RetrievedSkill, Skill,
+    SkillContext, SkillError, SkillRefinementProposal, SkillScope, SkillState, SkillStats,
+    SubgoalSignature,
 };

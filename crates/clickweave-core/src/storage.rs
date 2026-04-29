@@ -394,6 +394,27 @@ impl RunStorage {
         self.base_path.join("agent_cache.json")
     }
 
+    /// Directory holding the project-local procedural-skill files
+    /// (Spec 3). Sibling to `agent_cache_path()` and `episodic_dir()`,
+    /// keyed by the same project-tier convention: saved projects use
+    /// `<project>/.clickweave/skills/`; unsaved projects nest under
+    /// `<app_data>/skills/<project_uuid>/` via the same `base_path`
+    /// the rest of the run-storage tree already lives under.
+    ///
+    /// Creates the directory if it does not yet exist (mkdir -p
+    /// semantics) so the `SkillStore` can write into it on the first
+    /// extraction without a separate setup step. Disk failures are
+    /// surfaced; callers fall back to a disabled `SkillContext` when
+    /// the dir cannot be created.
+    pub fn project_skills_dir(&self) -> Result<PathBuf> {
+        let dir = self.base_path.join("skills");
+        if self.persistent && !dir.exists() {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("creating project skills dir at {}", dir.display()))?;
+        }
+        Ok(dir)
+    }
+
     /// Path to the variant index file (workflow-level, not per-execution).
     pub fn variant_index_path(&self) -> PathBuf {
         self.base_path.join("variant_index.jsonl")

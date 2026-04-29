@@ -20,12 +20,14 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use tracing::warn;
 
+use super::retrieval::{ScoringWeights, is_retrieval_eligible, merge_tiers, score};
 use super::store::SkillStore;
 use super::types::{
     ApplicabilitySignature, RetrievedSkill, Skill, SkillContext, SkillError, SkillState,
     SubgoalSignature,
 };
 use crate::agent::episodic::HashedShingleEmbedder;
+use crate::agent::episodic::embedder::Embedder;
 
 pub struct SkillIndex {
     by_id: HashMap<(String, u32), Arc<Skill>>,
@@ -138,16 +140,31 @@ impl SkillIndex {
         }
     }
 
-    /// Phase 2 lookup: return up to `k` skills whose `subgoal_signature`
-    /// matches and whose state is `Confirmed` or `Promoted` (drafts are
-    /// not retrieval-eligible). Scoring is a placeholder (`1.0` on
-    /// match) — Phase 3's retrieval module replaces this with the rich
-    /// formula and supplies cross-tier merging.
+    /// Return up to `k` skills whose `subgoal_signature` matches and
+    /// whose state is `Confirmed` or `Promoted` (drafts are not
+    /// retrieval-eligible). Scores combine signature match, text
+    /// similarity (subgoal text via the shared embedder), occurrence
+    /// boost, success rate, and time decay; the cross-tier merge then
+    /// applies the project-local multiplier and global cap.
     pub fn lookup(
         &self,
         subgoal_sig: &SubgoalSignature,
         _applicability_sig: &ApplicabilitySignature,
         k: usize,
+    ) -> Vec<RetrievedSkill> {
+        self.lookup_at(subgoal_sig, _applicability_sig, "", k, Utc::now())
+    }
+
+    /// Lookup variant exposing the query subgoal text (so the text
+    /// similarity component is meaningful) and an explicit `now` for
+    /// deterministic test coverage of the time-decay term.
+    pub fn lookup_at(
+        &self,
+        subgoal_sig: &SubgoalSignature,
+        _applicability_sig: &ApplicabilitySignature,
+        query_subgoal_text: &str,
+        k: usize,
+        now: DateTime<Utc>,
     ) -> Vec<RetrievedSkill> {
         if k == 0 {
             return Vec::new();
@@ -155,17 +172,38 @@ impl SkillIndex {
         let Some(keys) = self.by_subgoal_signature.get(subgoal_sig) else {
             return Vec::new();
         };
-        let mut out: Vec<RetrievedSkill> = keys
+        let weights = ScoringWeights::default();
+        let query_embedding = if query_subgoal_text.is_empty() {
+            Vec::new()
+        } else {
+            self.embedder.embed(query_subgoal_text)
+        };
+        let scored: Vec<_> = keys
             .iter()
             .filter_map(|key| self.by_id.get(key))
-            .filter(|skill| matches!(skill.state, SkillState::Confirmed | SkillState::Promoted))
-            .map(|skill| RetrievedSkill {
-                skill: skill.clone(),
-                score: 1.0,
+            .filter(|skill| is_retrieval_eligible(skill))
+            .map(|skill| {
+                let skill_embedding = self.embedder.embed(&skill.subgoal_text);
+                let raw = score(
+                    skill,
+                    subgoal_sig,
+                    &query_embedding,
+                    &skill_embedding,
+                    &weights,
+                    now,
+                );
+                let scope = skill.scope;
+                (
+                    scope,
+                    raw,
+                    RetrievedSkill {
+                        skill: skill.clone(),
+                        score: raw,
+                    },
+                )
             })
             .collect();
-        out.truncate(k);
-        out
+        merge_tiers(scored, k)
     }
 
     pub fn mark_invoked(&mut self, id: &str, version: u32, when: DateTime<Utc>) {
@@ -178,6 +216,23 @@ impl SkillIndex {
             updated.stats.last_invoked_at = Some(when);
             *entry = Arc::new(updated);
         }
+    }
+
+    /// Return every skill (regardless of state) whose `subgoal_signature`
+    /// matches `sig`. Used by the extractor to detect a matching version
+    /// family before deciding whether to merge or fork. Includes drafts —
+    /// extraction merges into draft entries even though retrieval skips
+    /// them.
+    pub fn skills_with_signature(&self, sig: &SubgoalSignature) -> Vec<Arc<Skill>> {
+        self.by_subgoal_signature
+            .get(sig)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(|key| self.by_id.get(key))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn skills_in_state(&self, state: SkillState) -> Vec<Arc<Skill>> {

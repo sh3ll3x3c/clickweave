@@ -205,6 +205,20 @@ pub struct SkillContext {
     pub project_id: String,
 }
 
+impl SkillContext {
+    /// Construct a context that disables every skill hook on the
+    /// runner. Mirrors `EpisodicContext::disabled()` — used by tests
+    /// and internal callers that don't construct skill paths.
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            project_skills_dir: PathBuf::new(),
+            global_skills_dir: None,
+            project_id: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RecordedStep {
     pub tool_name: String,

@@ -857,6 +857,12 @@ pub async fn run_agent(
                 // Spec 2 P4: thread the per-run EpisodicContext into the
                 // engine. Disabled context = no episodic stores opened.
                 Some(task_episodic_ctx.clone()),
+                // Spec 3: per-run SkillContext lands in Phase 5 when the
+                // Tauri command surface (`commands/skills.rs`) and the
+                // settings UI ship. Until then, the runner gets a
+                // disabled context so the procedural-skills hooks are
+                // no-ops in production.
+                None,
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
@@ -1662,6 +1668,7 @@ mod run_agent_smoke_tests {
             None,
             None,
             Some(Arc::clone(&storage)),
+            None,
             None,
         )
         .await

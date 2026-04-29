@@ -99,6 +99,10 @@ pub async fn run_agent_workflow<B, M>(
     // preserving the legacy "no episodic" behaviour for tests and
     // internal callers that don't construct paths.
     episodic_ctx: Option<crate::agent::episodic::EpisodicContext>,
+    // Spec 3 procedural-skills wiring. `None` → `SkillContext::disabled()`,
+    // preserving the legacy "no skills" behaviour for tests and
+    // internal callers that don't construct paths.
+    skill_ctx: Option<crate::agent::skills::SkillContext>,
 ) -> anyhow::Result<(
     AgentState,
     AgentCache,
@@ -133,7 +137,11 @@ where
     // context — episodic stays a no-op for that run.
     let episodic_ctx =
         episodic_ctx.unwrap_or_else(crate::agent::episodic::EpisodicContext::disabled);
-    let mut runner = StateRunner::new_with_episodic(goal.clone(), config, episodic_ctx);
+    // Spec 3: skill_ctx falls back to disabled when the caller did not
+    // wire up the procedural-skills layer (tests, internal callers).
+    let skill_ctx = skill_ctx.unwrap_or_else(crate::agent::skills::SkillContext::disabled);
+    let mut runner =
+        StateRunner::new_with_episodic_and_skills(goal.clone(), config, episodic_ctx, skill_ctx);
     if let Some(c) = cache {
         runner = runner.with_cache(c);
     }

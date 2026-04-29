@@ -211,6 +211,31 @@ pub fn build_user_turn_message(
     retrieved: &[crate::agent::episodic::RetrievedEpisode],
     tools_in_scope_names: &[String],
 ) -> String {
+    build_user_turn_message_with_skills(
+        wm,
+        ts,
+        current_step,
+        observation_text,
+        retrieved,
+        &[],
+        tools_in_scope_names,
+    )
+}
+
+/// Spec 3 variant of [`build_user_turn_message`] that also splices an
+/// `<applicable_skills>` block when `applicable_skills` is non-empty.
+/// The block lands after `<retrieved_recoveries>` and before the tools
+/// scope / observation so the LLM sees the candidate procedural skills
+/// alongside remembered recoveries.
+pub fn build_user_turn_message_with_skills(
+    wm: &WorldModel,
+    ts: &TaskState,
+    current_step: usize,
+    observation_text: &str,
+    retrieved: &[crate::agent::episodic::RetrievedEpisode],
+    applicable_skills: &[crate::agent::skills::RetrievedSkill],
+    tools_in_scope_names: &[String],
+) -> String {
     let mut out = render_step_input(wm, ts, current_step);
 
     let recoveries_block =
@@ -218,6 +243,15 @@ pub fn build_user_turn_message(
     if !recoveries_block.is_empty() {
         out.push_str(&recoveries_block);
         out.push('\n');
+    }
+
+    if !applicable_skills.is_empty() {
+        let skills_block =
+            crate::agent::skills::render::render_applicable_skills_block(applicable_skills);
+        if !skills_block.is_empty() {
+            out.push_str(&skills_block);
+            out.push('\n');
+        }
     }
 
     let scope_block = render_tools_in_scope_block(tools_in_scope_names);
@@ -598,6 +632,66 @@ mod state_spine_prompt_tests {
         let ts = TaskState::new("ship it".to_string());
         let out = build_user_turn_message(&wm, &ts, 0, "obs", &[], &[]);
         assert!(!out.contains("<tools_in_scope>"));
+    }
+
+    #[test]
+    fn user_turn_renders_applicable_skills_block_when_non_empty() {
+        use crate::agent::skills::{
+            ApplicabilityHints, ApplicabilitySignature, OutcomePredicate, RetrievedSkill, Skill,
+            SkillScope, SkillState, SkillStats, SubgoalSignature,
+        };
+        use chrono::TimeZone;
+        use std::sync::Arc;
+
+        let wm = WorldModel::default();
+        let ts = TaskState::new("ship it".to_string());
+        let skill = Skill {
+            id: "open-chat".into(),
+            version: 1,
+            state: SkillState::Confirmed,
+            scope: SkillScope::ProjectLocal,
+            name: "Open chat".into(),
+            description: "desc".into(),
+            tags: vec![],
+            subgoal_text: "open chat".into(),
+            subgoal_signature: SubgoalSignature("sig".into()),
+            applicability: ApplicabilityHints {
+                apps: vec![],
+                hosts: vec![],
+                signature: ApplicabilitySignature("a".into()),
+            },
+            parameter_schema: vec![],
+            action_sketch: vec![],
+            outputs: vec![],
+            outcome_predicate: OutcomePredicate::SubgoalCompleted {
+                post_state_world_model_signature: None,
+            },
+            provenance: vec![],
+            stats: SkillStats::default(),
+            edited_by_user: false,
+            created_at: chrono::Utc.timestamp_opt(0, 0).unwrap(),
+            updated_at: chrono::Utc.timestamp_opt(0, 0).unwrap(),
+            produced_node_ids: vec![],
+            body: String::new(),
+        };
+        let applicable = vec![RetrievedSkill {
+            skill: Arc::new(skill),
+            score: 1.0,
+        }];
+        let out = build_user_turn_message_with_skills(&wm, &ts, 1, "obs", &[], &applicable, &[]);
+        assert!(out.contains("<applicable_skills>"));
+        assert!(out.contains("Open chat"));
+        let skills_end = out.find("</applicable_skills>").unwrap();
+        let obs_start = out.find("obs").unwrap();
+        assert!(skills_end < obs_start);
+    }
+
+    #[test]
+    fn user_turn_omits_applicable_skills_block_when_empty() {
+        let wm = WorldModel::default();
+        let ts = TaskState::new("ship it".to_string());
+        let out = build_user_turn_message_with_skills(&wm, &ts, 1, "obs", &[], &[], &[]);
+        assert!(!out.contains("<applicable_skills>"));
     }
 
     #[test]

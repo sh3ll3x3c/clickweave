@@ -3596,6 +3596,7 @@ mod e2e_run_agent_workflow_tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("run_agent_workflow ok");
@@ -3705,6 +3706,7 @@ mod e2e_run_agent_workflow_tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("run_agent_workflow ok");
@@ -3792,6 +3794,7 @@ mod e2e_run_agent_workflow_tests {
             None,
             Some(storage.clone()),
             None,
+            None,
         )
         .await
         .expect("run_agent_workflow ok");
@@ -3876,6 +3879,7 @@ mod variant_context_placement_tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("run_agent_workflow ok");
@@ -3941,6 +3945,7 @@ mod variant_context_placement_tests {
             None,
             None,
             uuid::Uuid::new_v4(),
+            None,
             None,
             None,
             None,
