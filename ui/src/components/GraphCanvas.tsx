@@ -16,6 +16,7 @@ import { useAppGrouping } from "../hooks/useAppGrouping";
 import { useUserGrouping } from "../hooks/useUserGrouping";
 import { useNodeSync } from "../hooks/useNodeSync";
 import { useEdgeSync } from "../hooks/useEdgeSync";
+import { AgentRunGroupNode } from "./AgentRunGroupNode";
 import { AppGroupNode } from "./AppGroupNode";
 import { UserGroupNode } from "./UserGroupNode";
 import { WorkflowNode } from "./WorkflowNode";
@@ -149,7 +150,12 @@ function WorkflowGraphCanvas({
   onRemoveNodesFromGroup,
 }: WorkflowGraphCanvasProps) {
   const nodeTypes: NodeTypes = useMemo(
-    () => ({ workflow: WorkflowNode, appGroup: AppGroupNode, userGroup: UserGroupNode }),
+    () => ({
+      workflow: WorkflowNode,
+      appGroup: AppGroupNode,
+      userGroup: UserGroupNode,
+      agent_run_group: AgentRunGroupNode,
+    }),
     [],
   );
 
@@ -160,6 +166,9 @@ function WorkflowGraphCanvas({
 
   const appState = useAppGrouping(workflow);
   const userGroupState = useUserGrouping(workflow);
+  const agentRunCollapsed = useStore((s) => s.agentRunCollapsed);
+  const runTraces = useStore((s) => s.runTraces);
+  const toggleAgentRunCollapsed = useStore((s) => s.toggleAgentRunCollapsed);
 
   // Mid-run delete gate: expose an inline reject callback so the
   // useNodeSync hook can reject user deletions while the agent is
@@ -206,6 +215,9 @@ function WorkflowGraphCanvas({
     nodeToAppGroup: appState.nodeToAppGroup,
     appGroupMeta: appState.appGroupMeta,
     toggleAppCollapse: appState.toggleAppCollapse,
+    agentRunCollapsed,
+    runTraces,
+    toggleAgentRunCollapsed,
     collapsedUserGroups: userGroupState.collapsedUserGroups,
     nodeToUserGroup: userGroupState.nodeToUserGroup,
     userGroupMeta: userGroupState.userGroupMeta,

@@ -6,6 +6,7 @@ import { AmbiguityResolutionCard } from "./AmbiguityResolutionCard";
 import { AmbiguityResolutionModal } from "./AmbiguityResolutionModal";
 import { ConfirmClearConversationModal } from "./ConfirmClearConversationModal";
 import { isAgentActive } from "../store/slices/agentSlice";
+import { RunTraceView } from "./RunTraceView";
 
 interface AssistantPanelProps {
   open: boolean;
@@ -28,6 +29,7 @@ export function AssistantPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const agentStatus = useStore((s) => s.agentStatus);
+  const activeRunId = useStore((s) => s.agentRunId);
   const pendingApproval = useStore((s) => s.pendingApproval);
   const completionDisagreement = useStore((s) => s.completionDisagreement);
   const consecutiveDestructiveCapHit = useStore(
@@ -53,7 +55,6 @@ export function AssistantPanel({
   );
   const activeAmbiguity =
     ambiguityResolutions.find((r) => r.id === activeAmbiguityId) ?? null;
-  const agentRunning = agentStatus === "running";
   // Broader "active" check for features that must not race the
   // backend task — includes the VLM-disagreement resolver window.
   const agentActive = isAgentActive(agentStatus, completionDisagreement);
@@ -61,7 +62,7 @@ export function AssistantPanel({
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth" });
   }, [messages.length]);
 
   // Focus textarea when panel opens
@@ -291,6 +292,8 @@ export function AssistantPanel({
         </div>
       )}
 
+      {agentActive && activeRunId && <RunTraceView runId={activeRunId} />}
+
       {/* Input — hidden while the agent is running OR while a VLM
           completion-disagreement resolver is pending. In the
           disagreement window the backend task is still alive and
@@ -300,15 +303,7 @@ export function AssistantPanel({
           above. */}
       <div className="border-t border-[var(--border)] px-3 py-3">
         {agentActive ? (
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent-coral)] border-t-transparent" />
-              <span className="text-xs text-[var(--text-secondary)]">
-                {agentRunning
-                  ? "Agent running..."
-                  : "Awaiting completion decision..."}
-              </span>
-            </div>
+          <div className="flex justify-end">
             <button
               onClick={stopAgent}
               className="rounded-lg border border-red-500/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 hover:text-red-300"

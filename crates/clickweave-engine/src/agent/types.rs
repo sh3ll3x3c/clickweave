@@ -7,6 +7,44 @@ use crate::agent::skills::{SkillScope, SkillState};
 use crate::agent::step_record::BoundaryKind;
 use crate::agent::task_state::TaskState;
 
+/// Wrapper carried on the engine-to-Tauri mpsc channel. Splits durable,
+/// serializable events from one-shot channel control messages.
+#[derive(Debug)]
+pub enum RunnerOutput {
+    /// A durable, serializable agent event. Persisted to `events.jsonl`
+    /// and mapped to a Tauri topic by the forwarder.
+    Event(AgentEvent),
+
+    /// Non-persisted ordering barrier. The forwarder skips durable
+    /// persistence for this variant and signals `ack` after every
+    /// previously queued event has been handled.
+    DrainBarrier {
+        ack: tokio::sync::oneshot::Sender<()>,
+    },
+
+    /// Non-persisted Tauri-side trigger for skill proposal generation.
+    SkillProposalNeeded {
+        skill_id: String,
+        version: u32,
+        run_id: String,
+    },
+}
+
+impl RunnerOutput {
+    pub fn into_event(self) -> Option<AgentEvent> {
+        match self {
+            RunnerOutput::Event(event) => Some(event),
+            RunnerOutput::DrainBarrier { .. } | RunnerOutput::SkillProposalNeeded { .. } => None,
+        }
+    }
+}
+
+impl From<AgentEvent> for RunnerOutput {
+    fn from(event: AgentEvent) -> Self {
+        RunnerOutput::Event(event)
+    }
+}
+
 /// Default ceiling on agent observe-act iterations. Chosen to cover typical
 /// multi-step tasks (login → action → confirm) with headroom while keeping a
 /// runaway loop from burning through an LLM budget. Callers set a larger
@@ -126,6 +164,7 @@ pub enum AgentEvent {
         run_id: Uuid,
         boundary_kind: BoundaryKind,
         step_index: usize,
+        milestone_text: Option<String>,
     },
     /// Emitted after the runner's episodic-retrieval pass returns at
     /// least one candidate (Spec 2 D24). Triggered on run-start and on

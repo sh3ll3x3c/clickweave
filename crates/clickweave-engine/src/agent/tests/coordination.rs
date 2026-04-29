@@ -91,10 +91,12 @@ fn spawn_recording_approver(
     (handle, seen)
 }
 
-fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+fn drain_events(rx: &mut mpsc::Receiver<RunnerOutput>) -> Vec<AgentEvent> {
     let mut out = Vec::new();
     while let Ok(ev) = rx.try_recv() {
-        out.push(ev);
+        if let Some(event) = ev.into_event() {
+            out.push(event);
+        }
     }
     out
 }
@@ -117,7 +119,7 @@ async fn stop_during_approval_wait_sends_rejection_not_channel_drop() {
         ..Default::default()
     };
 
-    let (event_tx, _event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, _event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, mut approval_rx) = approval_channel();
 
     // Receive the approval request, then send `false` on the oneshot
@@ -174,7 +176,7 @@ async fn buffered_events_do_not_leak_between_runs() {
     ]);
     let mcp_a = MockMcp::with_click_tool();
 
-    let (event_tx_a, mut event_rx_a) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx_a, mut event_rx_a) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx_a, approval_rx_a) = approval_channel();
     let approver_a = spawn_auto_approver(approval_rx_a);
 
@@ -202,7 +204,7 @@ async fn buffered_events_do_not_leak_between_runs() {
     let llm_b = MockAgent::new(vec![MockAgent::done_response("run B done")]);
     let mcp_b = MockMcp::with_click_tool();
 
-    let (event_tx_b, mut event_rx_b) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx_b, mut event_rx_b) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx_b, _approval_rx_b) = approval_channel();
     let runner_b = StateRunner::new("goal B".to_string(), AgentConfig::default())
         .with_events(event_tx_b)
@@ -262,7 +264,7 @@ async fn workflow_mapping_miss_emits_warning_and_run_continues() {
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let approver = spawn_auto_approver(approval_rx);
 
@@ -415,7 +417,7 @@ async fn focus_window_after_native_launch_is_suppressed_with_ax_toolset() {
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 
@@ -578,7 +580,7 @@ async fn focus_window_still_runs_when_app_kind_is_unknown() {
         ..Default::default()
     };
 
-    let (event_tx, _event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, _event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let approver = spawn_auto_approver(approval_rx);
 
@@ -705,7 +707,7 @@ async fn focus_window_after_cdp_connected_is_suppressed_for_electron_target() {
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 
@@ -860,7 +862,7 @@ async fn focus_window_suppressed_when_allow_focus_window_policy_is_false() {
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 

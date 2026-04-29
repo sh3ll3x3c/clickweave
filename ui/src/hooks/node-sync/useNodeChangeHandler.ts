@@ -14,6 +14,7 @@ import {
   MIN_GROUP_HEIGHT,
   groupConstants,
 } from "./nodeBuilders";
+import { AGENT_RUN_GROUP_PREFIX } from "./useRfNodeBuilder";
 
 interface UseNodeChangeHandlerParams {
   workflow: Workflow;
@@ -89,6 +90,14 @@ export function useNodeChangeHandler({
         const expandedSet = new Set<string>();
         const addUnique = (m: string) => { if (!expandedSet.has(m)) { expandedSet.add(m); expanded.push(m); } };
         for (const id of removeIds) {
+          if (id.startsWith(AGENT_RUN_GROUP_PREFIX)) {
+            const runId = id.slice(AGENT_RUN_GROUP_PREFIX.length);
+            for (const node of workflow.nodes) {
+              if (node.source_run_id === runId) addUnique(node.id);
+            }
+            continue;
+          }
+
           // User group container deletion → expand to all member nodes
           const ugMeta = userGroupMeta.get(id);
           if (ugMeta) {
@@ -207,10 +216,29 @@ export function useNodeChangeHandler({
                 if (child.parentId === change.id) {
                   const parentNode = nodeMap.get(change.id);
                   const { headerHeight: ph, padding: pp } = groupConstants(parentNode?.type ?? "appGroup");
-                  posUpdates.set(child.id, {
+                  const childPosition = {
                     x: child.position.x + change.position.x - pp,
                     y: child.position.y + change.position.y - ph - pp,
-                  });
+                  };
+                  const childAnchor = userGroupMeta.get(child.id)?.anchorId ?? appGroupMeta.get(child.id)?.anchorId;
+                  if (!childAnchor) {
+                    posUpdates.set(child.id, childPosition);
+                    continue;
+                  }
+
+                  posUpdates.set(childAnchor, childPosition);
+                  const { headerHeight: ch, padding: cp } = groupConstants(child.type ?? "appGroup");
+                  for (const grandchild of updatedNodes) {
+                    if (grandchild.parentId !== child.id) continue;
+                    const grandchildAnchor =
+                      userGroupMeta.get(grandchild.id)?.anchorId ??
+                      appGroupMeta.get(grandchild.id)?.anchorId ??
+                      grandchild.id;
+                    posUpdates.set(grandchildAnchor, {
+                      x: grandchild.position.x + childPosition.x - cp,
+                      y: grandchild.position.y + childPosition.y - ch - cp,
+                    });
+                  }
                 }
               }
             }

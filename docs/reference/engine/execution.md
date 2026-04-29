@@ -155,6 +155,8 @@ The loop emits events through an `AgentChannels` mpsc channel, forwarded as Taur
 - `agent://skill_confirmed` — emitted when a draft skill is confirmed by the command layer. Payload: `{ run_id, event_run_id, skill_id, version }`.
 - `agent://skill_invoked` — emitted when a run resolves and starts replaying a confirmed/promoted skill. Payload: `{ run_id, event_run_id, skill_id, version, parameter_count }`.
 
+`agent://node_added` and `agent://edge_added` remain per-step engine emissions. The frontend buffers them by `run_id` and commits them to the canvas only on a clean `agent://complete` terminal event; stopped, errored, destructive-cap, and disagreement-cancelled runs drop the buffer. See the frontend reference for the canvas-materialization projection.
+
 After `StepOutcome::Done`, the loop runs a VLM completion check when a vision backend is attached: it takes a screenshot via `take_screenshot`, sends it with the goal and agent summary, and parses YES/NO from the reply. YES lets the run complete normally (`Completed`). NO halts the run with `TerminalReason::CompletionDisagreement` and emits `agent://completion_disagreement`. Verification errors (no vision backend, screenshot failure, empty or failed VLM response) log a warning and fall through to the legacy `Completed` path — a broken verifier must not tank successful runs.
 
 All payloads carry the `run_id` so stale events from a prior run can be filtered on the UI side.

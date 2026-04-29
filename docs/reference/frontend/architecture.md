@@ -29,6 +29,7 @@ ui/src/
 │   ├── WorkflowNode.tsx
 │   ├── AppGroupNode.tsx
 │   ├── UserGroupNode.tsx
+│   ├── AgentRunGroupNode.tsx
 │   ├── DataEdge.tsx
 │   ├── NodePalette.tsx
 │   ├── LogsDrawer.tsx
@@ -44,6 +45,7 @@ ui/src/
 │   ├── ImageLightbox.tsx
 │   ├── IntentEmptyState.tsx
 │   ├── AssistantPanel.tsx
+│   ├── RunTraceView.tsx
 │   ├── ExecutionTab.tsx
 │   ├── skills/
 │   │   ├── SkillsPanel.tsx
@@ -157,9 +159,11 @@ The agent slice owns the live state of the state-spine agent loop. The backend `
 - `pendingApproval: PendingApproval | null` — populated when the agent asks the user to approve the next tool invocation
 - `completionDisagreement: CompletionDisagreement | null` — populated when the backend emits `agent://completion_disagreement`; holds the screenshot, VLM reasoning, and agent summary surfaced by the assistant panel's disagreement card
 - `agentRunId: string | null` — per-run generation ID used to drop stale events from a prior run
-- actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `addAgentNode`, `addAgentEdge`, `setPendingApproval`, `approveAction`, `rejectAction`, `setCompletionDisagreement`, `confirmDisagreementAsComplete` (invokes `resolve_completion_disagreement` with `"confirm"` — backend writes the durable record and emits `agent://complete`), `cancelDisagreement` (invokes with `"cancel"` — backend emits `agent://stopped { reason: "user_cancelled_disagreement" }`), `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
+- `pendingRunNodes: Record<string, Node[]>`, `pendingRunEdges: Record<string, Edge[]>` — per-run canvas buffers for agent-produced workflow materialization
+- `agentRunCollapsed: Record<string, boolean>` — session-only collapse state for synthetic agent-run containers
+- actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `bufferAgentNode`, `bufferAgentEdge`, `commitRunBuffer`, `dropRunBuffer`, `toggleAgentRunCollapsed`, `setPendingApproval`, `approveAction`, `rejectAction`, `setCompletionDisagreement`, `confirmDisagreementAsComplete` (invokes `resolve_completion_disagreement` with `"confirm"` — backend writes the durable record and emits `agent://complete`), `cancelDisagreement` (invokes with `"cancel"` — backend emits `agent://stopped { reason: "user_cancelled_disagreement" }`), `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
 
-The new state-spine events (`agent://task_state_changed`, `agent://world_model_changed`, `agent://boundary_record_written`) are emitted by `StateRunner` and carried through to the frontend, but are not yet consumed by this slice — a later task lights up the subgoal-stack / world-model inspector panel. `WorldModelDiff` (payload of `world_model_changed`) is a minimal `{ changed_fields: Vec<String> }` shape — a re-render hint, not a full snapshot.
+The state-spine events (`agent://task_state_changed`, `agent://world_model_changed`, `agent://boundary_record_written`) are emitted by `StateRunner` and carried through to `AssistantSlice.runTraces` for the live trace surface. `WorldModelDiff` (payload of `world_model_changed`) is a minimal `{ changed_fields: Vec<String> }` shape — a re-render hint, not a full snapshot.
 
 The Spec 2 episodic-memory events (`agent://episodes_retrieved`, `agent://episode_written`, `agent://episode_promoted`) are emitted by the engine and the background `EpisodicWriter` task, fan out through the same `forward_agent_event` seam, and carry the active `run_id` so the stale-run filter drops late events from a previous run. The slice itself does not yet consume them — they currently support telemetry / future inspector surfaces only. The fields the UI threads into `AgentRunRequest` to control the layer (`episodic_enabled`, `retrieved_episodes_k`, `episodic_global_participation`) are sourced from the SettingsSlice fields documented below.
 
@@ -171,9 +175,12 @@ Owns the conversational surface. `messages` is the source of truth for continuat
 
 - `messages: AssistantMessage[]` where `AssistantMessage.role` is `"user" | "assistant" | "system"` and `runId?: string` is present for user/assistant pairs
 - `assistantOpen: boolean`, `assistantError: string | null`
-- actions: `setAssistantOpen`, `toggleAssistant`, `setAssistantError`, `pushAssistantMessage(role, content, runId?)`, `pushSystemAnnotation`, `clearConversation`, `clearConversationFlow`, `setMessages`, `mapMessagesByRunIds`, `dropTurnsByRunIds`
+- `runTraces: Record<string, RunTrace>` — live trace state keyed by agent `run_id`. `RunTrace` contains `{ runId, phase, activeSubgoal, steps, worldModelDeltas, milestones, terminalFrame }`, where steps carry tool name/body/failure state, deltas carry changed world-model field names, milestones mirror completed-subgoal/recovery boundaries, and terminal frames distinguish complete/stopped/error/disagreement-cancelled endings.
+- actions: `setAssistantOpen`, `toggleAssistant`, `setAssistantError`, `pushAssistantMessage(role, content, runId?)`, `pushSystemAnnotation`, `clearConversation`, `clearConversationFlow`, `setMessages`, `mapMessagesByRunIds`, `dropTurnsByRunIds`, `applyTaskStateUpdate`, `applyWorldModelDelta`, `applyBoundary`, `pushTraceStep`, `setTerminalFrame`, `clearTrace`
 - persisted per-workflow to `agent_chat.json`, hydrated on project open; saves are best-effort and gated on `storeTraces`
 - opening the panel while a walkthrough is `Recording` or `Paused` cancels it; `Review`/`Processing` state is kept and just hidden behind the assistant
+
+`RunTraceView.tsx` renders the active `RunTrace` inside `AssistantPanel` while an agent run is active. It shows the harness phase, active subgoal, per-step records, world-model delta hints, boundary milestones, and the terminal frame. Before the first trace event arrives it renders a small "Agent running..." fallback scoped to the trace component; `AssistantPanel` itself no longer owns a standalone spinner/status row.
 
 **SkillsSlice** (`skillsSlice.ts`)
 
@@ -249,7 +256,7 @@ All three flow through `AgentRunRequest` (`skills_enabled`, `applicable_skills_k
 - State-spine additions (payloads carry `run_id` per D17, filtered by `isStaleRunId` alongside all other `agent://*` events):
   - `agent://task_state_changed` — full `TaskState` snapshot emitted after any turn that applied at least one mutation
   - `agent://world_model_changed` — emitted once per step after `observe`; payload carries a `WorldModelDiff { changed_fields: string[] }` re-render hint, not the full model
-  - `agent://boundary_record_written` — emitted when the runner persists a `StepRecord`; payload `{ boundary_kind, step_index }` where `boundary_kind` is `"terminal" | "subgoal_completed" | "recovery_succeeded"`
+  - `agent://boundary_record_written` — emitted when the runner persists a `StepRecord`; payload `{ boundary_kind, step_index, milestone_text }` where `boundary_kind` is `"terminal" | "subgoal_completed" | "recovery_succeeded"` and `milestone_text` is present for completed-subgoal milestones
 - Spec 2 episodic-memory additions (same stale-run filtering; payload shapes locked by D33):
   - `agent://episodes_retrieved` — payload `{ trigger: "run_start" | "recovering_entry", count, episode_ids: string[], scope_breakdown: { workflow, global } }`. Fired by the runner when a retrieval pass returned at least one candidate.
   - `agent://episode_written` — payload `{ outcome: "inserted" | "merged" | "dropped: <reason>", episode_id, scope: "workflow_local" | "global", occurrence_count }`. Fired by the background `EpisodicWriter` task after each successful insert / merge.
@@ -263,6 +270,8 @@ All three flow through `AgentRunRequest` (`skills_enabled`, `applicable_skills_k
 - `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`
 
 All `agent://*` payloads carry a `run_id` field. Events whose `run_id` does not match the active run are silently dropped (`isStaleRunId` in `useAgentEvents`) so late-arriving events from a previous run cannot leak into the current UI state. The three state-spine additions above are filtered through the same stale-run gate.
+
+Agent canvas materialization is deferred by run. `agent://node_added` and `agent://edge_added` append to `pendingRunNodes[run_id]` and `pendingRunEdges[run_id]`. `agent://complete` commits the buffered nodes and edges into the workflow in one clean-terminal batch. `agent://stopped`, `agent://error`, `agent://consecutive_destructive_cap_hit`, disagreement cancellation, and Clear conversation drop the active buffer. Clean-terminal commit never creates or mutates `workflow.groups`; grouping for agent output is a React Flow projection.
 
 ## Graph Editor (`GraphCanvas`)
 
@@ -280,6 +289,7 @@ Workflow canvas node types:
 - `workflow` -> `WorkflowNode`
 - `appGroup` -> `AppGroupNode` (auto-generated groups by app)
 - `userGroup` -> `UserGroupNode` (user-created groups)
+- `agent_run_group` -> `AgentRunGroupNode` (synthetic, session-only container for nodes produced by one agent run)
 
 Skill-detail canvas node types are selected when `GraphCanvas` receives a `skillSource` prop. The canvas is read-only and uses:
 
@@ -293,6 +303,15 @@ Skill-detail canvas node types are selected when `GraphCanvas` receives a `skill
 - Handle-to-handle connect creates edges
 - Delete key removes selected nodes/edges (multi-select supported; independently selected edges are removed silently via `removeEdgesOnly` without a separate history entry)
 - Node selection drives detail modal visibility
+
+Agent-run containers are projected in `useRfNodeBuilder` between app-group rendering and user-group rendering. The composition rules are:
+
+- Workflow nodes with `source_run_id`, no app group, and no user group are parented directly under `agent-run-${run_id}`.
+- App-group containers whose member workflow nodes all share the same `source_run_id` are parented under the matching agent-run container, preserving the inner app group.
+- Mixed-source app groups are left unwrapped.
+- User-created groups take precedence; members of a user group are not wrapped by the agent-run projection.
+
+`AgentRunGroupNode` is synthetic only. Its React Flow id is `agent-run-${run_id}` and it is never persisted to `workflow.groups`. Deleting the synthetic container expands to the underlying workflow nodes for that `source_run_id`.
 
 Workflows are persisted as a linear sequence of tool-call nodes — there are no control-flow nodes (If / Switch / Loop / EndLoop) and no conditional edge labels. Edges carry only their source/target, with `from` and `to` fields on `Edge`.
 

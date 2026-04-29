@@ -3,6 +3,7 @@ import type { Node as RFNode } from "@xyflow/react";
 import type { Workflow } from "../../bindings";
 import type { AppGroupMeta } from "../useAppGrouping";
 import type { UserGroupMeta } from "../useUserGrouping";
+import type { RunTrace } from "../../store/slices/assistantSlice";
 import {
   APP_GROUP_HEADER_HEIGHT,
   APP_GROUP_PADDING,
@@ -26,6 +27,9 @@ interface UseRfNodeBuilderParams {
   nodeToAppGroup: Map<string, string>;
   appGroupMeta: Map<string, AppGroupMeta>;
   toggleAppCollapse: (groupId: string) => void;
+  agentRunCollapsed: Record<string, boolean>;
+  runTraces: Record<string, RunTrace>;
+  toggleAgentRunCollapsed: (runId: string) => void;
   collapsedUserGroups: Set<string>;
   nodeToUserGroup: Map<string, string>;
   userGroupMeta: Map<string, UserGroupMeta>;
@@ -35,6 +39,205 @@ interface UseRfNodeBuilderParams {
   onRenameCancel: () => void;
   onDeleteNodes: (ids: string[]) => void;
   setRfNodes: Dispatch<SetStateAction<RFNode[]>>;
+}
+
+export const AGENT_RUN_GROUP_PREFIX = "agent-run-";
+
+export interface AgentRunProjectionContext {
+  workflow: Workflow;
+  collapsedApps: Set<string>;
+  appGroups: Map<string, string[]>;
+  appGroupMeta: Map<string, AppGroupMeta>;
+  nodeToUserGroup: Map<string, string>;
+  agentRunCollapsed: Record<string, boolean>;
+  runTraces: Record<string, RunTrace>;
+  toggleAgentRunCollapsed: (runId: string) => void;
+  prevMap?: Map<string, RFNode>;
+}
+
+function truncate(text: string, maxLength: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, maxLength - 1)}...`;
+}
+
+function agentRunGroupId(runId: string): string {
+  return `${AGENT_RUN_GROUP_PREFIX}${runId}`;
+}
+
+function singleRunId(
+  memberIds: string[],
+  sourceRunByNodeId: Map<string, string | null | undefined>,
+): string | null {
+  let runId: string | null = null;
+  for (const memberId of memberIds) {
+    const memberRunId = sourceRunByNodeId.get(memberId);
+    if (!memberRunId) return null;
+    if (runId == null) {
+      runId = memberRunId;
+    } else if (runId !== memberRunId) {
+      return null;
+    }
+  }
+  return runId;
+}
+
+function childPosition(
+  node: RFNode,
+  runGroupId: string,
+  containerPosition: { x: number; y: number },
+  previous: RFNode | undefined,
+): { x: number; y: number } {
+  if (previous?.parentId === runGroupId) {
+    return previous.position;
+  }
+  return {
+    x: node.position.x - containerPosition.x + USER_GROUP_PADDING,
+    y: node.position.y - containerPosition.y + USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING,
+  };
+}
+
+function runSummary(runId: string, trace: RunTrace | undefined): string {
+  return truncate(
+    trace?.terminalFrame?.detail || trace?.activeSubgoal || `Agent run ${runId}`,
+    80,
+  );
+}
+
+export function projectAgentRunGroups(
+  rfNodes: RFNode[],
+  ctx: AgentRunProjectionContext,
+): RFNode[] {
+  const sourceRunByNodeId = new Map(
+    ctx.workflow.nodes.map((node) => [node.id, node.source_run_id]),
+  );
+  const candidateRunByNodeId = new Map<string, string>();
+  const candidateIdsByRun = new Map<string, string[]>();
+  const appGroupMemberIds = new Set<string>();
+
+  const addCandidate = (nodeId: string, runId: string) => {
+    if (candidateRunByNodeId.has(nodeId)) return;
+    candidateRunByNodeId.set(nodeId, runId);
+    const runCandidates = candidateIdsByRun.get(runId) ?? [];
+    runCandidates.push(nodeId);
+    candidateIdsByRun.set(runId, runCandidates);
+  };
+
+  for (const [groupId, memberIds] of ctx.appGroups) {
+    for (const memberId of memberIds) appGroupMemberIds.add(memberId);
+    if (memberIds.some((memberId) => ctx.nodeToUserGroup.has(memberId))) {
+      continue;
+    }
+    const runId = singleRunId(memberIds, sourceRunByNodeId);
+    if (!runId) continue;
+
+    if (ctx.collapsedApps.has(groupId)) {
+      const anchorId = ctx.appGroupMeta.get(groupId)?.anchorId;
+      if (anchorId) addCandidate(anchorId, runId);
+    } else {
+      addCandidate(groupId, runId);
+    }
+  }
+
+  for (const node of rfNodes) {
+    if (node.type !== "workflow") continue;
+    if (ctx.nodeToUserGroup.has(node.id)) continue;
+    if (appGroupMemberIds.has(node.id)) continue;
+    const runId = sourceRunByNodeId.get(node.id);
+    if (!runId) continue;
+    addCandidate(node.id, runId);
+  }
+
+  if (candidateRunByNodeId.size === 0) return rfNodes;
+
+  const emittedRunIds = new Set<string>();
+  const candidateIds = new Set(candidateRunByNodeId.keys());
+  const output: RFNode[] = [];
+
+  for (const node of rfNodes) {
+    const runId = candidateRunByNodeId.get(node.id);
+    if (!runId) {
+      output.push(node);
+      continue;
+    }
+    if (emittedRunIds.has(runId)) continue;
+    emittedRunIds.add(runId);
+
+    const runGroupId = agentRunGroupId(runId);
+    const runCandidateIds = candidateIdsByRun.get(runId) ?? [];
+    const runCandidates = rfNodes.filter((n) => runCandidateIds.includes(n.id));
+    const existingGroup = ctx.prevMap?.get(runGroupId);
+    const firstCandidate = runCandidates[0] ?? node;
+    const containerPosition =
+      existingGroup?.position ?? firstCandidate.position ?? { x: 0, y: 0 };
+    const isCollapsed = !!ctx.agentRunCollapsed[runId];
+    const runNodeIds = ctx.workflow.nodes
+      .filter((wfNode) => wfNode.source_run_id === runId)
+      .map((wfNode) => wfNode.id);
+
+    let maxX = 0;
+    let maxY = 0;
+    for (const child of runCandidates) {
+      const previous = ctx.prevMap?.get(child.id);
+      const position = childPosition(
+        child,
+        runGroupId,
+        containerPosition,
+        previous,
+      );
+      const measured = previous?.measured;
+      const childW =
+        measured?.width ?? (child.style?.width as number | undefined) ?? APPROX_NODE_WIDTH;
+      const childH =
+        measured?.height ?? (child.style?.height as number | undefined) ?? APPROX_NODE_HEIGHT;
+      maxX = Math.max(maxX, position.x + childW);
+      maxY = Math.max(maxY, position.y + childH);
+    }
+
+    output.push({
+      id: runGroupId,
+      type: "agent_run_group",
+      position: containerPosition,
+      draggable: true,
+      selected: existingGroup?.selected ?? false,
+      data: {
+        runId,
+        summary: runSummary(runId, ctx.runTraces[runId]),
+        stepCount: runNodeIds.length,
+        isCollapsed,
+        onToggleCollapse: () => ctx.toggleAgentRunCollapsed(runId),
+      },
+      style: {
+        ...existingGroup?.style,
+        width: Math.max(MIN_GROUP_WIDTH, maxX + USER_GROUP_PADDING),
+        height: Math.max(MIN_GROUP_HEIGHT, maxY + USER_GROUP_PADDING),
+      },
+    });
+
+    for (const member of runCandidates) {
+      const previous = ctx.prevMap?.get(member.id);
+      output.push({
+        ...member,
+        parentId: runGroupId,
+        extent: "parent" as const,
+        position: childPosition(member, runGroupId, containerPosition, previous),
+        hidden: isCollapsed,
+        style: { ...member.style, transition: "opacity 150ms ease 50ms" },
+      });
+    }
+  }
+
+  const collapsedRunIds = new Set(
+    Object.entries(ctx.agentRunCollapsed)
+      .filter(([, collapsed]) => collapsed)
+      .map(([runId]) => runId),
+  );
+  return output.map((node) => {
+    if (candidateIds.has(node.id) || !node.parentId) return node;
+    const runId = sourceRunByNodeId.get(node.id);
+    if (!runId || !collapsedRunIds.has(runId)) return node;
+    return { ...node, hidden: true };
+  });
 }
 
 /**
@@ -52,6 +255,9 @@ export function useRfNodeBuilder({
   nodeToAppGroup,
   appGroupMeta,
   toggleAppCollapse,
+  agentRunCollapsed,
+  runTraces,
+  toggleAgentRunCollapsed,
   collapsedUserGroups,
   nodeToUserGroup,
   userGroupMeta,
@@ -226,6 +432,19 @@ export function useRfNodeBuilder({
           }
         }
       }
+
+      const projectedNodes = projectAgentRunGroups(nodes, {
+        workflow,
+        collapsedApps,
+        appGroups,
+        appGroupMeta,
+        nodeToUserGroup,
+        agentRunCollapsed,
+        runTraces,
+        toggleAgentRunCollapsed,
+        prevMap,
+      });
+      nodes.splice(0, nodes.length, ...projectedNodes);
 
       // ── Second pass: user group rendering ──────────────────────────
       // Runs after auto-groups (app groups) are resolved.
@@ -467,6 +686,9 @@ export function useRfNodeBuilder({
     nodeToAppGroup,
     appGroupMeta,
     toggleAppCollapse,
+    agentRunCollapsed,
+    runTraces,
+    toggleAgentRunCollapsed,
     collapsedUserGroups,
     nodeToUserGroup,
     userGroupMeta,

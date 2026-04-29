@@ -170,11 +170,20 @@ export interface AgentSlice {
   /** Active modal target for the ambiguity inspector, keyed by
    *  AmbiguityResolution.id. */
   activeAmbiguityId: string | null;
+  /** Agent-produced nodes buffered until the run reaches a clean terminal event. */
+  pendingRunNodes: Record<string, Node[]>;
+  /** Agent-produced edges buffered until the run reaches a clean terminal event. */
+  pendingRunEdges: Record<string, Edge[]>;
+  /** Session-only collapse state for synthetic agent-run containers. */
+  agentRunCollapsed: Record<string, boolean>;
   startAgent: (goal: string) => Promise<void>;
   stopAgent: () => Promise<void>;
   addAgentStep: (step: AgentStep) => void;
-  addAgentNode: (node: Node) => void;
-  addAgentEdge: (edge: Edge) => void;
+  bufferAgentNode: (runId: string, node: Node) => void;
+  bufferAgentEdge: (runId: string, edge: Edge) => void;
+  commitRunBuffer: (runId: string, summary: string) => void;
+  dropRunBuffer: (runId: string) => void;
+  toggleAgentRunCollapsed: (runId: string) => void;
   setPendingApproval: (approval: PendingApproval | null) => void;
   approveAction: () => Promise<void>;
   rejectAction: () => Promise<void>;
@@ -225,6 +234,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentRunId: null,
   ambiguityResolutions: [],
   activeAmbiguityId: null,
+  pendingRunNodes: {},
+  pendingRunEdges: {},
+  agentRunCollapsed: {},
 
   startAgent: async (goal) => {
     const priorState = get();
@@ -392,20 +404,66 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }));
   },
 
-  addAgentNode: (node) => {
-    const { workflow, setWorkflow } = get();
-    setWorkflow({
-      ...workflow,
-      nodes: [...workflow.nodes, node],
+  bufferAgentNode: (runId, node) => {
+    set((state) => ({
+      pendingRunNodes: {
+        ...state.pendingRunNodes,
+        [runId]: [...(state.pendingRunNodes[runId] ?? []), node],
+      },
+    }));
+  },
+
+  bufferAgentEdge: (runId, edge) => {
+    set((state) => ({
+      pendingRunEdges: {
+        ...state.pendingRunEdges,
+        [runId]: [...(state.pendingRunEdges[runId] ?? []), edge],
+      },
+    }));
+  },
+
+  commitRunBuffer: (runId, _summary) => {
+    set((state) => {
+      const nodes = state.pendingRunNodes[runId] ?? [];
+      const edges = state.pendingRunEdges[runId] ?? [];
+      const { [runId]: _removedNodes, ...pendingRunNodes } =
+        state.pendingRunNodes;
+      const { [runId]: _removedEdges, ...pendingRunEdges } =
+        state.pendingRunEdges;
+
+      if (nodes.length === 0) {
+        return { pendingRunNodes, pendingRunEdges };
+      }
+
+      return {
+        pendingRunNodes,
+        pendingRunEdges,
+        workflow: {
+          ...state.workflow,
+          nodes: [...state.workflow.nodes, ...nodes],
+          edges: [...state.workflow.edges, ...edges],
+        },
+      };
     });
   },
 
-  addAgentEdge: (edge) => {
-    const { workflow, setWorkflow } = get();
-    setWorkflow({
-      ...workflow,
-      edges: [...workflow.edges, edge],
+  dropRunBuffer: (runId) => {
+    set((state) => {
+      const { [runId]: _removedNodes, ...pendingRunNodes } =
+        state.pendingRunNodes;
+      const { [runId]: _removedEdges, ...pendingRunEdges } =
+        state.pendingRunEdges;
+      return { pendingRunNodes, pendingRunEdges };
     });
+  },
+
+  toggleAgentRunCollapsed: (runId) => {
+    set((state) => ({
+      agentRunCollapsed: {
+        ...state.agentRunCollapsed,
+        [runId]: !state.agentRunCollapsed[runId],
+      },
+    }));
   },
 
   setPendingApproval: (approval) => set({ pendingApproval: approval }),
@@ -476,7 +534,10 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
    * frontend gates stay armed until the backend task finishes.
    */
   cancelDisagreement: async () => {
-    const { pushLog } = get();
+    const { pushLog, agentRunId } = get();
+    if (agentRunId) {
+      get().dropRunBuffer(agentRunId);
+    }
     try {
       await invoke("resolve_completion_disagreement", { action: "cancel" });
       pushLog("Agent run cancelled by user (VLM disagreement)");
@@ -509,6 +570,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       completionDisagreement: null,
       consecutiveDestructiveCapHit: null,
       agentRunId: null,
+      pendingRunNodes: {},
+      pendingRunEdges: {},
+      agentRunCollapsed: {},
       // Ambiguity records are intentionally NOT cleared — they persist across
       // runs so the user can still inspect past resolutions until they
       // explicitly clear them or start a new project.

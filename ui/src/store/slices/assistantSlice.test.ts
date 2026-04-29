@@ -138,6 +138,90 @@ describe("AssistantMessage extensions", () => {
   });
 });
 
+describe("RunTrace reducers", () => {
+  beforeEach(() => {
+    useStore.setState({ runTraces: {} });
+  });
+
+  it("applyTaskStateUpdate initializes trace phase and active subgoal", () => {
+    useStore.getState().applyTaskStateUpdate("run-1", {
+      goal: "goal",
+      phase: "executing",
+      subgoal_stack: [
+        {
+          id: "subgoal-1",
+          text: "Open settings",
+          pushed_at_step: 0,
+          parent: null,
+        },
+      ],
+      watch_slots: [],
+      hypotheses: [],
+      milestones: [],
+    });
+
+    const trace = useStore.getState().runTraces["run-1"];
+    expect(trace.phase).toBe("executing");
+    expect(trace.activeSubgoal).toBe("Open settings");
+    expect(trace.steps).toEqual([]);
+  });
+
+  it("applyWorldModelDelta records changed fields at the next step index", () => {
+    useStore.getState().pushTraceStep("run-1", {
+      stepIndex: 0,
+      toolName: "cdp_click",
+      phase: "executing",
+      body: "clicked",
+      failed: false,
+    });
+
+    useStore.getState().applyWorldModelDelta("run-1", {
+      changed_fields: ["focused_app", "elements"],
+    });
+
+    expect(useStore.getState().runTraces["run-1"].worldModelDeltas).toEqual([
+      { stepIndex: 1, changedFields: ["focused_app", "elements"] },
+    ]);
+  });
+
+  it("applyBoundary appends non-terminal milestones and ignores terminal boundaries", () => {
+    useStore
+      .getState()
+      .applyBoundary("run-1", "subgoal_completed", 2, "Logged in");
+    useStore
+      .getState()
+      .applyBoundary("run-1", "recovery_succeeded", 3, null);
+    useStore.getState().applyBoundary("run-1", "terminal", 4, null);
+
+    expect(useStore.getState().runTraces["run-1"].milestones).toEqual([
+      { stepIndex: 2, kind: "subgoal_completed", text: "Logged in" },
+      { stepIndex: 3, kind: "recovery_succeeded", text: "Recovery succeeded" },
+    ]);
+  });
+
+  it("pushTraceStep, setTerminalFrame, and clearTrace update the run trace", () => {
+    useStore.getState().pushTraceStep("run-1", {
+      stepIndex: 0,
+      toolName: "cdp_find_elements",
+      phase: "exploring",
+      body: "found button",
+      failed: false,
+    });
+    useStore
+      .getState()
+      .setTerminalFrame("run-1", { kind: "complete", detail: "Done" });
+
+    expect(useStore.getState().runTraces["run-1"].steps).toHaveLength(1);
+    expect(useStore.getState().runTraces["run-1"].terminalFrame).toEqual({
+      kind: "complete",
+      detail: "Done",
+    });
+
+    useStore.getState().clearTrace("run-1");
+    expect(useStore.getState().runTraces["run-1"]).toBeUndefined();
+  });
+});
+
 describe("agent chat persistence", () => {
   beforeEach(() => {
     (commands.saveAgentChat as ReturnType<typeof vi.fn>).mockClear();
@@ -289,5 +373,42 @@ describe("clearConversationFlow", () => {
     const groups = useStore.getState().workflow.groups ?? [];
     expect(groups).toHaveLength(1);
     expect(groups[0].node_ids).toEqual(["n2", "n3"]);
+  });
+
+  it("drops the active run buffer and trace when clearing conversation", async () => {
+    useStore.setState({
+      agentRunId: "r1",
+      runTraces: {
+        r1: {
+          runId: "r1",
+          phase: "exploring",
+          activeSubgoal: "Inspect app",
+          steps: [],
+          worldModelDeltas: [],
+          milestones: [],
+          terminalFrame: null,
+        },
+      },
+    });
+    useStore.getState().bufferAgentNode("r1", {
+      id: "pending-node",
+      name: "pending-node",
+      node_type: { type: "CdpWait", text: "", timeout_ms: 1000 },
+      position: { x: 0, y: 0 },
+      enabled: true,
+      timeout_ms: null,
+      settle_ms: null,
+      retries: 0,
+      trace_level: "Minimal",
+      role: "Default",
+      expected_outcome: null,
+      auto_id: "",
+      source_run_id: "r1",
+    });
+
+    await useStore.getState().clearConversationFlow();
+
+    expect(useStore.getState().pendingRunNodes.r1).toBeUndefined();
+    expect(useStore.getState().runTraces.r1).toBeUndefined();
   });
 });

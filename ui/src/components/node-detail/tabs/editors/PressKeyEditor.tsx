@@ -18,7 +18,7 @@ export function PressKeyEditor({ nodeType, onUpdate }: NodeEditorProps) {
       />
       <TextField
         label="Modifiers"
-        value={nt.modifiers.join(", ")}
+        value={nt.modifiers?.join(", ") ?? ""}
         onChange={(v) =>
           updateType({
             modifiers: v ? v.split(",").map((s: string) => s.trim()).filter(Boolean) : [],

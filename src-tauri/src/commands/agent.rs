@@ -4,7 +4,7 @@ use clickweave_core::variant_index::{VariantEntry, VariantIndex};
 use clickweave_engine::agent::skills::{SkillContext, SkillScope, SkillState, SkillStore, slugify};
 use clickweave_engine::agent::{
     AgentChannels, AgentConfig, AgentEvent, ApprovalRequest, DisagreementResolutionAction,
-    PermissionAction, PermissionPolicy, PermissionRule, TerminalReason,
+    PermissionAction, PermissionPolicy, PermissionRule, RunnerOutput, TerminalReason,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -513,6 +513,7 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
             run_id: event_run_id,
             boundary_kind,
             step_index,
+            milestone_text,
         } => {
             let _ = app.emit(
                 "agent://boundary_record_written",
@@ -521,6 +522,7 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "event_run_id": event_run_id,
                     "boundary_kind": boundary_kind,
                     "step_index": step_index,
+                    "milestone_text": milestone_text,
                 }),
             );
         }
@@ -658,9 +660,37 @@ fn maybe_spawn_skill_proposal_task(
         return;
     }
 
+    spawn_skill_proposal_task(skill_ctx, agent_config, skill_id.clone(), *version);
+}
+
+async fn wait_for_agent_event_drain(event_tx: &tokio::sync::mpsc::Sender<RunnerOutput>) {
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    if event_tx
+        .send(RunnerOutput::DrainBarrier { ack: ack_tx })
+        .await
+        .is_ok()
+    {
+        let _ = ack_rx.await;
+    }
+}
+
+async fn emit_after_agent_event_drain<R: tauri::Runtime>(
+    event_tx: &tokio::sync::mpsc::Sender<RunnerOutput>,
+    app: &tauri::AppHandle<R>,
+    topic: &str,
+    payload: serde_json::Value,
+) {
+    wait_for_agent_event_drain(event_tx).await;
+    let _ = app.emit(topic, payload);
+}
+
+fn spawn_skill_proposal_task(
+    skill_ctx: &SkillContext,
+    agent_config: clickweave_llm::LlmConfig,
+    skill_id: String,
+    version: u32,
+) {
     let skills_dir = skill_ctx.project_skills_dir.clone();
-    let skill_id = skill_id.clone();
-    let version = *version;
     tauri::async_runtime::spawn(async move {
         let store = SkillStore::new(skills_dir.clone());
         let skill_path = skills_dir.join(format!("{}-v{}.md", slugify(&skill_id), version));
@@ -848,7 +878,7 @@ pub async fn run_agent(
     let event_forwarder_token = cancel_token.clone();
 
     // Live event channel: agent runner -> Tauri event emitter
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(64);
 
     // Approval channel: agent runner sends requests, we forward to UI and store
     // the oneshot response sender in the handle for `approve_agent_action` to use.
@@ -864,6 +894,7 @@ pub async fn run_agent(
     let event_storage = storage.clone();
     let task_run_id = run_id.clone();
     let event_run_id = run_id.clone();
+    let terminal_event_tx = event_tx.clone();
     let approval_run_id = run_id.clone();
     let task_episodic_ctx = episodic_ctx.clone();
     let task_skill_ctx = skill_ctx.clone();
@@ -898,20 +929,26 @@ pub async fn run_agent(
                 match res {
                     Ok(m) => m,
                     Err(e) => {
-                        let _ = emit_handle.emit(
+                        emit_after_agent_event_drain(
+                            &terminal_event_tx,
+                            &emit_handle,
                             "agent://error",
                             serde_json::json!({ "run_id": task_run_id, "message": format!("MCP spawn failed: {e}") }),
-                        );
+                        )
+                        .await;
                         let _ = done_tx.send(());
                         return;
                     }
                 }
             }
             _ = agent_token.cancelled() => {
-                let _ = emit_handle.emit(
+                emit_after_agent_event_drain(
+                    &terminal_event_tx,
+                    &emit_handle,
                     "agent://stopped",
                     serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
-                );
+                )
+                .await;
                 let _ = done_tx.send(());
                 return;
             }
@@ -958,36 +995,43 @@ pub async fn run_agent(
         // Storage init failure prevents the run from starting — durable tracing
         // must be available before executing any agent actions.
         let storage = task_storage;
-        let (variant_context, verification_artifacts_dir) = {
+        let storage_init = {
             let mut guard = storage.lock().unwrap();
-            match guard.begin_execution() {
-                Ok(_) => {}
-                Err(e) => {
-                    let _ = emit_handle.emit(
-                        "agent://error",
-                        serde_json::json!({
-                            "run_id": task_run_id,
-                            "message": format!("Run storage init failed: {e}"),
-                        }),
-                    );
-                    let _ = done_tx.send(());
-                    return;
-                }
+            if let Err(e) = guard.begin_execution() {
+                Err(format!("Run storage init failed: {e}"))
+            } else {
+                // Load via `load_existing` so entries whose execution dir
+                // is gone (retention sweep, crash, manual cleanup) never
+                // leak back into agent context — even if the on-disk
+                // JSONL still carries them. This enforces the privacy
+                // contract at read time so it is robust to races, partial
+                // failures, and hand-cleanup.
+                let variant_index =
+                    VariantIndex::load_existing(&guard.variant_index_path(), guard.base_path());
+                let verification_artifacts_dir = guard.execution_artifacts_dir();
+                Ok((variant_index.as_context_text(), verification_artifacts_dir))
             }
-            // Load via `load_existing` so entries whose execution dir
-            // is gone (retention sweep, crash, manual cleanup) never
-            // leak back into agent context — even if the on-disk
-            // JSONL still carries them. This enforces the privacy
-            // contract at read time so it is robust to races, partial
-            // failures, and hand-cleanup.
-            let variant_index =
-                VariantIndex::load_existing(&guard.variant_index_path(), guard.base_path());
-            let verification_artifacts_dir = guard.execution_artifacts_dir();
-            (variant_index.as_context_text(), verification_artifacts_dir)
+        };
+        let (variant_context, verification_artifacts_dir) = match storage_init {
+            Ok(v) => v,
+            Err(message) => {
+                emit_after_agent_event_drain(
+                    &terminal_event_tx,
+                    &emit_handle,
+                    "agent://error",
+                    serde_json::json!({
+                        "run_id": task_run_id,
+                        "message": message,
+                    }),
+                )
+                .await;
+                let _ = done_tx.send(());
+                return;
+            }
         };
 
         let channels = AgentChannels {
-            event_tx,
+            event_tx: event_tx.clone(),
             approval_tx,
         };
 
@@ -1030,10 +1074,13 @@ pub async fn run_agent(
                 Some(task_skill_ctx.clone()),
             ) => res,
             _ = agent_token.cancelled() => {
-                let _ = emit_handle.emit(
+                emit_after_agent_event_drain(
+                    &terminal_event_tx,
+                    &emit_handle,
                     "agent://stopped",
                     serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
-                );
+                )
+                .await;
                 let _ = done_tx.send(());
                 return;
             }
@@ -1112,32 +1159,47 @@ pub async fn run_agent(
                     | Some(TerminalReason::DisagreementConfirmed {
                         agent_summary: summary,
                     }) => {
-                        let _ = emit_handle.emit(
+                        emit_after_agent_event_drain(
+                            &terminal_event_tx,
+                            &emit_handle,
                             "agent://complete",
                             serde_json::json!({ "run_id": task_run_id, "summary": summary }),
-                        );
+                        )
+                        .await;
                     }
                     Some(TerminalReason::DisagreementCancelled { .. }) => {
-                        let _ = emit_handle.emit(
+                        emit_after_agent_event_drain(
+                            &terminal_event_tx,
+                            &emit_handle,
                             "agent://stopped",
                             serde_json::json!({
                                 "run_id": task_run_id,
                                 "reason": "user_cancelled_disagreement",
                             }),
-                        );
+                        )
+                        .await;
                     }
                     Some(reason) => {
                         let mut payload = serde_json::to_value(reason).unwrap_or_default();
                         if let Some(obj) = payload.as_object_mut() {
                             obj.insert("run_id".to_string(), serde_json::json!(task_run_id));
                         }
-                        let _ = emit_handle.emit("agent://stopped", payload);
+                        emit_after_agent_event_drain(
+                            &terminal_event_tx,
+                            &emit_handle,
+                            "agent://stopped",
+                            payload,
+                        )
+                        .await;
                     }
                     None => {
-                        let _ = emit_handle.emit(
+                        emit_after_agent_event_drain(
+                            &terminal_event_tx,
+                            &emit_handle,
                             "agent://stopped",
                             serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
-                        );
+                        )
+                        .await;
                     }
                 }
 
@@ -1228,10 +1290,13 @@ pub async fn run_agent(
                 }
             }
             Err(e) => {
-                let _ = emit_handle.emit(
+                emit_after_agent_event_drain(
+                    &terminal_event_tx,
+                    &emit_handle,
                     "agent://error",
                     serde_json::json!({ "run_id": task_run_id, "message": format!("{e}") }),
-                );
+                )
+                .await;
             }
         }
 
@@ -1249,15 +1314,30 @@ pub async fn run_agent(
             tokio::select! {
                 biased;
                 _ = event_forwarder_token.cancelled() => {
-                    // Drain remaining buffered events before exiting
-                    while let Ok(event) = event_rx.try_recv() {
-                        let _ = event_storage.lock().unwrap().append_agent_event(&event);
+                    // Drain remaining buffered outputs before exiting.
+                    while let Ok(output) = event_rx.try_recv() {
+                        match output {
+                            RunnerOutput::Event(event) => {
+                                let _ = event_storage.lock().unwrap().append_agent_event(&event);
+                            }
+                            RunnerOutput::DrainBarrier { ack } => {
+                                let _ = ack.send(());
+                            }
+                            RunnerOutput::SkillProposalNeeded { skill_id, version, .. } => {
+                                spawn_skill_proposal_task(
+                                    &proposal_skill_ctx,
+                                    proposal_agent_config.clone(),
+                                    skill_id,
+                                    version,
+                                );
+                            }
+                        }
                     }
                     break;
                 }
-                maybe_event = event_rx.recv() => {
-                    match maybe_event {
-                        Some(event) => {
+                maybe_output = event_rx.recv() => {
+                    match maybe_output {
+                        Some(RunnerOutput::Event(event)) => {
                             // Durable trace: persist every event to events.jsonl
                             let _ = event_storage.lock().unwrap().append_agent_event(&event);
                             // Fan out to the matching `agent://*` Tauri topic.
@@ -1269,6 +1349,17 @@ pub async fn run_agent(
                                 &event,
                                 &proposal_skill_ctx,
                                 proposal_agent_config.clone(),
+                            );
+                        }
+                        Some(RunnerOutput::DrainBarrier { ack }) => {
+                            let _ = ack.send(());
+                        }
+                        Some(RunnerOutput::SkillProposalNeeded { skill_id, version, .. }) => {
+                            spawn_skill_proposal_task(
+                                &proposal_skill_ctx,
+                                proposal_agent_config.clone(),
+                                skill_id,
+                                version,
                             );
                         }
                         None => break,
@@ -1696,6 +1787,192 @@ mod run_agent_smoke_tests {
         "agent://episode_promoted",
     ];
 
+    fn agent_event_line_count(events_path: &std::path::Path) -> usize {
+        std::fs::read_to_string(events_path)
+            .ok()
+            .map(|raw| {
+                raw.lines()
+                    .filter(|line| !line.is_empty())
+                    .filter(|line| {
+                        serde_json::from_str::<serde_json::Value>(line)
+                            .ok()
+                            .and_then(|value| value.get("type").cloned())
+                            .is_some()
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    async fn wait_for_captured_count(
+        captured: &Arc<Mutex<Vec<(String, String)>>>,
+        expected: usize,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if captured.lock().unwrap().len() >= expected {
+                    break;
+                }
+                tokio::task::yield_now().await;
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("captured Tauri events in time");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn runner_output_forwarder_skips_drain_barrier_and_persists_events() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflow_name = "runner-output-forwarder";
+        let mut storage_inner =
+            clickweave_core::storage::RunStorage::new(tmp.path(), workflow_name);
+        let exec_dir = storage_inner.begin_execution().expect("begin_execution");
+        let events_path = tmp
+            .path()
+            .join(".clickweave")
+            .join("runs")
+            .join(workflow_name)
+            .join(&exec_dir)
+            .join("events.jsonl");
+        let storage = Arc::new(Mutex::new(storage_inner));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<RunnerOutput>(8);
+        let forwarded: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let forwarded_for_task = Arc::clone(&forwarded);
+        let storage_for_task = Arc::clone(&storage);
+        let forwarder_task = tokio::spawn(async move {
+            while let Some(output) = rx.recv().await {
+                match output {
+                    RunnerOutput::Event(event) => {
+                        let _ = storage_for_task.lock().unwrap().append_agent_event(&event);
+                        forward_agent_event(&handle, &run_id, &event);
+                        forwarded_for_task.lock().unwrap().push(event);
+                    }
+                    RunnerOutput::DrainBarrier { ack } => {
+                        let _ = ack.send(());
+                    }
+                    RunnerOutput::SkillProposalNeeded { .. } => {}
+                }
+            }
+        });
+
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        tx.send(RunnerOutput::DrainBarrier { ack: ack_tx })
+            .await
+            .expect("send drain barrier");
+        tokio::time::timeout(std::time::Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drain barrier ack in time")
+            .expect("drain barrier ack sender alive");
+        assert_eq!(
+            agent_event_line_count(&events_path),
+            0,
+            "DrainBarrier must not append an AgentEvent line",
+        );
+
+        tx.send(RunnerOutput::Event(AgentEvent::Warning {
+            message: "synthetic warning".to_string(),
+        }))
+        .await
+        .expect("send warning event");
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        tx.send(RunnerOutput::DrainBarrier { ack: ack_tx })
+            .await
+            .expect("send second drain barrier");
+        tokio::time::timeout(std::time::Duration::from_secs(1), ack_rx)
+            .await
+            .expect("second drain barrier ack in time")
+            .expect("second drain barrier ack sender alive");
+
+        drop(tx);
+        forwarder_task.await.expect("forwarder joined");
+
+        assert_eq!(
+            agent_event_line_count(&events_path),
+            1,
+            "RunnerOutput::Event must append exactly one AgentEvent line",
+        );
+        assert!(
+            matches!(
+                forwarded.lock().unwrap().as_slice(),
+                [AgentEvent::Warning { .. }]
+            ),
+            "only the durable event should be forwarded",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn terminal_emit_waits_for_prior_runner_output_drain() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        for topic in ["agent://warning", "agent://complete"] {
+            let captured = Arc::clone(&captured);
+            handle.listen_any(topic, move |evt| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push((topic.to_string(), evt.payload().to_string()));
+            });
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<RunnerOutput>(8);
+        let forwarder_handle = handle.clone();
+        let forwarder_run_id = run_id.clone();
+        let forwarder_task = tokio::spawn(async move {
+            while let Some(output) = rx.recv().await {
+                match output {
+                    RunnerOutput::Event(event) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        forward_agent_event(&forwarder_handle, &forwarder_run_id, &event);
+                    }
+                    RunnerOutput::DrainBarrier { ack } => {
+                        let _ = ack.send(());
+                    }
+                    RunnerOutput::SkillProposalNeeded { .. } => {}
+                }
+            }
+        });
+
+        tx.send(RunnerOutput::Event(AgentEvent::Warning {
+            message: "queued before terminal".to_string(),
+        }))
+        .await
+        .expect("send prior event");
+        emit_after_agent_event_drain(
+            &tx,
+            &handle,
+            "agent://complete",
+            serde_json::json!({ "run_id": run_id, "summary": "done" }),
+        )
+        .await;
+        drop(tx);
+        forwarder_task.await.expect("forwarder joined");
+
+        wait_for_captured_count(&captured, 2).await;
+        let topics: Vec<String> = captured
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(topic, _)| topic.clone())
+            .collect();
+        assert_eq!(
+            topics,
+            vec![
+                "agent://warning".to_string(),
+                "agent://complete".to_string()
+            ],
+            "terminal emit must not outrun already queued per-step events",
+        );
+    }
+
     /// Rubric-10 gate (D-PR2): every `AgentEvent` the engine emits
     /// must (1) reach `events.jsonl` and (2) route to exactly one
     /// `agent://<topic>` via `forward_agent_event`. The scripted
@@ -1779,7 +2056,7 @@ mod run_agent_smoke_tests {
         let storage = Arc::new(Mutex::new(storage_inner));
 
         // ── Arrange: engine event channel + Tauri-forwarder pump ───
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(64);
         let (approval_tx, _approval_rx) =
             tokio::sync::mpsc::channel::<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>(1);
         let channels = AgentChannels {
@@ -1800,7 +2077,10 @@ mod run_agent_smoke_tests {
         let forwarded: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let forwarded_for_task = Arc::clone(&forwarded);
         let forwarder_task = tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
+            while let Some(output) = event_rx.recv().await {
+                let Some(event) = output.into_event() else {
+                    continue;
+                };
                 let _ = forwarder_storage.lock().unwrap().append_agent_event(&event);
                 forward_agent_event(&forwarder_handle, &forwarder_run_id, &event);
                 forwarded_for_task.lock().unwrap().push(event);

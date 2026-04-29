@@ -31,8 +31,8 @@ use crate::agent::skills::{
 };
 use crate::agent::task_state::{Milestone, SubgoalId, TaskState, TaskStateMutation};
 use crate::agent::types::{
-    AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest, StepOutcome,
-    TerminalReason, WorldModelDiff,
+    AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest, RunnerOutput,
+    StepOutcome, TerminalReason, WorldModelDiff,
 };
 use crate::agent::world_model::{InvalidationEvent, WorldModel};
 use crate::executor::Mcp;
@@ -104,7 +104,7 @@ pub struct StateRunner {
     pub storage: Option<std::sync::Arc<std::sync::Mutex<clickweave_core::storage::RunStorage>>>,
     pub run_id: uuid::Uuid,
     /// Live event channel. When `None` the runner runs silently.
-    pub event_tx: Option<mpsc::Sender<AgentEvent>>,
+    pub event_tx: Option<mpsc::Sender<RunnerOutput>>,
     /// Approval-gate channel pair. When `None` no prompt fires (the
     /// permission policy is consulted in isolation).
     pub approval_gate: Option<crate::agent::approval::ApprovalGate>,
@@ -408,7 +408,7 @@ impl StateRunner {
 
     /// Attach a live event channel. Events emitted by the runner are
     /// forwarded through this sender; `None` runs silently.
-    pub fn with_events(mut self, tx: mpsc::Sender<AgentEvent>) -> Self {
+    pub fn with_events(mut self, tx: mpsc::Sender<RunnerOutput>) -> Self {
         self.event_tx = Some(tx);
         self
     }
@@ -1215,11 +1215,18 @@ impl StateRunner {
     async fn write_subgoal_completed_records(&mut self, count: usize, turn: &AgentTurn) {
         let action_taken =
             serde_json::to_value(&turn.mutations).unwrap_or_else(|_| serde_json::json!([]));
-        for _ in 0..count {
+        let milestone_start = self.task_state.milestones.len().saturating_sub(count);
+        for i in 0..count {
+            let milestone_text = self
+                .task_state
+                .milestones
+                .get(milestone_start + i)
+                .map(|m| m.text.clone());
             self.persist_boundary_record(
                 crate::agent::step_record::BoundaryKind::SubgoalCompleted,
                 action_taken.clone(),
                 serde_json::json!({"kind": "subgoal_completed"}),
+                milestone_text,
             )
             .await;
         }
@@ -1324,6 +1331,7 @@ impl StateRunner {
             crate::agent::step_record::BoundaryKind::RecoverySucceeded,
             action_taken,
             outcome_json,
+            None,
         )
         .await;
     }
@@ -1357,6 +1365,7 @@ impl StateRunner {
             crate::agent::step_record::BoundaryKind::Terminal,
             action_taken,
             outcome_json,
+            None,
         )
         .await;
     }
@@ -1369,6 +1378,7 @@ impl StateRunner {
         boundary_kind: crate::agent::step_record::BoundaryKind,
         action_taken: serde_json::Value,
         outcome: serde_json::Value,
+        milestone_text: Option<String>,
     ) {
         let record = self.build_step_record(boundary_kind.clone(), action_taken, outcome);
         self.write_step_record(&record);
@@ -1376,6 +1386,7 @@ impl StateRunner {
             run_id: self.run_id,
             boundary_kind,
             step_index: record.step_index,
+            milestone_text,
         })
         .await;
     }
@@ -1474,7 +1485,15 @@ impl StateRunner {
             .turn_pre_signatures
             .take()
             .unwrap_or_else(|| self.world_model.field_signatures());
+        let prev_phase = self.task_state.phase;
         self.observe();
+        if prev_phase != self.task_state.phase {
+            self.emit_event(AgentEvent::TaskStateChanged {
+                run_id: self.run_id,
+                task_state: self.task_state.clone(),
+            })
+            .await;
+        }
         let post_signatures = self.world_model.field_signatures();
         let diff = diff_world_model_signatures(&pre_signatures, &post_signatures);
         self.emit_event(AgentEvent::WorldModelChanged {
@@ -2066,7 +2085,7 @@ impl StateRunner {
         if tx.is_closed() {
             return;
         }
-        if let Err(e) = tx.send(event).await {
+        if let Err(e) = tx.send(RunnerOutput::Event(event)).await {
             warn!("state-spine: failed to emit agent event (channel closed): {e}");
         }
     }
@@ -3372,6 +3391,13 @@ impl StateRunner {
             // past their TTL even when no other event arrived.
             self.queue_snapshot_stale_if_aged();
             self.observe();
+            if prev_phase_at_top != self.task_state.phase {
+                self.emit_event(AgentEvent::TaskStateChanged {
+                    run_id: self.run_id,
+                    task_state: self.task_state.clone(),
+                })
+                .await;
+            }
 
             // No pre-step CDP maybe-connect — legacy also defers the
             // decision to the post-tool hook (`maybe_cdp_connect` after
@@ -4492,7 +4518,7 @@ mod builder_tests {
 
     #[test]
     fn with_events_stores_sender() {
-        let (tx, _rx) = mpsc::channel::<AgentEvent>(8);
+        let (tx, _rx) = mpsc::channel::<RunnerOutput>(8);
         let r = StateRunner::new_for_test("g".to_string()).with_events(tx);
         assert!(r.event_tx.is_some());
     }
@@ -6473,7 +6499,7 @@ mod dispatch_skill_tests {
 
     fn fresh_runner_with_skill(
         skill: Option<Skill>,
-    ) -> (StateRunner, mpsc::Receiver<AgentEvent>, TempDir) {
+    ) -> (StateRunner, mpsc::Receiver<RunnerOutput>, TempDir) {
         let tmp = TempDir::new().unwrap();
         let mut runner = StateRunner::new_for_test_with_skills(
             "test goal".to_string(),
@@ -6553,7 +6579,11 @@ mod dispatch_skill_tests {
             .last_invoked_at;
         assert!(stamped.is_some());
 
-        let event = rx.try_recv().expect("SkillInvoked must be emitted");
+        let event = rx
+            .try_recv()
+            .expect("SkillInvoked must be emitted")
+            .into_event()
+            .expect("SkillInvoked must be a durable event");
         match event {
             AgentEvent::SkillInvoked {
                 skill_id,

@@ -64,7 +64,7 @@ impl EpisodicWriter {
     /// filter even after the runner moves on.
     pub fn spawn(
         ctx: EpisodicContext,
-        event_tx: Option<mpsc::Sender<crate::agent::types::AgentEvent>>,
+        event_tx: Option<mpsc::Sender<crate::agent::types::RunnerOutput>>,
         run_id: uuid::Uuid,
     ) -> Result<Self, EpisodicError> {
         Self::spawn_with_config(ctx, EpisodicStoreConfig::default(), event_tx, run_id)
@@ -77,7 +77,7 @@ impl EpisodicWriter {
     pub fn spawn_with_config(
         ctx: EpisodicContext,
         store_config: EpisodicStoreConfig,
-        event_tx: Option<mpsc::Sender<crate::agent::types::AgentEvent>>,
+        event_tx: Option<mpsc::Sender<crate::agent::types::RunnerOutput>>,
         run_id: uuid::Uuid,
     ) -> Result<Self, EpisodicError> {
         let (tx, mut rx) = mpsc::channel::<WriteRequest>(CHANNEL_CAP);
@@ -128,7 +128,7 @@ impl EpisodicWriter {
                                         outcome,
                                         crate::agent::episodic::EpisodeScope::WorkflowLocal,
                                     );
-                                    let _ = tx.send(event).await;
+                                    let _ = tx.send(event.into()).await;
                                 }
                             }
                             Err(e) => {
@@ -140,13 +140,12 @@ impl EpisodicWriter {
                                 // message with a stable `episodic:`
                                 // prefix; non-sensitive.
                                 if let Some(tx) = &event_tx_task {
-                                    let _ = tx
-                                        .send(crate::agent::types::AgentEvent::Warning {
-                                            message: format!(
-                                                "episodic: write dropped: derive_and_insert failed: {e}"
-                                            ),
-                                        })
-                                        .await;
+                                    let event = crate::agent::types::AgentEvent::Warning {
+                                        message: format!(
+                                            "episodic: write dropped: derive_and_insert failed: {e}"
+                                        ),
+                                    };
+                                    let _ = tx.send(event.into()).await;
                                 }
                             }
                         }
@@ -178,7 +177,7 @@ impl EpisodicWriter {
                                                 promoted_episode_ids: promoted,
                                                 skipped_count: skipped,
                                             };
-                                        let _ = tx.send(event).await;
+                                        let _ = tx.send(event.into()).await;
                                     }
                                 }
                                 Err(e) => {
@@ -189,13 +188,10 @@ impl EpisodicWriter {
                                     // `episodic: ...` for memory-loss
                                     // signals.
                                     if let Some(tx) = &event_tx_task {
-                                        let _ = tx
-                                            .send(crate::agent::types::AgentEvent::Warning {
-                                                message: format!(
-                                                    "episodic: promotion dropped: {e}"
-                                                ),
-                                            })
-                                            .await;
+                                        let event = crate::agent::types::AgentEvent::Warning {
+                                            message: format!("episodic: promotion dropped: {e}"),
+                                        };
+                                        let _ = tx.send(event.into()).await;
                                     }
                                 }
                             }
@@ -414,7 +410,7 @@ async fn promote_matching_episodes(
     global: &Arc<SqliteEpisodicStore>,
     workflow_hash: &str,
     run_started_at: chrono::DateTime<chrono::Utc>,
-    event_tx: Option<&mpsc::Sender<crate::agent::types::AgentEvent>>,
+    event_tx: Option<&mpsc::Sender<crate::agent::types::RunnerOutput>>,
     run_id: uuid::Uuid,
 ) -> Result<(Vec<String>, usize), EpisodicError> {
     // Route global writes through `SqliteEpisodicStore::insert` so
@@ -489,7 +485,7 @@ async fn promote_matching_episodes(
                         outcome,
                         crate::agent::episodic::EpisodeScope::Global,
                     );
-                    let _ = tx.send(event).await;
+                    let _ = tx.send(event.into()).await;
                 }
                 match promoted_id {
                     Some(id) => promoted_ids.push(id),

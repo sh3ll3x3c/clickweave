@@ -553,7 +553,7 @@ mod verify_and_approval_tests {
     use super::super::super::test_stubs::{NoVlm, ScriptedLlm, StaticMcp, YesVlm, llm_reply_tool};
     use crate::agent::runner::StateRunner;
     use crate::agent::types::{
-        AgentConfig, AgentEvent, ApprovalRequest, StepOutcome, TerminalReason,
+        AgentConfig, AgentEvent, ApprovalRequest, RunnerOutput, StepOutcome, TerminalReason,
     };
     use crate::executor::Mcp;
 
@@ -632,7 +632,7 @@ mod verify_and_approval_tests {
         let mcp = mcp_with_screenshot();
         let tools = mcp.tools_as_openai();
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(8);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(8);
         let runner = StateRunner::new("goal".to_string(), cfg_with_steps(3))
             .with_vision(vlm)
             .with_events(event_tx);
@@ -662,6 +662,9 @@ mod verify_and_approval_tests {
         // Drain events and look for the CompletionDisagreement one.
         let mut saw_disagreement = false;
         while let Ok(ev) = event_rx.try_recv() {
+            let Some(ev) = ev.into_event() else {
+                continue;
+            };
             if matches!(ev, AgentEvent::CompletionDisagreement { .. }) {
                 saw_disagreement = true;
             }
@@ -915,7 +918,7 @@ mod verify_and_approval_tests {
 mod loop_and_cap_tests {
     use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::StateRunner;
-    use crate::agent::types::{AgentConfig, AgentEvent, TerminalReason};
+    use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput, TerminalReason};
     use crate::executor::Mcp;
     use clickweave_core::Workflow;
     use tokio::sync::mpsc;
@@ -1061,7 +1064,7 @@ mod loop_and_cap_tests {
         let mcp = destructive_mcp("quit_app");
         let tools = mcp.tools_as_openai();
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
         let runner = StateRunner::new("goal".to_string(), cfg).with_events(event_tx);
         let state = runner
             .run(
@@ -1088,6 +1091,9 @@ mod loop_and_cap_tests {
 
         let mut saw_cap_event = false;
         while let Ok(ev) = event_rx.try_recv() {
+            let Some(ev) = ev.into_event() else {
+                continue;
+            };
             if matches!(ev, AgentEvent::ConsecutiveDestructiveCapHit { .. }) {
                 saw_cap_event = true;
                 break;
@@ -1262,7 +1268,7 @@ mod loop_and_cap_tests {
 mod workflow_graph_tests {
     use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::StateRunner;
-    use crate::agent::types::{AgentConfig, AgentEvent, TerminalReason};
+    use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput, TerminalReason};
     use crate::executor::Mcp;
     use clickweave_core::Workflow;
     use tokio::sync::mpsc;
@@ -1285,10 +1291,12 @@ mod workflow_graph_tests {
     }
 
     /// Drain `event_rx` of every already-buffered event. Non-blocking.
-    fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+    fn drain_events(rx: &mut mpsc::Receiver<RunnerOutput>) -> Vec<AgentEvent> {
         let mut out = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            out.push(ev);
+            if let Some(event) = ev.into_event() {
+                out.push(event);
+            }
         }
         out
     }
@@ -1306,7 +1314,7 @@ mod workflow_graph_tests {
         let tools = mcp.tools_as_openai();
 
         let run_id = uuid::Uuid::new_v4();
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(16);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(16);
         let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5))
             .with_run_id(run_id)
             .with_events(event_tx);
@@ -1360,7 +1368,7 @@ mod workflow_graph_tests {
         let mcp = build_mcp_with_one_element();
         let tools = mcp.tools_as_openai();
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
         let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_events(event_tx);
 
         let state = runner
@@ -1413,7 +1421,7 @@ mod workflow_graph_tests {
         let mcp = build_mcp_with_one_element();
         let tools = mcp.tools_as_openai();
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(16);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(16);
         let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_events(event_tx);
 
         let state = runner
@@ -1453,7 +1461,7 @@ mod workflow_graph_tests {
         let mcp = build_mcp_with_one_element();
         let tools = mcp.tools_as_openai();
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(16);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(16);
         let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_events(event_tx);
 
         let state = runner
@@ -1497,7 +1505,7 @@ mod workflow_graph_tests {
         let mcp = build_mcp_with_one_element();
         let tools = mcp.tools_as_openai();
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(16);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(16);
         let runner = StateRunner::new("goal".to_string(), cfg).with_events(event_tx);
 
         let state = runner
@@ -1547,7 +1555,7 @@ mod workflow_graph_tests {
 mod cdp_and_focus_window_tests {
     use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::{FocusSkipReason, StateRunner};
-    use crate::agent::types::{AgentConfig, AgentEvent, TerminalReason};
+    use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput, TerminalReason};
     use crate::executor::Mcp;
     use clickweave_core::Workflow;
     use serde_json::Value;
@@ -1568,10 +1576,12 @@ mod cdp_and_focus_window_tests {
         }
     }
 
-    fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+    fn drain_events(rx: &mut mpsc::Receiver<RunnerOutput>) -> Vec<AgentEvent> {
         let mut out = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            out.push(ev);
+            if let Some(event) = ev.into_event() {
+                out.push(event);
+            }
         }
         out
     }
@@ -1725,7 +1735,7 @@ mod cdp_and_focus_window_tests {
             .with_reply("focus_window", "REAL focus_window body (should not appear)");
         let tools_openai = mcp.tools_as_openai();
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
         let mut runner =
             StateRunner::new("goal".to_string(), cfg_with_focus_steps(5)).with_events(event_tx);
         // Seed the kind hint so the classifier has a Native classification
@@ -1795,7 +1805,7 @@ mod cdp_and_focus_window_tests {
         let mcp = StaticMcp::with_tools(&tools);
         let tools_openai = mcp.tools_as_openai();
 
-        let (event_tx, _event_rx) = mpsc::channel::<AgentEvent>(32);
+        let (event_tx, _event_rx) = mpsc::channel::<RunnerOutput>(32);
         let mut runner =
             StateRunner::new("goal".to_string(), cfg_with_focus_steps(5)).with_events(event_tx);
         // Pre-seed "CDP already live" so the CdpLive branch of the
@@ -1841,7 +1851,7 @@ mod cdp_and_focus_window_tests {
         let mcp = StaticMcp::with_tools(&tools).with_reply("launch_app", launch_body);
         let tools_openai = mcp.tools_as_openai();
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
         let runner =
             StateRunner::new("goal".to_string(), cfg_with_focus_steps(5)).with_events(event_tx);
         let _ = runner
@@ -2260,7 +2270,7 @@ mod cdp_and_focus_window_tests {
             }
         }
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(8);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(8);
         let runner =
             StateRunner::new("g".to_string(), AgentConfig::default()).with_events(event_tx);
         let mcp = RefreshCountingMcp {
@@ -3153,16 +3163,44 @@ mod state_spine_event_contract_tests {
     use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::StateRunner;
     use crate::agent::step_record::BoundaryKind;
-    use crate::agent::types::{AgentConfig, AgentEvent};
+    use crate::agent::task_state::Phase;
+    use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput};
     use crate::executor::Mcp;
+    use clickweave_llm::{CallType, ChatResponse, Choice, FunctionCall, Message, ToolCall};
+    use serde_json::Value;
     use tokio::sync::mpsc;
 
-    fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+    fn drain_events(rx: &mut mpsc::Receiver<RunnerOutput>) -> Vec<AgentEvent> {
         let mut out = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            out.push(ev);
+            if let Some(event) = ev.into_event() {
+                out.push(event);
+            }
         }
         out
+    }
+
+    fn tc(id: &str, name: &str, arguments: Value) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            call_type: CallType::Function,
+            function: FunctionCall {
+                name: name.to_string(),
+                arguments,
+            },
+        }
+    }
+
+    fn llm_reply_tools(id: &str, calls: Vec<ToolCall>) -> ChatResponse {
+        ChatResponse {
+            id: id.to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message::assistant_tool_calls(calls),
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+            usage: None,
+        }
     }
 
     /// A scripted run through `StateRunner::run` emits
@@ -3189,7 +3227,7 @@ mod state_spine_event_contract_tests {
             .with_reply("cdp_click", "clicked");
 
         let run_id = uuid::Uuid::new_v4();
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
         let runner = StateRunner::new("goal".to_string(), AgentConfig::default())
             .with_run_id(run_id)
             .with_events(event_tx);
@@ -3254,7 +3292,7 @@ mod state_spine_event_contract_tests {
             StaticMcp::with_tools(&["cdp_find_elements"]).with_reply("cdp_find_elements", body);
 
         let run_id = uuid::Uuid::new_v4();
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
         let runner = StateRunner::new("goal".to_string(), AgentConfig::default())
             .with_run_id(run_id)
             .with_events(event_tx);
@@ -3318,7 +3356,7 @@ mod state_spine_event_contract_tests {
         );
 
         let run_id = uuid::Uuid::new_v4();
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
         let runner = StateRunner::new("goal".to_string(), AgentConfig::default())
             .with_run_id(run_id)
             .with_events(event_tx);
@@ -3359,22 +3397,105 @@ mod state_spine_event_contract_tests {
             AgentEvent::BoundaryRecordWritten {
                 run_id: rid,
                 boundary_kind: BoundaryKind::Terminal,
+                milestone_text,
                 ..
-            } => assert_eq!(
-                *rid, run_id,
-                "BoundaryRecordWritten must carry the runner's run_id",
-            ),
+            } => {
+                assert_eq!(
+                    *rid, run_id,
+                    "BoundaryRecordWritten must carry the runner's run_id",
+                );
+                assert_eq!(
+                    milestone_text, &None,
+                    "Terminal boundary events must not carry milestone text",
+                );
+            }
             other => panic!("unreachable — filtered above; got {:?}", other),
         }
     }
 
-    /// Driving `StateRunner::run_turn` directly with a turn carrying a
-    /// `CompleteSubgoal` mutation emits `AgentEvent::TaskStateChanged`
-    /// (D17, because `apply_mutations` applied ≥1 mutation). Calling
-    /// `run_turn` with an empty mutation vec must not emit
-    /// `TaskStateChanged` — the event fires only when mutations land.
     #[tokio::test]
-    async fn task_state_changed_fires_when_mutations_apply_not_otherwise() {
+    async fn boundary_record_written_carries_milestone_text_for_completed_subgoals() {
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tools(
+                "scripted-push-subgoals",
+                vec![
+                    tc("m1", "push_subgoal", serde_json::json!({"text": "A"})),
+                    tc("m2", "push_subgoal", serde_json::json!({"text": "B"})),
+                    tc(
+                        "a1",
+                        "cdp_find_elements",
+                        serde_json::json!({"query": "", "max_results": 300}),
+                    ),
+                ],
+            ),
+            llm_reply_tools(
+                "scripted-complete-subgoals",
+                vec![
+                    tc(
+                        "m3",
+                        "complete_subgoal",
+                        serde_json::json!({"summary": "did B"}),
+                    ),
+                    tc(
+                        "m4",
+                        "complete_subgoal",
+                        serde_json::json!({"summary": "did A"}),
+                    ),
+                    tc("a2", "agent_done", serde_json::json!({"summary": "ok"})),
+                ],
+            ),
+        ]);
+        let mcp = StaticMcp::with_tools(&["cdp_find_elements"]).with_reply(
+            "cdp_find_elements",
+            r#"{"page_url":"about:blank","source":"cdp","matches":[]}"#,
+        );
+
+        let run_id = uuid::Uuid::new_v4();
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
+        let runner = StateRunner::new("goal".to_string(), AgentConfig::default())
+            .with_run_id(run_id)
+            .with_events(event_tx);
+
+        let tools = mcp.tools_as_openai();
+        let _ = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                tools,
+                None,
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        let completed_texts: Vec<Option<String>> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::BoundaryRecordWritten {
+                    boundary_kind: BoundaryKind::SubgoalCompleted,
+                    milestone_text,
+                    ..
+                } => Some(milestone_text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            completed_texts,
+            vec![Some("B".to_string()), Some("A".to_string())],
+            "each CompleteSubgoal boundary must carry the matching milestone text; events={:?}",
+            events,
+        );
+    }
+
+    /// Driving `StateRunner::run_turn` directly with a turn that pushes the
+    /// first subgoal and dispatches an action emits `TaskStateChanged` twice:
+    /// once for the applied mutation, then once after `observe` re-infers the
+    /// phase as `Executing`. A later turn with no mutations and no phase shift
+    /// must not emit another one.
+    #[tokio::test]
+    async fn task_state_changed_reemits_when_observe_shifts_phase() {
         use crate::agent::runner::{AgentAction, AgentTurn, ToolExecutor};
         use crate::agent::task_state::TaskStateMutation;
         use async_trait::async_trait;
@@ -3393,7 +3514,7 @@ mod state_spine_event_contract_tests {
         }
 
         let run_id = uuid::Uuid::new_v4();
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
         let mut runner = StateRunner::new("goal".to_string(), AgentConfig::default())
             .with_run_id(run_id)
             .with_events(event_tx);
@@ -3435,19 +3556,29 @@ mod state_spine_event_contract_tests {
             .collect();
         assert_eq!(
             task_state_events.len(),
-            1,
-            "exactly one TaskStateChanged event expected (turn 1 had mutations, \
-             turn 2 did not); events={:?}",
+            2,
+            "exactly two TaskStateChanged events expected: mutation snapshot plus \
+             post-observe phase snapshot; events={:?}",
             events,
         );
-        assert_eq!(
-            task_state_events[0].0, run_id,
+        assert!(
+            task_state_events.iter().all(|(rid, _)| *rid == run_id),
             "TaskStateChanged must carry the runner's run_id",
         );
         assert_eq!(
             task_state_events[0].1.subgoal_stack.len(),
             1,
             "task_state payload must reflect the post-mutation stack depth",
+        );
+        assert_eq!(
+            task_state_events[0].1.phase,
+            Phase::Exploring,
+            "the first TaskStateChanged event is the immediate post-mutation snapshot",
+        );
+        assert_eq!(
+            task_state_events[1].1.phase,
+            Phase::Executing,
+            "the second TaskStateChanged event must carry the dispatch-time phase",
         );
     }
 }
@@ -3459,14 +3590,16 @@ mod state_spine_event_contract_tests {
 mod repeat_action_loop_detection_tests {
     use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
     use crate::agent::runner::{NO_PROGRESS_WARNING_PREFIX, StateRunner};
-    use crate::agent::types::{AgentConfig, AgentEvent};
+    use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput};
     use crate::executor::Mcp;
     use tokio::sync::mpsc;
 
-    fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+    fn drain_events(rx: &mut mpsc::Receiver<RunnerOutput>) -> Vec<AgentEvent> {
         let mut out = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            out.push(ev);
+            if let Some(event) = ev.into_event() {
+                out.push(event);
+            }
         }
         out
     }
@@ -3493,7 +3626,7 @@ mod repeat_action_loop_detection_tests {
         max_steps: usize,
     ) -> Vec<AgentEvent> {
         let llm = ScriptedLlm::new(scripted);
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
         let runner = StateRunner::new("goal".to_string(), cfg(max_steps)).with_events(event_tx);
         let tools = mcp.tools_as_openai();
         let _ = runner
@@ -3582,7 +3715,7 @@ mod repeat_action_loop_detection_tests {
             same(),
             llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
         ]);
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
         let runner = StateRunner::new("goal".to_string(), cfg).with_events(event_tx);
         let tools = mcp.tools_as_openai();
         let _ = runner
@@ -3645,7 +3778,7 @@ mod repeat_action_loop_detection_tests {
             click(),
             llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
         ]);
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+        let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
         let runner = StateRunner::new("goal".to_string(), cfg_with_room)
             .with_events(event_tx)
             .with_permissions(policy);

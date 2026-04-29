@@ -46,7 +46,7 @@ use crate::executor::Mcp;
 /// Channels that can be attached to the agent runner for live feedback.
 pub struct AgentChannels {
     /// Live event emission channel.
-    pub event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
+    pub event_tx: tokio::sync::mpsc::Sender<RunnerOutput>,
     /// Approval request channel (each request comes with a oneshot response sender).
     pub approval_tx:
         tokio::sync::mpsc::Sender<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>,

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { Edge, Node, Workflow } from "../../bindings";
 
 // Tauri's `invoke` must be mocked before agentSlice is imported — the
 // slice captures the imported binding at module init time.
@@ -8,6 +9,34 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { useStore } from "../useAppStore";
+
+function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
+  return {
+    id: "00000000-0000-0000-0000-000000000001",
+    name: "wf",
+    nodes: [],
+    edges: [],
+    groups: [],
+    ...overrides,
+  };
+}
+
+function makeNode(id: string, runId: string): Node {
+  return {
+    id,
+    name: id,
+    node_type: { type: "CdpWait", text: "Ready", timeout_ms: 1000 },
+    position: { x: 0, y: 0 },
+    enabled: true,
+    timeout_ms: null,
+    settle_ms: null,
+    retries: 0,
+    trace_level: "Minimal",
+    role: "Default",
+    expected_outcome: null,
+    source_run_id: runId,
+  };
+}
 
 describe("agentSlice.startAgent", () => {
   beforeEach(() => {
@@ -189,6 +218,95 @@ describe("agentSlice.startAgent", () => {
   });
 });
 
+describe("agentSlice run buffers", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+    useStore.setState({
+      workflow: makeWorkflow(),
+      pendingRunNodes: {},
+      pendingRunEdges: {},
+    });
+  });
+
+  it("buffers nodes and edges until commit appends them to the workflow", () => {
+    const groups = [
+      {
+        id: "group-1",
+        name: "User group",
+        color: "#888888",
+        node_ids: ["user-node-1", "user-node-2"],
+        parent_group_id: null,
+      },
+    ];
+    useStore.setState({
+      workflow: makeWorkflow({ groups }),
+    });
+    const groupsBefore = useStore.getState().workflow.groups;
+    const node = makeNode("agent-node-1", "run-1");
+    const edge: Edge = { from: "anchor", to: "agent-node-1" };
+
+    useStore.getState().bufferAgentNode("run-1", node);
+    useStore.getState().bufferAgentEdge("run-1", edge);
+
+    expect(useStore.getState().workflow.nodes).toEqual([]);
+    expect(useStore.getState().workflow.edges).toEqual([]);
+
+    useStore.getState().commitRunBuffer("run-1", "Created a node");
+
+    const state = useStore.getState();
+    expect(state.workflow.nodes).toEqual([node]);
+    expect(state.workflow.edges).toEqual([edge]);
+    expect(state.workflow.groups).toBe(groupsBefore);
+    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
+    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
+  });
+
+  it("dropRunBuffer removes buffered entries without mutating the workflow", () => {
+    const node = makeNode("agent-node-1", "run-1");
+    const edge: Edge = { from: "anchor", to: "agent-node-1" };
+    const workflowBefore = useStore.getState().workflow;
+
+    useStore.getState().bufferAgentNode("run-1", node);
+    useStore.getState().bufferAgentEdge("run-1", edge);
+    useStore.getState().dropRunBuffer("run-1");
+    useStore.getState().dropRunBuffer("missing-run");
+
+    const state = useStore.getState();
+    expect(state.workflow).toBe(workflowBefore);
+    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
+    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
+  });
+
+  it("commitRunBuffer with no buffered nodes only clears stale buffer entries", () => {
+    const edge: Edge = { from: "a", to: "b" };
+    useStore.getState().bufferAgentEdge("run-1", edge);
+    const workflowBefore = useStore.getState().workflow;
+
+    useStore.getState().commitRunBuffer("run-1", "No nodes");
+
+    const state = useStore.getState();
+    expect(state.workflow).toBe(workflowBefore);
+    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
+    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
+  });
+});
+
+describe("agentSlice agent-run collapse state", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+  });
+
+  it("toggles synthetic agent-run containers by run id", () => {
+    useStore.getState().toggleAgentRunCollapsed("run-1");
+    expect(useStore.getState().agentRunCollapsed["run-1"]).toBe(true);
+
+    useStore.getState().toggleAgentRunCollapsed("run-1");
+    expect(useStore.getState().agentRunCollapsed["run-1"]).toBe(false);
+  });
+});
+
 describe("agentSlice ambiguity resolutions", () => {
   beforeEach(() => {
     invokeMock.mockReset();
@@ -356,6 +474,26 @@ describe("agentSlice.cancelDisagreement", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     useStore.getState().resetAgent();
+  });
+
+  it("drops the active run buffer before forwarding the cancellation", async () => {
+    useStore.getState().setAgentRunId("run-prior");
+    useStore.getState().setCompletionDisagreement({
+      screenshotBase64: "abc",
+      vlmReasoning: "modal still visible",
+      agentSummary: "clicked submit",
+    });
+    useStore
+      .getState()
+      .bufferAgentNode("run-prior", makeNode("pending-node", "run-prior"));
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().cancelDisagreement();
+
+    expect(useStore.getState().pendingRunNodes["run-prior"]).toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("resolve_completion_disagreement", {
+      action: "cancel",
+    });
   });
 
   it("invokes resolve_completion_disagreement with 'cancel' without clearing the card locally", async () => {

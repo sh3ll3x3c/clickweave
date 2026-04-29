@@ -1851,7 +1851,7 @@ async fn vlm_yes_verdict_completes_run_normally() {
     let workflow = clickweave_core::Workflow::new("VLM YES test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(16);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(16);
     let runner = StateRunner::new("Open settings".to_string(), config)
         .with_vision(vlm)
         .with_events(event_tx);
@@ -1881,6 +1881,9 @@ async fn vlm_yes_verdict_completes_run_normally() {
     let mut saw_goal_complete = false;
     let mut saw_disagreement = false;
     while let Ok(ev) = event_rx.try_recv() {
+        let Some(ev) = ev.into_event() else {
+            continue;
+        };
         match ev {
             AgentEvent::GoalComplete { .. } => saw_goal_complete = true,
             AgentEvent::CompletionDisagreement { .. } => saw_disagreement = true,
@@ -1915,7 +1918,7 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(16);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(16);
     let vlm: Arc<dyn DynChatBackend> = agent_backend.clone();
     let runner = StateRunner::new("Open settings".to_string(), config)
         .with_vision(vlm)
@@ -1950,6 +1953,9 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
     let mut disagreement_payload: Option<(String, String, String)> = None;
     let mut saw_goal_complete = false;
     while let Ok(ev) = event_rx.try_recv() {
+        let Some(ev) = ev.into_event() else {
+            continue;
+        };
         match ev {
             AgentEvent::CompletionDisagreement {
                 screenshot_b64,
@@ -2458,6 +2464,9 @@ async fn consecutive_destructive_cap_halts_after_three_calls() {
     // `try_recv` reports Empty.
     let mut found = false;
     while let Ok(event) = event_rx.try_recv() {
+        let Some(event) = event.into_event() else {
+            continue;
+        };
         if let AgentEvent::ConsecutiveDestructiveCapHit {
             recent_tool_names,
             cap,

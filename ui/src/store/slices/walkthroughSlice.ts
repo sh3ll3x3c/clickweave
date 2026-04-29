@@ -110,7 +110,11 @@ export async function closeRecordingBarWindow() {
 async function seedCache(workflow: Workflow, get: () => StoreState) {
   const entries: { node_id: string; app_name: string }[] = [];
   for (const node of workflow.nodes) {
-    if (node.node_type.type === "FocusWindow" && node.node_type.value) {
+    if (
+      node.node_type.type === "FocusWindow" &&
+      node.node_type.method === "AppName" &&
+      node.node_type.value
+    ) {
       entries.push({ node_id: node.id, app_name: node.node_type.value });
     }
   }

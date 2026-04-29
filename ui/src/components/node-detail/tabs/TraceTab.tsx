@@ -7,7 +7,7 @@ import { eventTypeColor, formatEventPayload, formatEventDetail, runDuration } fr
 import { useNodeRuns } from "../hooks";
 
 function isImageArtifact(art: Artifact): boolean {
-  return art.kind === "Screenshot" || art.kind === "TemplateMatch";
+  return art.kind === "Screenshot";
 }
 
 function artifactFilename(art: Artifact): string {

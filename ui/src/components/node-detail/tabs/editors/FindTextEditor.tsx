@@ -12,7 +12,7 @@ export function FindTextEditor({ nodeType, onUpdate }: NodeEditorProps) {
     <FieldGroup title="Find Text">
       <TextField
         label="Search Text"
-        value={nt.search_text}
+        value={nt.search_text ?? ""}
         onChange={(v) => updateType({ search_text: v })}
       />
       <TextField

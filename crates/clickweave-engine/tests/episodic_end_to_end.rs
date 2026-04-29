@@ -16,7 +16,6 @@
 //!      paths — Phase 3 must keep failure isolation (D32) intact.
 
 use chrono::Utc;
-use clickweave_engine::agent::AgentEvent;
 use clickweave_engine::agent::episodic::store::EpisodicStore;
 use clickweave_engine::agent::episodic::{
     CompactAction, Embedder, EpisodeRecord, EpisodeScope, EpisodicContext, EpisodicWriter,
@@ -26,6 +25,7 @@ use clickweave_engine::agent::episodic::{
 };
 use clickweave_engine::agent::step_record::{BoundaryKind, StepRecord, WorldModelSnapshot};
 use clickweave_engine::agent::task_state::{Phase, TaskState};
+use clickweave_engine::agent::{AgentEvent, RunnerOutput};
 use tokio::sync::mpsc;
 
 fn empty_task_state(goal: &str) -> TaskState {
@@ -114,7 +114,7 @@ async fn writer_emits_episode_written_event_after_derive_and_insert() {
         workflow_hash: "test-workflow".into(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);
     let run_id = uuid::Uuid::new_v4();
     let writer = EpisodicWriter::spawn(ctx.clone(), Some(tx), run_id).expect("spawn writer");
 
@@ -140,12 +140,12 @@ async fn writer_emits_episode_written_event_after_derive_and_insert() {
         .expect("event received in time")
         .expect("channel still open");
     match evt {
-        AgentEvent::EpisodeWritten {
+        RunnerOutput::Event(AgentEvent::EpisodeWritten {
             run_id: ev_run_id,
             outcome,
             occurrence_count,
             ..
-        } => {
+        }) => {
             assert_eq!(
                 ev_run_id, run_id,
                 "writer must stamp emitted events with the run_id captured at spawn"
@@ -184,7 +184,7 @@ async fn writer_emits_episode_promoted_event_on_clean_terminal() {
         workflow_hash: "test-workflow".into(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);
     let run_id = uuid::Uuid::new_v4();
     let writer = EpisodicWriter::spawn(ctx.clone(), Some(tx), run_id).expect("spawn writer");
 
@@ -212,19 +212,19 @@ async fn writer_emits_episode_promoted_event_on_clean_terminal() {
         tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
     {
         match maybe_event {
-            Some(AgentEvent::EpisodeWritten {
+            Some(RunnerOutput::Event(AgentEvent::EpisodeWritten {
                 scope: clickweave_engine::agent::episodic::EpisodeScope::Global,
                 run_id: ev_run_id,
                 ..
-            }) => {
+            })) => {
                 assert_eq!(ev_run_id, run_id, "global EpisodeWritten must carry run_id");
                 global_written_seen = true;
             }
-            Some(AgentEvent::EpisodePromoted {
+            Some(RunnerOutput::Event(AgentEvent::EpisodePromoted {
                 run_id: ev_run_id,
                 promoted_episode_ids,
                 ..
-            }) => {
+            })) => {
                 assert_eq!(ev_run_id, run_id);
                 assert!(
                     !promoted_episode_ids.is_empty(),
@@ -271,7 +271,7 @@ async fn writer_skips_promotion_on_skip_terminal_kind_and_emits_no_event() {
         workflow_hash: "test-workflow".into(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);
     let run_id = uuid::Uuid::new_v4();
     let writer = EpisodicWriter::spawn(ctx.clone(), Some(tx), run_id).expect("spawn writer");
 
@@ -291,7 +291,7 @@ async fn writer_skips_promotion_on_skip_terminal_kind_and_emits_no_event() {
         Err(_) => {
             // Timeout — expected. No event on the wire.
         }
-        Ok(Some(AgentEvent::EpisodePromoted { .. })) => {
+        Ok(Some(RunnerOutput::Event(AgentEvent::EpisodePromoted { .. }))) => {
             panic!("EpisodePromoted must NOT fire on SkipPromotion terminal");
         }
         Ok(_) => {
@@ -336,7 +336,7 @@ async fn single_writer_processes_derive_and_insert_then_promote_pass() {
         workflow_hash: "unified-writer-test".into(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);
     let run_id = uuid::Uuid::new_v4();
     let writer = EpisodicWriter::spawn(ctx.clone(), Some(tx), run_id).expect("spawn writer");
 
@@ -429,17 +429,17 @@ async fn single_writer_processes_derive_and_insert_then_promote_pass() {
         tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await
     {
         match evt {
-            AgentEvent::EpisodeWritten {
+            RunnerOutput::Event(AgentEvent::EpisodeWritten {
                 run_id: ev_run_id, ..
-            } => {
+            }) => {
                 assert_eq!(ev_run_id, run_id, "EpisodeWritten must carry the run_id");
                 written_seen = true;
             }
-            AgentEvent::EpisodePromoted {
+            RunnerOutput::Event(AgentEvent::EpisodePromoted {
                 run_id: ev_run_id,
                 promoted_episode_ids,
                 ..
-            } => {
+            }) => {
                 assert_eq!(ev_run_id, run_id, "EpisodePromoted must carry the run_id");
                 assert!(
                     !promoted_episode_ids.is_empty(),
@@ -557,7 +557,7 @@ async fn writer_emits_warning_on_derive_and_insert_failure() {
         global_path: None,
         workflow_hash: "warn-w".into(),
     };
-    let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
+    let (tx, mut rx) = mpsc::channel::<RunnerOutput>(64);
     let writer = EpisodicWriter::spawn(ctx, Some(tx), uuid::Uuid::new_v4()).expect("spawn");
 
     // Use a separate connection to drop the table the writer's
@@ -582,7 +582,7 @@ async fn writer_emits_warning_on_derive_and_insert_failure() {
     while let Ok(Some(evt)) =
         tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await
     {
-        if let AgentEvent::Warning { message } = evt {
+        if let RunnerOutput::Event(AgentEvent::Warning { message }) = evt {
             assert!(
                 message.starts_with("episodic:"),
                 "warning prefix `episodic:` lets consumers filter memory-loss signals; got {:?}",
@@ -668,7 +668,7 @@ async fn writer_with_config_honours_global_cap_and_prunes() {
         }
     }
 
-    let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
+    let (tx, _rx) = mpsc::channel::<RunnerOutput>(64);
     let writer = EpisodicWriter::spawn_with_config(
         ctx,
         store_config.clone(),
@@ -757,7 +757,7 @@ async fn promotion_dedup_returns_existing_global_id_and_unions_refs() {
         workflow_hash: "dedup-workflow".into(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);
     let run_id = uuid::Uuid::new_v4();
     let writer = EpisodicWriter::spawn(ctx, Some(tx), run_id).expect("spawn writer");
 
@@ -778,10 +778,10 @@ async fn promotion_dedup_returns_existing_global_id_and_unions_refs() {
     while let Ok(Some(evt)) =
         tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await
     {
-        if let AgentEvent::EpisodePromoted {
+        if let RunnerOutput::Event(AgentEvent::EpisodePromoted {
             promoted_episode_ids,
             ..
-        } = evt
+        }) = evt
         {
             promoted_ids = promoted_episode_ids;
             break;
