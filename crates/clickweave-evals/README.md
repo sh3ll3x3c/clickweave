@@ -29,6 +29,7 @@ cargo run -p clickweave-evals -- \
   --scenario-dir crates/clickweave-evals/scenarios \
   --agent-base-url http://localhost:1234/v1 \
   --agent-model local-model \
+  --concurrency 2 \
   --out target/clickweave-eval-suite.json
 ```
 
@@ -59,6 +60,10 @@ The command also reads `CLICKWEAVE_EVAL_AGENT_BASE_URL`,
 `CLICKWEAVE_EVAL_AGENT_MODEL`, `CLICKWEAVE_EVAL_AGENT_API_KEY`,
 `CLICKWEAVE_EVAL_JUDGE_BASE_URL`, `CLICKWEAVE_EVAL_JUDGE_MODEL`, and
 `CLICKWEAVE_EVAL_JUDGE_API_KEY`.
+
+`--concurrency` controls how many scenarios run at once in `--scenario-dir`
+mode. A single scenario still runs sequentially internally because each agent
+turn depends on the previous tool result and world model.
 
 ## Scenarios
 
