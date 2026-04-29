@@ -6,14 +6,14 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 // Partial-mock the generated bindings: keep every command the rest of
 // the store uses as a passthrough vi.fn so the slice factories don't
-// blow up during setState, but override `pruneAgentCacheForNodes`
+// blow up during setState, but override `pruneSkillLineageForNodes`
 // with a spy so we can assert it was called.
 vi.mock("../bindings", async () => {
-  const pruneAgentCacheForNodes = vi.fn(async () => undefined);
+  const pruneSkillLineageForNodes = vi.fn(async () => undefined);
   const noop = () => vi.fn(async () => undefined);
   return {
     commands: new Proxy(
-      { pruneAgentCacheForNodes },
+      { pruneSkillLineageForNodes },
       {
         get(target, prop, receiver) {
           if (prop in target) return Reflect.get(target, prop, receiver);
@@ -31,14 +31,14 @@ import {
 } from "./useHandleDeleteNodes";
 import { commands, type Node } from "../bindings";
 
-function makeNode(
-  id: string,
-  name: string,
-  sourceRunId: string | null,
-): Node {
+function makeNode(id: string, name: string, sourceRunId: string | null): Node {
   return {
     id,
-    node_type: { type: "CdpWait", text: "", timeout_ms: 1000 } as Node["node_type"],
+    node_type: {
+      type: "CdpWait",
+      text: "",
+      timeout_ms: 1000,
+    } as Node["node_type"],
     position: { x: 0, y: 0 },
     name,
     enabled: true,
@@ -55,7 +55,11 @@ function makeNode(
 
 function seedStore(
   nodes: Node[],
-  messages: Array<{ role: "user" | "assistant" | "system"; content: string; runId?: string }>,
+  messages: Array<{
+    role: "user" | "assistant" | "system";
+    content: string;
+    runId?: string;
+  }>,
 ) {
   useStore.setState({
     workflow: {
@@ -80,10 +84,12 @@ function seedStore(
 
 describe("useHandleDeleteNodes", () => {
   beforeEach(() => {
-    (commands.pruneAgentCacheForNodes as ReturnType<typeof vi.fn>).mockClear();
+    (
+      commands.pruneSkillLineageForNodes as ReturnType<typeof vi.fn>
+    ).mockClear();
   });
 
-  it("calls pruneAgentCacheForNodes for deleted agent-built nodes", async () => {
+  it("calls pruneSkillLineageForNodes for deleted agent-built nodes", async () => {
     const removeNodes = vi.fn((ids: string[]) => {
       useStore.setState((s) => ({
         workflow: {
@@ -93,10 +99,7 @@ describe("useHandleDeleteNodes", () => {
       }));
     });
     seedStore(
-      [
-        makeNode("n1", "cdp_click", "r1"),
-        makeNode("n2", "cdp_fill", "r1"),
-      ],
+      [makeNode("n1", "cdp_click", "r1"), makeNode("n2", "cdp_fill", "r1")],
       [
         { role: "user", content: "goal", runId: "r1" },
         { role: "assistant", content: "summary", runId: "r1" },
@@ -109,7 +112,9 @@ describe("useHandleDeleteNodes", () => {
     });
 
     expect(removeNodes).toHaveBeenCalledWith(["n1"]);
-    expect((commands.pruneAgentCacheForNodes as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+    expect(
+      commands.pruneSkillLineageForNodes as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(
       expect.objectContaining({ node_ids: ["n1"], store_traces: true }),
     );
   });
@@ -124,10 +129,7 @@ describe("useHandleDeleteNodes", () => {
       }));
     });
     seedStore(
-      [
-        makeNode("n1", "cdp_click", "r1"),
-        makeNode("n2", "cdp_fill", "r1"),
-      ],
+      [makeNode("n1", "cdp_click", "r1"), makeNode("n2", "cdp_fill", "r1")],
       [
         { role: "user", content: "send test", runId: "r1" },
         { role: "assistant", content: "done", runId: "r1" },
@@ -139,9 +141,7 @@ describe("useHandleDeleteNodes", () => {
       result.current(["n1"]);
     });
 
-    const sys = useStore
-      .getState()
-      .messages.find((m) => m.role === "system");
+    const sys = useStore.getState().messages.find((m) => m.role === "system");
     expect(sys).toBeDefined();
     expect(sys!.content).toMatch(/Deleted/);
     expect(sys!.content).toMatch(/cdp_click/);
@@ -157,10 +157,7 @@ describe("useHandleDeleteNodes", () => {
       }));
     });
     seedStore(
-      [
-        makeNode("n1", "cdp_click", "r1"),
-        makeNode("n2", "cdp_fill", "r1"),
-      ],
+      [makeNode("n1", "cdp_click", "r1"), makeNode("n2", "cdp_fill", "r1")],
       [
         { role: "user", content: "goal", runId: "r1" },
         { role: "assistant", content: "full summary", runId: "r1" },
@@ -219,20 +216,22 @@ describe("useHandleDeleteNodes", () => {
     });
 
     expect(removeNodes).toHaveBeenCalledWith(["n1"]);
-    expect((commands.pruneAgentCacheForNodes as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-    const sys = useStore
-      .getState()
-      .messages.find((m) => m.role === "system");
+    expect(
+      commands.pruneSkillLineageForNodes as ReturnType<typeof vi.fn>,
+    ).not.toHaveBeenCalled();
+    const sys = useStore.getState().messages.find((m) => m.role === "system");
     expect(sys).toBeUndefined();
   });
 });
 
 describe("useHandleDeleteGroupWithContents", () => {
   beforeEach(() => {
-    (commands.pruneAgentCacheForNodes as ReturnType<typeof vi.fn>).mockClear();
+    (
+      commands.pruneSkillLineageForNodes as ReturnType<typeof vi.fn>
+    ).mockClear();
   });
 
-  it("prunes cache + annotates when the group contains agent-built nodes", async () => {
+  it("prunes skill lineage + annotates when the group contains agent-built nodes", async () => {
     const n1 = makeNode("n1", "cdp_click", "r1");
     const n2 = makeNode("n2", "cdp_fill", "r1");
     const deleteGroupWithContents = vi.fn((_groupId: string) => {
@@ -280,14 +279,12 @@ describe("useHandleDeleteGroupWithContents", () => {
     });
 
     expect(deleteGroupWithContents).toHaveBeenCalledWith("g1");
-    expect(commands.pruneAgentCacheForNodes).toHaveBeenCalledWith(
+    expect(commands.pruneSkillLineageForNodes).toHaveBeenCalledWith(
       expect.objectContaining({
         node_ids: expect.arrayContaining(["n1", "n2"]),
       }),
     );
-    const sys = useStore
-      .getState()
-      .messages.find((m) => m.role === "system");
+    const sys = useStore.getState().messages.find((m) => m.role === "system");
     expect(sys).toBeDefined();
     expect(sys!.content).toMatch(/Deleted/);
   });
@@ -327,7 +324,7 @@ describe("useHandleDeleteGroupWithContents", () => {
     });
 
     expect(deleteGroupWithContents).not.toHaveBeenCalled();
-    expect(commands.pruneAgentCacheForNodes).not.toHaveBeenCalled();
+    expect(commands.pruneSkillLineageForNodes).not.toHaveBeenCalled();
   });
 
   it("rejects group delete while a completion-disagreement resolver is pending", async () => {

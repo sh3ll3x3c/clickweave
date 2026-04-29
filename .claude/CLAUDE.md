@@ -10,9 +10,9 @@ Layout under the workflow dir:
 ```
 <workflow_dir>/
   decisions.json            ← workflow-level decision cache
-  agent_cache.json          ← workflow-level agent decision cache (persists across runs)
   agent_chat.json           ← user prompt(s) + assistant replies for this workflow (the "scenario")
   variant_index.jsonl       ← workflow-level variant index (one line per execution)
+  skills/                   ← project-local procedural skills (`*.md` + refinement proposals)
   <execution_dir>/          ← YYYY-MM-DD_HH-MM-SS_<short_uuid>, one per workflow execution
     events.jsonl            ← execution-level events: agent step events (step_completed, step_failed) + control-flow (branch_evaluated, loop_iteration)
     <node_name>/            ← sanitized node name (e.g. launch-calculator/)
@@ -30,6 +30,11 @@ Layout under the workflow dir:
   4. **Application log:** `~/Library/Logs/Clickweave/clickweave.YYYY-MM-DD.txt` (see Application Logs) — correlate LLM tool-call lines (`clickweave_llm::client`) and engine dispatch (`clickweave_engine::agent::loop_runner`) against the events above. Mismatches between LLM tool calls and `step_completed` counts are a strong bug signal.
 - If an execution dir has no `<node_name>/` subdir, the agent failed before any node run was created — the exec-level `events.jsonl` is the only trace.
 - Never reason about a run from just one layer. Always cross-reference the chat (intent) against the events (what the engine emitted) against the app log (what the LLM actually called).
+
+## Agent Skills
+- **Project-local skills:** `<project>/.clickweave/skills/`
+- **Unsaved projects:** the skills dir is resolved through `RunStorage::project_skills_dir()` under the app-data run-storage tree.
+- Skills are markdown files with YAML frontmatter. Draft skills are derived from agent conversation boundaries and can be confirmed, promoted, forked, or deleted through the skills UI.
 
 ## Walkthrough Session Logs
 - **Saved projects:** `<project>/.clickweave/walkthroughs/<session_dir>/`

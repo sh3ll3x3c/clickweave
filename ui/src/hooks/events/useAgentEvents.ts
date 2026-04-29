@@ -1,8 +1,9 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { Node, Edge } from "../../bindings";
+import type { BoundaryKind, Edge, Node, TaskState, WorldModelDiff } from "../../bindings";
 import { useStore } from "../../store/useAppStore";
 import type { AgentStatus } from "../../store/slices/agentSlice";
+import type { AgentPhase, TerminalFrame } from "../../store/slices/assistantSlice";
 
 /** All run-scoped payloads include a generation ID. */
 interface RunScoped {
@@ -78,6 +79,20 @@ interface ConsecutiveDestructiveCapHitPayload extends RunScoped {
   cap: number;
 }
 
+interface TaskStateChangedPayload extends RunScoped {
+  task_state: TaskState;
+}
+
+interface WorldModelChangedPayload extends RunScoped {
+  diff: WorldModelDiff;
+}
+
+interface BoundaryRecordWrittenPayload extends RunScoped {
+  boundary_kind: BoundaryKind;
+  step_index: number;
+  milestone_text: string | null;
+}
+
 /**
  * Subscribe to agent backend events:
  * agent://started, agent://step, agent://complete,
@@ -117,6 +132,9 @@ export function useAgentEvents() {
     const isStale = (runId: string): boolean =>
       isStaleRunId(useStore.getState().agentRunId, runId);
 
+    const currentTracePhase = (runId: string): AgentPhase =>
+      useStore.getState().runTraces[runId]?.phase ?? "exploring";
+
     // ── Run lifecycle ──────────────────────────────────────────
 
     sub(
@@ -130,6 +148,7 @@ export function useAgentEvents() {
     sub(
       listen<AgentStepPayload>("agent://step", (e) => {
         if (isStale(e.payload.run_id)) return;
+        const phase = currentTracePhase(e.payload.run_id);
         useStore.getState().addAgentStep({
           summary: e.payload.summary,
           toolName: e.payload.tool_name,
@@ -142,20 +161,31 @@ export function useAgentEvents() {
           .pushLog(
             `Agent step ${e.payload.step_number}: ${e.payload.tool_name}`,
           );
+        useStore.getState().pushTraceStep(e.payload.run_id, {
+          stepIndex: e.payload.step_number,
+          toolName: e.payload.tool_name,
+          phase,
+          body: e.payload.summary,
+          failed: false,
+        });
       }),
     );
 
     sub(
       listen<NodeAddedPayload>("agent://node_added", (e) => {
         if (isStale(e.payload.run_id)) return;
-        useStore.getState().addAgentNode(e.payload.node);
+        useStore
+          .getState()
+          .bufferAgentNode(e.payload.run_id, e.payload.node);
       }),
     );
 
     sub(
       listen<EdgeAddedPayload>("agent://edge_added", (e) => {
         if (isStale(e.payload.run_id)) return;
-        useStore.getState().addAgentEdge(e.payload.edge);
+        useStore
+          .getState()
+          .bufferAgentEdge(e.payload.run_id, e.payload.edge);
       }),
     );
 
@@ -191,6 +221,7 @@ export function useAgentEvents() {
     sub(
       listen<StepFailedPayload>("agent://step_failed", (e) => {
         if (isStale(e.payload.run_id)) return;
+        const phase = currentTracePhase(e.payload.run_id);
         useStore.getState().addAgentStep({
           summary: `Error: ${e.payload.error}`,
           toolName: e.payload.tool_name,
@@ -203,6 +234,13 @@ export function useAgentEvents() {
           .pushLog(
             `Agent step ${e.payload.step_number} failed: ${e.payload.tool_name} — ${e.payload.error}`,
           );
+        useStore.getState().pushTraceStep(e.payload.run_id, {
+          stepIndex: e.payload.step_number,
+          toolName: e.payload.tool_name,
+          phase,
+          body: e.payload.error,
+          failed: true,
+        });
       }),
     );
 
@@ -234,6 +272,10 @@ export function useAgentEvents() {
     sub(
       listen<RunScoped & { summary?: string }>("agent://complete", (e) => {
         if (isStale(e.payload.run_id)) return;
+        const summary = e.payload.summary?.trim();
+        useStore
+          .getState()
+          .commitRunBuffer(e.payload.run_id, summary || "Goal completed.");
         // A confirmed disagreement demotes status to `stopped` for the
         // card UI but the backend still emits `agent://complete` on
         // resolution. Accept the promotion from either `running` or
@@ -253,7 +295,10 @@ export function useAgentEvents() {
         // was actually done.
         useStore.getState().setCompletionDisagreement(null);
         useStore.getState().pushLog("Agent completed");
-        const summary = e.payload.summary?.trim();
+        useStore.getState().setTerminalFrame(e.payload.run_id, {
+          kind: "complete",
+          detail: summary || "Goal completed.",
+        });
         useStore
           .getState()
           .pushAssistantMessage(
@@ -291,6 +336,7 @@ export function useAgentEvents() {
         "agent://consecutive_destructive_cap_hit",
         (e) => {
           if (isStale(e.payload.run_id)) return;
+          useStore.getState().dropRunBuffer(e.payload.run_id);
           setStatusIfActive("stopped");
           useStore
             .getState()
@@ -311,6 +357,7 @@ export function useAgentEvents() {
     sub(
       listen<AgentStoppedPayload>("agent://stopped", (e) => {
         if (isStale(e.payload.run_id)) return;
+        useStore.getState().dropRunBuffer(e.payload.run_id);
         // A `stopped` for `user_cancelled_disagreement` arrives after the
         // operator's Cancel button optimistically flipped status to
         // `stopped`; the disagreement card is already dismissed. Keep
@@ -335,6 +382,14 @@ export function useAgentEvents() {
                   : e.payload.reason === "loop_detected"
                     ? "the same tool call kept failing — stopped to avoid looping"
                     : e.payload.reason;
+        const frameKind: TerminalFrame["kind"] =
+          e.payload.reason === "user_cancelled_disagreement"
+            ? "disagreement_cancelled"
+            : "stopped";
+        useStore.getState().setTerminalFrame(e.payload.run_id, {
+          kind: frameKind,
+          detail,
+        });
         useStore.getState().pushLog(`Agent stopped: ${detail}`);
         useStore
           .getState()
@@ -376,6 +431,7 @@ export function useAgentEvents() {
     sub(
       listen<AgentErrorPayload>("agent://error", (e) => {
         if (isStale(e.payload.run_id)) return;
+        useStore.getState().dropRunBuffer(e.payload.run_id);
         // Only transition to error if the agent was still active —
         // a racing error after stop should not override "stopped".
         const current = useStore.getState().agentStatus;
@@ -387,6 +443,10 @@ export function useAgentEvents() {
         // `isAgentActive` drops to false now that the backend task
         // has signalled it is done.
         useStore.getState().setCompletionDisagreement(null);
+        useStore.getState().setTerminalFrame(e.payload.run_id, {
+          kind: "error",
+          detail: e.payload.message,
+        });
         useStore
           .getState()
           .pushLog(`Agent error: ${e.payload.message}`);
@@ -397,6 +457,86 @@ export function useAgentEvents() {
             `Error: ${e.payload.message}`,
             e.payload.run_id,
           );
+      }),
+    );
+
+    // ── Trace events ────────────────────────────────────────────
+
+    sub(
+      listen<TaskStateChangedPayload>("agent://task_state_changed", (e) => {
+        if (isStale(e.payload.run_id)) return;
+        useStore
+          .getState()
+          .applyTaskStateUpdate(e.payload.run_id, e.payload.task_state);
+      }),
+    );
+
+    sub(
+      listen<WorldModelChangedPayload>("agent://world_model_changed", (e) => {
+        if (isStale(e.payload.run_id)) return;
+        useStore
+          .getState()
+          .applyWorldModelDelta(e.payload.run_id, e.payload.diff);
+      }),
+    );
+
+    sub(
+      listen<BoundaryRecordWrittenPayload>(
+        "agent://boundary_record_written",
+        (e) => {
+          if (isStale(e.payload.run_id)) return;
+          useStore.getState().applyBoundary(
+            e.payload.run_id,
+            e.payload.boundary_kind,
+            e.payload.step_index,
+            e.payload.milestone_text,
+          );
+        },
+      ),
+    );
+
+    sub(
+      listen<{
+        run_id: string;
+        event_run_id: string;
+        skill_id: string;
+        version: number;
+        parameter_count: number;
+      }>("agent://skill_invoked", (e) => {
+        if (isStale(e.payload.run_id)) return;
+        const suffix = e.payload.parameter_count === 1 ? "" : "s";
+        useStore
+          .getState()
+          .pushLog(
+            `Agent invoked skill ${e.payload.skill_id} v${e.payload.version} (${e.payload.parameter_count} parameter${suffix})`,
+          );
+      }),
+    );
+
+    sub(
+      listen<{
+        run_id: string;
+        event_run_id: string;
+        skill_id: string;
+        version: number;
+        state: "draft" | "confirmed" | "promoted";
+        scope: "project_local" | "global";
+      }>("agent://skill_extracted", (e) => {
+        if (isStale(e.payload.run_id)) return;
+        useStore.getState().applySkillExtracted(e.payload);
+      }),
+    );
+
+    sub(
+      listen<{
+        run_id: string;
+        event_run_id: string;
+        skill_id: string;
+        version: number;
+      }>("agent://skill_confirmed", (e) => {
+        // skill_confirmed can arrive outside an active run (user
+        // confirms a skill from the panel). Don't gate on isStale.
+        useStore.getState().applySkillConfirmed(e.payload);
       }),
     );
 

@@ -187,7 +187,11 @@ pub struct CompactBudget {
 impl Default for CompactBudget {
     fn default() -> Self {
         Self {
-            max_tokens: 100_000,
+            // Keep message history below the smallest provider window we
+            // ship against (~40k) with room for tool schemas and the model
+            // response. Tool definitions are sent separately and are not
+            // included in this estimate.
+            max_tokens: 32_000,
             recent_n: 6,
         }
     }

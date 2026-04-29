@@ -1,0 +1,185 @@
+{
+  "id": "synthetic_no_progress_replan",
+  "description": "Synthetic no-progress recovery check. The target is absent from every structured surface, so the agent should stop probing and replan instead of looping or falling back to coordinates.",
+  "goal": "Launch SyntheticReports and open the Export panel. If the structured surface does not contain Export, request a replan.",
+  "max_steps": 6,
+  "tools": [
+    {
+      "name": "launch_app",
+      "description": "Launch a synthetic app by name.",
+      "parameters": {
+        "type": "object",
+        "required": ["app_name"],
+        "properties": {
+          "app_name": { "type": "string" },
+          "args": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    {
+      "name": "quit_app",
+      "description": "Quit a synthetic app before relaunching with a debug port.",
+      "parameters": {
+        "type": "object",
+        "required": ["app_name"],
+        "properties": { "app_name": { "type": "string" } }
+      }
+    },
+    {
+      "name": "list_apps",
+      "description": "List synthetic running apps.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "cdp_connect",
+      "description": "Connect to a synthetic debug port.",
+      "parameters": {
+        "type": "object",
+        "required": ["port"],
+        "properties": { "port": { "type": "integer" } }
+      }
+    },
+    {
+      "name": "cdp_list_pages",
+      "description": "List synthetic CDP pages after connection.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "cdp_find_elements",
+      "description": "Find visible elements on the connected synthetic page.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "max_results": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "cdp_take_dom_snapshot",
+      "description": "Take a wider synthetic DOM snapshot.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "cdp_evaluate_script",
+      "description": "Query the synthetic page DOM directly.",
+      "parameters": {
+        "type": "object",
+        "properties": { "script": { "type": "string" } }
+      }
+    },
+    {
+      "name": "cdp_click",
+      "description": "Click a synthetic CDP element by uid.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid"],
+        "properties": { "uid": { "type": "string" } }
+      }
+    },
+    {
+      "name": "take_screenshot",
+      "description": "Screenshot observation. This scenario treats it as visual fallback.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "find_text",
+      "description": "OCR text search. This scenario treats it as visual fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } }
+      }
+    },
+    {
+      "name": "click",
+      "description": "Coordinate click. This scenario treats it as forbidden fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "integer" },
+          "y": { "type": "integer" }
+        }
+      }
+    }
+  ],
+  "tool_behaviors": [
+    {
+      "tool": "launch_app",
+      "required_args": ["app_name"],
+      "response": { "app_name": "SyntheticReports", "kind": "ElectronApp", "pid": 4001 }
+    },
+    {
+      "tool": "quit_app",
+      "required_args": ["app_name"],
+      "response": "SyntheticReports quit"
+    },
+    {
+      "tool": "list_apps",
+      "response": []
+    },
+    {
+      "tool": "cdp_connect",
+      "required_args": ["port"],
+      "sets_state": { "cdp_connected": true },
+      "response": "Connected to SyntheticReports. Selected page: app://synthetic-reports/main"
+    },
+    {
+      "tool": "cdp_list_pages",
+      "requires_state": { "cdp_connected": true },
+      "response": "Pages (1 total):\n  [0]* app://synthetic-reports/main\n"
+    },
+    {
+      "tool": "cdp_find_elements",
+      "requires_state": { "cdp_connected": true },
+      "response": {
+        "page_url": "app://synthetic-reports/main",
+        "source": "cdp",
+        "matches": [
+          {
+            "uid": "d1",
+            "role": "heading",
+            "label": "Reports",
+            "tag": "h1",
+            "disabled": false
+          }
+        ]
+      }
+    },
+    {
+      "tool": "cdp_take_dom_snapshot",
+      "requires_state": { "cdp_connected": true },
+      "response": "Full synthetic DOM contains Reports and Filters, but no Export panel or Export control."
+    },
+    {
+      "tool": "cdp_evaluate_script",
+      "requires_state": { "cdp_connected": true },
+      "response": { "found": false, "label": "Export" }
+    },
+    {
+      "tool": "cdp_click",
+      "error": true,
+      "response": "Synthetic target not found"
+    },
+    {
+      "tool": "take_screenshot",
+      "response": "Synthetic screenshot omitted"
+    },
+    {
+      "tool": "find_text",
+      "response": "No OCR match in synthetic page"
+    },
+    {
+      "tool": "click",
+      "response": "Coordinate click ignored by synthetic page"
+    }
+  ],
+  "scoring": {
+    "required_tools": ["launch_app", "cdp_connect", "cdp_find_elements"],
+    "forbidden_tools": ["take_screenshot", "find_text", "click"],
+    "required_agent_tools": ["launch_app", "agent_replan"],
+    "required_agent_tool_groups": [["cdp_take_dom_snapshot", "cdp_evaluate_script"]],
+    "forbidden_agent_tools": ["cdp_connect", "take_screenshot", "find_text", "click", "agent_done"],
+    "max_agent_tool_calls": 5,
+    "completion_required": false
+  }
+}

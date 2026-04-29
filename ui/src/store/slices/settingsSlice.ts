@@ -3,9 +3,12 @@ import type { EndpointConfig, PermissionLevel, ToolPermissions } from "../state"
 import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_FAST_ENABLED } from "../state";
 import { formatModelStatus, verifyConfiguredModels } from "../modelAvailability";
 import {
+  DEFAULT_APPLICABLE_SKILLS_K,
   DEFAULT_EPISODIC_ENABLED,
   DEFAULT_EPISODIC_GLOBAL_PARTICIPATION,
   DEFAULT_RETRIEVED_EPISODES_K,
+  DEFAULT_SKILLS_ENABLED,
+  DEFAULT_SKILLS_GLOBAL_PARTICIPATION,
   DEFAULT_STORE_TRACES,
   DEFAULT_TRACE_RETENTION_DAYS,
   loadSettings,
@@ -28,6 +31,9 @@ export interface SettingsSlice {
   episodicEnabled: boolean;
   retrievedEpisodesK: number;
   episodicGlobalParticipation: boolean;
+  skillsEnabled: boolean;
+  applicableSkillsK: number;
+  skillsGlobalParticipation: boolean;
   _settingsLoaded: boolean;
 
   loadSettingsFromDisk: () => void;
@@ -45,6 +51,9 @@ export interface SettingsSlice {
   setEpisodicEnabled: (enabled: boolean) => void;
   setRetrievedEpisodesK: (n: number) => void;
   setEpisodicGlobalParticipation: (enabled: boolean) => void;
+  setSkillsEnabled: (enabled: boolean) => void;
+  setApplicableSkillsK: (n: number) => void;
+  setSkillsGlobalParticipation: (enabled: boolean) => void;
 }
 
 function persistSetting<K extends keyof PersistedSettings>(
@@ -78,6 +87,9 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   episodicEnabled: DEFAULT_EPISODIC_ENABLED,
   retrievedEpisodesK: DEFAULT_RETRIEVED_EPISODES_K,
   episodicGlobalParticipation: DEFAULT_EPISODIC_GLOBAL_PARTICIPATION,
+  skillsEnabled: DEFAULT_SKILLS_ENABLED,
+  applicableSkillsK: DEFAULT_APPLICABLE_SKILLS_K,
+  skillsGlobalParticipation: DEFAULT_SKILLS_GLOBAL_PARTICIPATION,
   _settingsLoaded: false,
 
   loadSettingsFromDisk: () => {
@@ -109,6 +121,14 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
             DEFAULT_RETRIEVED_EPISODES_K,
           ),
           episodicGlobalParticipation: s.episodicGlobalParticipation,
+          skillsEnabled: s.skillsEnabled,
+          applicableSkillsK: clampInt(
+            s.applicableSkillsK,
+            1,
+            10,
+            DEFAULT_APPLICABLE_SKILLS_K,
+          ),
+          skillsGlobalParticipation: s.skillsGlobalParticipation,
         });
         verifyConfiguredModels(s)
           .then((results) => {
@@ -152,4 +172,13 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
     ),
   setEpisodicGlobalParticipation: (enabled) =>
     persistSetting("episodicGlobalParticipation", enabled, set),
+  setSkillsEnabled: (enabled) => persistSetting("skillsEnabled", enabled, set),
+  setApplicableSkillsK: (n) =>
+    persistSetting(
+      "applicableSkillsK",
+      clampInt(n, 1, 10, DEFAULT_APPLICABLE_SKILLS_K),
+      set,
+    ),
+  setSkillsGlobalParticipation: (enabled) =>
+    persistSetting("skillsGlobalParticipation", enabled, set),
 });

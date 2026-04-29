@@ -2,6 +2,7 @@ import type { StateCreator } from "zustand";
 import { isWalkthroughActive } from "./walkthroughSlice";
 import type { StoreState } from "./types";
 import { commands } from "../../bindings";
+import type { BoundaryKind, Phase, TaskState, WorldModelDiff } from "../../bindings";
 import { saveAgentChat } from "../agentChatPersistence";
 import { autoDissolveGroups } from "../useWorkflowMutations";
 
@@ -26,10 +27,52 @@ export interface AssistantMessage {
   runId?: string;
 }
 
+export type AgentPhase = Phase;
+
+export interface TraceStep {
+  stepIndex: number;
+  toolName: string;
+  phase: AgentPhase;
+  body: string;
+  failed: boolean;
+}
+
+export interface WorldModelDelta {
+  stepIndex: number;
+  changedFields: string[];
+}
+
+export type MilestoneKind = Extract<
+  BoundaryKind,
+  "subgoal_completed" | "recovery_succeeded"
+>;
+
+export interface TraceMilestone {
+  stepIndex: number;
+  kind: MilestoneKind;
+  text: string;
+}
+
+export interface TerminalFrame {
+  kind: "complete" | "stopped" | "error" | "disagreement_cancelled";
+  detail: string;
+}
+
+export interface RunTrace {
+  runId: string;
+  phase: AgentPhase;
+  activeSubgoal: string;
+  steps: TraceStep[];
+  worldModelDeltas: WorldModelDelta[];
+  milestones: TraceMilestone[];
+  terminalFrame: TerminalFrame | null;
+}
+
 export interface AssistantSlice {
   messages: AssistantMessage[];
   assistantOpen: boolean;
   assistantError: string | null;
+  runTraces: Record<string, RunTrace>;
 
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
@@ -57,12 +100,68 @@ export interface AssistantSlice {
   ) => void;
   /** Drop user/assistant messages whose runId is in `runIds`. System annotations survive. */
   dropTurnsByRunIds: (runIds: Set<string>) => void;
+  applyTaskStateUpdate: (runId: string, taskState: TaskState) => void;
+  applyWorldModelDelta: (runId: string, diff: WorldModelDiff) => void;
+  applyBoundary: (
+    runId: string,
+    kind: BoundaryKind,
+    stepIndex: number,
+    milestoneText: string | null,
+  ) => void;
+  pushTraceStep: (runId: string, step: TraceStep) => void;
+  setTerminalFrame: (runId: string, frame: TerminalFrame) => void;
+  clearTrace: (runId: string) => void;
   /**
    * Full Clear-conversation flow (D1.C1): delete every agent-built
    * node, wipe the cache + variant-index + transcript files via the
    * Tauri command, and empty the local messages array. Not undoable.
    */
   clearConversationFlow: () => Promise<void>;
+}
+
+const defaultPhase: AgentPhase = "exploring";
+
+function emptyRunTrace(runId: string): RunTrace {
+  return {
+    runId,
+    phase: defaultPhase,
+    activeSubgoal: "",
+    steps: [],
+    worldModelDeltas: [],
+    milestones: [],
+    terminalFrame: null,
+  };
+}
+
+function traceWith(runTraces: Record<string, RunTrace>, runId: string): RunTrace {
+  return runTraces[runId] ?? emptyRunTrace(runId);
+}
+
+function nextTraceStepIndex(trace: RunTrace): number {
+  if (trace.steps.length === 0) return 0;
+  return Math.max(...trace.steps.map((step) => step.stepIndex)) + 1;
+}
+
+function boundaryMilestone(
+  kind: BoundaryKind,
+  stepIndex: number,
+  milestoneText: string | null,
+): TraceMilestone | null {
+  if (kind === "subgoal_completed") {
+    return {
+      stepIndex,
+      kind,
+      text: milestoneText?.trim() || "Subgoal completed",
+    };
+  }
+  if (kind === "recovery_succeeded") {
+    return {
+      stepIndex,
+      kind,
+      text: milestoneText?.trim() || "Recovery succeeded",
+    };
+  }
+  return null;
 }
 
 export const createAssistantSlice: StateCreator<
@@ -92,6 +191,7 @@ export const createAssistantSlice: StateCreator<
   messages: [],
   assistantOpen: false,
   assistantError: null,
+  runTraces: {},
 
   setAssistantOpen: (open) => {
     if (open && isWalkthroughActive(get().walkthroughStatus)) {
@@ -177,8 +277,100 @@ export const createAssistantSlice: StateCreator<
     persist();
   },
 
+  applyTaskStateUpdate: (runId, taskState) => {
+    set((s) => {
+      const current = traceWith(s.runTraces, runId);
+      const activeSubgoal = taskState.subgoal_stack.at(-1)?.text ?? "";
+      return {
+        runTraces: {
+          ...s.runTraces,
+          [runId]: {
+            ...current,
+            phase: taskState.phase,
+            activeSubgoal,
+          },
+        },
+      };
+    });
+  },
+
+  applyWorldModelDelta: (runId, diff) => {
+    set((s) => {
+      const current = traceWith(s.runTraces, runId);
+      const delta: WorldModelDelta = {
+        stepIndex: nextTraceStepIndex(current),
+        changedFields: diff.changed_fields,
+      };
+      return {
+        runTraces: {
+          ...s.runTraces,
+          [runId]: {
+            ...current,
+            worldModelDeltas: [...current.worldModelDeltas, delta],
+          },
+        },
+      };
+    });
+  },
+
+  applyBoundary: (runId, kind, stepIndex, milestoneText) => {
+    const milestone = boundaryMilestone(kind, stepIndex, milestoneText);
+    if (!milestone) return;
+    set((s) => {
+      const current = traceWith(s.runTraces, runId);
+      return {
+        runTraces: {
+          ...s.runTraces,
+          [runId]: {
+            ...current,
+            milestones: [...current.milestones, milestone],
+          },
+        },
+      };
+    });
+  },
+
+  pushTraceStep: (runId, step) => {
+    set((s) => {
+      const current = traceWith(s.runTraces, runId);
+      return {
+        runTraces: {
+          ...s.runTraces,
+          [runId]: {
+            ...current,
+            steps: [...current.steps, step],
+          },
+        },
+      };
+    });
+  },
+
+  setTerminalFrame: (runId, frame) => {
+    set((s) => {
+      const current = traceWith(s.runTraces, runId);
+      return {
+        runTraces: {
+          ...s.runTraces,
+          [runId]: {
+            ...current,
+            terminalFrame: frame,
+          },
+        },
+      };
+    });
+  },
+
+  clearTrace: (runId) => {
+    set((s) => {
+      if (!s.runTraces[runId]) return {};
+      const { [runId]: _removed, ...remaining } = s.runTraces;
+      return { runTraces: remaining };
+    });
+  },
+
   clearConversationFlow: async () => {
     const state = get();
+    const activeRunId = state.agentRunId;
     const agentNodeIds = state.workflow.nodes
       .filter((n) => n.source_run_id != null)
       .map((n) => n.id);
@@ -229,6 +421,11 @@ export const createAssistantSlice: StateCreator<
       state.setAssistantError(`Failed to clear conversation: ${String(e)}`);
     } finally {
       conversationWipeInProgress = false;
+    }
+
+    if (activeRunId) {
+      state.dropRunBuffer(activeRunId);
+      state.clearTrace(activeRunId);
     }
   },
   };

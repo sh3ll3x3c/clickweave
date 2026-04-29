@@ -23,12 +23,12 @@ export function ConfirmClearConversationModal({
         <h3 className="text-base font-semibold">Clear conversation</h3>
         <p>
           Delete {agentNodeCount} agent-built node
-          {agentNodeCount === 1 ? "" : "s"}, wipe the agent cache and
+          {agentNodeCount === 1 ? "" : "s"}, wipe draft skills and
           conversational memory, and drop the chat transcript?
         </p>
         <p className="text-[var(--text-secondary)]">
-          This includes any nodes you may have edited after the agent
-          created them. This action cannot be undone.
+          This includes any nodes you may have edited after the agent created
+          them. This action cannot be undone.
         </p>
         <div className="flex justify-end gap-2 pt-1">
           <button

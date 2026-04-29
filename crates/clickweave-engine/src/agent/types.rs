@@ -1,11 +1,49 @@
 use clickweave_core::Workflow;
 use clickweave_core::cdp::CdpFindElementMatch;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::agent::skills::{SkillScope, SkillState};
 use crate::agent::step_record::BoundaryKind;
 use crate::agent::task_state::TaskState;
+
+/// Wrapper carried on the engine-to-Tauri mpsc channel. Splits durable,
+/// serializable events from one-shot channel control messages.
+#[derive(Debug)]
+pub enum RunnerOutput {
+    /// A durable, serializable agent event. Persisted to `events.jsonl`
+    /// and mapped to a Tauri topic by the forwarder.
+    Event(AgentEvent),
+
+    /// Non-persisted ordering barrier. The forwarder skips durable
+    /// persistence for this variant and signals `ack` after every
+    /// previously queued event has been handled.
+    DrainBarrier {
+        ack: tokio::sync::oneshot::Sender<()>,
+    },
+
+    /// Non-persisted Tauri-side trigger for skill proposal generation.
+    SkillProposalNeeded {
+        skill_id: String,
+        version: u32,
+        run_id: String,
+    },
+}
+
+impl RunnerOutput {
+    pub fn into_event(self) -> Option<AgentEvent> {
+        match self {
+            RunnerOutput::Event(event) => Some(event),
+            RunnerOutput::DrainBarrier { .. } | RunnerOutput::SkillProposalNeeded { .. } => None,
+        }
+    }
+}
+
+impl From<AgentEvent> for RunnerOutput {
+    fn from(event: AgentEvent) -> Self {
+        RunnerOutput::Event(event)
+    }
+}
 
 /// Default ceiling on agent observe-act iterations. Chosen to cover typical
 /// multi-step tasks (login → action → confirm) with headroom while keeping a
@@ -126,6 +164,7 @@ pub enum AgentEvent {
         run_id: Uuid,
         boundary_kind: BoundaryKind,
         step_index: usize,
+        milestone_text: Option<String>,
     },
     /// Emitted after the runner's episodic-retrieval pass returns at
     /// least one candidate (Spec 2 D24). Triggered on run-start and on
@@ -177,6 +216,39 @@ pub enum AgentEvent {
         run_id: Uuid,
         promoted_episode_ids: Vec<String>,
         skipped_count: usize,
+    },
+    /// Emitted by the runner each time the LLM picks `invoke_skill`
+    /// from the offered `<applicable_skills>` block and the runner
+    /// has resolved the target to a confirmed/promoted on-disk skill.
+    /// Carries the `(skill_id, version)` pair plus the validated
+    /// parameter count (the parameters themselves stay off the wire so
+    /// frontends can render a count chip without size-cap concerns).
+    SkillInvoked {
+        run_id: Uuid,
+        skill_id: String,
+        version: u32,
+        parameter_count: u32,
+    },
+    /// Emitted by the runner after the extractor inserts or merges a
+    /// skill at a `CompleteSubgoal` boundary. Frontends use this to
+    /// refresh the Skills panel index without polling. `state` and
+    /// `scope` echo the skill's on-disk fields so a panel slice can
+    /// place the entry in the correct bucket without an extra read.
+    SkillExtracted {
+        run_id: Uuid,
+        skill_id: String,
+        version: u32,
+        state: SkillState,
+        scope: SkillScope,
+    },
+    /// Emitted by the Tauri command layer after a user accepts an LLM
+    /// refinement proposal and `confirm_skill_proposal` flips a draft
+    /// skill to `Confirmed`. Frontends use this to move a skill from
+    /// the Drafts bucket to the Confirmed bucket.
+    SkillConfirmed {
+        run_id: Uuid,
+        skill_id: String,
+        version: u32,
     },
 }
 
@@ -236,8 +308,6 @@ pub struct AgentConfig {
     pub max_consecutive_errors: usize,
     /// Whether to build a workflow graph as the agent executes.
     pub build_workflow: bool,
-    /// Whether to use the decision cache for repeated page states.
-    pub use_cache: bool,
     /// Halt the run after this many consecutive destructive tool calls.
     /// `0` disables the cap entirely.
     pub consecutive_destructive_cap: usize,
@@ -283,6 +353,19 @@ pub struct AgentConfig {
     /// merge — bumps in-workflow recoveries above global ones at equal
     /// raw score (D21).
     pub episodic_workflow_priority_multiplier: f32,
+
+    // Spec 3 procedural-skills fields ----------------------------------
+    /// Master kill-switch for the procedural-skills layer. When false,
+    /// extraction, retrieval, and replay all become no-ops regardless of
+    /// other state.
+    pub skills_enabled: bool,
+    /// Top-k applicable skills surfaced into the next user turn after a
+    /// `push_subgoal` mutation (default 2).
+    pub applicable_skills_k: usize,
+    /// Whether the run reads from / writes to the opt-in global skill
+    /// store (off by default — keeps cross-project skill exposure
+    /// deliberate).
+    pub skills_global_participation: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -319,7 +402,6 @@ impl Default for AgentConfig {
             max_steps: DEFAULT_MAX_STEPS,
             max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
             build_workflow: true,
-            use_cache: true,
             consecutive_destructive_cap: DEFAULT_CONSECUTIVE_DESTRUCTIVE_CAP,
             allow_focus_window: false,
             state_block_max_elements: 300,
@@ -333,6 +415,9 @@ impl Default for AgentConfig {
             episodic_score_weights: EpisodicScoreWeights::default(),
             episodic_global_cap_per_retrieval: 1,
             episodic_workflow_priority_multiplier: 1.3,
+            skills_enabled: true,
+            applicable_skills_k: 2,
+            skills_global_participation: false,
         }
     }
 }
@@ -526,32 +611,6 @@ pub enum StepOutcome {
     Replan(String),
 }
 
-/// A cached decision for a previously seen page state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedDecision {
-    /// The tool name that was called.
-    pub tool_name: String,
-    /// The tool arguments.
-    pub arguments: serde_json::Value,
-    /// Fingerprint of the page elements at the time of the decision.
-    pub element_fingerprint: String,
-    /// Number of times this cache entry has been used.
-    pub hit_count: u32,
-    /// Node UUIDs this cached decision has produced over its lifetime.
-    /// A single decision can produce multiple nodes when replayed across
-    /// runs. Eviction-on-delete removes the decision only when this Vec
-    /// becomes empty. Legacy entries deserialize as empty.
-    #[serde(default)]
-    pub produced_node_ids: Vec<Uuid>,
-}
-
-/// In-memory cache mapping page fingerprints to past decisions.
-#[derive(Debug, Default)]
-pub struct AgentCache {
-    /// Map from cache key to cached decision.
-    pub entries: HashMap<String, CachedDecision>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,34 +679,5 @@ mod tests {
             let parsed: DisagreementResolutionAction = serde_json::from_str(&s).unwrap();
             assert_eq!(parsed, expected);
         }
-    }
-
-    #[test]
-    fn cached_decision_default_produced_node_ids_is_empty() {
-        let d = CachedDecision {
-            tool_name: "click".to_string(),
-            arguments: serde_json::Value::Null,
-            element_fingerprint: String::new(),
-            hit_count: 0,
-            produced_node_ids: Vec::new(),
-        };
-        assert!(d.produced_node_ids.is_empty());
-    }
-
-    #[test]
-    fn cached_decision_missing_produced_node_ids_defaults_to_empty() {
-        // Cache entries serialized before the `produced_node_ids` field
-        // was introduced must still deserialize (with an empty lineage Vec).
-        let json = r#"{
-            "tool_name": "click",
-            "arguments": {"uid": "1_0"},
-            "element_fingerprint": "abc",
-            "hit_count": 1
-        }"#;
-        let d: CachedDecision = serde_json::from_str(json).unwrap();
-        assert!(
-            d.produced_node_ids.is_empty(),
-            "entries missing the field must deserialize with empty produced_node_ids"
-        );
     }
 }

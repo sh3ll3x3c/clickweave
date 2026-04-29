@@ -2,11 +2,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod llm;
 mod mcp_resolve;
 mod menu;
 mod platform;
 mod privacy;
 
+use clickweave_engine::agent::WorldModelDiff;
+use clickweave_engine::agent::step_record::BoundaryKind;
+use clickweave_engine::agent::task_state::{
+    Hypothesis, Milestone, Phase, Subgoal, TaskState, WatchSlot,
+};
 use commands::*;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -86,50 +92,66 @@ fn main() {
         )
         .init();
 
-    let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
-        ping,
-        get_mcp_status,
-        pick_workflow_file,
-        pick_save_file,
-        open_project,
-        save_project,
-        validate,
-        node_type_defaults,
-        generate_auto_id,
-        run_workflow,
-        stop_workflow,
-        supervision_respond,
-        list_runs,
-        load_run_events,
-        read_artifact_base64,
-        import_asset,
-        start_walkthrough,
-        pause_walkthrough,
-        resume_walkthrough,
-        stop_walkthrough,
-        cancel_walkthrough,
-        get_walkthrough_draft,
-        apply_walkthrough_annotations,
-        seed_walkthrough_cache,
-        detect_cdp_apps,
-        validate_app_path,
-        list_chrome_profiles,
-        create_chrome_profile,
-        is_chrome_profile_configured,
-        get_chrome_profile_path,
-        launch_chrome_for_setup,
-        confirmable_tools,
-        check_endpoint,
-        list_models,
-        run_agent,
-        stop_agent,
-        approve_agent_action,
-        resolve_completion_disagreement,
-        commands::agent_chat::load_agent_chat,
-        commands::agent_chat::save_agent_chat,
-        commands::agent_chat::prune_agent_cache_for_nodes,
-        commands::agent_chat::clear_agent_conversation,
-    ]);
+    let builder = Builder::<tauri::Wry>::new()
+        .commands(collect_commands![
+            ping,
+            get_mcp_status,
+            pick_workflow_file,
+            pick_save_file,
+            open_project,
+            save_project,
+            validate,
+            node_type_defaults,
+            generate_auto_id,
+            run_workflow,
+            stop_workflow,
+            supervision_respond,
+            list_runs,
+            load_run_events,
+            read_artifact_base64,
+            import_asset,
+            start_walkthrough,
+            pause_walkthrough,
+            resume_walkthrough,
+            stop_walkthrough,
+            cancel_walkthrough,
+            get_walkthrough_draft,
+            apply_walkthrough_annotations,
+            seed_walkthrough_cache,
+            save_walkthrough_as_skill,
+            detect_cdp_apps,
+            validate_app_path,
+            list_chrome_profiles,
+            create_chrome_profile,
+            is_chrome_profile_configured,
+            get_chrome_profile_path,
+            launch_chrome_for_setup,
+            confirmable_tools,
+            check_endpoint,
+            list_models,
+            run_agent,
+            stop_agent,
+            approve_agent_action,
+            resolve_completion_disagreement,
+            commands::agent_chat::load_agent_chat,
+            commands::agent_chat::save_agent_chat,
+            commands::agent_chat::prune_skill_lineage_for_nodes,
+            commands::agent_chat::clear_agent_conversation,
+            commands::skills::confirm_skill_proposal,
+            commands::skills::reject_skill_proposal,
+            commands::skills::promote_skill_to_global,
+            commands::skills::fork_skill,
+            commands::skills::delete_skill,
+            commands::skills::list_skills_for_panel,
+        ])
+        .typ::<TaskState>()
+        .typ::<Subgoal>()
+        .typ::<WatchSlot>()
+        .typ::<Milestone>()
+        .typ::<Hypothesis>()
+        .typ::<Phase>()
+        .typ::<WorldModelDiff>()
+        .typ::<BoundaryKind>();
 
     #[cfg(debug_assertions)]
     {

@@ -127,8 +127,8 @@ pub fn parse_execution_dir_timestamp(dir_name: &str) -> Option<DateTime<Utc>> {
 /// Remove execution directories whose timestamp prefix is older than the
 /// retention window. Only walks the two-level layout produced by
 /// `RunStorage::new_app_data` — `runs/<workflow_dir>/<execution_dir>/` —
-/// so sibling files (e.g. `decisions.json`, `agent_cache.json`) and any
-/// dir that doesn't look like an execution dir are left alone.
+/// so sibling files (e.g. `decisions.json`) and any dir that doesn't look
+/// like an execution dir are left alone.
 ///
 /// * `runs_root` — the top-level `runs/` directory (e.g. under the app
 ///   data dir, or a saved project's `.clickweave/` dir).
@@ -218,8 +218,8 @@ pub fn cleanup_expired_runs(
             let name = name.to_string();
             let Some(ts) = parse_execution_dir_timestamp(&name) else {
                 // Not an execution dir — leave it alone. Preserves
-                // sibling files like `decisions.json`, `agent_cache.json`,
-                // and future layout additions we do not yet know about.
+                // sibling files like `decisions.json` and future layout
+                // additions we do not yet know about.
                 continue;
             };
             if ts >= cutoff {
@@ -347,13 +347,16 @@ fn prune_variant_index_entries(path: &Path, removed_names: &[String]) -> Result<
 pub struct RunStorage {
     /// Points to `runs/<workflow_dir>/`
     base_path: PathBuf,
+    /// Points to the project-local procedural-skills directory for this
+    /// workflow. Saved projects use `<project>/.clickweave/skills/`;
+    /// unsaved projects use `<app_data>/skills/<workflow_uuid>/`.
+    project_skills_path: PathBuf,
     /// The current execution directory name (set by `begin_execution`).
     execution_dir: Option<String>,
     /// When false, every write operation is a no-op that returns a
     /// synthesised result. Used by the `Store run traces` privacy kill
     /// switch — the agent and executor code paths still behave as if
-    /// storage is available (caches still function in-memory for the
-    /// session), but nothing touches the disk.
+    /// storage is available, but nothing touches the disk.
     persistent: bool,
 }
 
@@ -389,9 +392,23 @@ impl RunStorage {
         self.base_path.join("decisions.json")
     }
 
-    /// Path to the agent decision cache (workflow-level, persists across runs).
-    pub fn agent_cache_path(&self) -> PathBuf {
-        self.base_path.join("agent_cache.json")
+    /// Directory holding the project-local procedural-skill files (Spec 3).
+    /// Saved projects use `<project>/.clickweave/skills/`; unsaved projects
+    /// use `<app_data>/skills/<workflow_uuid>/` so first-save can move the
+    /// directory into the project without depending on the run-log layout.
+    ///
+    /// Creates the directory if it does not yet exist (mkdir -p
+    /// semantics) so the `SkillStore` can write into it on the first
+    /// extraction without a separate setup step. Disk failures are
+    /// surfaced; callers fall back to a disabled `SkillContext` when
+    /// the dir cannot be created.
+    pub fn project_skills_dir(&self) -> Result<PathBuf> {
+        let dir = self.project_skills_path.clone();
+        if self.persistent && !dir.exists() {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("creating project skills dir at {}", dir.display()))?;
+        }
+        Ok(dir)
     }
 
     /// Path to the variant index file (workflow-level, not per-execution).
@@ -400,8 +417,8 @@ impl RunStorage {
     }
 
     /// Path to the per-workflow conversational-agent chat transcript.
-    /// Sibling to `agent_cache_path()`. Loaded by the UI on project
-    /// open, saved on every assistant message push.
+    /// Loaded by the UI on project open, saved on every assistant
+    /// message push.
     pub fn agent_chat_path(&self) -> PathBuf {
         self.base_path.join("agent_chat.json")
     }
@@ -443,11 +460,12 @@ impl RunStorage {
     ///
     /// Path: `<project>/.clickweave/runs/<sanitized_workflow_name>/`
     pub fn new(project_path: &Path, workflow_name: &str) -> Self {
+        let clickweave_dir = project_path.join(".clickweave");
         Self {
-            base_path: project_path
-                .join(".clickweave")
+            base_path: clickweave_dir
                 .join("runs")
                 .join(sanitize_name(workflow_name)),
+            project_skills_path: clickweave_dir.join("skills"),
             execution_dir: None,
             persistent: true,
         }
@@ -461,6 +479,7 @@ impl RunStorage {
         let dir_name = format!("{}_{short_id}", sanitize_name(workflow_name));
         Self {
             base_path: app_data_dir.join("runs").join(dir_name),
+            project_skills_path: app_data_dir.join("skills").join(workflow_id.to_string()),
             execution_dir: None,
             persistent: true,
         }
@@ -926,6 +945,10 @@ mod tests {
             storage.base_path,
             PathBuf::from("/tmp/com.clickweave.app/runs/my-workflow_550e8400")
         );
+        assert_eq!(
+            storage.project_skills_path,
+            PathBuf::from("/tmp/com.clickweave.app/skills/550e8400-e29b-41d4-a716-446655440000")
+        );
     }
 
     #[test]
@@ -936,20 +959,10 @@ mod tests {
             storage.base_path,
             PathBuf::from("/tmp/my-project/.clickweave/runs/open-calculator")
         );
-    }
-
-    #[test]
-    fn agent_chat_path_is_sibling_to_agent_cache_path() {
-        let project_dir = PathBuf::from("/tmp/my-project");
-        let storage = RunStorage::new(&project_dir, "My Workflow");
-        let cache = storage.agent_cache_path();
-        let chat = storage.agent_chat_path();
         assert_eq!(
-            cache.parent(),
-            chat.parent(),
-            "agent_chat.json must live beside agent_cache.json"
+            storage.project_skills_path,
+            PathBuf::from("/tmp/my-project/.clickweave/skills")
         );
-        assert_eq!(chat.file_name().unwrap(), "agent_chat.json");
     }
 
     #[test]

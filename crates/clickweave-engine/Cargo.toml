@@ -31,6 +31,14 @@ bincode = "1.3"
 ulid = "1.1"
 url = "2.5"
 
+# Procedural-skills layer (Spec 3): YAML frontmatter on disk and a
+# notify-based file watcher for external edits. Declared here so the
+# Phase 1 pure-logic modules and the Phase 2 store/watcher can compile
+# inside this crate.
+serde_yaml = "0.9"
+notify = "6"
+parking_lot = "0.12"
+
 [dev-dependencies]
 # `tokio::time::pause` lets cdp_lifecycle tests skip the real retry sleeps.
 tokio = { workspace = true, features = ["test-util"] }

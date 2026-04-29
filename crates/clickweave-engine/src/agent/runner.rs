@@ -26,9 +26,13 @@ use crate::agent::permissions::{
 };
 use crate::agent::phase::{self, PhaseSignals};
 use crate::agent::recovery::{RecoveryAction, recovery_strategy};
-use crate::agent::task_state::{TaskState, TaskStateMutation};
+use crate::agent::skills::{
+    RecordedStep, RetrievedSkill, SkillContext, SkillFrame, SkillIndex, SkillStore,
+    SubgoalSignature,
+};
+use crate::agent::task_state::{Milestone, SubgoalId, TaskState, TaskStateMutation};
 use crate::agent::types::{
-    AgentCache, AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest,
+    AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest, RunnerOutput,
     StepOutcome, TerminalReason, WorldModelDiff,
 };
 use crate::agent::world_model::{InvalidationEvent, WorldModel};
@@ -52,6 +56,15 @@ pub enum AgentAction {
     AgentReplan {
         reason: String,
     },
+    /// Replay a procedural skill listed in the previous turn's
+    /// `<applicable_skills>` block. The harness expands the skill's
+    /// recorded action sketch through the same dispatch helper as live
+    /// tool calls so the safety surface is identical.
+    InvokeSkill {
+        skill_id: String,
+        version: u32,
+        parameters: serde_json::Value,
+    },
 }
 
 /// Batched single-pass agent output: task-state mutations followed by one
@@ -67,10 +80,9 @@ pub struct AgentTurn {
 /// dispatch -> continuity -> invalidate.
 ///
 /// Phase 2c: the struct carries a superset of fields — the minimum the new
-/// control loop exercises plus the "compatibility fields" the Phase 3 cutover
-/// needs to preserve the existing `run_agent_workflow` seam
-/// (`(AgentState, AgentCache)` tuple). Fields the live Phase 2c tests don't
-/// touch are covered by the module-wide `#![allow(dead_code)]`.
+/// control loop exercises plus compatibility fields needed by the public
+/// `run_agent_workflow` seam. Fields the live tests don't touch are covered by
+/// the module-wide `#![allow(dead_code)]`.
 pub struct StateRunner {
     // --- Core state-spine fields ---
     pub world_model: WorldModel,
@@ -86,7 +98,6 @@ pub struct StateRunner {
     pub config: AgentConfig,
     pub state: AgentState,
     pub workflow: clickweave_core::Workflow,
-    pub cache: AgentCache,
     pub last_node_id: Option<uuid::Uuid>,
     pub recent_destructive_tools: Vec<String>,
 
@@ -94,7 +105,7 @@ pub struct StateRunner {
     pub storage: Option<std::sync::Arc<std::sync::Mutex<clickweave_core::storage::RunStorage>>>,
     pub run_id: uuid::Uuid,
     /// Live event channel. When `None` the runner runs silently.
-    pub event_tx: Option<mpsc::Sender<AgentEvent>>,
+    pub event_tx: Option<mpsc::Sender<RunnerOutput>>,
     /// Approval-gate channel pair. When `None` no prompt fires (the
     /// permission policy is consulted in isolation).
     pub approval_gate: Option<crate::agent::approval::ApprovalGate>,
@@ -156,10 +167,81 @@ pub struct StateRunner {
     /// Authoritative gate for D24 run-start retrieval: set true the
     /// first time `try_retrieve_episodic` reaches its trigger-decision
     /// slot, regardless of whether retrieval returned hits. Decoupled
-    /// from `step_index` so cache-replay / synthetic-skip / policy-deny
-    /// / approval-reject paths cannot let `step_index == 0` re-fire
+    /// from `step_index` so synthetic-skip / policy-deny / approval-reject
+    /// paths cannot let `step_index == 0` re-fire
     /// run-start retrieval after the run has already taken actions.
     pub(crate) episodic_run_start_retrieved: bool,
+
+    // --- Spec 3 procedural-skills fields (Phase 3) ---
+    /// Boundary metadata threaded in from the Tauri layer (project +
+    /// global skills directories, project id, master enable flag). Phase
+    /// 3 reads these to construct the `SkillIndex` and gate
+    /// extraction / retrieval. A `disabled` context turns every skill
+    /// hook into a no-op.
+    pub(crate) skill_ctx: SkillContext,
+    /// Per-run skill index, shared with the file-watcher consumer.
+    /// Built once at runner construction and rebuilt across runs only
+    /// (never mid-run — file events flip individual entries via the
+    /// watcher consumer).
+    pub(crate) skill_index: Arc<parking_lot::RwLock<SkillIndex>>,
+    /// On-disk store backing `skill_index`. Carried as an `Arc` so the
+    /// extractor (Phase 3) and watcher consumer (Phase 2) can share the
+    /// recently-written-tolerance table without duplicating writes.
+    pub(crate) skill_store: Arc<SkillStore>,
+    /// Optional in-memory accumulator of every successful tool call this
+    /// run, keyed by step. Drained by `maybe_extract_skill` at every
+    /// `CompleteSubgoal` boundary against the `[push_idx..]` window.
+    /// Cleared at run-terminal so the runner can in theory be reused.
+    pub(crate) recorded_steps: Vec<RecordedStep>,
+    /// Snapshot of `world_model` taken just after `observe()` at the
+    /// top of the current loop iteration. Used as the `world_model_pre`
+    /// when a successful tool dispatch produces a `RecordedStep`.
+    pub(crate) pre_dispatch_snapshot: Option<crate::agent::step_record::WorldModelSnapshot>,
+    /// Stack of `recorded_steps.len()` indices captured at every
+    /// `PushSubgoal` mutation. Each `CompleteSubgoal` pops the top so
+    /// the extractor can address the action sketch by step range
+    /// (`recorded_steps[push_idx..]`). Mirrors `task_state.subgoal_stack`
+    /// in depth.
+    pub(crate) push_idx_stack: Vec<usize>,
+    /// Stack of subgoal signatures captured at `PushSubgoal` time. The
+    /// extractor must key the skill by the state that made the subgoal
+    /// applicable, not by the later post-completion world model.
+    pub(crate) push_signature_stack: Vec<SubgoalSignature>,
+    /// `SubgoalId`s generated by the most recent batch of mutations.
+    /// Populated inside `apply_mutations` and consumed by the retrieval
+    /// hook in the outer loop. Cleared on every fresh batch — it must
+    /// not span turns.
+    pub(crate) last_pushed_subgoal_ids: Vec<SubgoalId>,
+    /// `(push_idx, milestone)` queue drained by
+    /// `write_subgoal_completed_records` so each completed-subgoal
+    /// extraction has both the action-sketch start index and the
+    /// milestone payload available without re-walking
+    /// `task_state.milestones`.
+    pub(crate) completed_subgoal_extraction_queue:
+        Vec<(usize, Milestone, SubgoalSignature, Vec<uuid::Uuid>)>,
+    /// Workflow node ids emitted via `AgentEvent::NodeAdded`, tracked
+    /// per active subgoal frame. A produced node belongs to every open
+    /// frame so nested subgoals keep their local lineage while parent
+    /// subgoals still include all nodes produced during their lifetime.
+    pub(crate) produced_node_ids_stack: Vec<Vec<uuid::Uuid>>,
+    /// Top-k applicable skills surfaced for the next user turn.
+    /// Populated by the retrieval hook on `push_subgoal`, consumed +
+    /// cleared by `build_user_turn_message`'s caller at the next
+    /// iteration.
+    pub(crate) pending_applicable_skills: Vec<RetrievedSkill>,
+    /// Optional eval-only override for the stable system-prompt header.
+    /// Production callers leave this as `None` and use the file-backed
+    /// default in `prompts/agent_system.md`.
+    pub(crate) agent_system_prompt_override: Option<String>,
+    /// Frame held while the runner is waiting on an LLM fallback turn
+    /// during a skill replay. Phase 3 always leaves this `None`; Phase
+    /// 4 lands the real consumer.
+    pub(crate) suspended_skill_frame: Option<SkillFrame>,
+    /// Join handle for the file-watcher consumer task spawned at run
+    /// start. Aborted at run-terminal so the consumer doesn't outlive
+    /// the runner. `None` when skills are disabled or the watcher
+    /// failed to spawn.
+    pub(crate) skill_watcher_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl StateRunner {
@@ -188,6 +270,28 @@ impl StateRunner {
         goal: String,
         config: AgentConfig,
         episodic_ctx: crate::agent::episodic::EpisodicContext,
+    ) -> Self {
+        Self::new_with_episodic_and_skills(goal, config, episodic_ctx, SkillContext::disabled())
+    }
+
+    /// Construct a runner with both an explicit Spec 2 [`EpisodicContext`]
+    /// and an explicit Spec 3 [`SkillContext`].
+    ///
+    /// Production callers go through this constructor once Phase 3 lands
+    /// the Tauri-layer wiring; the legacy [`Self::new`] and
+    /// [`Self::new_with_episodic`] are preserved for the many integration
+    /// tests that don't exercise skills (they pass the disabled context
+    /// implicitly).
+    ///
+    /// When `skill_ctx.enabled == true`, the constructor builds the
+    /// `SkillIndex` from the on-disk store. When disabled (or when the
+    /// build fails), the runner stores an empty index — extraction +
+    /// retrieval become no-ops and the runner still runs end-to-end.
+    pub fn new_with_episodic_and_skills(
+        goal: String,
+        config: AgentConfig,
+        episodic_ctx: crate::agent::episodic::EpisodicContext,
+        skill_ctx: SkillContext,
     ) -> Self {
         let workflow = clickweave_core::Workflow::default();
         let state = AgentState::new(workflow.clone());
@@ -228,6 +332,26 @@ impl StateRunner {
             (None, None)
         };
 
+        // Spec 3: build the skill index when enabled. Failure to build
+        // (e.g. unreadable directory entry) drops to an empty index so
+        // the runner still runs — skills are best-effort by design.
+        let embedder =
+            std::sync::Arc::new(crate::agent::episodic::HashedShingleEmbedder::default());
+        let skill_index = if skill_ctx.enabled {
+            match SkillIndex::build(&skill_ctx, embedder.clone()) {
+                Ok(idx) => idx,
+                Err(err) => {
+                    tracing::warn!(?err, "skills: index build failed; running with empty index");
+                    SkillIndex::empty(embedder.clone())
+                }
+            }
+        } else {
+            SkillIndex::empty(embedder.clone())
+        };
+        let skill_store =
+            std::sync::Arc::new(SkillStore::new(skill_ctx.project_skills_dir.clone()));
+        let skill_index = std::sync::Arc::new(parking_lot::RwLock::new(skill_index));
+
         Self {
             world_model: WorldModel::default(),
             task_state: TaskState::new(goal),
@@ -238,7 +362,6 @@ impl StateRunner {
             config,
             state,
             workflow,
-            cache: AgentCache::default(),
             last_node_id: None,
             recent_destructive_tools: Vec::new(),
             storage: None,
@@ -262,16 +385,33 @@ impl StateRunner {
             last_failed_error_kind: None,
             episodic_events_ref: None,
             episodic_run_start_retrieved: false,
+            skill_ctx,
+            skill_index,
+            skill_store,
+            recorded_steps: Vec::new(),
+            pre_dispatch_snapshot: None,
+            push_idx_stack: Vec::new(),
+            push_signature_stack: Vec::new(),
+            last_pushed_subgoal_ids: Vec::new(),
+            completed_subgoal_extraction_queue: Vec::new(),
+            produced_node_ids_stack: Vec::new(),
+            pending_applicable_skills: Vec::new(),
+            agent_system_prompt_override: None,
+            suspended_skill_frame: None,
+            skill_watcher_handle: None,
         }
-    }
-
-    pub fn with_cache(mut self, cache: AgentCache) -> Self {
-        self.cache = cache;
-        self
     }
 
     pub fn with_run_id(mut self, run_id: uuid::Uuid) -> Self {
         self.run_id = run_id;
+        self
+    }
+
+    /// Override the stable system-prompt header. Intended for the eval
+    /// harness and prompt-optimization experiments only; production runs
+    /// use the checked-in default prompt file.
+    pub fn with_agent_system_prompt_override(mut self, prompt: impl Into<String>) -> Self {
+        self.agent_system_prompt_override = Some(prompt.into());
         self
     }
 
@@ -289,7 +429,7 @@ impl StateRunner {
 
     /// Attach a live event channel. Events emitted by the runner are
     /// forwarded through this sender; `None` runs silently.
-    pub fn with_events(mut self, tx: mpsc::Sender<AgentEvent>) -> Self {
+    pub fn with_events(mut self, tx: mpsc::Sender<RunnerOutput>) -> Self {
         self.event_tx = Some(tx);
         self
     }
@@ -386,13 +526,6 @@ impl StateRunner {
         Some(s)
     }
 
-    /// Consume the runner and return the accumulated [`AgentCache`].
-    /// API parity with `AgentRunner::into_cache` — the Phase 3b cutover
-    /// keeps `run_agent_workflow`'s `(AgentState, AgentCache)` contract.
-    pub fn into_cache(self) -> AgentCache {
-        self.cache
-    }
-
     /// Clone the episodic writer's channel sender, if a writer is active.
     ///
     /// The returned sender shares the same worker task as the writer owned
@@ -421,13 +554,6 @@ impl StateRunner {
         }
     }
 
-    /// Consume the runner and return `(AgentState, AgentCache)` — matches the
-    /// existing `run_agent_workflow` seam so the Tauri call site keeps
-    /// working without a public-surface change at cutover.
-    pub fn into_state_and_cache(self) -> (AgentState, AgentCache) {
-        (self.state, self.cache)
-    }
-
     #[cfg(test)]
     pub fn new_for_test(goal: String) -> Self {
         // Test fixtures historically assumed the legacy `allow_focus_window =
@@ -440,6 +566,30 @@ impl StateRunner {
             ..AgentConfig::default()
         };
         Self::new(goal, config)
+    }
+
+    /// Test-only constructor that wires an enabled `SkillContext` at a
+    /// caller-provided directory. Used by Phase 3 e2e tests that need
+    /// to drive the extractor + retrieval loop without spinning up a
+    /// full Tauri + Mcp + LLM stack.
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_skills(goal: String, skills_dir: std::path::PathBuf) -> Self {
+        let config = AgentConfig {
+            allow_focus_window: true,
+            ..AgentConfig::default()
+        };
+        let skill_ctx = SkillContext {
+            enabled: true,
+            project_skills_dir: skills_dir,
+            global_skills_dir: None,
+            project_id: "test".into(),
+        };
+        Self::new_with_episodic_and_skills(
+            goal,
+            config,
+            crate::agent::episodic::EpisodicContext::disabled(),
+            skill_ctx,
+        )
     }
 
     /// Borrow the current CDP bookkeeping. Used by `verify_completion`
@@ -534,8 +684,8 @@ impl StateRunner {
 
         // D24: run-start retrieval fires once per run, full stop.
         // `episodic_run_start_retrieved` is the authoritative gate (not
-        // `step_index == 0`, which lied on cache-replay / synthetic-skip
-        // / policy-deny / approval-reject paths because none of those
+        // `step_index == 0`, which lied on synthetic-skip / policy-deny /
+        // approval-reject paths because none of those
         // ticked the counter). Marked consumed on first reach so a
         // zero-hit retrieval still counts as "the run-start slot was
         // used" and can never fire a second time.
@@ -659,28 +809,74 @@ impl StateRunner {
         });
     }
 
-    /// Whether the step is eligible to be served from `AgentCache` without
-    /// asking the LLM (D17). Only in `Phase::Exploring` with an empty
-    /// subgoal stack and no active watch slots — anything else means the
-    /// LLM has in-flight intent that a cached decision would clobber.
-    pub fn is_replay_eligible(&self) -> bool {
-        self.task_state.phase == crate::agent::phase::Phase::Exploring
-            && self.task_state.subgoal_stack.is_empty()
-            && self.task_state.watch_slots.is_empty()
-    }
-
     /// Apply the batch of task-state mutations from an `AgentTurn`, in
     /// order. Invalid mutations become warnings but do not abort the pass —
     /// subsequent mutations and the action still run. Matches the
     /// error-path table in the spec.
+    ///
+    /// PushSubgoal / CompleteSubgoal route through the per-mutation
+    /// helpers on `TaskState` so the runner can capture the generated
+    /// `SubgoalId` (Spec 3 retrieval hook) and the matching push-side
+    /// `recorded_steps` index (Spec 3 extractor) without re-walking
+    /// the mutation slice. `last_pushed_subgoal_ids` is cleared at the
+    /// top of every batch — the retrieval hook reads it once per turn.
     pub fn apply_mutations(&mut self, muts: &[TaskStateMutation]) -> Vec<String> {
         let mut warnings = Vec::new();
+        self.last_pushed_subgoal_ids.clear();
+
         for m in muts {
-            if let Err(e) = self.task_state.apply(m, self.step_index) {
-                warnings.push(format!("{}", e));
+            match m {
+                TaskStateMutation::PushSubgoal { text } => {
+                    self.push_idx_stack.push(self.recorded_steps.len());
+                    self.push_signature_stack.push(
+                        crate::agent::skills::signature::compute_subgoal_signature(
+                            text,
+                            &self.world_model,
+                        ),
+                    );
+                    let id = self.task_state.apply_push_subgoal(text, self.step_index);
+                    self.last_pushed_subgoal_ids.push(id);
+                    self.produced_node_ids_stack.push(Vec::new());
+                }
+                TaskStateMutation::CompleteSubgoal { summary } => {
+                    let push_idx = self.push_idx_stack.pop().unwrap_or(0);
+                    let push_sig = self.push_signature_stack.pop();
+                    let produced_node_ids = self.produced_node_ids_stack.pop().unwrap_or_default();
+                    match self
+                        .task_state
+                        .apply_complete_subgoal(summary, self.step_index)
+                    {
+                        Ok(milestone) => {
+                            let pre_state_sig = push_sig.unwrap_or_else(|| {
+                                crate::agent::skills::signature::compute_subgoal_signature(
+                                    &milestone.text,
+                                    &self.world_model,
+                                )
+                            });
+                            self.completed_subgoal_extraction_queue.push((
+                                push_idx,
+                                milestone,
+                                pre_state_sig,
+                                produced_node_ids,
+                            ));
+                        }
+                        Err(e) => warnings.push(format!("{}", e)),
+                    }
+                }
+                other => {
+                    if let Err(e) = self.task_state.apply(other, self.step_index) {
+                        warnings.push(format!("{}", e));
+                    }
+                }
             }
         }
         warnings
+    }
+
+    fn record_produced_node_id(&mut self, node_id: uuid::Uuid) {
+        for produced_node_ids in &mut self.produced_node_ids_stack {
+            produced_node_ids.push(node_id);
+        }
     }
 
     /// Rewrite raw AX uid references in a workflow node into replay-stable
@@ -1058,16 +1254,89 @@ impl StateRunner {
     /// summaries are recoverable from `events.jsonl` without a
     /// separate transcript lookup. Emits one
     /// `AgentEvent::BoundaryRecordWritten` per persisted record.
-    async fn write_subgoal_completed_records(&self, count: usize, turn: &AgentTurn) {
+    async fn write_subgoal_completed_records(&mut self, count: usize, turn: &AgentTurn) {
         let action_taken =
             serde_json::to_value(&turn.mutations).unwrap_or_else(|_| serde_json::json!([]));
-        for _ in 0..count {
+        let milestone_start = self.task_state.milestones.len().saturating_sub(count);
+        for i in 0..count {
+            let milestone_text = self
+                .task_state
+                .milestones
+                .get(milestone_start + i)
+                .map(|m| m.text.clone());
             self.persist_boundary_record(
                 crate::agent::step_record::BoundaryKind::SubgoalCompleted,
                 action_taken.clone(),
                 serde_json::json!({"kind": "subgoal_completed"}),
+                milestone_text,
             )
             .await;
+        }
+
+        // Spec 3: drain the extraction queue populated by
+        // `apply_mutations`. Each completed-subgoal milestone has both
+        // its push-side `recorded_steps` index, the milestone payload,
+        // and the node lineage for that subgoal frame available without
+        // re-walking `task_state.milestones`.
+        let queue = std::mem::take(&mut self.completed_subgoal_extraction_queue);
+        if !queue.is_empty() && self.skill_ctx.enabled && self.config.skills_enabled {
+            let workflow_hash = self.episodic_ctx.workflow_hash.clone();
+            let run_id = self.run_id;
+            let step_index = self.state.steps.len();
+
+            for (push_idx, milestone, pre_state_sig, produced_node_ids) in queue {
+                let action_sequence = if push_idx < self.recorded_steps.len() {
+                    self.recorded_steps[push_idx..].to_vec()
+                } else {
+                    Vec::new()
+                };
+                match crate::agent::skills::extractor::maybe_extract_skill(
+                    &milestone,
+                    &action_sequence,
+                    pre_state_sig,
+                    &self.world_model,
+                    &self.skill_index,
+                    &self.skill_store,
+                    &self.skill_ctx,
+                    run_id,
+                    &workflow_hash,
+                    step_index,
+                    &produced_node_ids,
+                )
+                .await
+                {
+                    Ok(crate::agent::skills::MaybeExtracted::Inserted {
+                        skill_id,
+                        version,
+                        ..
+                    })
+                    | Ok(crate::agent::skills::MaybeExtracted::Merged {
+                        skill_id, version, ..
+                    }) => {
+                        let (state, scope) = self
+                            .skill_index
+                            .read()
+                            .get(&skill_id, version)
+                            .map(|s| (s.state, s.scope))
+                            .unwrap_or((
+                                crate::agent::skills::SkillState::Draft,
+                                crate::agent::skills::SkillScope::ProjectLocal,
+                            ));
+                        self.emit_event(AgentEvent::SkillExtracted {
+                            run_id: self.run_id,
+                            skill_id,
+                            version,
+                            state,
+                            scope,
+                        })
+                        .await;
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        tracing::warn!(?err, "skills: extraction failed; continuing");
+                    }
+                }
+            }
         }
     }
 
@@ -1097,6 +1366,7 @@ impl StateRunner {
             crate::agent::step_record::BoundaryKind::RecoverySucceeded,
             action_taken,
             outcome_json,
+            None,
         )
         .await;
     }
@@ -1130,6 +1400,7 @@ impl StateRunner {
             crate::agent::step_record::BoundaryKind::Terminal,
             action_taken,
             outcome_json,
+            None,
         )
         .await;
     }
@@ -1142,6 +1413,7 @@ impl StateRunner {
         boundary_kind: crate::agent::step_record::BoundaryKind,
         action_taken: serde_json::Value,
         outcome: serde_json::Value,
+        milestone_text: Option<String>,
     ) {
         let record = self.build_step_record(boundary_kind.clone(), action_taken, outcome);
         self.write_step_record(&record);
@@ -1149,6 +1421,7 @@ impl StateRunner {
             run_id: self.run_id,
             boundary_kind,
             step_index: record.step_index,
+            milestone_text,
         })
         .await;
     }
@@ -1195,7 +1468,7 @@ impl StateRunner {
     /// 4. Advance `step_index`.
     ///
     /// Integration tests drive this with deterministic `AgentTurn`s; Phase 3
-    /// will wrap this with the LLM loop + compaction + cache replay.
+    /// is wrapped by the LLM loop + compaction in [`Self::run_inner`].
     ///
     /// Return tuple: `(outcome, warnings, milestones_appended)`.
     /// `milestones_appended` counts `CompleteSubgoal` mutations that
@@ -1247,7 +1520,15 @@ impl StateRunner {
             .turn_pre_signatures
             .take()
             .unwrap_or_else(|| self.world_model.field_signatures());
+        let prev_phase = self.task_state.phase;
         self.observe();
+        if prev_phase != self.task_state.phase {
+            self.emit_event(AgentEvent::TaskStateChanged {
+                run_id: self.run_id,
+                task_state: self.task_state.clone(),
+            })
+            .await;
+        }
         let post_signatures = self.world_model.field_signatures();
         let diff = diff_world_model_signatures(&pre_signatures, &post_signatures);
         self.emit_event(AgentEvent::WorldModelChanged {
@@ -1292,13 +1573,41 @@ impl StateRunner {
                     reason: reason.clone(),
                 }
             }
+            AgentAction::InvokeSkill {
+                skill_id,
+                version,
+                parameters,
+            } => {
+                // Phase 4: validate the skill exists + parameter
+                // shape + emit `SkillInvoked`. The per-step expansion
+                // (Task 4.3 follow-up) hasn't landed yet, so this arm
+                // returns a replan that names the resolved skill so
+                // the next LLM turn has a clear breadcrumb. Errors at
+                // lookup / validation time produce an `InvalidArgs`-
+                // shaped replan instead of panicking so a malformed
+                // `invoke_skill` call can't take the run down.
+                match self
+                    .dispatch_skill(skill_id, *version, parameters.clone())
+                    .await
+                {
+                    Ok(frame) => TurnOutcome::Replan {
+                        reason: format!(
+                            "skill {}@v{} resolved with {} parameter(s); replay engine pending — falling back to LLM",
+                            frame.skill.id,
+                            frame.skill.version,
+                            frame.params.as_object().map(|m| m.len()).unwrap_or(0),
+                        ),
+                    },
+                    Err(reason) => TurnOutcome::Replan { reason },
+                }
+            }
         };
 
         // `step_index` is owned by the outer-loop call sites that record
         // an `AgentStep` (via `advance_recorded_step_index`). `run_turn`
         // intentionally does not advance it — early-continue paths
-        // (cache replay, synthetic focus skip, policy deny, approval
-        // reject) record their own steps without going through
+        // (synthetic focus skip, policy deny, approval reject) record
+        // their own steps without going through
         // `run_turn`, and prior to this fix the divergent advancement
         // let `step_index == 0` re-fire D24 run-start retrieval after
         // the run had already taken actions.
@@ -1317,8 +1626,7 @@ impl StateRunner {
 
     /// Emit a per-step `WorldModelChanged` event for an early-exit step
     /// path that recorded an `AgentStep` without going through
-    /// `run_turn`. Cache-replay branches (Continue / Break), live
-    /// policy-deny, live approval-reject, and the synthetic
+    /// `run_turn`. Live policy-deny, live approval-reject, and the synthetic
     /// `focus_window` skip all record steps but skip `run_turn`
     /// entirely; without this hook, the `turn_pre_signatures` baseline
     /// would be carried into the next iteration and the
@@ -1347,9 +1655,7 @@ impl StateRunner {
     /// `(failed_tool, error_kind)` pair instead of the empty defaults.
     /// `error_kind` is the stable string `"policy_denied"` so episodic
     /// retrieval can group denied-tool recoveries by failure family
-    /// without parsing the human-readable message. Shared helper for
-    /// cached-replay deny + live deny so the two branches can't
-    /// drift on the kind string.
+    /// without parsing the human-readable message.
     pub(crate) fn record_policy_deny_failure(&mut self, tool_name: &str) {
         self.last_failed_tool_name = Some(tool_name.to_string());
         self.last_failed_error_kind = Some("policy_denied".to_string());
@@ -1357,7 +1663,7 @@ impl StateRunner {
 
     /// Mirror of `record_policy_deny_failure`'s clear half. Called by
     /// every recovery-success path (live ToolSuccess in `run_turn`,
-    /// cache-replay success, synthetic focus-window skip) so a prior
+    /// synthetic focus-window skip) so a prior
     /// deny / tool-error doesn't bleed into a later Recovering snapshot
     /// after the agent has demonstrably recovered.
     pub(crate) fn clear_last_failure_tracking(&mut self) {
@@ -1372,9 +1678,8 @@ impl StateRunner {
     /// the next turn renders it as the observation; the warning event
     /// is emitted here.
     ///
-    /// Shared between the live `ToolSuccess` arm and the cache-replay
-    /// success branch so cached dispatches contribute to the same
-    /// streak count as live dispatches.
+    /// Called by the live `ToolSuccess` arm so repeated live dispatches
+    /// contribute to the same streak count.
     async fn track_repeat_action(
         &mut self,
         tool_name: &str,
@@ -1416,24 +1721,8 @@ impl StateRunner {
     }
 }
 
-/// Control signal returned from [`StateRunner::try_replay_cache`].
-///
-/// Mirrors the legacy `ReplayResult` semantics: `Continue` means the
-/// replay handled this iteration (success, policy-reject, or approval-
-/// reject) and the outer loop should `continue`; `Break` means a terminal
-/// condition was reached (approval unavailable, max-errors, destructive
-/// cap); `FellThrough` means the LLM path should run this iteration.
-enum ReplayResult {
-    Continue,
-    Break,
-    FellThrough,
-}
-
 /// Result of requesting user approval for a tool action. Shared by both
-/// the cache-replay path (Task 3a.2) and the live dispatch path
-/// (Task 3a.3) — the only behavioural difference between the two is the
-/// `" (cached)"` suffix in the human-facing description, enforced by the
-/// single helper [`StateRunner::request_approval`] below.
+/// policy evaluation and the live dispatch path.
 enum ApprovalResult {
     Approved,
     Rejected,
@@ -1473,6 +1762,13 @@ pub(crate) enum FocusSkipReason {
     /// Operator flipped [`AgentConfig::allow_focus_window`] to `false`;
     /// every focus_window is dropped regardless of kind or toolset.
     PolicyDisabled,
+}
+
+#[derive(Debug, Clone)]
+struct RunningAppInfo {
+    name: String,
+    pid: Option<i32>,
+    kind: Option<String>,
 }
 
 impl FocusSkipReason {
@@ -1522,6 +1818,44 @@ impl FocusSkipReason {
     }
 }
 
+/// True when a model-authored `launch_app` call has no launch-only
+/// arguments. Native-devtools brings an already-running app to the
+/// foreground in this shape, so the no-focus policy must verify the
+/// process state before dispatching it.
+fn launch_app_has_launch_only_args(arguments: &Value) -> bool {
+    match arguments.get("args") {
+        Some(Value::Array(args)) => !args.is_empty(),
+        Some(Value::String(args)) => !args.trim().is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => true,
+    }
+}
+
+fn force_background_launch_app(action: &mut AgentAction, allow_focus_window: bool) {
+    if allow_focus_window {
+        return;
+    }
+    let AgentAction::ToolCall {
+        tool_name,
+        arguments,
+        ..
+    } = action
+    else {
+        return;
+    };
+    if tool_name != "launch_app"
+        || arguments
+            .get("background")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return;
+    }
+    if let Value::Object(map) = arguments {
+        map.insert("background".to_string(), Value::Bool(true));
+    }
+}
+
 /// macOS AX-dispatch toolset — every tool required for the
 /// focus-preserving automation path. When the MCP server advertises
 /// **all** of these plus `take_ax_snapshot`, the agent can drive native
@@ -1560,7 +1894,7 @@ fn is_coordinate_primitive(name: &str) -> bool {
     )
 }
 
-/// Observation tools whose cached entries are stale on read. Mirrors
+/// Observation tools that do not become workflow action nodes. Mirrors
 /// the legacy `OBSERVATION_TOOLS` list — duplicated here because the
 /// legacy list was a private `const` on `AgentRunner`, and lifting it to
 /// a shared module is out of scope for Task 3a.2 (refactoring pass
@@ -1584,13 +1918,13 @@ const OBSERVATION_TOOLS: &[&str] = &[
     "android_list_devices",
 ];
 
-/// AX dispatch tools whose cached uid goes stale on every
+/// AX dispatch tools whose uid arguments are scoped to one
 /// `take_ax_snapshot`. See the legacy `AX_DISPATCH_TOOLS`.
 const AX_DISPATCH_TOOLS: &[&str] = &["ax_click", "ax_set_value", "ax_select"];
 
-/// Tools that transition app / window / CDP state. Their cache key
-/// reflects the pre-state, so replay would fire the transition a second
-/// time on unchanged elements. See the legacy `STATE_TRANSITION_TOOLS`.
+/// Tools that transition app / window / CDP state. They are unsafe for
+/// skill replay because replaying them against unchanged elements would
+/// fire the transition a second time. See the legacy `STATE_TRANSITION_TOOLS`.
 const STATE_TRANSITION_TOOLS: &[&str] = &[
     "launch_app",
     "focus_window",
@@ -1664,8 +1998,8 @@ pub(crate) fn is_observation_tool(
 }
 
 // `pub(crate)` so the ported `observation_union_tests` in
-// `crate::agent::world_model` can verify cache-eligibility without reaching
-// through `StateRunner`'s private API (Task 3a.7.d).
+// `crate::agent::world_model` can verify dispatch classification without
+// reaching through `StateRunner`'s private API (Task 3a.7.d).
 pub(crate) fn is_ax_dispatch_tool(tool_name: &str) -> bool {
     AX_DISPATCH_TOOLS.contains(&tool_name)
 }
@@ -1762,6 +2096,111 @@ pub(crate) fn diff_world_model_signatures(
 }
 
 impl StateRunner {
+    fn skill_frame_to_single_step_action(frame: &crate::agent::skills::SkillFrame) -> AgentAction {
+        match frame.skill.action_sketch.as_slice() {
+            [crate::agent::skills::ActionSketchStep::ToolCall { tool, args, .. }] => {
+                match crate::agent::skills::substitution::substitute_value(
+                    args,
+                    &frame.params,
+                    &frame.captured,
+                ) {
+                    Ok(arguments) => AgentAction::ToolCall {
+                        tool_name: tool.clone(),
+                        arguments,
+                        tool_call_id: format!(
+                            "skill-{}-v{}-step-{}",
+                            frame.skill.id, frame.skill.version, frame.next_step
+                        ),
+                    },
+                    Err(err) => AgentAction::AgentReplan {
+                        reason: format!("skill replay substitution failed: {err}"),
+                    },
+                }
+            }
+            [] => AgentAction::AgentReplan {
+                reason: format!(
+                    "skill {}@v{} has no replay steps",
+                    frame.skill.id, frame.skill.version
+                ),
+            },
+            [_] => AgentAction::AgentReplan {
+                reason: format!(
+                    "skill {}@v{} contains a non-tool replay step; full replay is not available yet",
+                    frame.skill.id, frame.skill.version
+                ),
+            },
+            steps => AgentAction::AgentReplan {
+                reason: format!(
+                    "skill {}@v{} has {} replay steps; full multi-step replay is not available yet",
+                    frame.skill.id,
+                    frame.skill.version,
+                    steps.len()
+                ),
+            },
+        }
+    }
+
+    /// Look up the named skill, validate parameters against its
+    /// schema, and emit `AgentEvent::SkillInvoked`. Returns the live
+    /// [`SkillFrame`] on success or a human-readable replan reason on
+    /// failure (unknown skill, draft skill, invalid parameters).
+    ///
+    /// Phase 4 lands the lookup-and-validate half of `dispatch_skill`.
+    /// The per-step expansion through the live dispatch helper —
+    /// including sub-skill recursion, the `Loop` arm, and the
+    /// LLM-fallback path on divergence — is staged for the follow-up
+    /// pass. See the Phase 4 deferred-items list in the handoff for
+    /// the resume seam. Until that lands, the outer-loop
+    /// `AgentAction::InvokeSkill` arm degrades to a replan whose reason
+    /// names the skill that was about to run, so a live invocation
+    /// produces a clear bail-out rather than a silent no-op.
+    pub(crate) async fn dispatch_skill(
+        &mut self,
+        skill_id: &str,
+        version: u32,
+        parameters: serde_json::Value,
+    ) -> Result<crate::agent::skills::SkillFrame, String> {
+        use crate::agent::skills::replay::{SkillFrame, validate_parameters};
+        use crate::agent::skills::types::SkillState;
+
+        let skill = match self.skill_index.read().get(skill_id, version) {
+            Some(s) if !matches!(s.state, SkillState::Draft) => s,
+            Some(_) => {
+                return Err(format!(
+                    "skill {skill_id}@v{version} is in draft state and cannot be invoked"
+                ));
+            }
+            None => {
+                return Err(format!("unknown skill: {skill_id}@v{version}"));
+            }
+        };
+
+        let validated_params = match validate_parameters(&parameters, &skill.parameter_schema) {
+            Ok(p) => p,
+            Err(e) => return Err(format!("invalid skill parameters: {e}")),
+        };
+
+        let parameter_count = validated_params
+            .as_object()
+            .map(|m| m.len() as u32)
+            .unwrap_or(0);
+        self.emit_event(AgentEvent::SkillInvoked {
+            run_id: self.run_id,
+            skill_id: skill_id.to_string(),
+            version,
+            parameter_count,
+        })
+        .await;
+
+        // Stamp `last_invoked_at` so the index reflects the attempt
+        // even when the per-step expansion hasn't landed yet.
+        self.skill_index
+            .write()
+            .mark_invoked(skill_id, version, chrono::Utc::now());
+
+        Ok(SkillFrame::new(skill, validated_params))
+    }
+
     /// Best-effort send of an [`AgentEvent`] through the configured
     /// channel. No-op when the channel is unset or closed — event
     /// emission must never fail the run.
@@ -1770,7 +2209,7 @@ impl StateRunner {
         if tx.is_closed() {
             return;
         }
-        if let Err(e) = tx.send(event).await {
+        if let Err(e) = tx.send(RunnerOutput::Event(event)).await {
             warn!("state-spine: failed to emit agent event (channel closed): {e}");
         }
     }
@@ -1909,6 +2348,168 @@ impl StateRunner {
         }
     }
 
+    /// Return the app target whose CDP session should be acquired after a
+    /// synthetic `focus_window` skip. `CdpAttachable` always promises this
+    /// path. `PolicyDisabled` also needs it for background Electron/Chrome
+    /// work: suppressing the focus steal must not suppress the app-scoped
+    /// CDP lifecycle that would otherwise attach to the target.
+    fn cdp_target_for_skipped_focus_window<M: Mcp + ?Sized>(
+        &self,
+        reason: FocusSkipReason,
+        arguments: &Value,
+        mcp: &M,
+    ) -> Option<(String, Option<String>)> {
+        if !mcp.has_tool("cdp_connect") {
+            return None;
+        }
+        let app_name = arguments.get("app_name").and_then(Value::as_str)?;
+        if self.cdp_state.is_connected_to(app_name, 0) {
+            return None;
+        }
+        let kind_hint = self.known_app_kinds.get(app_name).cloned();
+        match reason {
+            FocusSkipReason::CdpAttachable => Some((app_name.to_string(), kind_hint)),
+            FocusSkipReason::PolicyDisabled => match kind_hint.as_deref() {
+                Some("Native") => None,
+                Some("ElectronApp" | "ChromeBrowser" | "electron_app" | "chrome_browser") => {
+                    Some((app_name.to_string(), kind_hint))
+                }
+                // Unknown kind: let `auto_connect_cdp` probe. Native apps
+                // short-circuit there; Electron/Chrome targets get an
+                // app-scoped debug session without a foreground focus steal.
+                None => Some((app_name.to_string(), None)),
+                Some(_) => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Under the no-focus policy, suppress a no-args `launch_app` when
+    /// the target process is already running. Native-devtools treats that
+    /// shape as "bring the app to the front"; for CDP-capable apps the
+    /// runner can attach in the background instead.
+    async fn running_app_for_no_focus_launch<M: Mcp + ?Sized>(
+        &self,
+        arguments: &Value,
+        mcp: &M,
+    ) -> Option<RunningAppInfo> {
+        if self.config.allow_focus_window || !mcp.has_tool("list_apps") {
+            return None;
+        }
+        if launch_app_has_launch_only_args(arguments) {
+            return None;
+        }
+        let app_name = arguments.get("app_name").and_then(Value::as_str)?;
+        if app_name.trim().is_empty() {
+            return None;
+        }
+
+        let list_args = serde_json::json!({
+            "app_name": app_name,
+            "user_apps_only": true,
+        });
+        match mcp.call_tool("list_apps", Some(list_args)).await {
+            Ok(result) if result.is_error != Some(true) => {
+                let text = extract_result_text(&result);
+                let entries: Vec<Value> = match serde_json::from_str(&text) {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        debug!(
+                            app = app_name,
+                            error = %e,
+                            "state-spine: list_apps parse failed during no-focus launch guard"
+                        );
+                        return None;
+                    }
+                };
+                entries.into_iter().find_map(|entry| {
+                    let name = entry.get("name").and_then(Value::as_str)?;
+                    if !name.eq_ignore_ascii_case(app_name) {
+                        return None;
+                    }
+                    let pid = entry
+                        .get("pid")
+                        .and_then(Value::as_i64)
+                        .and_then(|pid| i32::try_from(pid).ok());
+                    let kind = entry
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .filter(|kind| !kind.trim().is_empty())
+                        .map(str::to_string);
+                    Some(RunningAppInfo {
+                        name: name.to_string(),
+                        pid,
+                        kind,
+                    })
+                })
+            }
+            Ok(result) => {
+                debug!(
+                    app = app_name,
+                    error = %extract_result_text(&result),
+                    "state-spine: list_apps returned error during no-focus launch guard"
+                );
+                None
+            }
+            Err(e) => {
+                debug!(
+                    app = app_name,
+                    error = %e,
+                    "state-spine: list_apps failed during no-focus launch guard"
+                );
+                None
+            }
+        }
+    }
+
+    fn skipped_launch_result_text(info: &RunningAppInfo) -> String {
+        let mut body = serde_json::Map::new();
+        body.insert("app_name".to_string(), Value::String(info.name.clone()));
+        body.insert(
+            "message".to_string(),
+            Value::String(
+                "launch_app skipped: app is already running; foreground focus not required"
+                    .to_string(),
+            ),
+        );
+        if let Some(pid) = info.pid {
+            body.insert("pid".to_string(), Value::Number(pid.into()));
+        }
+        if let Some(kind) = &info.kind {
+            body.insert("kind".to_string(), Value::String(kind.clone()));
+        }
+        Value::Object(body).to_string()
+    }
+
+    /// Block raw model-authored CDP lifecycle operations. The agent runner
+    /// owns app-scoped CDP acquisition so the model cannot attach to an
+    /// unrelated app listening on a guessed port like 9222.
+    fn raw_cdp_lifecycle_blocked(tool_name: &str, arguments: &Value) -> Option<String> {
+        match tool_name {
+            "cdp_connect" => {
+                let port = arguments
+                    .get("port")
+                    .and_then(Value::as_u64)
+                    .map(|p| format!(" Requested port was {p}."))
+                    .unwrap_or_default();
+                Some(format!(
+                    "raw cdp_connect blocked: CDP connection lifecycle is runtime-managed. \
+                     Do not guess debug ports.{port} Use launch_app or focus_window for the \
+                     target Electron/Chrome app; the runner will reuse an existing \
+                     --remote-debugging-port or relaunch that app with an ephemeral debug port, \
+                     then attach CDP."
+                ))
+            }
+            "cdp_disconnect" => Some(
+                "raw cdp_disconnect blocked: CDP connection lifecycle is runtime-managed. \
+                 The runner disconnects or reattaches when the target app changes; choose the \
+                 next app action or agent_replan instead."
+                    .to_string(),
+            ),
+            _ => None,
+        }
+    }
+
     /// Reject a coordinate-primitive tool (`click` / `type_text` /
     /// `press_key` / `move_mouse` / `scroll` / `drag`) when a structured
     /// surface is wired for the current focused app: a live CDP page, or
@@ -1917,8 +2518,8 @@ impl StateRunner {
     /// Defense-in-depth behind the per-turn `<tools_in_scope>` filter:
     /// the filter narrows the LLM's *advertised* tool list, but this
     /// guard rejects the *dispatched* call so a wrong-family choice
-    /// (cached replay from a different state, malformed turn, future
-    /// LLM regression) cannot reach MCP. Returns `Some(reason)` when the
+    /// (malformed turn, future replay path, future LLM regression)
+    /// cannot reach MCP. Returns `Some(reason)` when the
     /// dispatch must be blocked; `None` otherwise.
     fn coordinate_primitive_blocked<M: Mcp + ?Sized>(
         &self,
@@ -2422,7 +3023,7 @@ impl StateRunner {
         }
     }
 
-    /// Evaluate the permission policy for a cached tool call.
+    /// Evaluate the permission policy for a tool call.
     fn policy_for(
         &self,
         tool_name: &str,
@@ -2440,11 +3041,8 @@ impl StateRunner {
     /// legacy `AgentRunner::request_approval`. Returns `None` when no
     /// approval gate is configured (auto-approve).
     ///
-    /// `description_suffix` is appended to the human-facing description so
-    /// callers can distinguish live calls from cached replays (the cache
-    /// path passes `" (cached)"`; the live path passes `""`). This is the
-    /// only behavioural difference between cached and live approval —
-    /// sharing this helper avoids drift between the two paths.
+    /// `description_suffix` is appended to the human-facing description for
+    /// callers that need extra context.
     async fn request_approval(
         &self,
         tool_name: &str,
@@ -2485,19 +3083,6 @@ impl StateRunner {
             warn!(tool = %tool_name, "state-spine: approval channel send failed");
             Some(ApprovalResult::Unavailable)
         }
-    }
-
-    /// Convenience wrapper for the cache-replay path — tags the approval
-    /// request description as `(cached)` so the UI can distinguish a live
-    /// dispatch from a replay.
-    async fn request_cached_approval(
-        &self,
-        tool_name: &str,
-        arguments: &Value,
-        step_index: usize,
-    ) -> Option<ApprovalResult> {
-        self.request_approval(tool_name, arguments, step_index, " (cached)")
-            .await
     }
 
     /// Verify an agent-reported completion against a fresh screenshot via
@@ -2600,345 +3185,6 @@ impl StateRunner {
             }
         }
     }
-
-    /// Attempt to serve the current iteration from the [`AgentCache`]
-    /// instead of asking the LLM. Port of the legacy
-    /// `AgentRunner::try_replay_cache` — preserves every branch of the
-    /// legacy semantics per D11.
-    ///
-    /// **Nine-branch catalogue (4 fall-through × 3 approval × 2 execution
-    /// — approval Allow collapses with execution since it shares the
-    /// dispatch tail):**
-    ///
-    /// 1. Fall-through: `!use_cache` or no elements.
-    /// 2. Fall-through: same cache key as the last replay.
-    /// 3. Fall-through: cache miss / unknown tool.
-    /// 4. Fall-through: cached tool is observation-only / AX dispatch /
-    ///    state-transition (stale on read).
-    /// 5. Approval Deny: evict entry, record error step, bump
-    ///    `consecutive_errors`, consult recovery strategy.
-    /// 6. Approval Ask → Rejected: evict, record Replan step.
-    /// 7. Approval Ask → Unavailable: set `TerminalReason::ApprovalUnavailable`
-    ///    and break.
-    /// 8. Execute → success: rebuild node (stubbed for Task 3a.5), bump
-    ///    hit_count + produced_node_ids lineage, append
-    ///    assistant_tool_calls + tool_result to the transcript, emit
-    ///    `StepCompleted`, maybe_cdp_connect (stubbed for Task 3a.6),
-    ///    destructive-cap check (stubbed for Task 3a.4). Continue.
-    /// 9. Execute → tool_error / call_error: null `last_cache_key`, fall
-    ///    through to the LLM.
-    ///
-    /// Preconditions: caller has already consulted
-    /// [`Self::is_replay_eligible`]. Replay still verifies `use_cache`
-    /// internally for parity with the legacy runner.
-    #[allow(clippy::too_many_arguments)]
-    async fn try_replay_cache<M: Mcp + ?Sized>(
-        &mut self,
-        goal: &str,
-        elements: &[clickweave_core::cdp::CdpFindElementMatch],
-        step_index: usize,
-        // Threaded through for `add_workflow_node` (Task 3a.5 wiring):
-        // the tool-to-NodeType mapping consults the advertised tool schemas.
-        mcp_tools: &[Value],
-        annotations_by_tool: &HashMap<String, ToolAnnotations>,
-        mcp: &M,
-        messages: &mut Vec<Message>,
-        previous_result: &mut Option<String>,
-        last_cache_key: &mut Option<String>,
-        last_failure: &mut Option<(String, Value, String)>,
-        last_action: &mut Option<(String, Value, u32)>,
-    ) -> ReplayResult {
-        // Branch 1: cache disabled or nothing to fingerprint.
-        if !self.config.use_cache || elements.is_empty() {
-            return ReplayResult::FellThrough;
-        }
-        let current_key = super::cache::cache_key(goal, elements);
-
-        // Branch 2: same key as the last replay — break the loop so the
-        // LLM picks the next action.
-        if last_cache_key.as_ref() == Some(&current_key) {
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        }
-
-        // Branch 3: cache miss.
-        let Some(cached) = self.cache.lookup(goal, elements) else {
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        };
-
-        // Branch 4a: observation-only entries (stale-on-read).
-        if is_observation_tool(&cached.tool_name, annotations_by_tool) {
-            debug!(
-                tool = %cached.tool_name,
-                "state-spine: skipping cached observation tool (stale entry)"
-            );
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        }
-        // Branch 4b: AX dispatch uids are generation-scoped.
-        if is_ax_dispatch_tool(&cached.tool_name) {
-            debug!(
-                tool = %cached.tool_name,
-                "state-spine: skipping cached AX dispatch entry (uid is generation-scoped)"
-            );
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        }
-        // Branch 4c: state-transition tools must never replay.
-        if is_state_transition_tool(&cached.tool_name) {
-            debug!(
-                tool = %cached.tool_name,
-                "state-spine: skipping cached state-transition entry (not safe to replay)"
-            );
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        }
-
-        let cached_tool = cached.tool_name.clone();
-        let cached_args = cached.arguments.clone();
-        debug!(
-            tool = %cached_tool,
-            hits = cached.hit_count,
-            "state-spine: cache hit — replaying cached decision"
-        );
-
-        // Approval gating (branches 5–7). Observation tools already bailed
-        // above, so every surviving entry is approval-gated.
-        let needs_approval = !is_observation_tool(&cached_tool, annotations_by_tool);
-        if needs_approval {
-            let policy_action = self.policy_for(&cached_tool, &cached_args, annotations_by_tool);
-            if matches!(policy_action, PermissionAction::Deny) {
-                // Branch 5: hard policy reject.
-                self.cache.remove(goal, elements);
-                *last_cache_key = None;
-                let err_msg = format!("Tool `{}` denied by permission policy", cached_tool);
-                warn!(
-                    tool = %cached_tool,
-                    "state-spine: cached tool denied by permission policy"
-                );
-                let command = AgentCommand::ToolCall {
-                    tool_name: cached_tool.clone(),
-                    arguments: cached_args.clone(),
-                    tool_call_id: format!("cache-{}", step_index),
-                };
-                self.emit_event(AgentEvent::StepFailed {
-                    step_index,
-                    tool_name: cached_tool.clone(),
-                    error: err_msg.clone(),
-                })
-                .await;
-                let step = AgentStep {
-                    index: step_index,
-                    elements: elements.to_vec(),
-                    command,
-                    outcome: StepOutcome::Error(err_msg.clone()),
-                    page_url: self.state.current_url.clone(),
-                };
-                self.state.steps.push(step);
-                self.advance_recorded_step_index();
-                self.emit_world_model_changed_for_recorded_step().await;
-                // A denied tool is the recovery-trigger event. Capture
-                // it as the last failure so the next `Recovering`-entry
-                // snapshot has a real `(failed_tool, error_kind)` pair.
-                self.record_policy_deny_failure(&cached_tool);
-                self.state.consecutive_errors += 1;
-                self.consecutive_errors = self.state.consecutive_errors;
-                *previous_result = Some(format!("Error: {}", err_msg));
-                let action = recovery_strategy(
-                    self.state.consecutive_errors,
-                    self.config.max_consecutive_errors,
-                );
-                if matches!(action, RecoveryAction::Abort) {
-                    self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
-                        consecutive_errors: self.state.consecutive_errors,
-                    });
-                    return ReplayResult::Break;
-                }
-                // Denied cached dispatch breaks the streak; mirror of the live policy-deny path.
-                *last_action = None;
-                return ReplayResult::Continue;
-            }
-            if matches!(policy_action, PermissionAction::Ask) {
-                match self
-                    .request_cached_approval(&cached_tool, &cached_args, step_index)
-                    .await
-                {
-                    Some(ApprovalResult::Rejected) => {
-                        // Branch 6: operator rejected — evict + replan.
-                        self.cache.remove(goal, elements);
-                        *last_cache_key = None;
-                        let command = AgentCommand::ToolCall {
-                            tool_name: cached_tool.clone(),
-                            arguments: cached_args.clone(),
-                            tool_call_id: format!("cache-{}", step_index),
-                        };
-                        let step = AgentStep {
-                            index: step_index,
-                            elements: elements.to_vec(),
-                            command,
-                            outcome: StepOutcome::Replan("User rejected cached action".to_string()),
-                            page_url: self.state.current_url.clone(),
-                        };
-                        self.state.steps.push(step);
-                        self.advance_recorded_step_index();
-                        self.emit_world_model_changed_for_recorded_step().await;
-                        *previous_result = Some("Replan: user rejected cached action".to_string());
-                        // Rejected cached dispatch breaks the streak.
-                        *last_action = None;
-                        return ReplayResult::Continue;
-                    }
-                    Some(ApprovalResult::Unavailable) => {
-                        // Branch 7: approval channel gone — terminal.
-                        self.state.terminal_reason = Some(TerminalReason::ApprovalUnavailable);
-                        return ReplayResult::Break;
-                    }
-                    // Approved or no gate configured — fall through to execute.
-                    _ => {}
-                }
-            }
-            // PermissionAction::Allow: no prompt.
-        }
-
-        // Branches 8 & 9: execute the cached tool call against MCP.
-        match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
-            Ok(result) if !result.is_error.unwrap_or(false) => {
-                // Branch 8: success path.
-                let result_text = extract_result_text(&result);
-                let tool_call_id = format!("cache-{}", step_index);
-                let command = AgentCommand::ToolCall {
-                    tool_name: cached_tool.clone(),
-                    arguments: cached_args.clone(),
-                    tool_call_id: tool_call_id.clone(),
-                };
-
-                // Rebuild the workflow node for this run — the cache stores
-                // decisions across runs, so the current workflow needs the
-                // replayed action as a node. The produced node id is
-                // appended to the cached entry's lineage so selective-delete
-                // can evict the right cross-run rows later.
-                let produced_node_id_on_replay = self
-                    .add_workflow_node(&cached_tool, &cached_args, mcp_tools, annotations_by_tool)
-                    .await;
-                if let Some(entry) = self.cache.entries.get_mut(&current_key) {
-                    if let Some(node_id) = produced_node_id_on_replay {
-                        entry.produced_node_ids.push(node_id);
-                    }
-                    entry.hit_count += 1;
-                }
-
-                // Reconstruct transcript so the LLM sees the full action
-                // history, not just the raw result text.
-                messages.push(Message::assistant_tool_calls(vec![
-                    clickweave_llm::ToolCall {
-                        id: tool_call_id.clone(),
-                        call_type: clickweave_llm::CallType::Function,
-                        function: clickweave_llm::FunctionCall {
-                            name: cached_tool.clone(),
-                            arguments: cached_args.clone(),
-                        },
-                    },
-                ]));
-                messages.push(Message::tool_result(&tool_call_id, &result_text));
-
-                self.emit_event(AgentEvent::StepCompleted {
-                    step_index,
-                    tool_name: cached_tool.clone(),
-                    summary: crate::agent::prompt::truncate_summary(&result_text, 120),
-                })
-                .await;
-
-                // Auto-CDP-connect after a cached launch_app /
-                // focus_window replay. State-transition tools already
-                // fall through above (branch 4c) today, but the hook
-                // stays here so behaviour parity with the live path
-                // survives any future cache-filter relaxation, and so
-                // that a cached `quit_app` still clears CDP state.
-                self.maybe_cdp_connect(&cached_tool, &cached_args, &result_text, mcp)
-                    .await;
-
-                // Continuity + invalidation parity with the live
-                // ToolSuccess branch: a cached take_ax_snapshot /
-                // take_screenshot must also refresh
-                // `last_native_ax_snapshot` / `last_screenshot`, and a
-                // cached focus / lifecycle / navigation tool must queue
-                // the matching invalidation event so the next observe
-                // drops the stale fields. Without this the cache replay
-                // path silently lies about world-model freshness.
-                self.update_continuity_after_tool_success(&cached_tool, &result_text);
-                self.queue_invalidations_for_tool_success(&cached_tool, &cached_args);
-
-                let step = AgentStep {
-                    index: step_index,
-                    elements: elements.to_vec(),
-                    command,
-                    outcome: StepOutcome::Success(result_text.clone()),
-                    page_url: self.state.current_url.clone(),
-                };
-                self.state.steps.push(step);
-                self.advance_recorded_step_index();
-                self.emit_world_model_changed_for_recorded_step().await;
-                self.state.consecutive_errors = 0;
-                self.consecutive_errors = 0;
-                *last_failure = None;
-                // Clear the per-turn failure tracking so a prior
-                // policy-deny / tool-error doesn't bleed into a later
-                // `Recovering`-entry snapshot after the agent has
-                // demonstrably recovered via cache replay.
-                self.clear_last_failure_tracking();
-
-                // Cached successful dispatches must contribute to the
-                // same repeat-action streak as live dispatches, otherwise
-                // an LLM looping on a cacheable action would alternate
-                // live / cached and never trip the threshold via the
-                // live arm alone.
-                let nudge = self
-                    .track_repeat_action(
-                        &cached_tool,
-                        &cached_args,
-                        &result_text,
-                        annotations_by_tool,
-                        last_action,
-                    )
-                    .await;
-                *previous_result = Some(nudge.unwrap_or(result_text));
-                *last_cache_key = Some(current_key);
-
-                // Destructive-cap accounting: the cached replay counts toward
-                // the streak just like a live tool call. State-transition
-                // tools (the common destructive case) already fall through at
-                // branch 4c, so this guards the narrow tail where a cached
-                // non-transition tool carries `destructive_hint == Some(true)`.
-                if matches!(
-                    self.maybe_halt_on_destructive_cap(&cached_tool, annotations_by_tool),
-                    CapStatus::CapReached
-                ) {
-                    self.emit_destructive_cap_hit().await;
-                    return ReplayResult::Break;
-                }
-                ReplayResult::Continue
-            }
-            Ok(result) => {
-                // Branch 9a: tool returned is_error=true.
-                let err_text = extract_result_text(&result);
-                debug!(
-                    error = %err_text,
-                    "state-spine: cached decision returned error, falling through to LLM"
-                );
-                *last_cache_key = None;
-                ReplayResult::FellThrough
-            }
-            Err(e) => {
-                // Branch 9b: the call itself failed.
-                debug!(
-                    error = %e,
-                    "state-spine: cached decision execution failed, falling through to LLM"
-                );
-                *last_cache_key = None;
-                ReplayResult::FellThrough
-            }
-        }
-    }
 }
 
 /// Parse a raw LLM response `Message` into an `AgentTurn` carrying
@@ -3017,6 +3263,40 @@ pub fn parse_agent_turn(message: &Message) -> anyhow::Result<AgentTurn> {
                         .unwrap_or("Unknown reason")
                         .to_string();
                     AgentAction::AgentReplan { reason }
+                }
+                "invoke_skill" => {
+                    let skill_id = args
+                        .get("skill_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let version = args.get("version").and_then(Value::as_u64);
+                    match (skill_id, version) {
+                        (Some(skill_id), Some(version)) => match u32::try_from(version) {
+                            Ok(version) => {
+                                let parameters =
+                                    args.get("parameters").cloned().unwrap_or(Value::Null);
+                                AgentAction::InvokeSkill {
+                                    skill_id,
+                                    version,
+                                    parameters,
+                                }
+                            }
+                            Err(_) => {
+                                tracing::warn!("state-spine: invoke_skill version out of range");
+                                AgentAction::AgentReplan {
+                                    reason: "invoke_skill version out of range".to_string(),
+                                }
+                            }
+                        },
+                        _ => {
+                            tracing::warn!(
+                                "state-spine: invoke_skill missing required fields — replanning"
+                            );
+                            AgentAction::AgentReplan {
+                                reason: "invoke_skill missing required fields".to_string(),
+                            }
+                        }
+                    }
                 }
                 _ => AgentAction::ToolCall {
                     tool_name: name.to_string(),
@@ -3139,18 +3419,71 @@ impl<M: Mcp + ?Sized> ToolExecutor for McpToolExecutor<'_, M> {
 }
 
 impl StateRunner {
+    fn start_skill_watcher_if_enabled(&mut self) {
+        if !self.skill_ctx.enabled
+            || !self.config.skills_enabled
+            || self.skill_watcher_handle.is_some()
+        {
+            return;
+        }
+
+        let mut dirs = Vec::new();
+        let mut stores = Vec::new();
+
+        let project_dir = self.skill_ctx.project_skills_dir.clone();
+        if let Err(err) = std::fs::create_dir_all(&project_dir) {
+            warn!(
+                ?project_dir,
+                ?err,
+                "skills: failed to create project skills dir for watcher"
+            );
+            return;
+        }
+        dirs.push(project_dir);
+        stores.push(self.skill_store.clone());
+
+        if let Some(global_dir) = self.skill_ctx.global_skills_dir.clone() {
+            if let Err(err) = std::fs::create_dir_all(&global_dir) {
+                warn!(
+                    ?global_dir,
+                    ?err,
+                    "skills: failed to create global skills dir for watcher"
+                );
+            } else {
+                dirs.push(global_dir.clone());
+                stores.push(Arc::new(SkillStore::new(global_dir)));
+            }
+        }
+
+        match crate::agent::skills::watcher::SkillWatcher::spawn(dirs) {
+            Ok(watcher) => {
+                self.skill_watcher_handle = Some(
+                    crate::agent::skills::watcher_consumer::WatcherConsumer::spawn_watcher(
+                        self.skill_index.clone(),
+                        stores,
+                        watcher,
+                    ),
+                );
+            }
+            Err(err) => {
+                warn!(
+                    ?err,
+                    "skills: watcher failed to start; external edits will be picked up on next run"
+                );
+            }
+        }
+    }
+
     /// Top-level observe → compose → LLM → parse → apply → dispatch →
     /// compact control loop. Task 3a.1 ships the minimum skeleton; later
-    /// tasks (flagged by `TODO(task-3a.N)` markers inline) wire cache
-    /// replay, VLM verification, approval, loop detection,
+    /// tasks (flagged by `TODO(task-3a.N)` markers inline) wire VLM
+    /// verification, approval, loop detection,
     /// consecutive-destructive cap, workflow-graph emission, CDP
     /// auto-connect, synthetic `focus_window` skip, recovery strategy,
     /// and boundary `StepRecord` writes.
     ///
-    /// The signature mirrors `AgentRunner::run` so `run_agent_workflow`
-    /// can pivot onto `StateRunner` without a caller-side change. Crate-
-    /// private because the `Mcp` trait is `pub(crate)`; the public entry
-    /// point stays [`crate::agent::run_agent_workflow`].
+    /// Crate-private because the `Mcp` trait is `pub(crate)`; the public
+    /// entry point stays [`crate::agent::run_agent_workflow`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run<B, M>(
         mut self,
@@ -3160,11 +3493,12 @@ impl StateRunner {
         workflow: clickweave_core::Workflow,
         mcp_tools: Vec<Value>,
         anchor_node_id: Option<uuid::Uuid>,
-    ) -> anyhow::Result<(AgentState, AgentCache)>
+    ) -> anyhow::Result<AgentState>
     where
         B: ChatBackend + ?Sized,
         M: Mcp + ?Sized,
     {
+        self.start_skill_watcher_if_enabled();
         // Drain queued episodic writes on *every* exit path,
         // including the early `?` returns from chat/parse failures.
         // Without this, a recovery write queued moments before an LLM
@@ -3184,8 +3518,22 @@ impl StateRunner {
         if let Some(writer) = &self.episodic_writer {
             writer.flush().await;
         }
+        // Spec 3: clear the per-run scratch state so the runner could
+        // in theory be reused. Files (the on-disk skill store) outlive
+        // the runner — only the in-memory accumulators are dropped here.
+        self.recorded_steps.clear();
+        self.push_idx_stack.clear();
+        self.push_signature_stack.clear();
+        self.last_pushed_subgoal_ids.clear();
+        self.completed_subgoal_extraction_queue.clear();
+        self.produced_node_ids_stack.clear();
+        self.pending_applicable_skills.clear();
+        self.pre_dispatch_snapshot = None;
+        if let Some(handle) = self.skill_watcher_handle.take() {
+            handle.abort();
+        }
         match result {
-            Ok(()) => Ok((self.state, self.cache)),
+            Ok(()) => Ok(self.state),
             Err(e) => Err(e),
         }
     }
@@ -3204,7 +3552,10 @@ impl StateRunner {
         M: Mcp + ?Sized,
     {
         use crate::agent::context::{CompactBudget, compact};
-        use crate::agent::prompt::{build_system_prompt, build_user_turn_message};
+        use crate::agent::prompt::{
+            UserTurnMessageInput, build_system_prompt, build_system_prompt_with_header,
+            build_user_turn_message_from_input,
+        };
 
         // Reset the visible state tuple to match the freshly-provided
         // workflow. `AgentState::new(workflow)` wipes steps/terminal_reason
@@ -3223,7 +3574,11 @@ impl StateRunner {
         // at the caller seam (`build_goal_block`) so they land in
         // `messages[1]`, preserving the `messages[0]` cache prefix.
         let tool_list_for_prompt = openai_tools_to_mcp_tool_list(&mcp_tools);
-        let system_text = build_system_prompt(&tool_list_for_prompt);
+        let system_text = if let Some(prompt) = self.agent_system_prompt_override.as_deref() {
+            build_system_prompt_with_header(prompt, &tool_list_for_prompt)
+        } else {
+            build_system_prompt(&tool_list_for_prompt)
+        };
 
         // Stable list of advertised MCP tool names for the per-turn
         // `<tools_in_scope>` filter. Computed once per run since `mcp_tools`
@@ -3239,14 +3594,16 @@ impl StateRunner {
         // straight into the user turn so messages[1] is the single
         // run-specific slot.
         let initial_scope = self.compute_tools_in_scope(&advertised_tool_names);
-        let initial_user = build_user_turn_message(
-            &self.world_model,
-            &self.task_state,
-            0,
-            &goal,
-            &[],
-            &initial_scope,
-        );
+        let initial_user = build_user_turn_message_from_input(UserTurnMessageInput {
+            wm: &self.world_model,
+            ts: &self.task_state,
+            current_step: 0,
+            observation_text: &goal,
+            retrieved: &[],
+            applicable_skills: &[],
+            tools_in_scope_names: &initial_scope,
+            max_elements: self.config.state_block_max_elements,
+        });
 
         let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
 
@@ -3263,20 +3620,18 @@ impl StateRunner {
             .chain(crate::agent::prompt::pseudo_tools())
             .collect();
 
-        // Annotations index is seeded once per run so the cache-replay
-        // gate, permission-policy evaluation, and (Task 3a.4) destructive
-        // cap see the same `read_only_hint` / `destructive_hint` view.
+        // Annotations index is seeded once per run so permission-policy
+        // evaluation and the destructive cap see the same `read_only_hint`
+        // / `destructive_hint` view.
         let annotations_by_tool = build_annotations_index(&mcp_tools);
 
-        let budget = CompactBudget::default();
+        let budget = CompactBudget {
+            recent_n: self.config.recent_n,
+            ..CompactBudget::default()
+        };
         let mut previous_result: Option<String> = None;
-        // Tracks the cache key of the previous successful replay so the
-        // next iteration can detect a same-key repeat and fall through to
-        // the LLM instead of thrashing on one cached decision.
-        let mut last_cache_key: Option<String> = None;
-        // Reserved for Task 3a.4 loop detection: `(tool_name, arguments,
-        // error)` from the last failing live call. Carried here so the
-        // cache-replay success path can clear it (parity with legacy).
+        // Loop detection: `(tool_name, arguments, error)` from the last
+        // failing live call.
         let mut last_failure: Option<(String, Value, String)> = None;
         // No-progress detector for the success path. Failures already
         // abort on identical-error repeats via `last_failure` above;
@@ -3294,8 +3649,8 @@ impl StateRunner {
             //    Capture the pre-mirror world-model signatures so the
             //    `WorldModelChanged` diff emitted by `run_turn` sees the
             //    direct-observation writes below. Only seed the
-            //    baseline when it is empty: early-exit branches (cache
-            //    replay `Continue`/`Break`, policy deny, approval reject)
+            //    baseline when it is empty: early-exit branches (policy
+            //    deny, approval reject)
             //    skip `run_turn` entirely, so the baseline must persist
             //    across iterations until `run_turn.take()` consumes it.
             //    `run_turn` falls back to an internal snapshot when
@@ -3303,6 +3658,16 @@ impl StateRunner {
             if self.turn_pre_signatures.is_none() {
                 self.turn_pre_signatures = Some(self.world_model.field_signatures());
             }
+            // Spec 3: snapshot the world model before this iteration's
+            // dispatch so any successful tool call this turn pushes a
+            // `RecordedStep` whose `world_model_pre` matches what the
+            // LLM saw at decision time. Captured here (before
+            // `fetch_elements` mutates `world_model.elements`) so the
+            // pre-state reflects the page the LLM was looking at, not
+            // the post-fetch mirror.
+            self.pre_dispatch_snapshot = Some(
+                crate::agent::step_record::WorldModelSnapshot::from_world_model(&self.world_model),
+            );
             let elements = self.fetch_elements(mcp).await;
 
             // Mirror the observation into the world model so the state
@@ -3371,8 +3736,8 @@ impl StateRunner {
             // Top-of-loop observe — unconditional. Drains pending
             // invalidation events queued by the prior iteration's
             // dispatch (focus shift, navigation, app lifecycle, tool
-            // failure) and re-infers `phase` so the cache-replay gate,
-            // episodic retrieval, and prompt render all see the
+            // failure) and re-infers `phase` so episodic retrieval and
+            // prompt render both see the
             // post-event state. `run_turn` runs another `observe()`
             // after dispatch; the two passes are idempotent — events
             // are drained once per queue-and-observe cycle, so a second
@@ -3388,44 +3753,23 @@ impl StateRunner {
             // past their TTL even when no other event arrived.
             self.queue_snapshot_stale_if_aged();
             self.observe();
-
-            // 1a. Cache-replay gate. `is_replay_eligible` enforces D17
-            // (Phase::Exploring, empty subgoal stack, no watch slots);
-            // `try_replay_cache` layers in the per-entry stale-on-read
-            // guards, approval gating, and live MCP re-dispatch.
-            if self.is_replay_eligible() {
-                let replay = self
-                    .try_replay_cache(
-                        &goal,
-                        &elements,
-                        self.state.steps.len(),
-                        &mcp_tools,
-                        &annotations_by_tool,
-                        mcp,
-                        &mut messages,
-                        &mut previous_result,
-                        &mut last_cache_key,
-                        &mut last_failure,
-                        &mut last_action,
-                    )
-                    .await;
-                match replay {
-                    ReplayResult::Continue => continue,
-                    ReplayResult::Break => break,
-                    ReplayResult::FellThrough => {}
-                }
+            if prev_phase_at_top != self.task_state.phase {
+                self.emit_event(AgentEvent::TaskStateChanged {
+                    run_id: self.run_id,
+                    task_state: self.task_state.clone(),
+                })
+                .await;
             }
+
             // No pre-step CDP maybe-connect — legacy also defers the
             // decision to the post-tool hook (`maybe_cdp_connect` after
             // a successful `launch_app` / `focus_window`). CDP tools the
             // LLM picks before a connection exists return a "not
             // connected" MCP error that the recovery strategy absorbs.
 
-            // Spec 2: episodic retrieval on cache miss. Cache
-            // hits fast-pathed via `Continue` above, so we only land
-            // here on miss / fall-through. `try_retrieve_episodic`
-            // returns an empty vec when episodic is inactive or no
-            // trigger condition fires.
+            // Spec 2: episodic retrieval. `try_retrieve_episodic` returns
+            // an empty vec when episodic is inactive or no trigger condition
+            // fires.
             let retrieved = self.try_retrieve_episodic(prev_phase_at_top).await;
 
             // 2. Compose the per-turn user message with the state block +
@@ -3433,14 +3777,20 @@ impl StateRunner {
             // history before the LLM call.
             let step_obs = previous_result.clone().unwrap_or_default();
             let step_scope = self.compute_tools_in_scope(&advertised_tool_names);
-            let step_msg = build_user_turn_message(
-                &self.world_model,
-                &self.task_state,
-                self.step_index,
-                &step_obs,
-                &retrieved,
-                &step_scope,
-            );
+            // Spec 3: drain `pending_applicable_skills` once per turn —
+            // the block surfaces in the next user turn after the
+            // `push_subgoal` that produced it, then disappears.
+            let applicable = std::mem::take(&mut self.pending_applicable_skills);
+            let step_msg = build_user_turn_message_from_input(UserTurnMessageInput {
+                wm: &self.world_model,
+                ts: &self.task_state,
+                current_step: self.step_index,
+                observation_text: &step_obs,
+                retrieved: &retrieved,
+                applicable_skills: &applicable,
+                tools_in_scope_names: &step_scope,
+                max_elements: self.config.state_block_max_elements,
+            });
             messages.push(Message::user(step_msg));
             messages = compact(messages, &budget);
 
@@ -3458,7 +3808,7 @@ impl StateRunner {
             // 4. Parse the LLM response into an AgentTurn carrying any
             //    `0..N` task-state mutations followed by exactly one
             //    action.
-            let turn = parse_agent_turn(&choice.message)?;
+            let mut turn = parse_agent_turn(&choice.message)?;
 
             // 4'. Apply task-state mutations BEFORE any early-exit
             //     branching. Synthetic focus-skip / live policy-deny /
@@ -3508,6 +3858,145 @@ impl StateRunner {
                 self.write_subgoal_completed_records(outer_milestones_appended, &turn)
                     .await;
             }
+
+            // 4''-bis. Spec 3: skill retrieval on `push_subgoal`.
+            //          `apply_mutations` populates `last_pushed_subgoal_ids`;
+            //          here we consume it once per turn and accumulate
+            //          retrieved skills in `pending_applicable_skills` so
+            //          the next user-turn render splices them into the
+            //          `<applicable_skills>` block.
+            //
+            //          Runs *before* the synthetic-focus-skip / live-policy-
+            //          deny / live-approval-reject early-exit branches so
+            //          retrieval fires for every real `push_subgoal`
+            //          regardless of which dispatch branch the action
+            //          eventually takes.
+            if self.skill_ctx.enabled
+                && self.config.skills_enabled
+                && !self.last_pushed_subgoal_ids.is_empty()
+            {
+                let pushed = std::mem::take(&mut self.last_pushed_subgoal_ids);
+                let k = self.config.applicable_skills_k;
+                for id in &pushed {
+                    let Some(subgoal) = self
+                        .task_state
+                        .subgoal_stack
+                        .iter()
+                        .find(|s| s.id == *id)
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    let subgoal_sig = crate::agent::skills::signature::compute_subgoal_signature(
+                        &subgoal.text,
+                        &self.world_model,
+                    );
+                    let app_sig = crate::agent::skills::signature::compute_applicability_signature(
+                        &self.world_model,
+                    );
+                    let candidates = self.skill_index.read().lookup_at(
+                        &subgoal_sig,
+                        &app_sig,
+                        &subgoal.text,
+                        k,
+                        chrono::Utc::now(),
+                    );
+                    self.pending_applicable_skills.extend(candidates);
+                }
+            }
+
+            // 4''-ter. Spec 3: expand a resolved `invoke_skill` into
+            // the first replayed tool call. Phase 4's full replay
+            // engine still owns nested sub-skills, loops, capture
+            // propagation, and divergence recovery; this bridge covers
+            // confirmed leaf tool-call skills.
+            if let AgentAction::InvokeSkill {
+                skill_id,
+                version,
+                parameters,
+            } = turn.action.clone()
+            {
+                turn.action = match self.dispatch_skill(&skill_id, version, parameters).await {
+                    Ok(frame) => Self::skill_frame_to_single_step_action(&frame),
+                    Err(reason) => AgentAction::AgentReplan { reason },
+                };
+            }
+
+            // 4a. Synthetic `launch_app` skip for the no-focus policy.
+            // A no-args launch of an already-running app is a focus
+            // change in native-devtools. When background operation is
+            // required, treat that as a successful app-state observation
+            // and let the CDP lifecycle helper attach without sending the
+            // foregrounding MCP call.
+            if let AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                tool_call_id,
+            } = &turn.action
+                && tool_name == "launch_app"
+                && let Some(running) = self.running_app_for_no_focus_launch(arguments, mcp).await
+            {
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "launch_app".to_string(),
+                    summary: "skipped: app already running; focus changes disabled".to_string(),
+                })
+                .await;
+                let skip_body = Self::skipped_launch_result_text(&running);
+                debug!(
+                    tool = "launch_app",
+                    app = running.name,
+                    "state-spine: suppressing launch_app for already-running app",
+                );
+                let step_idx_for_event = self.state.steps.len();
+                self.state.steps.push(AgentStep {
+                    index: step_idx_for_event,
+                    elements: elements.clone(),
+                    command: AgentCommand::ToolCall {
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                    },
+                    outcome: StepOutcome::Success(skip_body.clone()),
+                    page_url: self.state.current_url.clone(),
+                });
+                self.advance_recorded_step_index();
+                self.emit_world_model_changed_for_recorded_step().await;
+                self.state.consecutive_errors = 0;
+                self.consecutive_errors = 0;
+                last_failure = None;
+                self.clear_last_failure_tracking();
+                self.maybe_cdp_connect(tool_name, arguments, &skip_body, mcp)
+                    .await;
+                previous_result = Some(skip_body.clone());
+                if let Some(nudge) = self
+                    .track_repeat_action(
+                        tool_name,
+                        arguments,
+                        &skip_body,
+                        &annotations_by_tool,
+                        &mut last_action,
+                    )
+                    .await
+                {
+                    previous_result = Some(nudge);
+                }
+                self.emit_event(AgentEvent::StepCompleted {
+                    step_index: step_idx_for_event,
+                    tool_name: "launch_app".to_string(),
+                    summary: crate::agent::prompt::truncate_summary(&skip_body, 120),
+                })
+                .await;
+                append_assistant_and_tool_result(
+                    &mut messages,
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                    previous_result.as_deref(),
+                );
+                continue;
+            }
+
+            force_background_launch_app(&mut turn.action, self.config.allow_focus_window);
 
             // 4a'. Synthetic `focus_window` skip. When the MCP surface +
             // app kind lets us suppress the focus-stealing MCP call
@@ -3564,30 +4053,23 @@ impl StateRunner {
                 // observation outcome — clear failure tracking the
                 // same way the live ToolSuccess path does.
                 self.clear_last_failure_tracking();
-                // CdpAttachable promised "auto-connect will fire" in the
-                // skip message. The post-tool `maybe_cdp_connect` hook
-                // only runs on real ToolSuccess, so without this call
-                // the LLM would wait forever for a `cdp_page` that is
-                // never attempted. Drive `auto_connect_cdp` directly
-                // here using the kind hint from `known_app_kinds` (the
-                // very predicate that authorized the skip). On success
-                // the helper marks `cdp_state` connected and clears
-                // `cdp_connect_status`; on failure the terminal paths
-                // record the failure reason. The actual
+                // `CdpAttachable` and the no-focus policy both require
+                // app-scoped CDP acquisition. The post-tool
+                // `maybe_cdp_connect` hook only runs on real ToolSuccess,
+                // so synthetic skips must drive `auto_connect_cdp`
+                // directly. On success the helper marks `cdp_state`
+                // connected and clears `cdp_connect_status`; on failure
+                // terminal paths record the reason. The actual
                 // `world_model.cdp_page` write happens at the next
-                // turn's `fetch_elements` mirror — that's why the
-                // finalizer refreshes the MCP tool cache here, so the
-                // next turn's observation gate sees `cdp_find_elements`.
-                if matches!(reason, FocusSkipReason::CdpAttachable)
-                    && let Some(app_name) = arguments.get("app_name").and_then(|v| v.as_str())
-                {
-                    let kind_hint = self.known_app_kinds.get(app_name).cloned();
-                    if let Some(cdp_port) = self
-                        .auto_connect_cdp(app_name, kind_hint.as_deref(), mcp)
+                // turn's `fetch_elements` mirror, so the finalizer
+                // refreshes the MCP tool cache here.
+                if let Some((app_name, kind_hint)) =
+                    self.cdp_target_for_skipped_focus_window(reason, arguments, mcp)
+                    && let Some(cdp_port) = self
+                        .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
                         .await
-                    {
-                        self.finalize_cdp_connected(app_name, cdp_port, mcp).await;
-                    }
+                {
+                    self.finalize_cdp_connected(&app_name, cdp_port, mcp).await;
                 }
                 previous_result = Some(skip_body.clone());
                 // Synthetic skip is a successful dispatch from the LLM's
@@ -3623,11 +4105,100 @@ impl StateRunner {
                 continue;
             }
 
+            // 4a-bis. Raw CDP lifecycle guard. The runner owns CDP
+            // acquisition/release at app scope; a model-authored
+            // `cdp_connect({"port": 9222})` can attach to any app
+            // listening on that port, which is exactly the failure mode
+            // this guard blocks. Surface a synthetic error and keep MCP
+            // untouched.
+            if let AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                tool_call_id,
+            } = &turn.action
+                && let Some(err_msg) = Self::raw_cdp_lifecycle_blocked(tool_name, arguments)
+            {
+                warn!(
+                    tool = %tool_name,
+                    "state-spine: raw CDP lifecycle tool blocked"
+                );
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: tool_name.clone(),
+                    summary: "blocked: CDP lifecycle is runtime-managed".to_string(),
+                })
+                .await;
+                let step_idx_for_event = self.state.steps.len();
+                self.state.steps.push(AgentStep {
+                    index: step_idx_for_event,
+                    elements: elements.clone(),
+                    command: AgentCommand::ToolCall {
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                    },
+                    outcome: StepOutcome::Error(err_msg.clone()),
+                    page_url: self.state.current_url.clone(),
+                });
+                self.advance_recorded_step_index();
+                self.emit_world_model_changed_for_recorded_step().await;
+                self.state.consecutive_errors += 1;
+                self.consecutive_errors = self.state.consecutive_errors;
+                previous_result = Some(err_msg.clone());
+                append_assistant_and_tool_result(
+                    &mut messages,
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                    previous_result.as_deref(),
+                );
+                self.emit_event(AgentEvent::StepFailed {
+                    step_index: step_idx_for_event,
+                    tool_name: tool_name.clone(),
+                    error: err_msg.clone(),
+                })
+                .await;
+                let looped = matches!(
+                    last_failure.as_ref(),
+                    Some((prev_tool, prev_args, prev_err))
+                        if prev_tool == tool_name
+                            && prev_args == arguments
+                            && prev_err == &err_msg
+                );
+                if looped {
+                    warn!(
+                        tool = %tool_name,
+                        "state-spine: identical raw CDP lifecycle block repeated — aborting"
+                    );
+                    self.state.terminal_reason = Some(TerminalReason::LoopDetected {
+                        tool_name: tool_name.clone(),
+                        error: err_msg.clone(),
+                    });
+                    break;
+                }
+                last_failure = Some((tool_name.clone(), arguments.clone(), err_msg.clone()));
+                let action = recovery_strategy(
+                    self.state.consecutive_errors,
+                    self.config.max_consecutive_errors,
+                );
+                if matches!(action, RecoveryAction::Abort) {
+                    warn!(
+                        errors = self.state.consecutive_errors,
+                        "state-spine: too many consecutive raw CDP lifecycle blocks — aborting"
+                    );
+                    self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
+                        consecutive_errors: self.state.consecutive_errors,
+                    });
+                    break;
+                }
+                last_action = None;
+                continue;
+            }
+
             // 4a-bis. Coordinate-primitive guard. Defense-in-depth
             // behind the per-turn `<tools_in_scope>` filter: the filter
             // narrows the LLM-facing tool list, but a wrong-family
-            // dispatch can still reach this point via cached replay
-            // from a different state or a malformed turn. When a
+            // dispatch can still reach this point via a malformed turn
+            // or future replay path. When a
             // structured surface is wired (CDP page attached, or
             // Native focus + AX dispatch toolset), reject the
             // coordinate primitive with a synthetic `StepOutcome::Error`
@@ -3717,9 +4288,7 @@ impl StateRunner {
 
             // 4a. Permission policy + approval gate for live `ToolCall`
             // actions. Mirrors the legacy `AgentRunner::execute_response`
-            // pre-dispatch policy check. The cache-replay path has its
-            // own identical gate at `try_replay_cache`; observation
-            // tools bypass approval entirely on both paths.
+            // pre-dispatch policy check. Observation tools bypass approval.
             if let AgentAction::ToolCall {
                 tool_name,
                 arguments,
@@ -3747,7 +4316,7 @@ impl StateRunner {
                             });
                             self.advance_recorded_step_index();
                             self.emit_world_model_changed_for_recorded_step().await;
-                            // Shared with the cached-deny branch — see
+                            // Shared with other policy-deny paths — see
                             // `record_policy_deny_failure` for rationale.
                             self.record_policy_deny_failure(tool_name);
                             self.state.consecutive_errors += 1;
@@ -3761,9 +4330,8 @@ impl StateRunner {
                                 previous_result.as_deref(),
                             );
 
-                            // Parity with the `TurnOutcome::ToolError` path
-                            // and the cache-replay Deny branch: emit
-                            // `StepFailed`, honor loop-detection on the
+                            // Parity with the `TurnOutcome::ToolError` path:
+                            // emit `StepFailed`, honor loop-detection on the
                             // identical `(tool, args, error)` tuple, and
                             // respect the `recovery_strategy` so repeated
                             // policy denials hit the same `MaxErrorsReached`
@@ -3834,8 +4402,7 @@ impl StateRunner {
                                 Some(ApprovalResult::Rejected) => {
                                     // Operator rejected: record a Replan
                                     // step and re-observe next iteration
-                                    // — matches the cache-replay branch
-                                    // and the legacy `StepOutcome::Replan`
+                                    // — matches the legacy `StepOutcome::Replan`
                                     // return from `execute_response`.
                                     self.state.steps.push(AgentStep {
                                         index: self.state.steps.len(),
@@ -4026,21 +4593,47 @@ impl StateRunner {
                         page_url: self.state.current_url.clone(),
                     });
                     self.advance_recorded_step_index();
+                    // Spec 3: push a `RecordedStep` parallel to the
+                    // `AgentStep` push so the extractor can read this
+                    // tool dispatch back at the next CompleteSubgoal
+                    // boundary. `world_model_pre` is the snapshot taken
+                    // before the iteration's observe + fetch (captured
+                    // at the top of the loop into `pre_dispatch_snapshot`);
+                    // `world_model_post` is the live world model now
+                    // that `update_continuity_after_tool_success` and
+                    // queued invalidations have applied.
+                    let tool_arguments_for_record = match &turn.action {
+                        AgentAction::ToolCall { arguments, .. } => arguments.clone(),
+                        _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
+                    };
+                    let pre_snapshot = self.pre_dispatch_snapshot.take().unwrap_or_else(|| {
+                        crate::agent::step_record::WorldModelSnapshot::from_world_model(
+                            &self.world_model,
+                        )
+                    });
+                    let post_snapshot =
+                        crate::agent::step_record::WorldModelSnapshot::from_world_model(
+                            &self.world_model,
+                        );
+                    self.recorded_steps.push(RecordedStep {
+                        tool_name: tool_name.clone(),
+                        arguments: tool_arguments_for_record,
+                        result_text: tool_body.clone(),
+                        world_model_pre: pre_snapshot,
+                        world_model_post: post_snapshot,
+                    });
                     previous_result = Some(tool_body.clone());
                     // Clear the loop-detection tracker on any success.
                     last_failure = None;
-                    // Emit the live StepCompleted event so subscribers see a
-                    // successful turn (cache-replay has its own emission in
-                    // `try_replay_cache`).
+                    // Emit StepCompleted so subscribers see a successful turn.
                     self.emit_event(AgentEvent::StepCompleted {
                         step_index: step_idx_for_event,
                         tool_name: tool_name.clone(),
                         summary: crate::agent::prompt::truncate_summary(&tool_body, 120),
                     })
                     .await;
-                    // Destructive-cap accounting on the live path. Mirrors
-                    // `AgentRunner::handle_step_outcome`'s cap branch. The
-                    // cache-replay path has the same guard inline.
+                    // Destructive-cap accounting mirrors
+                    // `AgentRunner::handle_step_outcome`'s cap branch.
                     if matches!(
                         self.maybe_halt_on_destructive_cap(&tool_name, &annotations_by_tool),
                         CapStatus::CapReached
@@ -4052,10 +4645,9 @@ impl StateRunner {
                     // Workflow-graph emission. Non-observation tools become
                     // nodes on `state.workflow`; the first node chains from
                     // `state.last_node_id` (seeded by `anchor_node_id` at
-                    // the top of `run`). Cache writes stamp the produced
-                    // node id into the cache entry's `produced_node_ids`
-                    // lineage so selective-delete can evict the right rows
-                    // later.
+                    // the top of `run`). Boundary extraction records produced
+                    // node ids into draft-skill lineage so selective-delete
+                    // can prune derived skills later.
                     let tool_arguments = match &turn.action {
                         AgentAction::ToolCall { arguments, .. } => arguments.clone(),
                         _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
@@ -4068,37 +4660,14 @@ impl StateRunner {
                             &annotations_by_tool,
                         )
                         .await;
-
-                    // Cache write. Mirrors the legacy filter: only cache
-                    // action tools, never observation / AX dispatch /
-                    // state-transition tools, and only when the page
-                    // fingerprint is non-empty.
-                    if self.config.use_cache
-                        && !is_observation_tool(&tool_name, &annotations_by_tool)
-                        && !is_ax_dispatch_tool(&tool_name)
-                        && !is_state_transition_tool(&tool_name)
-                        && !elements.is_empty()
-                    {
-                        match produced_node_id {
-                            Some(node_id) => {
-                                self.cache.store_with_node(
-                                    &goal,
-                                    &elements,
-                                    tool_name.clone(),
-                                    tool_arguments.clone(),
-                                    node_id,
-                                );
-                            }
-                            None => {
-                                self.cache.store(
-                                    &goal,
-                                    &elements,
-                                    tool_name.clone(),
-                                    tool_arguments.clone(),
-                                );
-                            }
-                        }
+                    // Spec 3: track every node produced inside each
+                    // active subgoal frame. Drained at
+                    // `complete_subgoal` so the extracted skill records
+                    // its `produced_node_ids` lineage.
+                    if let Some(node_id) = produced_node_id {
+                        self.record_produced_node_id(node_id);
                     }
+
                     // Auto-connect CDP after a successful `launch_app`
                     // / `focus_window` (Electron / Chrome targets only;
                     // native apps short-circuit inside the helper).
@@ -4152,9 +4721,7 @@ impl StateRunner {
                     self.state.consecutive_errors = self.consecutive_errors;
                     previous_result = Some(error.clone());
 
-                    // Emit StepFailed so subscribers see the failing turn;
-                    // the cache-replay policy-deny branch emits the same
-                    // event for its synthetic errors.
+                    // Emit StepFailed so subscribers see the failing turn.
                     self.emit_event(AgentEvent::StepFailed {
                         step_index: step_idx_for_event,
                         tool_name: tool_name.clone(),
@@ -4288,6 +4855,12 @@ impl StateRunner {
                     // `TurnOutcome::Done` already broke above — this
                     // arm is unreachable in practice but kept exhaustive
                     // so the matcher does not silently regress.
+                }
+                AgentAction::InvokeSkill { .. } => {
+                    // The replay engine appends its own per-step entries
+                    // through `dispatch_tool_call_through_helper`. The
+                    // outer transcript site has nothing to add for the
+                    // synthetic invoke_skill call itself.
                 }
             }
         }
@@ -4430,7 +5003,7 @@ mod builder_tests {
 
     #[test]
     fn with_events_stores_sender() {
-        let (tx, _rx) = mpsc::channel::<AgentEvent>(8);
+        let (tx, _rx) = mpsc::channel::<RunnerOutput>(8);
         let r = StateRunner::new_for_test("g".to_string()).with_events(tx);
         assert!(r.event_tx.is_some());
     }
@@ -4468,13 +5041,6 @@ mod builder_tests {
             Some(std::path::Path::new("/tmp/artifacts"))
         );
     }
-
-    #[test]
-    fn into_cache_returns_empty_cache_by_default() {
-        let r = StateRunner::new_for_test("g".to_string());
-        let cache = r.into_cache();
-        assert!(cache.entries.is_empty());
-    }
 }
 
 #[cfg(test)]
@@ -4492,58 +5058,6 @@ mod observe_tests {
             runner.task_state.phase,
             crate::agent::phase::Phase::Exploring
         );
-    }
-}
-
-#[cfg(test)]
-mod cache_gate_tests {
-    use super::*;
-    use crate::agent::task_state::{TaskStateMutation, WatchSlotName};
-
-    #[test]
-    fn replay_eligible_only_in_exploring_with_empty_state() {
-        let mut r = StateRunner::new_for_test("g".to_string());
-        r.observe();
-        assert!(r.is_replay_eligible());
-    }
-
-    #[test]
-    fn replay_not_eligible_with_active_subgoal() {
-        let mut r = StateRunner::new_for_test("g".to_string());
-        r.task_state
-            .apply(
-                &TaskStateMutation::PushSubgoal {
-                    text: "x".to_string(),
-                },
-                1,
-            )
-            .unwrap();
-        r.observe();
-        assert!(!r.is_replay_eligible());
-    }
-
-    #[test]
-    fn replay_not_eligible_with_active_watch_slot() {
-        let mut r = StateRunner::new_for_test("g".to_string());
-        r.task_state
-            .apply(
-                &TaskStateMutation::SetWatchSlot {
-                    name: WatchSlotName::PendingModal,
-                    note: "n".to_string(),
-                },
-                1,
-            )
-            .unwrap();
-        r.observe();
-        assert!(!r.is_replay_eligible());
-    }
-
-    #[test]
-    fn replay_not_eligible_when_recovering() {
-        let mut r = StateRunner::new_for_test("g".to_string());
-        r.consecutive_errors = 1;
-        r.observe();
-        assert!(!r.is_replay_eligible());
     }
 }
 
@@ -4962,6 +5476,66 @@ mod parse_agent_turn_tool_calls_tests {
         match turn.action {
             AgentAction::AgentDone { summary } => assert_eq!(summary, "logged in"),
             _ => panic!("expected agent_done"),
+        }
+    }
+
+    #[test]
+    fn maps_invoke_skill_pseudo_tool_to_invoke_skill_action() {
+        let msg = Message::assistant_tool_calls(vec![tc(
+            "tc1",
+            "invoke_skill",
+            json!({
+                "skill_id": "open_settings",
+                "version": 2,
+                "parameters": {"app": "Notes"}
+            }),
+        )]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        match turn.action {
+            AgentAction::InvokeSkill {
+                skill_id,
+                version,
+                parameters,
+            } => {
+                assert_eq!(skill_id, "open_settings");
+                assert_eq!(version, 2);
+                assert_eq!(parameters, json!({"app": "Notes"}));
+            }
+            other => panic!("expected invoke_skill, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn invoke_skill_missing_required_fields_replans() {
+        // Missing `version` — the parser cannot fabricate a sensible
+        // default, so degrades to a replan instead of dispatching a
+        // skill that won't resolve.
+        let msg = Message::assistant_tool_calls(vec![tc(
+            "tc1",
+            "invoke_skill",
+            json!({"skill_id": "open_settings"}),
+        )]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert!(matches!(turn.action, AgentAction::AgentReplan { .. }));
+    }
+
+    #[test]
+    fn invoke_skill_version_overflow_replans_instead_of_wrapping() {
+        let msg = Message::assistant_tool_calls(vec![tc(
+            "tc1",
+            "invoke_skill",
+            json!({
+                "skill_id": "open_settings",
+                "version": u64::from(u32::MAX) + 1,
+                "parameters": {}
+            }),
+        )]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        match turn.action {
+            AgentAction::AgentReplan { reason } => {
+                assert!(reason.contains("out of range"));
+            }
+            other => panic!("expected replan for overflow, got {:?}", other),
         }
     }
 
@@ -6086,8 +6660,8 @@ mod cdp_connect_status_tests {
 /// The gate (`episodic_run_start_retrieved`) replaces the drift-prone
 /// `step_index == 0` proxy; the helper (`advance_recorded_step_index`)
 /// is the single owner of `step_index` updates so the counter matches
-/// `state.steps.len()` across all recording paths (cache replay,
-/// synthetic skip, policy deny, approval reject, normal LLM turn).
+/// `state.steps.len()` across all recording paths (synthetic skip,
+/// policy deny, approval reject, normal LLM turn).
 #[cfg(test)]
 mod retrieval_gate_tests {
     use super::*;
@@ -6136,7 +6710,7 @@ mod retrieval_gate_tests {
 
         // Second call with no Recovering transition: must skip
         // entirely. Previously `step_index == 0` would have re-fired
-        // RunStart on cache-replay / policy-deny early-continue paths.
+        // RunStart on policy-deny early-continue paths.
         // Force `step_index` back to 0 to prove the gate (not the
         // counter) is what blocks re-fire.
         r.step_index = 0;
@@ -6179,8 +6753,7 @@ mod retrieval_gate_tests {
 
     #[tokio::test]
     async fn record_policy_deny_failure_sets_stable_kind() {
-        // Both cached-deny and live-deny branches funnel through
-        // this helper, and the snapshot derived from
+        // Policy-deny branches funnel through this helper, and the snapshot derived from
         // `last_failed_*` populates `FailureSignature` on the
         // eventual write. The `error_kind` must be the stable
         // snake_case `policy_denied`, not a free-form string.
@@ -6246,6 +6819,151 @@ mod retrieval_gate_tests {
     }
 }
 
+#[cfg(test)]
+mod skills_apply_mutations_tests {
+    //! Spec 3 Phase 3 unit tests for the runner-side scratch fields
+    //! populated by `apply_mutations`.
+
+    use super::*;
+    use crate::agent::world_model::{AppKind, FocusedApp, Fresh, FreshnessSource};
+
+    fn focused_app(name: &str) -> Fresh<FocusedApp> {
+        Fresh {
+            value: FocusedApp {
+                name: name.to_string(),
+                kind: AppKind::Native,
+                pid: 1,
+            },
+            written_at: 0,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: None,
+        }
+    }
+
+    #[test]
+    fn push_subgoal_records_id_and_push_idx() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.apply_mutations(&[TaskStateMutation::PushSubgoal {
+            text: "open chat".into(),
+        }]);
+        assert_eq!(r.last_pushed_subgoal_ids.len(), 1);
+        assert_eq!(r.push_idx_stack.len(), 1);
+        assert_eq!(r.push_idx_stack[0], 0); // recorded_steps was empty
+        assert_eq!(r.push_signature_stack.len(), 1);
+        assert_eq!(r.produced_node_ids_stack.len(), 1);
+        assert!(r.produced_node_ids_stack[0].is_empty());
+    }
+
+    #[test]
+    fn complete_subgoal_drains_push_idx_into_extraction_queue() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.apply_mutations(&[TaskStateMutation::PushSubgoal {
+            text: "open chat".into(),
+        }]);
+        r.apply_mutations(&[TaskStateMutation::CompleteSubgoal {
+            summary: "done".into(),
+        }]);
+        assert!(r.push_idx_stack.is_empty(), "push_idx popped on complete");
+        assert!(
+            r.push_signature_stack.is_empty(),
+            "push signature popped on complete"
+        );
+        assert_eq!(
+            r.completed_subgoal_extraction_queue.len(),
+            1,
+            "extraction queue carries the completed milestone",
+        );
+    }
+
+    #[test]
+    fn complete_subgoal_carries_push_time_signature() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.world_model.focused_app = Some(focused_app("Finder"));
+        let push_sig = crate::agent::skills::signature::compute_subgoal_signature(
+            "open inbox",
+            &r.world_model,
+        );
+
+        r.apply_mutations(&[TaskStateMutation::PushSubgoal {
+            text: "open inbox".into(),
+        }]);
+        r.world_model.focused_app = Some(focused_app("Mail"));
+        let completion_sig = crate::agent::skills::signature::compute_subgoal_signature(
+            "open inbox",
+            &r.world_model,
+        );
+        r.apply_mutations(&[TaskStateMutation::CompleteSubgoal {
+            summary: "done".into(),
+        }]);
+
+        let (_, _, queued_sig, _) = r
+            .completed_subgoal_extraction_queue
+            .first()
+            .expect("queued extraction");
+        assert_eq!(queued_sig, &push_sig);
+        assert_ne!(queued_sig, &completion_sig);
+    }
+
+    #[test]
+    fn last_pushed_subgoal_ids_cleared_each_batch() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.apply_mutations(&[TaskStateMutation::PushSubgoal {
+            text: "first".into(),
+        }]);
+        r.apply_mutations(&[]); // empty batch — should still clear
+        assert!(r.last_pushed_subgoal_ids.is_empty());
+    }
+
+    #[test]
+    fn nested_subgoals_queue_produced_nodes_per_frame() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        let outer_node = uuid::Uuid::new_v4();
+        let inner_node = uuid::Uuid::new_v4();
+        let after_inner_node = uuid::Uuid::new_v4();
+
+        r.apply_mutations(&[TaskStateMutation::PushSubgoal {
+            text: "outer".into(),
+        }]);
+        r.record_produced_node_id(outer_node);
+
+        r.apply_mutations(&[TaskStateMutation::PushSubgoal {
+            text: "inner".into(),
+        }]);
+        r.record_produced_node_id(inner_node);
+
+        r.apply_mutations(&[TaskStateMutation::CompleteSubgoal {
+            summary: "inner done".into(),
+        }]);
+        r.record_produced_node_id(after_inner_node);
+
+        r.apply_mutations(&[TaskStateMutation::CompleteSubgoal {
+            summary: "outer done".into(),
+        }]);
+
+        assert!(r.produced_node_ids_stack.is_empty());
+        assert_eq!(r.completed_subgoal_extraction_queue.len(), 2);
+        assert_eq!(
+            r.completed_subgoal_extraction_queue[0].3,
+            vec![inner_node],
+            "inner frame only records nodes produced after the inner push",
+        );
+        assert_eq!(
+            r.completed_subgoal_extraction_queue[1].3,
+            vec![outer_node, inner_node, after_inner_node],
+            "outer frame records every node produced while it was active",
+        );
+    }
+
+    #[test]
+    fn complete_with_empty_stack_records_warning_not_panic() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        let warnings = r.apply_mutations(&[TaskStateMutation::CompleteSubgoal {
+            summary: "done".into(),
+        }]);
+        assert!(!warnings.is_empty());
+    }
+}
+
 /// Test-only re-exports for Task 3a.6 unit tests that need access to the
 /// otherwise-private CDP classifier helpers. Keeps the helpers private on
 /// the production surface while letting the integration tests exercise
@@ -6284,5 +7002,229 @@ pub(crate) mod test_support {
         mcp: &M,
     ) {
         runner.finalize_cdp_connected(app_name, cdp_port, mcp).await;
+    }
+}
+
+#[cfg(test)]
+mod dispatch_skill_tests {
+    //! Phase 4 lookup-and-validate coverage for `StateRunner::dispatch_skill`.
+    //! The per-step expansion (Task 4.3+) is deferred; these tests pin
+    //! the foundation so the resume seam stays stable.
+
+    use super::*;
+    use crate::agent::skills::types::{
+        ApplicabilityHints, ApplicabilitySignature, ExpectedWorldModelDelta, OutcomePredicate,
+        ParameterSlot, ProvenanceEntry, Skill, SkillState, SkillStats, SubgoalSignature,
+    };
+    use crate::agent::skills::{ActionSketchStep, SkillIndex, SkillScope};
+    use chrono::Utc;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
+
+    fn make_skill(id: &str, version: u32, state: SkillState, schema: Vec<ParameterSlot>) -> Skill {
+        let now = Utc::now();
+        Skill {
+            id: id.to_string(),
+            version,
+            state,
+            scope: SkillScope::ProjectLocal,
+            name: format!("Skill {id}"),
+            description: "test skill".to_string(),
+            tags: vec![],
+            subgoal_text: "open the file".to_string(),
+            subgoal_signature: SubgoalSignature("sg".to_string()),
+            applicability: ApplicabilityHints {
+                apps: vec![],
+                hosts: vec![],
+                signature: ApplicabilitySignature("app".to_string()),
+            },
+            parameter_schema: schema,
+            action_sketch: vec![ActionSketchStep::ToolCall {
+                tool: "noop".to_string(),
+                args: serde_json::json!({}),
+                captures_pre: vec![],
+                captures: vec![],
+                expected_world_model_delta: ExpectedWorldModelDelta::default(),
+            }],
+            outputs: vec![],
+            outcome_predicate: OutcomePredicate::SubgoalCompleted {
+                post_state_world_model_signature: None,
+            },
+            provenance: vec![ProvenanceEntry {
+                run_id: uuid::Uuid::new_v4().to_string(),
+                step_index: 0,
+                completed_at: now,
+                workflow_hash: "h".to_string(),
+            }],
+            stats: SkillStats {
+                occurrence_count: 1,
+                success_rate: 0.5,
+                last_seen_at: Some(now),
+                last_invoked_at: None,
+            },
+            edited_by_user: false,
+            created_at: now,
+            updated_at: now,
+            produced_node_ids: vec![],
+            body: "# Test\n".to_string(),
+        }
+    }
+
+    fn tool_step(tool: &str) -> ActionSketchStep {
+        ActionSketchStep::ToolCall {
+            tool: tool.to_string(),
+            args: serde_json::json!({}),
+            captures_pre: vec![],
+            captures: vec![],
+            expected_world_model_delta: ExpectedWorldModelDelta::default(),
+        }
+    }
+
+    fn slot(name: &str, type_tag: &str, default: Option<serde_json::Value>) -> ParameterSlot {
+        ParameterSlot {
+            name: name.to_string(),
+            type_tag: type_tag.to_string(),
+            description: None,
+            default,
+            enum_values: None,
+        }
+    }
+
+    fn fresh_runner_with_skill(
+        skill: Option<Skill>,
+    ) -> (StateRunner, mpsc::Receiver<RunnerOutput>, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let mut runner = StateRunner::new_for_test_with_skills(
+            "test goal".to_string(),
+            tmp.path().to_path_buf(),
+        );
+        let embedder = Arc::new(crate::agent::episodic::HashedShingleEmbedder::default());
+        let mut index = SkillIndex::empty(embedder);
+        if let Some(s) = skill {
+            index.upsert(s);
+        }
+        runner.skill_index = Arc::new(parking_lot::RwLock::new(index));
+        let (tx, rx) = mpsc::channel(16);
+        runner.event_tx = Some(tx);
+        (runner, rx, tmp)
+    }
+
+    #[test]
+    fn single_step_bridge_rejects_multi_step_skill_before_partial_dispatch() {
+        let mut skill = make_skill("multi", 1, SkillState::Confirmed, vec![]);
+        skill.action_sketch = vec![tool_step("first"), tool_step("second")];
+        let frame = SkillFrame::new(Arc::new(skill), serde_json::json!({}));
+
+        match StateRunner::skill_frame_to_single_step_action(&frame) {
+            AgentAction::AgentReplan { reason } => {
+                assert!(
+                    reason.contains("2 replay steps"),
+                    "reason should explain unsupported multi-step replay: {reason}"
+                );
+            }
+            other => panic!("expected fail-closed replan, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn single_step_bridge_dispatches_exactly_one_tool_step() {
+        let skill = make_skill("single", 3, SkillState::Confirmed, vec![]);
+        let frame = SkillFrame::new(Arc::new(skill), serde_json::json!({}));
+
+        match StateRunner::skill_frame_to_single_step_action(&frame) {
+            AgentAction::ToolCall {
+                tool_name,
+                tool_call_id,
+                ..
+            } => {
+                assert_eq!(tool_name, "noop");
+                assert_eq!(tool_call_id, "skill-single-v3-step-0");
+            }
+            other => panic!("expected single-step tool call, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_id_yields_replan_naming_the_id() {
+        let (mut runner, _rx, _tmp) = fresh_runner_with_skill(None);
+        let err = runner
+            .dispatch_skill("never_extracted", 1, serde_json::json!({}))
+            .await
+            .expect_err("missing skill must fail");
+        assert!(err.contains("never_extracted"), "reason: {err}");
+    }
+
+    #[tokio::test]
+    async fn draft_state_is_rejected() {
+        let skill = make_skill("draftish", 1, SkillState::Draft, vec![]);
+        let (mut runner, _rx, _tmp) = fresh_runner_with_skill(Some(skill));
+        let err = runner
+            .dispatch_skill("draftish", 1, serde_json::json!({}))
+            .await
+            .expect_err("draft must not invoke");
+        assert!(err.contains("draft"), "reason: {err}");
+    }
+
+    #[tokio::test]
+    async fn invalid_parameters_yield_replan() {
+        let skill = make_skill(
+            "needs_count",
+            1,
+            SkillState::Confirmed,
+            vec![slot("count", "integer", None)],
+        );
+        let (mut runner, _rx, _tmp) = fresh_runner_with_skill(Some(skill));
+        let err = runner
+            .dispatch_skill("needs_count", 1, serde_json::json!({}))
+            .await
+            .expect_err("missing required field must fail");
+        assert!(err.contains("count"), "reason: {err}");
+    }
+
+    #[tokio::test]
+    async fn confirmed_emits_invoked_event_and_marks_invoked() {
+        let skill = make_skill(
+            "confirm_ok",
+            2,
+            SkillState::Confirmed,
+            vec![slot("name", "string", None)],
+        );
+        let (mut runner, mut rx, _tmp) = fresh_runner_with_skill(Some(skill));
+        let frame = runner
+            .dispatch_skill("confirm_ok", 2, serde_json::json!({"name": "x"}))
+            .await
+            .expect("confirmed skill should resolve");
+        assert_eq!(frame.skill.id, "confirm_ok");
+        assert_eq!(frame.skill.version, 2);
+        assert_eq!(frame.next_step, 0);
+
+        let stamped = runner
+            .skill_index
+            .read()
+            .get("confirm_ok", 2)
+            .unwrap()
+            .stats
+            .last_invoked_at;
+        assert!(stamped.is_some());
+
+        let event = rx
+            .try_recv()
+            .expect("SkillInvoked must be emitted")
+            .into_event()
+            .expect("SkillInvoked must be a durable event");
+        match event {
+            AgentEvent::SkillInvoked {
+                skill_id,
+                version,
+                parameter_count,
+                ..
+            } => {
+                assert_eq!(skill_id, "confirm_ok");
+                assert_eq!(version, 2);
+                assert_eq!(parameter_count, 1);
+            }
+            other => panic!("expected SkillInvoked, got {:?}", other),
+        }
     }
 }

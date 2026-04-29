@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useWalkthrough } from "../hooks/useWalkthrough";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
@@ -7,6 +7,7 @@ import type { AppKind, WalkthroughAction } from "../bindings";
 import { APP_KIND_LABELS, usesCdp } from "../utils/appKind";
 import { ImageLightbox, CrosshairOverlay, type LightboxImage } from "./ImageLightbox";
 import { computeAppGroups, type AppGroup, type RenderItem } from "../utils/walkthroughGrouping";
+import { applyAnnotationsToDraft } from "../utils/walkthroughDraft";
 import {
   ACTIONABLE_AX_ROLES,
   actionIcon,
@@ -22,6 +23,24 @@ import {
 
 const DND_GROUP_INDEX = "application/x-group-index";
 
+type SavedWalkthroughSkill = {
+  id: string;
+  version: number;
+  name: string;
+};
+
+function commandErrorMessage(error: unknown): string {
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 function groupBorderStyle(group: AppGroup): React.CSSProperties {
   return group.appName
     ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" }
@@ -31,10 +50,93 @@ function groupBorderStyle(group: AppGroup): React.CSSProperties {
 export function WalkthroughPanel() {
   const walkthrough = useWalkthrough();
   const assistantOpen = useStore((s) => s.assistantOpen);
+  const projectPath = useStore((s) => s.projectPath);
+  const workflow = useStore((s) => s.workflow);
+  const storeTraces = useStore((s) => s.storeTraces);
+  const skillsEnabled = useStore((s) => s.skillsEnabled);
+  const skillsGlobalParticipation = useStore((s) => s.skillsGlobalParticipation);
+  const loadSkillsForPanel = useStore((s) => s.loadSkillsForPanel);
 
   const [lightboxActionId, setLightboxActionId] = useState<string | null>(null);
   const [crosshairs, setCrosshairs] = useState<Map<string, { xPercent: number; yPercent: number }>>(new Map());
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [saveSkillState, setSaveSkillState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveSkillMessage, setSaveSkillMessage] = useState<string | null>(null);
+
+  const canSaveAsSkill =
+    skillsEnabled &&
+    storeTraces &&
+    Boolean(walkthrough.sessionId) &&
+    walkthrough.actions.some((action) => !action.candidate);
+
+  const saveAsSkill = useCallback(async () => {
+    if (!walkthrough.sessionId || !canSaveAsSkill) return;
+    setSaveSkillState("saving");
+    setSaveSkillMessage(null);
+    try {
+      const reviewedDraft = walkthrough.draft
+        ? (() => {
+            const { nodes, edges } = applyAnnotationsToDraft(
+              walkthrough.draft,
+              walkthrough.annotations,
+              walkthrough.actions,
+              walkthrough.actionNodeMap,
+              walkthrough.nodeOrder,
+            );
+            return {
+              ...walkthrough.draft,
+              id: workflow.id,
+              name: workflow.name,
+              nodes,
+              edges,
+            };
+          })()
+        : null;
+      const skill = await invoke<SavedWalkthroughSkill>("save_walkthrough_as_skill", {
+        request: {
+          session_id: walkthrough.sessionId,
+          project_path: projectPath,
+          workflow_name: workflow.name,
+          workflow_id: workflow.id,
+          reviewed_draft: reviewedDraft,
+          reviewed_actions: walkthrough.actions,
+          store_traces: storeTraces,
+        },
+      });
+      setSaveSkillState("saved");
+      setSaveSkillMessage(`Saved ${skill.name}`);
+      await loadSkillsForPanel({
+        projectPath,
+        workflowName: workflow.name,
+        workflowId: workflow.id,
+        includeGlobal: skillsGlobalParticipation,
+        storeTraces,
+      }).catch(() => {});
+    } catch (error) {
+      setSaveSkillState("error");
+      setSaveSkillMessage(commandErrorMessage(error));
+    }
+  }, [
+    canSaveAsSkill,
+    loadSkillsForPanel,
+    projectPath,
+    storeTraces,
+    skillsEnabled,
+    skillsGlobalParticipation,
+    walkthrough.sessionId,
+    walkthrough.actionNodeMap,
+    walkthrough.actions,
+    walkthrough.annotations,
+    walkthrough.draft,
+    walkthrough.nodeOrder,
+    workflow.id,
+    workflow.name,
+  ]);
+
+  useEffect(() => {
+    setSaveSkillState("idle");
+    setSaveSkillMessage(null);
+  }, [walkthrough.sessionId]);
 
   // Pointer-based item drag state
   type ItemDrag = {
@@ -667,8 +769,24 @@ export function WalkthroughPanel() {
         >
           Cancel
         </button>
+        <button
+          onClick={saveAsSkill}
+          disabled={!canSaveAsSkill || saveSkillState === "saving"}
+          className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] disabled:opacity-40"
+        >
+          {saveSkillState === "saving" ? "Saving..." : "Save as Skill"}
+        </button>
         {allDeleted && (
           <span className="text-[10px] text-[var(--text-muted)]">All steps deleted</span>
+        )}
+        {saveSkillMessage && (
+          <span
+            className={`truncate text-[10px] ${
+              saveSkillState === "error" ? "text-red-400" : "text-[var(--text-muted)]"
+            }`}
+          >
+            {saveSkillMessage}
+          </span>
         )}
         <button
           onClick={walkthrough.applyDraftToCanvas}

@@ -224,7 +224,6 @@ async fn agent_executes_single_click_and_completes() {
     let config = AgentConfig {
         max_steps: 10,
         build_workflow: true,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -232,7 +231,7 @@ async fn agent_executes_single_click_and_completes() {
     let workflow = clickweave_core::Workflow::new("Test Workflow");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -280,7 +279,6 @@ async fn agent_stops_at_max_steps() {
     let config = AgentConfig {
         max_steps: 3,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -288,7 +286,7 @@ async fn agent_stops_at_max_steps() {
     let workflow = clickweave_core::Workflow::new("Test Workflow");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -325,7 +323,6 @@ async fn agent_handles_text_only_response() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -333,7 +330,7 @@ async fn agent_handles_text_only_response() {
     let workflow = clickweave_core::Workflow::new("Test Workflow");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -372,7 +369,6 @@ async fn agent_replan_does_not_complete() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -380,7 +376,7 @@ async fn agent_replan_does_not_complete() {
     let workflow = clickweave_core::Workflow::new("Test Workflow");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -410,7 +406,6 @@ async fn agent_state_reports_completed_reason_on_done() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -418,7 +413,7 @@ async fn agent_state_reports_completed_reason_on_done() {
     let workflow = clickweave_core::Workflow::new("Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -454,7 +449,6 @@ async fn agent_state_reports_max_steps_reason() {
     let config = AgentConfig {
         max_steps: 3,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -462,7 +456,7 @@ async fn agent_state_reports_max_steps_reason() {
     let workflow = clickweave_core::Workflow::new("Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -544,7 +538,6 @@ async fn agent_state_reports_max_errors_reason() {
         max_steps: 30,
         max_consecutive_errors: 3,
         build_workflow: false,
-        use_cache: false,
         consecutive_destructive_cap: 0,
         allow_focus_window: true,
         ..AgentConfig::default()
@@ -554,7 +547,7 @@ async fn agent_state_reports_max_errors_reason() {
     let workflow = clickweave_core::Workflow::new("Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -633,7 +626,6 @@ async fn agent_state_reports_loop_detected_on_identical_repeat_failure() {
         max_steps: 30,
         max_consecutive_errors: 10, // high enough that MaxErrorsReached can't be what fires
         build_workflow: false,
-        use_cache: false,
         consecutive_destructive_cap: 0,
         allow_focus_window: true,
         ..AgentConfig::default()
@@ -643,7 +635,7 @@ async fn agent_state_reports_loop_detected_on_identical_repeat_failure() {
     let workflow = clickweave_core::Workflow::new("Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -685,7 +677,6 @@ async fn approval_success_allows_execution() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -706,7 +697,7 @@ async fn approval_success_allows_execution() {
     let workflow = clickweave_core::Workflow::new("Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -738,7 +729,6 @@ async fn approval_rejection_triggers_replan() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -759,7 +749,7 @@ async fn approval_rejection_triggers_replan() {
     let workflow = clickweave_core::Workflow::new("Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -792,7 +782,6 @@ async fn approval_channel_failure_terminates_agent() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -808,7 +797,7 @@ async fn approval_channel_failure_terminates_agent() {
     let workflow = clickweave_core::Workflow::new("Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -926,7 +915,6 @@ async fn append_assistant_message_strips_reasoning_content_from_transcript() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -934,7 +922,7 @@ async fn append_assistant_message_strips_reasoning_content_from_transcript() {
     let workflow = clickweave_core::Workflow::new("Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -970,282 +958,6 @@ async fn append_assistant_message_strips_reasoning_content_from_transcript() {
         "transcript assistant messages must not carry reasoning_content; \
          found {} message(s) with it set",
         assistant_msgs_with_reasoning.len()
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Cache replay creates workflow nodes
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn cache_replay_creates_workflow_nodes() {
-    // Populate a cache with a "click" decision for a known page state.
-    let mut cache = AgentCache::default();
-    let elements = vec![clickweave_core::cdp::CdpFindElementMatch {
-        uid: "1_0".to_string(),
-        role: "button".to_string(),
-        label: "Submit".to_string(),
-        tag: "button".to_string(),
-        disabled: false,
-        parent_role: None,
-        parent_name: None,
-    }];
-    cache.store(
-        "Click the submit button",
-        &elements,
-        "click".to_string(),
-        serde_json::json!({"x": 100, "y": 200}),
-    );
-
-    // LLM should only be called for the done step (cache handles the click).
-    let agent_llm = MockAgent::new(vec![MockAgent::done_response(
-        "Clicked the submit button via cache",
-    )]);
-
-    // MCP returns the same elements page for cdp_find_elements, then "ok" for the click.
-    let mcp_results = vec![
-        // cdp_find_elements for step 0 observation
-        ToolCallResult {
-            content: vec![ToolContent::Text {
-                text: serde_json::json!({
-                    "page_url": "https://example.com",
-                    "source": "cdp",
-                    "matches": [{
-                        "uid": "1_0",
-                        "role": "button",
-                        "label": "Submit",
-                        "tag": "button"
-                    }]
-                })
-                .to_string(),
-            }],
-            is_error: None,
-        },
-        // click result for cached replay
-        ToolCallResult {
-            content: vec![ToolContent::Text {
-                text: "Clicked at (100, 200)".to_string(),
-            }],
-            is_error: None,
-        },
-        // cdp_find_elements for step 1 observation (after cache replay)
-        ToolCallResult {
-            content: vec![ToolContent::Text {
-                text: serde_json::json!({
-                    "page_url": "https://example.com/success",
-                    "source": "cdp",
-                    "matches": [{
-                        "uid": "2_0",
-                        "role": "heading",
-                        "label": "Success",
-                        "tag": "h1"
-                    }]
-                })
-                .to_string(),
-            }],
-            is_error: None,
-        },
-    ];
-    let tools = vec![serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": "click",
-            "description": "Click at coordinates",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "x": {"type": "number"},
-                    "y": {"type": "number"}
-                },
-                "required": ["x", "y"]
-            }
-        }
-    })];
-    let mcp = MockMcp::new(mcp_results, tools);
-
-    let config = AgentConfig {
-        max_steps: 10,
-        build_workflow: true,
-        use_cache: true,
-        ..Default::default()
-    };
-
-    let runner = StateRunner::new("Click the submit button".to_string(), config).with_cache(cache);
-    let workflow = clickweave_core::Workflow::new("Cache Replay Test");
-    let mcp_tools = mcp.tools_as_openai();
-
-    let (state, _cache) = runner
-        .run(
-            &agent_llm,
-            &mcp,
-            "Click the submit button".to_string(),
-            workflow,
-            mcp_tools,
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert!(state.completed);
-    // The cache-replayed click should produce a workflow node.
-    assert!(
-        !state.workflow.nodes.is_empty(),
-        "Cache replay should create at least one workflow node"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Cache replay reconstructs transcript
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn cache_replay_reconstructs_transcript() {
-    // Populate a cache with a "click" decision.
-    let mut cache = AgentCache::default();
-    let elements = vec![clickweave_core::cdp::CdpFindElementMatch {
-        uid: "1_0".to_string(),
-        role: "button".to_string(),
-        label: "Submit".to_string(),
-        tag: "button".to_string(),
-        disabled: false,
-        parent_role: None,
-        parent_name: None,
-    }];
-    cache.store(
-        "Click the submit button",
-        &elements,
-        "click".to_string(),
-        serde_json::json!({"x": 100, "y": 200}),
-    );
-
-    // Capture the messages passed to the LLM on each call.
-    let captured = Arc::new(Mutex::new(Vec::<Vec<Message>>::new()));
-    let agent_llm = CapturingMockAgent::new(
-        vec![MockAgent::done_response("Done via cache")],
-        captured.clone(),
-    );
-
-    let mcp_results = vec![
-        // cdp_find_elements for step 0
-        ToolCallResult {
-            content: vec![ToolContent::Text {
-                text: serde_json::json!({
-                    "page_url": "https://example.com",
-                    "source": "cdp",
-                    "matches": [{
-                        "uid": "1_0",
-                        "role": "button",
-                        "label": "Submit",
-                        "tag": "button"
-                    }]
-                })
-                .to_string(),
-            }],
-            is_error: None,
-        },
-        // click result for cached replay
-        ToolCallResult {
-            content: vec![ToolContent::Text {
-                text: "Clicked at (100, 200)".to_string(),
-            }],
-            is_error: None,
-        },
-        // cdp_find_elements for step 1
-        ToolCallResult {
-            content: vec![ToolContent::Text {
-                text: serde_json::json!({
-                    "page_url": "https://example.com/next",
-                    "source": "cdp",
-                    "matches": [{
-                        "uid": "2_0",
-                        "role": "heading",
-                        "label": "Next Page",
-                        "tag": "h1"
-                    }]
-                })
-                .to_string(),
-            }],
-            is_error: None,
-        },
-    ];
-    let tools = vec![serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": "click",
-            "description": "Click at coordinates",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "x": {"type": "number"},
-                    "y": {"type": "number"}
-                },
-                "required": ["x", "y"]
-            }
-        }
-    })];
-    let mcp = MockMcp::new(mcp_results, tools);
-
-    let config = AgentConfig {
-        max_steps: 10,
-        build_workflow: false,
-        use_cache: true,
-        ..Default::default()
-    };
-
-    let runner = StateRunner::new("Click the submit button".to_string(), config).with_cache(cache);
-    let workflow = clickweave_core::Workflow::new("Transcript Test");
-    let mcp_tools = mcp.tools_as_openai();
-
-    let (state, _cache) = runner
-        .run(
-            &agent_llm,
-            &mcp,
-            "Click the submit button".to_string(),
-            workflow,
-            mcp_tools,
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert!(state.completed);
-
-    // The LLM should have been called once (for the done step, after cache
-    // replay). The messages passed should include the reconstructed assistant
-    // tool_call and the tool result from the cached click.
-    let calls = captured.lock().unwrap();
-    assert_eq!(
-        calls.len(),
-        1,
-        "LLM should be called once after cache replay"
-    );
-
-    let messages = &calls[0];
-
-    // Find the assistant message with tool_calls for the cached click
-    let has_assistant_tool_call = messages.iter().any(|m| {
-        m.role == Role::Assistant
-            && m.tool_calls
-                .as_ref()
-                .map(|tcs| tcs.iter().any(|tc| tc.function.name == "click"))
-                .unwrap_or(false)
-    });
-    assert!(
-        has_assistant_tool_call,
-        "Transcript should contain an assistant tool_call message for the cached click"
-    );
-
-    // Find the tool result message for the cached click
-    let has_tool_result = messages.iter().any(|m| {
-        m.role == Role::Tool
-            && m.tool_call_id
-                .as_ref()
-                .map(|id| id.starts_with("cache-"))
-                .unwrap_or(false)
-    });
-    assert!(
-        has_tool_result,
-        "Transcript should contain a tool result message for the cached click"
     );
 }
 
@@ -1290,7 +1002,6 @@ async fn multi_tool_response_only_executes_first() {
     let config = AgentConfig {
         max_steps: 10,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -1298,7 +1009,7 @@ async fn multi_tool_response_only_executes_first() {
     let workflow = clickweave_core::Workflow::new("Multi-tool Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -1371,7 +1082,6 @@ async fn malformed_tool_call_json_returns_error() {
     let config = AgentConfig {
         max_steps: 10,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -1379,7 +1089,7 @@ async fn malformed_tool_call_json_returns_error() {
     let workflow = clickweave_core::Workflow::new("Malformed JSON Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -1500,7 +1210,6 @@ async fn retained_history_stays_bounded_across_snapshot_heavy_steps() {
     let config = AgentConfig {
         max_steps: 10,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -1508,7 +1217,7 @@ async fn retained_history_stays_bounded_across_snapshot_heavy_steps() {
     let workflow = clickweave_core::Workflow::new("Snapshot-heavy Test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -1861,7 +1570,6 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -1872,7 +1580,7 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
     let mcp_tools = mcp.tools_as_openai();
     let tool_count_at_start = mcp_tools.len();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -2136,7 +1844,6 @@ async fn vlm_yes_verdict_completes_run_normally() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -2144,12 +1851,12 @@ async fn vlm_yes_verdict_completes_run_normally() {
     let workflow = clickweave_core::Workflow::new("VLM YES test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(16);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(16);
     let runner = StateRunner::new("Open settings".to_string(), config)
         .with_vision(vlm)
         .with_events(event_tx);
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &*agent_backend,
             &mcp,
@@ -2174,6 +1881,9 @@ async fn vlm_yes_verdict_completes_run_normally() {
     let mut saw_goal_complete = false;
     let mut saw_disagreement = false;
     while let Ok(ev) = event_rx.try_recv() {
+        let Some(ev) = ev.into_event() else {
+            continue;
+        };
         match ev {
             AgentEvent::GoalComplete { .. } => saw_goal_complete = true,
             AgentEvent::CompletionDisagreement { .. } => saw_disagreement = true,
@@ -2205,11 +1915,10 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(16);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(16);
     let vlm: Arc<dyn DynChatBackend> = agent_backend.clone();
     let runner = StateRunner::new("Open settings".to_string(), config)
         .with_vision(vlm)
@@ -2217,7 +1926,7 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
     let workflow = clickweave_core::Workflow::new("VLM NO test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &*agent_backend,
             &mcp,
@@ -2244,6 +1953,9 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
     let mut disagreement_payload: Option<(String, String, String)> = None;
     let mut saw_goal_complete = false;
     while let Ok(ev) = event_rx.try_recv() {
+        let Some(ev) = ev.into_event() else {
+            continue;
+        };
         match ev {
             AgentEvent::CompletionDisagreement {
                 screenshot_b64,
@@ -2287,7 +1999,6 @@ async fn vlm_check_falls_through_when_reply_is_empty() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -2296,7 +2007,7 @@ async fn vlm_check_falls_through_when_reply_is_empty() {
     let workflow = clickweave_core::Workflow::new("VLM empty reply fallback");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &*agent_backend,
             &mcp,
@@ -2341,7 +2052,6 @@ async fn vlm_check_falls_through_when_screenshot_fails() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
@@ -2350,7 +2060,7 @@ async fn vlm_check_falls_through_when_screenshot_fails() {
     let workflow = clickweave_core::Workflow::new("VLM error fallback");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &*agent_backend,
             &mcp,
@@ -2495,7 +2205,6 @@ async fn policy_deny_fails_step_without_prompting() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
     let runner = StateRunner::new("Click".to_string(), config)
@@ -2505,7 +2214,7 @@ async fn policy_deny_fails_step_without_prompting() {
     let workflow = clickweave_core::Workflow::new("Deny test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -2555,7 +2264,6 @@ async fn policy_allow_skips_approval_prompt() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
     let runner = StateRunner::new("Click".to_string(), config)
@@ -2565,7 +2273,7 @@ async fn policy_allow_skips_approval_prompt() {
     let workflow = clickweave_core::Workflow::new("Allow test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -2617,7 +2325,6 @@ async fn destructive_guardrail_still_prompts_when_tool_allowed() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
     let runner = StateRunner::new("Delete".to_string(), config)
@@ -2627,7 +2334,7 @@ async fn destructive_guardrail_still_prompts_when_tool_allowed() {
     let workflow = clickweave_core::Workflow::new("Guardrail test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (_state, _cache) = runner
+    let _state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -2713,7 +2420,6 @@ async fn consecutive_destructive_cap_halts_after_three_calls() {
     let config = AgentConfig {
         max_steps: 10,
         build_workflow: false,
-        use_cache: false,
         consecutive_destructive_cap: 3,
         ..Default::default()
     };
@@ -2724,7 +2430,7 @@ async fn consecutive_destructive_cap_halts_after_three_calls() {
     let workflow = clickweave_core::Workflow::new("Cap test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -2758,6 +2464,9 @@ async fn consecutive_destructive_cap_halts_after_three_calls() {
     // `try_recv` reports Empty.
     let mut found = false;
     while let Ok(event) = event_rx.try_recv() {
+        let Some(event) = event.into_event() else {
+            continue;
+        };
         if let AgentEvent::ConsecutiveDestructiveCapHit {
             recent_tool_names,
             cap,
@@ -2841,7 +2550,6 @@ async fn non_destructive_tool_resets_consecutive_destructive_counter() {
     let config = AgentConfig {
         max_steps: 10,
         build_workflow: false,
-        use_cache: false,
         consecutive_destructive_cap: 3,
         ..Default::default()
     };
@@ -2852,7 +2560,7 @@ async fn non_destructive_tool_resets_consecutive_destructive_counter() {
     let workflow = clickweave_core::Workflow::new("Cap reset test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -2903,7 +2611,6 @@ async fn consecutive_destructive_cap_of_zero_disables_feature() {
     let config = AgentConfig {
         max_steps: 10,
         build_workflow: false,
-        use_cache: false,
         consecutive_destructive_cap: 0,
         ..Default::default()
     };
@@ -2914,7 +2621,7 @@ async fn consecutive_destructive_cap_of_zero_disables_feature() {
     let workflow = clickweave_core::Workflow::new("Cap-zero test");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -2946,8 +2653,8 @@ async fn consecutive_destructive_cap_of_zero_disables_feature() {
 // These exercise the full `AgentChannels` contract end-to-end: a harness
 // task plays the role the Tauri forwarders play in production, and the
 // assertions verify the engine responds to realistic sequences of events
-// (stop-during-approval, cache replay through the approval gate, empty-
-// elements native paths, tool-mapping misses, cross-run event draining).
+// (stop-during-approval, empty-elements native paths, tool-mapping misses,
+// cross-run event draining).
 // ---------------------------------------------------------------------------
 
 mod coordination;

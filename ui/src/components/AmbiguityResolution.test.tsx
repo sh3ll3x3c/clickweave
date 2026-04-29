@@ -86,7 +86,6 @@ describe("AmbiguityResolutionModal", () => {
         unobserve() {}
         disconnect() {}
       }
-      // @ts-expect-error jsdom-only shim
       globalThis.ResizeObserver = StubResizeObserver;
     }
   });

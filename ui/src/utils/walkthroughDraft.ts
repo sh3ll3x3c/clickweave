@@ -78,7 +78,7 @@ export function applyAnnotationsToDraft(
             } else if (candidate.type === "Coordinates") {
               target = { type: "Coordinates", x: candidate.x, y: candidate.y };
             } else {
-              target = updated.node_type.target;
+              target = updated.node_type.target ?? null;
             }
             updated = { ...updated, node_type: { ...updated.node_type, target } };
           }

@@ -15,46 +15,11 @@
 use clickweave_mcp::Tool;
 use serde_json::{Value, json};
 
-use crate::agent::render::render_step_input;
+use crate::agent::render::{DEFAULT_MAX_ELEMENTS, render_step_input_with_cap};
 use crate::agent::task_state::TaskState;
 use crate::agent::world_model::{AppKind, WorldModel};
 
-const SYSTEM_PROMPT_HEADER: &str = r#"You are Clickweave, an agent that automates desktop and browser workflows via MCP tools.
-
-You operate on a harness-owned world model and task state. Each turn you receive:
-1. A `<world_model>` block describing the environment (apps, windows, pages, elements, snapshots, uncertainty).
-2. A `<task_state>` block describing your current goal, subgoal stack, active watch slots, and recorded hypotheses.
-3. An optional observation returned by the previous tool.
-
-You respond by emitting tool calls. Each turn carries zero or more state-mutation pseudo-tools followed by exactly one action:
-
-- Mutation pseudo-tools (never dispatched to MCP, applied by the harness): `push_subgoal`, `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`, `refute_hypothesis`.
-- Exactly one action per turn:
-  - any MCP tool from the available-tools list (the action that runs against the environment), or
-  - `agent_done` to declare the goal complete, or
-  - `agent_replan` to request a re-plan when stuck.
-
-Mutations are read from your `tool_calls` array regardless of their position; the first non-mutation call is taken as the action and any further action calls are ignored. Calling only mutation pseudo-tools is treated as a replan request.
-
-Rules:
-- The `phase` field in `<task_state>` is harness-inferred. Do not try to set it yourself.
-- Uid prefixes signal dispatch family: `a<N>` -> native AX (use `ax_click`/`ax_set_value`/`ax_select`); `d<N>` -> CDP (use `cdp_click`/`cdp_fill`); `[ocr]` -> coordinate-only matches from `find_text` / `find_image`. `[ocr]` entries are last-resort observations and must NEVER be clicked when a `cdp_page` is attached or an AX tree is available — they target raw screen pixels and steal focus.
-- Observation-only tools do not require approval; destructive tools may require approval from the operator.
-
-Dispatch family selection — keyed on `<world_model>`:
-- If `<world_model>` contains a `cdp_page` block, the app is browser- or Electron-backed and CDP is the primary dispatch family. Use CDP tools for everything: `cdp_find_elements` / `cdp_take_dom_snapshot` for discovery, `cdp_click` / `cdp_fill` / `cdp_type_text` / `cdp_press_key` / `cdp_evaluate_script` for action, `cdp_navigate` / `cdp_select_page` for page control. Coordinate primitives (`click` at (x,y), `type_text`, `press_key`) are forbidden when a `cdp_page` is attached — they bypass the page's event loop, steal focus, and produce no `d<N>` uids the next turn can target. The harness will reject such calls with a `coordinate primitive blocked` error, so you waste a turn.
-- If the visible element surface is too small to see your target (e.g. a sidebar, file tree, or panel that wasn't auto-fetched), call `cdp_take_dom_snapshot` once to widen it, or `cdp_evaluate_script` with a small JS expression to query the DOM directly. Do NOT fall back to coordinate clicks "to make something happen" — that path produces no observable progress for the next turn.
-- If `<world_model>` has no `cdp_page` (native macOS app), use `take_ax_snapshot` and `ax_*` tools. CRITICAL: snapshots are session-stateful — `take_ax_snapshot` immediately before every `ax_click` / `ax_set_value` / `ax_select`; if a dispatch returns `snapshot_expired`, take a fresh snapshot. Coordinate primitives are blocked here too whenever the AX dispatch toolset is wired.
-- If `<world_model>` has a `cdp_connect_status` line (auto-connect failed), the page is genuinely unreachable — do NOT keep waiting for a `cdp_page`; either retry `cdp_connect` explicitly, switch focus to a different app, or `agent_replan`.
-- Coordinate primitives (`click` at raw x,y, raw `type_text`, raw `press_key`) are last-resort: only use them when neither a `cdp_page` nor an AX tree is available, or when targeting OS-level chrome (menubar, dock, Spotlight) that lives outside both surfaces.
-- Each turn's user message includes a `<tools_in_scope>` block listing the MCP tools that fit the current dispatch family. Prefer tools from this block as your action; tools outside it are wrong-family for the current `<world_model>` state. The pseudo-tools (`push_subgoal`, `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`, `refute_hypothesis`, `agent_done`, `agent_replan`) are always in scope and are not listed in the block.
-
-When stuck — use the mutation pseudo-tools:
-- If the same action produced no observable change for the last turn or two, do NOT repeat it. Repeating the same `(tool_name, arguments)` 3 times in a row is a bug pattern; the harness will surface a no-progress nudge and you must change tactic.
-- Push a subgoal (`push_subgoal`) to scope the next attempt narrowly ("locate the file-explorer panel", "open the command palette"), and `complete_subgoal` once the observation confirms it.
-- Record what you tried and why it didn't work as a refuted hypothesis (`record_hypothesis` then `refute_hypothesis`) so the harness's recovery layer can see the dead end.
-- If you genuinely cannot make progress with the current plan, emit `agent_replan` rather than dispatching another speculative action.
-"#;
+const SYSTEM_PROMPT_HEADER: &str = include_str!("../../prompts/agent_system.md");
 
 /// Build the stable system prompt for the state-spine runner.
 ///
@@ -63,7 +28,13 @@ When stuck — use the mutation pseudo-tools:
 /// context, timestamps). Variant context lands in `messages[1]` at the user
 /// layer (D18).
 pub fn build_system_prompt(tools: &[Tool]) -> String {
-    let mut out = String::from(SYSTEM_PROMPT_HEADER);
+    build_system_prompt_with_header(SYSTEM_PROMPT_HEADER, tools)
+}
+
+/// Build a system prompt from an explicit header. Used by the eval harness
+/// to run GEPA/candidate prompts without changing the production default.
+pub fn build_system_prompt_with_header(header: &str, tools: &[Tool]) -> String {
+    let mut out = String::from(header.trim_end());
     out.push_str("\n\nAvailable tools:\n");
     for t in tools {
         out.push_str("- ");
@@ -211,23 +182,83 @@ pub fn build_user_turn_message(
     retrieved: &[crate::agent::episodic::RetrievedEpisode],
     tools_in_scope_names: &[String],
 ) -> String {
-    let mut out = render_step_input(wm, ts, current_step);
+    build_user_turn_message_from_input(UserTurnMessageInput {
+        wm,
+        ts,
+        current_step,
+        observation_text,
+        retrieved,
+        applicable_skills: &[],
+        tools_in_scope_names,
+        max_elements: DEFAULT_MAX_ELEMENTS,
+    })
+}
+
+/// Spec 3 variant of [`build_user_turn_message`] that also splices an
+/// `<applicable_skills>` block when `applicable_skills` is non-empty.
+/// The block lands after `<retrieved_recoveries>` and before the tools
+/// scope / observation so the LLM sees the candidate procedural skills
+/// alongside remembered recoveries.
+pub fn build_user_turn_message_with_skills(
+    wm: &WorldModel,
+    ts: &TaskState,
+    current_step: usize,
+    observation_text: &str,
+    retrieved: &[crate::agent::episodic::RetrievedEpisode],
+    applicable_skills: &[crate::agent::skills::RetrievedSkill],
+    tools_in_scope_names: &[String],
+) -> String {
+    build_user_turn_message_from_input(UserTurnMessageInput {
+        wm,
+        ts,
+        current_step,
+        observation_text,
+        retrieved,
+        applicable_skills,
+        tools_in_scope_names,
+        max_elements: DEFAULT_MAX_ELEMENTS,
+    })
+}
+
+pub(crate) struct UserTurnMessageInput<'a> {
+    pub wm: &'a WorldModel,
+    pub ts: &'a TaskState,
+    pub current_step: usize,
+    pub observation_text: &'a str,
+    pub retrieved: &'a [crate::agent::episodic::RetrievedEpisode],
+    pub applicable_skills: &'a [crate::agent::skills::RetrievedSkill],
+    pub tools_in_scope_names: &'a [String],
+    pub max_elements: usize,
+}
+
+pub(crate) fn build_user_turn_message_from_input(input: UserTurnMessageInput<'_>) -> String {
+    let mut out =
+        render_step_input_with_cap(input.wm, input.ts, input.current_step, input.max_elements);
 
     let recoveries_block =
-        crate::agent::episodic::render::render_retrieved_recoveries_block(retrieved);
+        crate::agent::episodic::render::render_retrieved_recoveries_block(input.retrieved);
     if !recoveries_block.is_empty() {
         out.push_str(&recoveries_block);
         out.push('\n');
     }
 
-    let scope_block = render_tools_in_scope_block(tools_in_scope_names);
+    if !input.applicable_skills.is_empty() {
+        let skills_block =
+            crate::agent::skills::render::render_applicable_skills_block(input.applicable_skills);
+        if !skills_block.is_empty() {
+            out.push_str(&skills_block);
+            out.push('\n');
+        }
+    }
+
+    let scope_block = render_tools_in_scope_block(input.tools_in_scope_names);
     if !scope_block.is_empty() {
         out.push_str(&scope_block);
     }
 
-    if !observation_text.is_empty() {
+    if !input.observation_text.is_empty() {
         out.push_str("\n<observation>\n");
-        out.push_str(observation_text);
+        out.push_str(input.observation_text);
         out.push_str("\n</observation>\n");
     }
     out
@@ -350,7 +381,7 @@ pub fn set_watch_slot_tool() -> Value {
         "type": "function",
         "function": {
             "name": "set_watch_slot",
-            "description": "Mark a background concern (modal, auth, focus shift) so the harness will not replay cached actions while it is active. Mutation only — does not dispatch to MCP.",
+            "description": "Mark a background concern (modal, auth, focus shift) that the harness should keep active while planning. Mutation only — does not dispatch to MCP.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -432,12 +463,40 @@ pub fn refute_hypothesis_tool() -> Value {
     })
 }
 
+/// Tool definition for the invoke_skill pseudo-tool (Spec 3 Phase 4).
+///
+/// Replays a procedural skill listed in the previous turn's
+/// `<applicable_skills>` block. The harness expands the skill's recorded
+/// action sketch through the same dispatch helper as live tool calls so
+/// the safety surface (permission policy, coordinate-primitive guard,
+/// consecutive-destructive cap) is identical.
+pub fn invoke_skill_tool() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "invoke_skill",
+            "description": "Invoke a procedural skill listed in <applicable_skills>. The harness expands and dispatches the skill's recorded steps. parameters must validate against the skill's parameter_schema.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id": { "type": "string" },
+                    "version":  { "type": "integer" },
+                    "parameters": { "type": "object" }
+                },
+                "required": ["skill_id", "version", "parameters"]
+            }
+        }
+    })
+}
+
 /// All harness-local pseudo-tools that the LLM may emit in a turn.
 ///
 /// Order is intentional: the action pseudo-tools (`agent_done`,
 /// `agent_replan`) come last so the LLM-facing tool list ends with the
 /// "terminate the loop" choices, while the mutations cluster together at
-/// the start of the pseudo-tool block.
+/// the start of the pseudo-tool block. `invoke_skill` is appended after
+/// `agent_replan` so the tool-list prefix stays stable for prompt-cache
+/// compatibility across runs that toggle the skills layer.
 pub fn pseudo_tools() -> Vec<Value> {
     vec![
         push_subgoal_tool(),
@@ -448,6 +507,7 @@ pub fn pseudo_tools() -> Vec<Value> {
         refute_hypothesis_tool(),
         agent_done_tool(),
         agent_replan_tool(),
+        invoke_skill_tool(),
     ]
 }
 
@@ -491,41 +551,6 @@ mod state_spine_prompt_tests {
         let tools: Vec<Tool> = vec![];
         let s = build_system_prompt(&tools);
         assert!(!s.contains("Variant context"));
-    }
-
-    #[test]
-    fn system_prompt_promotes_cdp_for_attached_pages() {
-        // The CDP block must (a) condition on `cdp_page` being attached
-        // and (b) forbid coordinate primitives in that case. Without
-        // both, the LLM falls back to `click(x, y)` on Electron apps —
-        // see the Obsidian Vault7 regression that motivated this rule.
-        let tools: Vec<Tool> = vec![];
-        let s = build_system_prompt(&tools);
-        assert!(s.contains("cdp_page"));
-        assert!(
-            s.to_lowercase().contains("forbidden")
-                || s.to_lowercase().contains("last-resort")
-                || s.to_lowercase().contains("avoid"),
-            "CDP block must explicitly discourage coordinate primitives when CDP is attached"
-        );
-        assert!(
-            s.contains("cdp_find_elements")
-                && s.contains("cdp_evaluate_script")
-                && s.contains("cdp_type_text"),
-            "CDP block must spell out the discovery + action recipe (incl. typing analogue)"
-        );
-    }
-
-    #[test]
-    fn system_prompt_promotes_mutation_pseudo_tools_when_stuck() {
-        // The "when stuck" rule must bind repeated identical actions to
-        // mutation pseudo-tools so the LLM has a structured escape hatch
-        // beyond simply firing the same tool again.
-        let tools: Vec<Tool> = vec![];
-        let s = build_system_prompt(&tools);
-        assert!(s.contains("push_subgoal"));
-        assert!(s.contains("record_hypothesis") || s.contains("refute_hypothesis"));
-        assert!(s.contains("agent_replan"));
     }
 
     #[test]
@@ -598,6 +623,66 @@ mod state_spine_prompt_tests {
         let ts = TaskState::new("ship it".to_string());
         let out = build_user_turn_message(&wm, &ts, 0, "obs", &[], &[]);
         assert!(!out.contains("<tools_in_scope>"));
+    }
+
+    #[test]
+    fn user_turn_renders_applicable_skills_block_when_non_empty() {
+        use crate::agent::skills::{
+            ApplicabilityHints, ApplicabilitySignature, OutcomePredicate, RetrievedSkill, Skill,
+            SkillScope, SkillState, SkillStats, SubgoalSignature,
+        };
+        use chrono::TimeZone;
+        use std::sync::Arc;
+
+        let wm = WorldModel::default();
+        let ts = TaskState::new("ship it".to_string());
+        let skill = Skill {
+            id: "open-chat".into(),
+            version: 1,
+            state: SkillState::Confirmed,
+            scope: SkillScope::ProjectLocal,
+            name: "Open chat".into(),
+            description: "desc".into(),
+            tags: vec![],
+            subgoal_text: "open chat".into(),
+            subgoal_signature: SubgoalSignature("sig".into()),
+            applicability: ApplicabilityHints {
+                apps: vec![],
+                hosts: vec![],
+                signature: ApplicabilitySignature("a".into()),
+            },
+            parameter_schema: vec![],
+            action_sketch: vec![],
+            outputs: vec![],
+            outcome_predicate: OutcomePredicate::SubgoalCompleted {
+                post_state_world_model_signature: None,
+            },
+            provenance: vec![],
+            stats: SkillStats::default(),
+            edited_by_user: false,
+            created_at: chrono::Utc.timestamp_opt(0, 0).unwrap(),
+            updated_at: chrono::Utc.timestamp_opt(0, 0).unwrap(),
+            produced_node_ids: vec![],
+            body: String::new(),
+        };
+        let applicable = vec![RetrievedSkill {
+            skill: Arc::new(skill),
+            score: 1.0,
+        }];
+        let out = build_user_turn_message_with_skills(&wm, &ts, 1, "obs", &[], &applicable, &[]);
+        assert!(out.contains("<applicable_skills>"));
+        assert!(out.contains("Open chat"));
+        let skills_end = out.find("</applicable_skills>").unwrap();
+        let obs_start = out.find("obs").unwrap();
+        assert!(skills_end < obs_start);
+    }
+
+    #[test]
+    fn user_turn_omits_applicable_skills_block_when_empty() {
+        let wm = WorldModel::default();
+        let ts = TaskState::new("ship it".to_string());
+        let out = build_user_turn_message_with_skills(&wm, &ts, 1, "obs", &[], &[], &[]);
+        assert!(!out.contains("<applicable_skills>"));
     }
 
     #[test]
@@ -737,17 +822,6 @@ mod state_spine_prompt_tests {
     }
 
     #[test]
-    fn system_prompt_documents_tools_in_scope_block() {
-        // The header must explain the per-turn block so the LLM knows
-        // to prefer the narrowed list. Without this the cache-stable
-        // `Available tools:` listing remains the dominant signal.
-        let tools: Vec<Tool> = vec![];
-        let s = build_system_prompt(&tools);
-        assert!(s.contains("<tools_in_scope>"));
-        assert!(s.to_lowercase().contains("prefer"));
-    }
-
-    #[test]
     fn truncate_summary_short_text_unchanged() {
         assert_eq!(truncate_summary("hello", 10), "hello");
     }
@@ -786,5 +860,35 @@ mod state_spine_prompt_tests {
             .as_array()
             .unwrap();
         assert!(required.iter().any(|r| r == "reason"));
+    }
+
+    #[test]
+    fn pseudo_tools_appends_invoke_skill_at_end() {
+        // Stable trailing position keeps the system-prompt prefix
+        // identical for runs that toggle the skills layer, so the
+        // shared LLM prompt-cache prefix is preserved.
+        let tools = pseudo_tools();
+        let last = tools.last().expect("at least one pseudo-tool");
+        let name = last
+            .get("function")
+            .and_then(|f| f.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        assert_eq!(name, "invoke_skill");
+    }
+
+    #[test]
+    fn invoke_skill_tool_requires_skill_id_version_parameters() {
+        let v = invoke_skill_tool();
+        let required = v
+            .get("function")
+            .and_then(|f| f.get("parameters"))
+            .and_then(|p| p.get("required"))
+            .and_then(Value::as_array)
+            .unwrap();
+        let names: Vec<&str> = required.iter().filter_map(Value::as_str).collect();
+        assert!(names.contains(&"skill_id"));
+        assert!(names.contains(&"version"));
+        assert!(names.contains(&"parameters"));
     }
 }

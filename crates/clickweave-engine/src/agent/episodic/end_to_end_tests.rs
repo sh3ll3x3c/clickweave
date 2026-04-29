@@ -25,7 +25,7 @@ use crate::agent::runner::StateRunner;
 use crate::agent::test_stubs::{
     CapturingLlm, ScriptedLlm, StaticMcp, llm_reply_tool, llm_reply_tool_with_id,
 };
-use crate::agent::types::{AgentConfig, AgentEvent};
+use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput};
 use crate::executor::Mcp;
 use clickweave_core::Workflow;
 
@@ -72,12 +72,14 @@ fn config_with_episodic_disabled(max_steps: usize) -> AgentConfig {
 /// Drain everything currently in the `event_rx` channel so the
 /// `EpisodicWriter`'s consumer task can produce its emissions before
 /// we observe the SQLite store.
-async fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+async fn drain_events(rx: &mut mpsc::Receiver<RunnerOutput>) -> Vec<AgentEvent> {
     let mut out = Vec::new();
     while let Ok(Some(ev)) =
         tokio::time::timeout(std::time::Duration::from_millis(20), rx.recv()).await
     {
-        out.push(ev);
+        if let Some(event) = ev.into_event() {
+            out.push(event);
+        }
     }
     out
 }
@@ -113,7 +115,7 @@ async fn recovery_written_and_retrieved_across_runs() {
     let mcp_run1 = build_mcp_with_recovery_tools();
     let tools_run1 = mcp_run1.tools_as_openai();
 
-    let (event_tx_run1, mut event_rx_run1) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx_run1, mut event_rx_run1) = mpsc::channel::<RunnerOutput>(64);
     let runner_run1 = StateRunner::new_with_episodic("login".to_string(), cfg_run1, ctx_run1)
         .with_run_id(uuid::Uuid::new_v4())
         .with_events(event_tx_run1)
@@ -232,7 +234,7 @@ async fn episodic_disabled_via_config_skips_store_open_and_retrieval() {
     let mcp = build_mcp_with_recovery_tools();
     let tools = mcp.tools_as_openai();
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let runner = StateRunner::new_with_episodic("login".to_string(), cfg, ctx)
         .with_run_id(uuid::Uuid::new_v4())
         .with_events(event_tx)
@@ -292,7 +294,7 @@ async fn episodic_ctx_disabled_overrides_config_enabled() {
     let mcp = build_mcp_with_recovery_tools();
     let tools = mcp.tools_as_openai();
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let runner = StateRunner::new_with_episodic("login".to_string(), cfg, ctx)
         .with_run_id(uuid::Uuid::new_v4())
         .with_events(event_tx)
@@ -350,7 +352,7 @@ async fn run_with_no_recovery_writes_nothing() {
         llm_reply_tool("agent_done", serde_json::json!({"summary": "clean run"})),
     ]);
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let runner = StateRunner::new_with_episodic("login".to_string(), config_with_steps(4), ctx)
         .with_run_id(uuid::Uuid::new_v4())
         .with_events(event_tx)
@@ -410,5 +412,8 @@ fn event_kind(e: &AgentEvent) -> &'static str {
         AgentEvent::EpisodeWritten { .. } => "episode_written",
         AgentEvent::EpisodePromoted { .. } => "episode_promoted",
         AgentEvent::EpisodesRetrieved { .. } => "episodes_retrieved",
+        AgentEvent::SkillInvoked { .. } => "skill_invoked",
+        AgentEvent::SkillExtracted { .. } => "skill_extracted",
+        AgentEvent::SkillConfirmed { .. } => "skill_confirmed",
     }
 }

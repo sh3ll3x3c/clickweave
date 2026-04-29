@@ -46,6 +46,12 @@ export interface PersistedSettings {
   retrievedEpisodesK: number;
   /** Spec 2 D35 privacy opt-in for the global cross-workflow store. */
   episodicGlobalParticipation: boolean;
+  /** Spec 3 master kill switch for procedural-skill memory. */
+  skillsEnabled: boolean;
+  /** Spec 3 retrieval depth — top-k applicable skills per push_subgoal. */
+  applicableSkillsK: number;
+  /** Spec 3 privacy opt-in for the global cross-workflow skills tier. */
+  skillsGlobalParticipation: boolean;
 }
 
 export const DEFAULT_TRACE_RETENTION_DAYS = 30;
@@ -53,6 +59,9 @@ export const DEFAULT_STORE_TRACES = true;
 export const DEFAULT_EPISODIC_ENABLED = true;
 export const DEFAULT_RETRIEVED_EPISODES_K = 2;
 export const DEFAULT_EPISODIC_GLOBAL_PARTICIPATION = false;
+export const DEFAULT_SKILLS_ENABLED = true;
+export const DEFAULT_APPLICABLE_SKILLS_K = 2;
+export const DEFAULT_SKILLS_GLOBAL_PARTICIPATION = false;
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
   supervisorConfig: DEFAULT_ENDPOINT,
@@ -68,6 +77,9 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   episodicEnabled: DEFAULT_EPISODIC_ENABLED,
   retrievedEpisodesK: DEFAULT_RETRIEVED_EPISODES_K,
   episodicGlobalParticipation: DEFAULT_EPISODIC_GLOBAL_PARTICIPATION,
+  skillsEnabled: DEFAULT_SKILLS_ENABLED,
+  applicableSkillsK: DEFAULT_APPLICABLE_SKILLS_K,
+  skillsGlobalParticipation: DEFAULT_SKILLS_GLOBAL_PARTICIPATION,
 };
 
 export async function loadSettings(): Promise<PersistedSettings> {
@@ -81,9 +93,11 @@ export async function loadSettings(): Promise<PersistedSettings> {
   // tombstone from the removed planner pipeline; the config drives the
   // supervisor (step verdict) model. Migrate on next load, then delete the
   // old key so subsequent loads skip the compat path.
-  const supervisorConfigStored = await store.get<EndpointConfig>("supervisorConfig");
+  const supervisorConfigStored =
+    await store.get<EndpointConfig>("supervisorConfig");
   const legacyPlannerConfig = await store.get<EndpointConfig>("plannerConfig");
-  const supervisorConfig = supervisorConfigStored ?? legacyPlannerConfig ?? fallback;
+  const supervisorConfig =
+    supervisorConfigStored ?? legacyPlannerConfig ?? fallback;
   if (!supervisorConfigStored && legacyPlannerConfig) {
     await store.set("supervisorConfig", legacyPlannerConfig);
     await store.delete("plannerConfig");
@@ -122,7 +136,11 @@ export async function loadSettings(): Promise<PersistedSettings> {
     await store.delete("vlmConfig");
     await store.save();
   }
-  if (legacyVlmEnabled !== null && legacyVlmEnabled !== undefined && !(await store.get<boolean>("fastEnabled"))) {
+  if (
+    legacyVlmEnabled !== null &&
+    legacyVlmEnabled !== undefined &&
+    !(await store.get<boolean>("fastEnabled"))
+  ) {
     await store.set("fastEnabled", fastEnabled);
     await store.delete("vlmEnabled");
     await store.save();
@@ -136,16 +154,25 @@ export async function loadSettings(): Promise<PersistedSettings> {
     "episodicGlobalParticipation",
   );
 
+  const skillsEnabled = await store.get<boolean>("skillsEnabled");
+  const applicableSkillsK = await store.get<number>("applicableSkillsK");
+  const skillsGlobalParticipation = await store.get<boolean>(
+    "skillsGlobalParticipation",
+  );
+
   return {
     supervisorConfig,
     agentConfig: agentConfig ?? fallback,
     fastConfig,
     fastEnabled,
     maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
-    hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
-    supervisionDelayMs: supervisionDelayMs ?? SETTINGS_DEFAULTS.supervisionDelayMs,
+    hoverDwellThreshold:
+      hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
+    supervisionDelayMs:
+      supervisionDelayMs ?? SETTINGS_DEFAULTS.supervisionDelayMs,
     toolPermissions: toolPermissions ?? SETTINGS_DEFAULTS.toolPermissions,
-    traceRetentionDays: traceRetentionDays ?? SETTINGS_DEFAULTS.traceRetentionDays,
+    traceRetentionDays:
+      traceRetentionDays ?? SETTINGS_DEFAULTS.traceRetentionDays,
     storeTraces: storeTraces ?? SETTINGS_DEFAULTS.storeTraces,
     episodicEnabled: episodicEnabled ?? SETTINGS_DEFAULTS.episodicEnabled,
     retrievedEpisodesK:
@@ -153,6 +180,10 @@ export async function loadSettings(): Promise<PersistedSettings> {
     episodicGlobalParticipation:
       episodicGlobalParticipation ??
       SETTINGS_DEFAULTS.episodicGlobalParticipation,
+    skillsEnabled: skillsEnabled ?? SETTINGS_DEFAULTS.skillsEnabled,
+    applicableSkillsK: applicableSkillsK ?? SETTINGS_DEFAULTS.applicableSkillsK,
+    skillsGlobalParticipation:
+      skillsGlobalParticipation ?? SETTINGS_DEFAULTS.skillsGlobalParticipation,
   };
 }
 

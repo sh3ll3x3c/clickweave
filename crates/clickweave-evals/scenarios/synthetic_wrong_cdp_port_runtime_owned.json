@@ -1,0 +1,217 @@
+{
+  "id": "synthetic_wrong_cdp_port_runtime_owned",
+  "description": "Synthetic wrong-port CDP check. Port 9222 is described as belonging to an unrelated app, so the agent must use app-scoped runtime CDP acquisition instead of manually connecting to a guessed port.",
+  "goal": "SyntheticMessenger is already running. Port 9222 belongs to an unrelated app. Attach the structured app surface and open the message composer without guessing a debug port.",
+  "max_steps": 7,
+  "tools": [
+    {
+      "name": "list_apps",
+      "description": "List synthetic running apps.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "app_name": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "probe_app",
+      "description": "Classify a synthetic app by name.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "app_name": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "focus_window",
+      "description": "Focus a synthetic app by name. The runner policy suppresses foreground focus and uses this as an app-scoped CDP acquisition trigger.",
+      "parameters": {
+        "type": "object",
+        "required": ["app_name"],
+        "properties": {
+          "app_name": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "quit_app",
+      "description": "Quit a synthetic app before relaunching with a runtime-owned debug port.",
+      "parameters": {
+        "type": "object",
+        "required": ["app_name"],
+        "properties": {
+          "app_name": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "launch_app",
+      "description": "Launch a synthetic app by name.",
+      "parameters": {
+        "type": "object",
+        "required": ["app_name"],
+        "properties": {
+          "app_name": { "type": "string" },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "name": "cdp_connect",
+      "description": "Low-level CDP connection. Agent-authored calls are forbidden; runtime auto-connect may call it after choosing an app-scoped ephemeral port.",
+      "parameters": {
+        "type": "object",
+        "required": ["port"],
+        "properties": {
+          "port": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "cdp_list_pages",
+      "description": "List synthetic CDP pages after connection.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "cdp_find_elements",
+      "description": "Find elements on the connected synthetic page.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "cdp_click",
+      "description": "Click a synthetic CDP element by uid.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid"],
+        "properties": {
+          "uid": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "take_ax_snapshot",
+      "description": "Native AX snapshot. This scenario treats it as the wrong family.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "take_screenshot",
+      "description": "Screenshot observation. This scenario treats it as visual fallback.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "find_text",
+      "description": "OCR text search. This scenario treats it as visual fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "click",
+      "description": "Coordinate click. This scenario treats it as forbidden fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "integer" },
+          "y": { "type": "integer" }
+        }
+      }
+    }
+  ],
+  "tool_behaviors": [
+    {
+      "tool": "list_apps",
+      "response": []
+    },
+    {
+      "tool": "probe_app",
+      "response": { "app_name": "SyntheticMessenger", "kind": "ElectronApp", "pid": 4001 }
+    },
+    {
+      "tool": "focus_window",
+      "required_args": ["app_name"],
+      "response": { "app_name": "SyntheticMessenger", "kind": "ElectronApp", "pid": 4001 }
+    },
+    {
+      "tool": "quit_app",
+      "required_args": ["app_name"],
+      "response": "SyntheticMessenger quit"
+    },
+    {
+      "tool": "launch_app",
+      "required_args": ["app_name"],
+      "response": { "app_name": "SyntheticMessenger", "kind": "ElectronApp", "pid": 4002 }
+    },
+    {
+      "tool": "cdp_connect",
+      "required_args": ["port"],
+      "sets_state": { "cdp_connected": true },
+      "response": "Connected to SyntheticMessenger. Selected page: app://synthetic-messenger/main"
+    },
+    {
+      "tool": "cdp_list_pages",
+      "requires_state": { "cdp_connected": true },
+      "response": "Pages (1 total):\n  [0]* app://synthetic-messenger/main\n"
+    },
+    {
+      "tool": "cdp_find_elements",
+      "requires_state": { "cdp_connected": true },
+      "response": {
+        "page_url": "app://synthetic-messenger/main",
+        "source": "cdp",
+        "matches": [
+          {
+            "uid": "d1",
+            "role": "textbox",
+            "label": "Message composer",
+            "tag": "textarea",
+            "disabled": false
+          }
+        ]
+      }
+    },
+    {
+      "tool": "cdp_click",
+      "required_args": ["uid"],
+      "requires_state": { "cdp_connected": true },
+      "response": "Synthetic composer focused"
+    },
+    {
+      "tool": "take_ax_snapshot",
+      "response": "AX tree contains only synthetic window chrome"
+    },
+    {
+      "tool": "take_screenshot",
+      "response": "Synthetic screenshot omitted"
+    },
+    {
+      "tool": "find_text",
+      "response": "No OCR match in synthetic page"
+    },
+    {
+      "tool": "click",
+      "response": "Coordinate click ignored by synthetic page"
+    }
+  ],
+  "scoring": {
+    "required_tools": ["cdp_connect", "cdp_find_elements", "cdp_click"],
+    "forbidden_tools": ["take_ax_snapshot", "take_screenshot", "find_text", "click"],
+    "required_agent_tools": ["cdp_click", "agent_done"],
+    "required_agent_tool_groups": [["launch_app", "focus_window"]],
+    "forbidden_agent_tools": ["cdp_connect", "cdp_disconnect", "take_ax_snapshot", "take_screenshot", "find_text", "click"],
+    "max_agent_tool_calls": 6,
+    "completion_required": true
+  }
+}

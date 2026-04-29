@@ -63,7 +63,7 @@ pub struct Hypothesis {
     pub refuted: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Milestone {
     pub subgoal_id: SubgoalId,
@@ -137,28 +137,52 @@ pub enum MutationError {
 }
 
 impl TaskState {
+    /// Push a new subgoal onto the stack and return its generated id.
+    /// Infallible — the stack has no upper bound.
+    ///
+    /// Split out from [`Self::apply`] so the runner can capture the
+    /// generated `SubgoalId` for the Spec 3 retrieval hook (the typed
+    /// `PushSubgoal` mutation only carries `text`).
+    pub fn apply_push_subgoal(&mut self, text: &str, step_index: usize) -> SubgoalId {
+        let parent = self.subgoal_stack.last().map(|s| s.id);
+        let id = SubgoalId::new();
+        self.subgoal_stack.push(Subgoal {
+            id,
+            text: text.to_string(),
+            pushed_at_step: step_index,
+            parent,
+        });
+        id
+    }
+
+    /// Pop the top subgoal and append a matching milestone. Returns the
+    /// just-completed `Milestone` so the runner can route it to the
+    /// Spec 3 extractor without re-walking `self.milestones`.
+    pub fn apply_complete_subgoal(
+        &mut self,
+        summary: &str,
+        step_index: usize,
+    ) -> Result<Milestone, MutationError> {
+        let top = self.subgoal_stack.pop().ok_or(MutationError::StackEmpty)?;
+        let milestone = Milestone {
+            subgoal_id: top.id,
+            text: top.text,
+            summary: summary.to_string(),
+            pushed_at_step: top.pushed_at_step,
+            completed_at_step: step_index,
+        };
+        self.milestones.push(milestone.clone());
+        Ok(milestone)
+    }
+
     pub fn apply(&mut self, m: &TaskStateMutation, step_index: usize) -> Result<(), MutationError> {
         match m {
             TaskStateMutation::PushSubgoal { text } => {
-                let parent = self.subgoal_stack.last().map(|s| s.id);
-                self.subgoal_stack.push(Subgoal {
-                    id: SubgoalId::new(),
-                    text: text.clone(),
-                    pushed_at_step: step_index,
-                    parent,
-                });
+                self.apply_push_subgoal(text, step_index);
                 Ok(())
             }
             TaskStateMutation::CompleteSubgoal { summary } => {
-                let top = self.subgoal_stack.pop().ok_or(MutationError::StackEmpty)?;
-                self.milestones.push(Milestone {
-                    subgoal_id: top.id,
-                    text: top.text,
-                    summary: summary.clone(),
-                    pushed_at_step: top.pushed_at_step,
-                    completed_at_step: step_index,
-                });
-                Ok(())
+                self.apply_complete_subgoal(summary, step_index).map(|_| ())
             }
             TaskStateMutation::SetWatchSlot { name, note } => {
                 // Idempotent by name — replacing any existing slot with that name.

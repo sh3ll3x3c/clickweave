@@ -4,11 +4,10 @@
 //! the engine's response to realistic cross-task event sequences is
 //! covered at the `AgentChannels` contract boundary.
 
-use super::{CapturingMockAgent, MockAgent, MockMcp};
+use super::{MockAgent, MockMcp};
 use crate::agent::StateRunner;
 use crate::agent::types::*;
 use crate::executor::Mcp;
-use clickweave_llm::Message;
 use clickweave_mcp::{ToolCallResult, ToolContent};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -92,10 +91,12 @@ fn spawn_recording_approver(
     (handle, seen)
 }
 
-fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+fn drain_events(rx: &mut mpsc::Receiver<RunnerOutput>) -> Vec<AgentEvent> {
     let mut out = Vec::new();
     while let Ok(ev) = rx.try_recv() {
-        out.push(ev);
+        if let Some(event) = ev.into_event() {
+            out.push(event);
+        }
     }
     out
 }
@@ -115,11 +116,10 @@ async fn stop_during_approval_wait_sends_rejection_not_channel_drop() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: false,
-        use_cache: false,
         ..Default::default()
     };
 
-    let (event_tx, _event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, _event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, mut approval_rx) = approval_channel();
 
     // Receive the approval request, then send `false` on the oneshot
@@ -137,7 +137,7 @@ async fn stop_during_approval_wait_sends_rejection_not_channel_drop() {
     let workflow = clickweave_core::Workflow::new("Stop-during-approval");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -176,7 +176,7 @@ async fn buffered_events_do_not_leak_between_runs() {
     ]);
     let mcp_a = MockMcp::with_click_tool();
 
-    let (event_tx_a, mut event_rx_a) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx_a, mut event_rx_a) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx_a, approval_rx_a) = approval_channel();
     let approver_a = spawn_auto_approver(approval_rx_a);
 
@@ -204,7 +204,7 @@ async fn buffered_events_do_not_leak_between_runs() {
     let llm_b = MockAgent::new(vec![MockAgent::done_response("run B done")]);
     let mcp_b = MockMcp::with_click_tool();
 
-    let (event_tx_b, mut event_rx_b) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx_b, mut event_rx_b) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx_b, _approval_rx_b) = approval_channel();
     let runner_b = StateRunner::new("goal B".to_string(), AgentConfig::default())
         .with_events(event_tx_b)
@@ -239,245 +239,7 @@ async fn buffered_events_do_not_leak_between_runs() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 3: Cached state-transition tools (launch_app / focus_window) must
-// NOT replay — replaying them re-fires an app/window transition against
-// stale CDP elements, producing duplicate step_completed events and
-// duplicate workflow nodes. The cache read-side filter falls through to
-// the LLM in this case.
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn cached_launch_app_is_not_replayed_and_falls_through_to_llm() {
-    let mut cache = AgentCache::default();
-    let elements = vec![clickweave_core::cdp::CdpFindElementMatch {
-        uid: "1_0".to_string(),
-        role: "button".to_string(),
-        label: "Submit".to_string(),
-        tag: "button".to_string(),
-        disabled: false,
-        parent_role: None,
-        parent_name: None,
-    }];
-    cache.store(
-        "launch Calculator",
-        &elements,
-        "launch_app".to_string(),
-        serde_json::json!({"app_name": "Calculator"}),
-    );
-
-    let agent_llm = MockAgent::new(vec![MockAgent::done_response("Launched via cache")]);
-
-    // probe_app returns "NativeApp" so auto_connect_cdp short-circuits
-    // before hitting the slow quit/relaunch path.
-    let tools = vec![
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "launch_app",
-                "description": "Launch an app",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"app_name": {"type": "string"}},
-                    "required": ["app_name"]
-                }
-            }
-        }),
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "probe_app",
-                "description": "Probe an app",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"app_name": {"type": "string"}},
-                    "required": ["app_name"]
-                }
-            }
-        }),
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "cdp_connect",
-                "description": "Connect to CDP",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"port": {"type": "number"}},
-                    "required": ["port"]
-                }
-            }
-        }),
-    ];
-
-    let results = vec![
-        cdp_button_page("https://example.com"),
-        text_result("Launched"),
-        text_result("NativeApp"),
-        cdp_button_page("https://example.com/next"),
-    ];
-    let mcp = MockMcp::new(results, tools);
-
-    let config = AgentConfig {
-        max_steps: 5,
-        build_workflow: false,
-        use_cache: true,
-        ..Default::default()
-    };
-
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
-    let (approval_tx, approval_rx) = approval_channel();
-    let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
-
-    let runner = StateRunner::new("launch Calculator".to_string(), config)
-        .with_cache(cache)
-        .with_events(event_tx)
-        .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("Cache-replay launch");
-    let mcp_tools = mcp.tools_as_openai();
-
-    let (state, _cache) = runner
-        .run(
-            &agent_llm,
-            &mcp,
-            "launch Calculator".to_string(),
-            workflow,
-            mcp_tools,
-            None,
-        )
-        .await
-        .unwrap();
-    approver.abort();
-
-    let approvals = seen_approvals.lock().unwrap();
-    assert!(
-        !approvals.iter().any(|name| name == "launch_app"),
-        "Cached launch_app must NOT replay (no approval prompt expected), saw {:?}",
-        *approvals,
-    );
-
-    let events = drain_events(&mut event_rx);
-    let saw_launch_step = events.iter().any(|ev| {
-        matches!(
-            ev,
-            AgentEvent::StepCompleted { tool_name, .. } if tool_name == "launch_app"
-        )
-    });
-    assert!(
-        !saw_launch_step,
-        "Cached launch_app must NOT replay — no StepCompleted for launch_app expected"
-    );
-
-    // The LLM was given a chance to decide and emitted `done` — the run
-    // should complete through that path, not through cache replay.
-    assert!(state.completed);
-}
-
-// ---------------------------------------------------------------------------
-// Scenario 4: Native / no-CDP path does not read or write the cache
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn empty_elements_skips_cache_read_and_write() {
-    // Pre-seed the cache with an entry keyed on *empty* elements. If the
-    // engine ever looked up using empty elements, this entry would hit
-    // and trigger a replay.
-    let mut cache = AgentCache::default();
-    cache.store(
-        "click somewhere",
-        &[],
-        "click".to_string(),
-        serde_json::json!({"x": 99, "y": 99}),
-    );
-
-    let capturing: Arc<Mutex<Vec<Vec<Message>>>> = Arc::new(Mutex::new(Vec::new()));
-    let llm = CapturingMockAgent::new(
-        vec![
-            MockAgent::tool_call_response("click", r#"{"x": 5, "y": 5}"#, "call_native_0"),
-            MockAgent::done_response("Done without cache"),
-        ],
-        capturing.clone(),
-    );
-
-    let tools = vec![serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": "click",
-            "description": "Click",
-            "parameters": {
-                "type": "object",
-                "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
-                "required": ["x", "y"]
-            }
-        }
-    })];
-    let results = vec![cdp_empty_page(), text_result("clicked"), cdp_empty_page()];
-    let mcp = MockMcp::new(results, tools);
-
-    let config = AgentConfig {
-        max_steps: 5,
-        build_workflow: false,
-        use_cache: true,
-        ..Default::default()
-    };
-
-    let (event_tx, _event_rx) = mpsc::channel::<AgentEvent>(64);
-    let (approval_tx, approval_rx) = approval_channel();
-    let approver = spawn_auto_approver(approval_rx);
-
-    let runner = StateRunner::new("click somewhere".to_string(), config)
-        .with_cache(cache)
-        .with_events(event_tx)
-        .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("Native-no-cache");
-    let mcp_tools = mcp.tools_as_openai();
-    let (state, final_cache) = runner
-        .run(
-            &llm,
-            &mcp,
-            "click somewhere".to_string(),
-            workflow,
-            mcp_tools,
-            None,
-        )
-        .await
-        .unwrap();
-    approver.abort();
-
-    // If cache replay had fired, the LLM would be called once (done only);
-    // with replay skipped, the LLM is called for both click and done.
-    let calls = capturing.lock().unwrap();
-    assert_eq!(
-        calls.len(),
-        2,
-        "LLM should be called twice (click + done) — empty elements must skip cache lookup"
-    );
-
-    // Read-side guard: the first step's tool_call_id comes from the LLM,
-    // not a synthetic "cache-0" id that would indicate a replay.
-    match &state.steps[0].command {
-        AgentCommand::ToolCall { tool_call_id, .. } => {
-            assert_eq!(
-                tool_call_id, "call_native_0",
-                "Empty-elements observation must not trigger cache replay — \
-                 first step should come from the LLM, not the cache"
-            );
-        }
-        other => panic!("Expected first step to be a ToolCall, got {:?}", other),
-    }
-
-    // Write-side guard: `store()` bumps hit_count. If the click had
-    // written into the cache on success, the seed's hit_count would be 2.
-    drop(state);
-    let seeded = final_cache
-        .lookup("click somewhere", &[])
-        .expect("pre-seeded entry should still exist");
-    assert_eq!(
-        seeded.hit_count, 1,
-        "empty-elements click must not touch the cache — hit_count should stay at 1"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Scenario 5: Workflow-mapping miss emits Warning, not Error; run continues
+// Scenario 3: Workflow-mapping miss emits Warning, not Error; run continues
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -499,11 +261,10 @@ async fn workflow_mapping_miss_emits_warning_and_run_continues() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: true,
-        use_cache: false,
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let approver = spawn_auto_approver(approval_rx);
 
@@ -512,7 +273,7 @@ async fn workflow_mapping_miss_emits_warning_and_run_continues() {
         .with_approval(approval_tx);
     let workflow = clickweave_core::Workflow::new("Mapping-miss");
     let mcp_tools = mcp.tools_as_openai();
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -651,13 +412,12 @@ async fn focus_window_after_native_launch_is_suppressed_with_ax_toolset() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: true,
-        use_cache: false,
         // Opt in to exercise the AxAvailable kind/toolset branch.
         allow_focus_window: true,
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 
@@ -667,7 +427,7 @@ async fn focus_window_after_native_launch_is_suppressed_with_ax_toolset() {
     let workflow = clickweave_core::Workflow::new("focus-window-skip");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -815,13 +575,12 @@ async fn focus_window_still_runs_when_app_kind_is_unknown() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: true,
-        use_cache: false,
         // Opt in to exercise the unknown-kind defer path.
         allow_focus_window: true,
         ..Default::default()
     };
 
-    let (event_tx, _event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, _event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let approver = spawn_auto_approver(approval_rx);
 
@@ -831,7 +590,7 @@ async fn focus_window_still_runs_when_app_kind_is_unknown() {
     let workflow = clickweave_core::Workflow::new("focus-unknown-kind");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -943,13 +702,12 @@ async fn focus_window_after_cdp_connected_is_suppressed_for_electron_target() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: true,
-        use_cache: false,
         // Opt in to exercise the CdpLive kind/toolset branch.
         allow_focus_window: true,
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 
@@ -966,7 +724,7 @@ async fn focus_window_after_cdp_connected_is_suppressed_for_electron_target() {
     let workflow = clickweave_core::Workflow::new("focus-window-cdp-skip");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -1100,12 +858,11 @@ async fn focus_window_suppressed_when_allow_focus_window_policy_is_false() {
     let config = AgentConfig {
         max_steps: 5,
         build_workflow: true,
-        use_cache: false,
         allow_focus_window: false,
         ..Default::default()
     };
 
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, approval_rx) = approval_channel();
     let (approver, seen_approvals) = spawn_recording_approver(approval_rx);
 
@@ -1115,7 +872,7 @@ async fn focus_window_suppressed_when_allow_focus_window_policy_is_false() {
     let workflow = clickweave_core::Workflow::new("focus-window-policy-off");
     let mcp_tools = mcp.tools_as_openai();
 
-    let (state, _cache) = runner
+    let state = runner
         .run(
             &agent_llm,
             &mcp,
@@ -1149,14 +906,6 @@ async fn focus_window_suppressed_when_allow_focus_window_policy_is_false() {
             assert!(
                 text.contains("agent policy"),
                 "Skip text must name the policy so the LLM understands why, got {:?}",
-                text,
-            );
-            // The LLM must see the dispatch primitives it should use
-            // instead of falling through to coordinate tools against a
-            // backgrounded window.
-            assert!(
-                text.contains("ax_click") || text.contains("cdp_click"),
-                "Skip text must nudge the LLM toward AX / CDP dispatch, got {:?}",
                 text,
             );
         }

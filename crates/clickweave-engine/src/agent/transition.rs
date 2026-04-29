@@ -3,21 +3,37 @@
 // dead_code warning on the helpers that are not yet wired in.
 #![allow(dead_code)]
 
-use clickweave_core::cdp::CdpFindElementMatch;
 use std::collections::BTreeSet;
 
-/// Generate a stable fingerprint for a single element.
+use blake3::Hasher;
+use clickweave_core::cdp::CdpFindElementMatch;
+
+/// Generate a stable, non-reversible fingerprint for a single element.
 ///
-/// The fingerprint includes the element's `uid`, `role`, `label`, `tag`, and
-/// parent info so that elements with the same visual description but different
-/// DOM identities produce different fingerprints.
+/// The hashed input includes the element's `uid`, `role`, `label`,
+/// `tag`, and parent info so that elements with the same visual
+/// description but different DOM identities produce different
+/// fingerprints. The returned value intentionally omits the raw label /
+/// parent text because `page_fingerprint` is rendered into prompts and
+/// durable traces.
 pub fn element_fingerprint(el: &CdpFindElementMatch) -> String {
     let parent = match (&el.parent_role, &el.parent_name) {
         (Some(role), Some(name)) => format!("{}:{}", role, name),
         (Some(role), None) => role.clone(),
         _ => String::new(),
     };
-    format!("{}|{}|{}|{}|{}", el.uid, el.role, el.label, el.tag, parent)
+    let mut hasher = Hasher::new();
+    hasher.update(el.uid.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.role.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.label.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.tag.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(parent.as_bytes());
+    let hex = hasher.finalize().to_hex();
+    hex[..16].to_string()
 }
 
 /// Detect whether a page transition occurred between two observations.
@@ -53,12 +69,18 @@ pub fn detect_transition(
 
 /// Generate a combined fingerprint for an entire page of elements.
 ///
-/// This is used as a cache key for decision caching — if the page
-/// fingerprint matches, we can reuse a previous decision.
+/// This is used in the world model and skill applicability signatures to
+/// decide whether the observed page still matches a prior plan.
 pub fn page_fingerprint(elements: &[CdpFindElementMatch]) -> String {
     let mut fps: Vec<String> = elements.iter().map(element_fingerprint).collect();
     fps.sort();
-    fps.join(";")
+    let mut hasher = Hasher::new();
+    for fp in &fps {
+        hasher.update(fp.as_bytes());
+        hasher.update(b"\0");
+    }
+    let hex = hasher.finalize().to_hex();
+    format!("count={};hash={}", elements.len(), &hex[..16])
 }
 
 #[cfg(test)]
@@ -83,8 +105,9 @@ mod tests {
         let fp1 = element_fingerprint(&el);
         let fp2 = element_fingerprint(&el);
         assert_eq!(fp1, fp2);
-        assert!(fp1.contains("button"));
-        assert!(fp1.contains("Submit"));
+        assert_eq!(fp1.len(), 16);
+        assert!(!fp1.contains("button"));
+        assert!(!fp1.contains("Submit"));
     }
 
     #[test]
@@ -99,7 +122,12 @@ mod tests {
             parent_name: Some("Login".to_string()),
         };
         let fp = element_fingerprint(&el);
-        assert!(fp.contains("form:Login"));
+        assert_eq!(fp.len(), 16);
+        assert!(!fp.contains("form:Login"));
+        assert_ne!(
+            fp,
+            element_fingerprint(&make_element("1_0", "button", "Submit", "button"))
+        );
     }
 
     #[test]
@@ -163,6 +191,8 @@ mod tests {
             make_element("1_0", "button", "Submit", "button"),
         ];
         assert_eq!(page_fingerprint(&elements_a), page_fingerprint(&elements_b));
+        assert!(!page_fingerprint(&elements_a).contains("Submit"));
+        assert!(!page_fingerprint(&elements_a).contains("Email"));
     }
 
     #[test]

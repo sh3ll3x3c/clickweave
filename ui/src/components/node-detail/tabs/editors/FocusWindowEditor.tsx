@@ -10,6 +10,17 @@ export function FocusWindowEditor({ nodeType, onUpdate }: NodeEditorProps) {
   const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   const appKind = nt.app_kind ?? "Native";
+  const updateValue = (v: string) => {
+    if (nt.method === "AppName") {
+      updateType({ value: optionalString(v) });
+      return;
+    }
+    const trimmed = v.trim();
+    const parsed = Number(trimmed);
+    updateType({
+      value: trimmed === "" || Number.isNaN(parsed) ? null : parsed,
+    });
+  };
 
   return (
     <FieldGroup title="Focus Window">
@@ -31,8 +42,8 @@ export function FocusWindowEditor({ nodeType, onUpdate }: NodeEditorProps) {
         label={
           { WindowId: "Window ID", AppName: "App Name", Pid: "Process ID" }[nt.method] ?? nt.method
         }
-        value={nt.value ?? ""}
-        onChange={(v) => updateType({ value: optionalString(v) })}
+        value={String(nt.value ?? "")}
+        onChange={updateValue}
       />
       <CheckboxField
         label="Bring to Front"

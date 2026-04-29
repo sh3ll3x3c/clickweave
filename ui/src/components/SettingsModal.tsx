@@ -71,6 +71,9 @@ interface SettingsModalProps {
   episodicEnabled: boolean;
   retrievedEpisodesK: number;
   episodicGlobalParticipation: boolean;
+  skillsEnabled: boolean;
+  applicableSkillsK: number;
+  skillsGlobalParticipation: boolean;
   onClose: () => void;
   onSupervisorConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
@@ -86,6 +89,9 @@ interface SettingsModalProps {
   onEpisodicEnabledChange: (enabled: boolean) => void;
   onRetrievedEpisodesKChange: (n: number) => void;
   onEpisodicGlobalParticipationChange: (enabled: boolean) => void;
+  onSkillsEnabledChange: (enabled: boolean) => void;
+  onApplicableSkillsKChange: (n: number) => void;
+  onSkillsGlobalParticipationChange: (enabled: boolean) => void;
 }
 
 const inputClass =
@@ -465,6 +471,9 @@ export function SettingsModal({
   episodicEnabled,
   retrievedEpisodesK,
   episodicGlobalParticipation,
+  skillsEnabled,
+  applicableSkillsK,
+  skillsGlobalParticipation,
   onClose,
   onSupervisorConfigChange,
   onAgentConfigChange,
@@ -480,6 +489,9 @@ export function SettingsModal({
   onEpisodicEnabledChange,
   onRetrievedEpisodesKChange,
   onEpisodicGlobalParticipationChange,
+  onSkillsEnabledChange,
+  onApplicableSkillsKChange,
+  onSkillsGlobalParticipationChange,
 }: SettingsModalProps) {
   const [tab, setTab] = useState<SettingsTab>("general");
 
@@ -527,12 +539,20 @@ export function SettingsModal({
             episodicEnabled={episodicEnabled}
             retrievedEpisodesK={retrievedEpisodesK}
             episodicGlobalParticipation={episodicGlobalParticipation}
+            skillsEnabled={skillsEnabled}
+            applicableSkillsK={applicableSkillsK}
+            skillsGlobalParticipation={skillsGlobalParticipation}
             onMaxRepairAttemptsChange={onMaxRepairAttemptsChange}
             onSupervisionDelayMsChange={onSupervisionDelayMsChange}
             onEpisodicEnabledChange={onEpisodicEnabledChange}
             onRetrievedEpisodesKChange={onRetrievedEpisodesKChange}
             onEpisodicGlobalParticipationChange={
               onEpisodicGlobalParticipationChange
+            }
+            onSkillsEnabledChange={onSkillsEnabledChange}
+            onApplicableSkillsKChange={onApplicableSkillsKChange}
+            onSkillsGlobalParticipationChange={
+              onSkillsGlobalParticipationChange
             }
           />
         ) : tab === "privacy" ? (

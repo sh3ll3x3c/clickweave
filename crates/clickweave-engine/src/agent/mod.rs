@@ -1,9 +1,9 @@
 mod approval;
-mod cache;
 mod completion_check;
 mod context;
 pub mod episodic;
 pub mod permissions;
+pub mod skills;
 // Phase is part of `TaskState`'s public surface (used to construct
 // `task_state_at_entry` snapshots in the episodic memory layer's
 // integration tests), so the module surfaces as `pub mod`.
@@ -46,7 +46,7 @@ use crate::executor::Mcp;
 /// Channels that can be attached to the agent runner for live feedback.
 pub struct AgentChannels {
     /// Live event emission channel.
-    pub event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
+    pub event_tx: tokio::sync::mpsc::Sender<RunnerOutput>,
     /// Approval request channel (each request comes with a oneshot response sender).
     pub approval_tx:
         tokio::sync::mpsc::Sender<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>,
@@ -58,7 +58,6 @@ pub struct AgentChannels {
 /// boundary so that callers (e.g. Tauri commands) can pass a `McpClient`
 /// directly.
 ///
-/// When `cache` is `Some`, the runner is seeded with cross-run decisions.
 /// When `channels` is `Some`, the runner emits live events and waits for
 /// approval before each tool execution.
 /// When `vision` is `Some`, the runner verifies `agent_done` against a
@@ -71,7 +70,7 @@ pub struct AgentChannels {
 /// screenshot and a JSON metadata file to that directory after every
 /// `agent_done` VLM check — regardless of verdict — so every completion
 /// check leaves forensic evidence on disk.
-/// Returns both the final agent state and the (possibly updated) cache.
+/// Returns the final agent state and the episodic writer channel, when active.
 /// Shared `RunStorage` handle threaded from the Tauri command into the
 /// engine. Phase 3a adds this as an explicit parameter so the new
 /// `StateRunner` can write boundary `StepRecord`s through the same
@@ -86,7 +85,6 @@ pub async fn run_agent_workflow<B, M>(
     config: AgentConfig,
     goal: String,
     mcp: &M,
-    cache: Option<AgentCache>,
     channels: Option<AgentChannels>,
     vision: Option<Arc<dyn DynChatBackend>>,
     permissions: Option<PermissionPolicy>,
@@ -98,15 +96,107 @@ pub async fn run_agent_workflow<B, M>(
     // preserving the legacy "no episodic" behaviour for tests and
     // internal callers that don't construct paths.
     episodic_ctx: Option<crate::agent::episodic::EpisodicContext>,
+    // Spec 3 procedural-skills wiring. `None` → `SkillContext::disabled()`,
+    // preserving the legacy "no skills" behaviour for tests and
+    // internal callers that don't construct paths.
+    skill_ctx: Option<crate::agent::skills::SkillContext>,
 ) -> anyhow::Result<(
     AgentState,
-    AgentCache,
     // A clone of the runner-owned episodic writer's channel sender. The
     // Tauri caller enqueues `WriteRequest::PromotePass` on this sender
     // after `run` returns so that the single worker task — and its single
     // pair of SQLite connections — handles both `DeriveAndInsert` and
     // `PromotePass`. Dropping the sender signals the worker to exit after
     // draining. `None` when episodic is disabled for this run.
+    Option<tokio::sync::mpsc::Sender<crate::agent::episodic::types::WriteRequest>>,
+)>
+where
+    B: ChatBackend,
+    M: Mcp + ?Sized,
+{
+    run_agent_workflow_inner(
+        llm,
+        config,
+        goal,
+        mcp,
+        channels,
+        vision,
+        permissions,
+        run_id,
+        anchor_node_id,
+        verification_artifacts_dir,
+        storage,
+        episodic_ctx,
+        skill_ctx,
+        None,
+    )
+    .await
+}
+
+/// Eval-only variant of [`run_agent_workflow`] that can substitute the stable
+/// system prompt header. Production callers should use `run_agent_workflow`
+/// so the checked-in default prompt remains the app contract.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_agent_workflow_with_prompt_override<B, M>(
+    llm: &B,
+    config: AgentConfig,
+    goal: String,
+    mcp: &M,
+    channels: Option<AgentChannels>,
+    vision: Option<Arc<dyn DynChatBackend>>,
+    permissions: Option<PermissionPolicy>,
+    run_id: uuid::Uuid,
+    anchor_node_id: Option<uuid::Uuid>,
+    verification_artifacts_dir: Option<PathBuf>,
+    storage: Option<RunStorageHandle>,
+    episodic_ctx: Option<crate::agent::episodic::EpisodicContext>,
+    skill_ctx: Option<crate::agent::skills::SkillContext>,
+    agent_system_prompt_override: Option<String>,
+) -> anyhow::Result<(
+    AgentState,
+    Option<tokio::sync::mpsc::Sender<crate::agent::episodic::types::WriteRequest>>,
+)>
+where
+    B: ChatBackend,
+    M: Mcp + ?Sized,
+{
+    run_agent_workflow_inner(
+        llm,
+        config,
+        goal,
+        mcp,
+        channels,
+        vision,
+        permissions,
+        run_id,
+        anchor_node_id,
+        verification_artifacts_dir,
+        storage,
+        episodic_ctx,
+        skill_ctx,
+        agent_system_prompt_override,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_agent_workflow_inner<B, M>(
+    llm: &B,
+    config: AgentConfig,
+    goal: String,
+    mcp: &M,
+    channels: Option<AgentChannels>,
+    vision: Option<Arc<dyn DynChatBackend>>,
+    permissions: Option<PermissionPolicy>,
+    run_id: uuid::Uuid,
+    anchor_node_id: Option<uuid::Uuid>,
+    verification_artifacts_dir: Option<PathBuf>,
+    storage: Option<RunStorageHandle>,
+    episodic_ctx: Option<crate::agent::episodic::EpisodicContext>,
+    skill_ctx: Option<crate::agent::skills::SkillContext>,
+    agent_system_prompt_override: Option<String>,
+) -> anyhow::Result<(
+    AgentState,
     Option<tokio::sync::mpsc::Sender<crate::agent::episodic::types::WriteRequest>>,
 )>
 where
@@ -132,11 +222,15 @@ where
     // context — episodic stays a no-op for that run.
     let episodic_ctx =
         episodic_ctx.unwrap_or_else(crate::agent::episodic::EpisodicContext::disabled);
-    let mut runner = StateRunner::new_with_episodic(goal.clone(), config, episodic_ctx);
-    if let Some(c) = cache {
-        runner = runner.with_cache(c);
-    }
+    // Spec 3: skill_ctx falls back to disabled when the caller did not
+    // wire up the procedural-skills layer (tests, internal callers).
+    let skill_ctx = skill_ctx.unwrap_or_else(crate::agent::skills::SkillContext::disabled);
+    let mut runner =
+        StateRunner::new_with_episodic_and_skills(goal.clone(), config, episodic_ctx, skill_ctx);
     runner = runner.with_run_id(run_id);
+    if let Some(prompt) = agent_system_prompt_override {
+        runner = runner.with_agent_system_prompt_override(prompt);
+    }
     if let Some(ch) = channels {
         runner = runner
             .with_events(ch.event_tx)
@@ -167,10 +261,10 @@ where
     // eliminating cross-connection visibility hazards.
     let writer_tx = runner.writer_sender();
 
-    let (state, cache) = runner
+    let state = runner
         .run(llm, mcp, goal, workflow, tools, anchor_node_id)
         .await?;
-    Ok((state, cache, writer_tx))
+    Ok((state, writer_tx))
 }
 
 /// Shared test doubles (`ScriptedLlm`, `StaticMcp`, `NullMcp`, `YesVlm`,

@@ -1,0 +1,122 @@
+{
+  "id": "synthetic_ax_snapshot_expired",
+  "description": "Synthetic native AX recovery check. If AX dispatch reports snapshot_expired, the agent should refresh the AX snapshot before retrying.",
+  "goal": "Launch SyntheticPrefs and activate the General tab using the native accessibility surface.",
+  "max_steps": 8,
+  "tools": [
+    {
+      "name": "launch_app",
+      "description": "Launch a synthetic native app by name.",
+      "parameters": {
+        "type": "object",
+        "required": ["app_name"],
+        "properties": { "app_name": { "type": "string" } }
+      }
+    },
+    {
+      "name": "take_ax_snapshot",
+      "description": "Capture a synthetic native accessibility tree.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "ax_click",
+      "description": "Click a synthetic AX element by uid.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid"],
+        "properties": { "uid": { "type": "string" } }
+      }
+    },
+    {
+      "name": "ax_set_value",
+      "description": "Set a synthetic AX value.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid", "value"],
+        "properties": {
+          "uid": { "type": "string" },
+          "value": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "ax_select",
+      "description": "Select a synthetic AX element.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid"],
+        "properties": { "uid": { "type": "string" } }
+      }
+    },
+    {
+      "name": "take_screenshot",
+      "description": "Screenshot observation. This scenario treats it as visual fallback.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "find_text",
+      "description": "OCR text search. This scenario treats it as visual fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } }
+      }
+    },
+    {
+      "name": "click",
+      "description": "Coordinate click. This scenario treats it as forbidden fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "integer" },
+          "y": { "type": "integer" }
+        }
+      }
+    }
+  ],
+  "tool_behaviors": [
+    {
+      "tool": "launch_app",
+      "required_args": ["app_name"],
+      "response": { "app_name": "SyntheticPrefs", "kind": "Native", "pid": 3101 }
+    },
+    {
+      "tool": "take_ax_snapshot",
+      "response": "uid=a2g1 window \"SyntheticPrefs\"\n  uid=a2g2 button \"General\" enabled=true\n  uid=a2g3 button \"Advanced\" enabled=true"
+    },
+    {
+      "tool": "ax_click",
+      "required_args": ["uid"],
+      "response_sequence": [
+        {
+          "error": true,
+          "response": "snapshot_expired: take a fresh AX snapshot before retrying"
+        },
+        {
+          "response": "Synthetic General tab activated"
+        }
+      ]
+    },
+    {
+      "tool": "take_screenshot",
+      "response": "Synthetic screenshot omitted"
+    },
+    {
+      "tool": "find_text",
+      "response": "No OCR match in synthetic native app"
+    },
+    {
+      "tool": "click",
+      "response": "Coordinate click ignored by synthetic native app"
+    }
+  ],
+  "scoring": {
+    "required_tools": ["launch_app", "take_ax_snapshot", "ax_click"],
+    "forbidden_tools": ["take_screenshot", "find_text", "click"],
+    "allowed_error_tools": ["ax_click"],
+    "required_agent_tools": ["launch_app", "take_ax_snapshot", "ax_click", "agent_done"],
+    "required_agent_tool_counts": { "take_ax_snapshot": 2 },
+    "forbidden_agent_tools": ["take_screenshot", "find_text", "click"],
+    "max_agent_tool_calls": 6,
+    "completion_required": true
+  }
+}

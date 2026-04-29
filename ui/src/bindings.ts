@@ -185,6 +185,14 @@ async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath
     else return { status: "error", error: e  as any };
 }
 },
+async saveWalkthroughAsSkill(request: SaveWalkthroughAsSkillRequest) : Promise<Result<Skill, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_walkthrough_as_skill", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async detectCdpApps() : Promise<Result<DetectedCdpApp[], CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("detect_cdp_apps") };
@@ -290,7 +298,7 @@ async approveAgentAction(approved: boolean) : Promise<Result<null, CommandError>
  * `cancel` (agree with the VLM, halt the run). The backend records the
  * decision to `events.jsonl` + `variant_index.jsonl` and emits the
  * appropriate terminal Tauri event.
- * 
+ *
  * Concurrency note: the AgentHandle lock is held across the oneshot
  * send on purpose. `force_stop` (the Stop button) also locks the
  * AgentHandle, cancels the run's CancellationToken, and takes the
@@ -327,9 +335,9 @@ async saveAgentChat(request: SaveAgentChatRequest) : Promise<Result<null, Comman
     else return { status: "error", error: e  as any };
 }
 },
-async pruneAgentCacheForNodes(request: PruneAgentCacheRequest) : Promise<Result<null, CommandError>> {
+async pruneSkillLineageForNodes(request: PruneSkillLineageRequest) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("prune_agent_cache_for_nodes", { request }) };
+    return { status: "ok", data: await TAURI_INVOKE("prune_skill_lineage_for_nodes", { request }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -338,6 +346,54 @@ async pruneAgentCacheForNodes(request: PruneAgentCacheRequest) : Promise<Result<
 async clearAgentConversation(request: ClearAgentConversationRequest) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("clear_agent_conversation", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async confirmSkillProposal(request: ConfirmSkillProposalRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("confirm_skill_proposal", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async rejectSkillProposal(request: RejectSkillProposalRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reject_skill_proposal", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async promoteSkillToGlobal(request: PromoteSkillToGlobalRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("promote_skill_to_global", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async forkSkill(request: ForkSkillRequest) : Promise<Result<Skill, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("fork_skill", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async deleteSkill(request: DeleteSkillRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_skill", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listSkillsForPanel(request: ListSkillsRequest) : Promise<Result<SkillSummary[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_skills_for_panel", { request }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -356,20 +412,21 @@ async clearAgentConversation(request: ClearAgentConversationRequest) : Promise<R
 /** user-defined types **/
 
 export type ActionConfidence = "High" | "Medium" | "Low"
+export type ActionSketchStep = { kind: "tool_call"; tool: string; args: JsonValue; captures_pre: CaptureClause[]; captures: CaptureClause[]; expected_world_model_delta: ExpectedWorldModelDelta } | { kind: "sub_skill"; skill_id: string; version: number; parameters: JsonValue; bind_outputs_as: Partial<{ [key in string]: string }> } | { kind: "loop"; until: LoopPredicate; body: ActionSketchStep[]; max_iterations: number; iteration_delay_ms: number }
 /**
- * Persisted transcript — a sibling file to `agent_cache.json`.
+ * Persisted transcript — a sibling file to the workflow run metadata.
  * Kept deliberately minimal (no schema version) until the format
  * changes; versioning is added lazily when it matters.
  */
 export type AgentChat = { messages: AgentChatMessage[] }
 export type AgentChatMessage = { role: AgentChatRole; content: string; timestamp: string; run_id?: string | null }
 export type AgentChatRole = "user" | "assistant" | "system"
-export type AgentRunRequest = { goal: string; agent: EndpointConfig; project_path: string | null; workflow_name: string; workflow_id: string; 
+export type AgentRunRequest = { goal: string; agent: EndpointConfig; project_path: string | null; workflow_name: string; workflow_id: string;
 /**
  * Permission policy for this run. When `None`, the default policy
  * (empty rules, allow_all=false, guardrail off) is used.
  */
-permissions?: PermissionPolicyWire | null; 
+permissions?: PermissionPolicyWire | null;
 /**
  * Halt the run after this many consecutive destructive tool calls.
  * `0` disables the cap. `None` uses the engine default (3).
@@ -388,22 +445,22 @@ allow_focus_window?: boolean | null;
 /**
  * Privacy kill switch: when false, the run is entirely in-memory.
  * No `.clickweave/runs/` directory is created and no trace files
- * or cache files are written. When `None`, persistence is on —
+ * or agent metadata files are written. When `None`, persistence is on —
  * matches the UI default (`storeTraces: true`).
  */
-store_traces?: boolean | null; 
+store_traces?: boolean | null;
 /**
  * Frontend-generated run ID. The engine stamps every node built
  * this run with this ID, and `agent://*` events echo it back.
  * When omitted (legacy callers / tests), a UUID is generated here.
  */
-run_id?: string | null; 
+run_id?: string | null;
 /**
  * Anchor node to seed `last_node_id` from. When present, the
  * run's first emitted edge is from `anchor_node_id` to whatever
  * first node the agent builds.
  */
-anchor_node_id?: string | null; 
+anchor_node_id?: string | null;
 /**
  * Prior conversation turns (goal + summary + run_id) injected
  * inline above the current goal. Runtime order = chronological.
@@ -426,21 +483,39 @@ retrieved_episodes_k?: number | null;
  * workflow may be promoted into the global cross-workflow store.
  * Default off keeps workflows isolated.
  */
-episodic_global_participation?: boolean | null }
+episodic_global_participation?: boolean | null;
+/**
+ * Spec 3 master kill switch for procedural skills on this run.
+ * `None` = inherit the engine default (`true`); `Some(false)` =
+ * run with skill extraction/retrieval/replay disabled.
+ */
+skills_enabled?: boolean | null;
+/**
+ * Spec 3 retrieval depth — top-k applicable skills returned per
+ * `push_subgoal` boundary. Clamped to `[1, 10]` at the Tauri seam.
+ */
+applicable_skills_k?: number | null;
+/**
+ * Spec 3 privacy opt-in: when `true`, confirmed global skills may
+ * participate in retrieval for this run.
+ */
+skills_global_participation?: boolean | null }
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**
  * Classification of an app's UI framework, used to decide whether
  * Chrome DevTools Protocol (CDP) tools can provide better automation.
- * 
+ *
  * - `Native`: standard native app — use accessibility-based automation
  * - `ChromeBrowser`: Chrome-family browser — CDP gives DOM access
  * - `ElectronApp`: Electron-based app — native AX is unreliable, CDP preferred
  */
 export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
+export type ApplicabilityHints = { apps: string[]; hosts: string[]; signature: ApplicabilitySignature }
+export type ApplicabilitySignature = string
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
-export type ArtifactKind = "Screenshot" | 
+export type ArtifactKind = "Screenshot" |
 /**
  * Catch-all for any artifact that doesn't fit a more specific category.
  * Legacy kinds (`Ocr`, `TemplateMatch`, `Log`) were never produced —
@@ -448,12 +523,13 @@ export type ArtifactKind = "Screenshot" |
  */
 "Other"
 export type AxClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget }
+export type AxDescriptorMatch = { role: string; name: string; parent_name: string | null }
 export type AxSelectParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget }
 export type AxSetValueParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget; value: string }
 /**
  * Distinguishes how a macOS accessibility-tree element target was produced,
  * so the executor can choose the right resolution strategy at dispatch time.
- * 
+ *
  * AX snapshots are session-stateful: every call to `take_ax_snapshot` bumps a
  * generation and emits uids like `a42g3`. Uids from prior snapshots are
  * rejected by `ax_click` / `ax_set_value` / `ax_select` with
@@ -461,14 +537,14 @@ export type AxSetValueParams = ({ verification_method?: VerificationMethod | nul
  * before each dispatch and resolves the node's descriptor (role + name) to a
  * fresh uid — see [`clickweave_engine::executor::deterministic::ax`].
  */
-export type AxTarget = 
+export type AxTarget =
 /**
  * Replay-stable descriptor. Executor re-resolves via `take_ax_snapshot`
  * and matches the first entry with this `role` whose `name` matches —
  * optional `parent_name` breaks ties for sidebars/outlines where many
  * rows share a role.
  */
-{ kind: "Descriptor"; value: { role: string; name: string; parent_name?: string | null } } | 
+{ kind: "Descriptor"; value: { role: string; name: string; parent_name?: string | null } } |
 /**
  * Raw uid captured at agent run time. Valid only for the current AX
  * snapshot generation — will fail with `snapshot_expired` on replay.
@@ -476,10 +552,15 @@ export type AxTarget =
  * original snapshot is still on hand.
  */
 { kind: "ResolvedUid"; value: string }
+export type BindingCorrection = { step_index: number; capture_name: string; keep: boolean; correction: CaptureClause | null }
+export type BindingRef = { kind: "captured"; name: string } | { kind: "params"; name: string }
+export type BoundaryKind = "terminal" | "subgoal_completed" | "recovery_succeeded"
+export type CaptureClause = { name: string; source: CaptureSource }
+export type CaptureSource = { kind: "ax_descriptor"; descriptor: AxDescriptorMatch } | { kind: "tool_result"; jsonpath: string } | { kind: "literal"; value: JsonValue }
 /**
  * User-selected app for CDP during walkthrough.
  */
-export type CdpAppConfig = { name: string; 
+export type CdpAppConfig = { name: string;
 /**
  * Path to the app binary (from file picker). None for already-running apps.
  */
@@ -497,16 +578,16 @@ export type CdpSelectPageParams = ({ verification_method?: VerificationMethod | 
  * Distinguishes how a CDP element target was produced, so the executor can
  * choose the right resolution strategy.
  */
-export type CdpTarget = 
+export type CdpTarget =
 /**
  * Precise element name from `cdp_find_elements` or walkthrough recording.
  */
-{ kind: "ExactLabel"; value: string } | 
+{ kind: "ExactLabel"; value: string } |
 /**
  * Semantic description (e.g. "the message input field") — always resolved
  * via snapshot + LLM at execution time.
  */
-{ kind: "Intent"; value: string } | 
+{ kind: "Intent"; value: string } |
 /**
  * Concrete DOM UID resolved at execution time (for Run mode / decision cache).
  */
@@ -527,7 +608,9 @@ export type CommandError = { kind: ErrorKind; message: string }
  * TypeScript binding picks it up.
  */
 export type CompletionDisagreementActionWire = "confirm" | "cancel"
+export type ConfirmSkillProposalRequest = { skill_id: string; version: number; accepted_proposal: SkillRefinementProposal; project_path: string | null; workflow_name: string; workflow_id: string; run_id: string | null; store_traces: boolean }
 export type ConfirmableTool = { name: string; description: string }
+export type DeleteSkillRequest = { skill_id: string; version: number; scope: SkillScope; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 /**
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
  */
@@ -537,18 +620,31 @@ export type Edge = { from: string; to: string }
 export type EndpointConfig = { base_url: string; model: string; api_key: string | null }
 export type ErrorKind = "Validation" | "Io" | "Mcp" | "AlreadyRunning" | "Internal"
 export type ExecutionMode = "Test" | "Run"
+/**
+ * Skills-layer mirror of `agent::types::WorldModelDiff` (same
+ * `changed_fields: Vec<String>` shape). Owned by this module so the
+ * `Skill` value round-trips through YAML / JSON without forcing
+ * `Deserialize` onto the runtime diff type. The extractor (Phase 3)
+ * converts from `WorldModelDiff` at the boundary.
+ */
+export type ExpectedWorldModelDelta = { changed_fields: string[] }
 export type FindAppParams = { search: string }
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text?: string; scope?: string | null }
 export type FocusWindowParams = ({ method: "AppName"; value: string } | { method: "WindowId"; value: number } | { method: "Pid"; value: number }) & ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null }
+export type ForkSkillRequest = { skill_id: string; version: number; new_name: string; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type HoverParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target?: ClickTarget | null; dwell_ms: number }
+export type Hypothesis = { text: string; recorded_at_step: number; refuted: boolean }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type LaunchAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
+export type ListSkillsRequest = { scope: SkillScope; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type LoadAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string }
+export type LoopPredicate = { kind: "world_model_delta"; expr: string } | { kind: "step_count_reached"; count: number }
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
+export type Milestone = { subgoal_id: SubgoalId; text: string; summary: string; pushed_at_step: number; completed_at_step: number }
 export type MouseButton = "Left" | "Right" | "Center"
-export type Node = { id: string; node_type: NodeType; position: Position; name: string; description?: string | null; auto_id?: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null; 
+export type Node = { id: string; node_type: NodeType; position: Position; name: string; description?: string | null; auto_id?: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null;
 /**
  * Provenance stamp: the agent generation ID that produced this node.
  * `None` for nodes added by the user, by deterministic walkthrough
@@ -561,7 +657,7 @@ export type NodeGroup = { id: string; name: string; color: string; node_ids: str
 export type NodeRename = { node_id: string; new_name: string }
 export type NodeRole = "Default" | "Verification"
 export type NodeRun = { run_id: string; node_id: string; node_name?: string; execution_dir?: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
-export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "FindApp" } & FindAppParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "Drag" } & DragParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "LaunchApp" } & LaunchAppParams) | ({ type: "QuitApp" } & QuitAppParams) | ({ type: "CdpWait" } & CdpWaitParams) | ({ type: "CdpClick" } & CdpClickParams) | ({ type: "CdpHover" } & CdpHoverParams) | ({ type: "CdpFill" } & CdpFillParams) | ({ type: "CdpType" } & CdpTypeParams) | ({ type: "CdpPressKey" } & CdpPressKeyParams) | ({ type: "CdpNavigate" } & CdpNavigateParams) | ({ type: "CdpNewPage" } & CdpNewPageParams) | ({ type: "CdpClosePage" } & CdpClosePageParams) | ({ type: "CdpSelectPage" } & CdpSelectPageParams) | ({ type: "CdpHandleDialog" } & CdpHandleDialogParams) | ({ type: "AxClick" } & AxClickParams) | ({ type: "AxSetValue" } & AxSetValueParams) | ({ type: "AxSelect" } & AxSelectParams) | ({ type: "AiStep" } & AiStepParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | 
+export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "FindApp" } & FindAppParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "Drag" } & DragParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "LaunchApp" } & LaunchAppParams) | ({ type: "QuitApp" } & QuitAppParams) | ({ type: "CdpWait" } & CdpWaitParams) | ({ type: "CdpClick" } & CdpClickParams) | ({ type: "CdpHover" } & CdpHoverParams) | ({ type: "CdpFill" } & CdpFillParams) | ({ type: "CdpType" } & CdpTypeParams) | ({ type: "CdpPressKey" } & CdpPressKeyParams) | ({ type: "CdpNavigate" } & CdpNavigateParams) | ({ type: "CdpNewPage" } & CdpNewPageParams) | ({ type: "CdpClosePage" } & CdpClosePageParams) | ({ type: "CdpSelectPage" } & CdpSelectPageParams) | ({ type: "CdpHandleDialog" } & CdpHandleDialogParams) | ({ type: "AxClick" } & AxClickParams) | ({ type: "AxSetValue" } & AxSetValueParams) | ({ type: "AxSelect" } & AxSelectParams) | ({ type: "AiStep" } & AiStepParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) |
 /**
  * Placeholder for removed or unrecognized node types. Preserved on
  * load so that old workflows don't hard-fail; the UI can display them
@@ -569,6 +665,9 @@ export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindI
  */
 { type: "Unknown" }
 export type NodeTypeInfo = { name: string; output_role: string; node_context: string; icon: string; node_type: NodeType }
+export type OutcomePredicate = { kind: "subgoal_completed"; post_state_world_model_signature: string | null }
+export type OutputDeclaration = { name: string; type_tag: string; from: BindingRef }
+export type ParameterSlot = { name: string; type_tag: string; description: string | null; default: JsonValue | null; enum_values: string[] | null }
 export type PermissionActionWire = "allow" | "ask" | "deny"
 /**
  * Wire form of the permission policy the UI ships with every `run_agent`.
@@ -576,7 +675,7 @@ export type PermissionActionWire = "allow" | "ask" | "deny"
  * / allow). It is mapped into `PermissionRule`s with the tool name as a
  * literal pattern so the Rust side only needs one evaluator.
  */
-export type PermissionPolicyWire = { rules?: PermissionRuleWire[]; allow_all?: boolean; require_confirm_destructive?: boolean; 
+export type PermissionPolicyWire = { rules?: PermissionRuleWire[]; allow_all?: boolean; require_confirm_destructive?: boolean;
 /**
  * Per-tool overrides: `{ "click": "allow" }`. Merged into the rule
  * list as literal-pattern rules before the evaluator runs.
@@ -588,6 +687,22 @@ per_tool?: Partial<{ [key in string]: PermissionActionWire }> }
  * derive so the TypeScript bindings pick it up.
  */
 export type PermissionRuleWire = { tool_pattern: string; args_pattern: string | null; action: PermissionActionWire }
+/**
+ * Harness-inferred phase of the agent run. Never authored by the LLM (D5).
+ */
+export type Phase =
+/**
+ * No active subgoal; the agent is deciding what to pursue.
+ */
+"exploring" |
+/**
+ * Active subgoal and recent steps are succeeding.
+ */
+"executing" |
+/**
+ * Consecutive errors or an `agent_replan` this step.
+ */
+"recovering"
 export type Position = { x: number; y: number }
 export type PressKeyParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { key: string; modifiers?: string[] }
 /**
@@ -596,14 +711,17 @@ export type PressKeyParams = ({ verification_method?: VerificationMethod | null;
  */
 export type PriorTurnWire = { goal: string; summary: string; run_id: string }
 export type ProjectData = { path: string; workflow: Workflow }
-export type PruneAgentCacheRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
+export type PromoteSkillToGlobalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
+export type ProvenanceEntry = { run_id: string; step_index: number; completed_at: string; workflow_hash: string }
+export type PruneSkillLineageRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
 export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
+export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
-export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
+export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null;
 /**
  * Supervisor LLM used for step verdict in Test mode.
  */
-supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number; 
+supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number;
 /**
  * Privacy kill switch: when false, the run is entirely in-memory
  * and no files are written under `.clickweave/runs/`. When missing,
@@ -613,25 +731,40 @@ store_traces?: boolean | null }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 export type SaveAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string; chat: AgentChat; store_traces: boolean }
+export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; workflow_name: string; workflow_id: string; reviewed_draft: Workflow | null; reviewed_actions: WalkthroughAction[] | null; store_traces: boolean }
 /**
  * Screenshot coordinate metadata for mapping screen coordinates to image pixels.
- * 
+ *
  * Given a screen coordinate `(sx, sy)`, the image pixel coordinate is:
  * `px = (sx - origin_x) * scale`, `py = (sy - origin_y) * scale`
  */
 export type ScreenshotMeta = { origin_x: number; origin_y: number; scale: number }
 export type ScreenshotMode = "Screen" | "Window" | "Region"
 export type ScrollParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { delta_y: number; x?: number | null; y?: number | null }
+export type Skill = { id: string; version: number; state: SkillState; scope: SkillScope; name: string; description: string; tags: string[]; subgoal_text: string; subgoal_signature: SubgoalSignature; applicability: ApplicabilityHints; parameter_schema: ParameterSlot[]; action_sketch: ActionSketchStep[]; outputs: OutputDeclaration[]; outcome_predicate: OutcomePredicate; provenance: ProvenanceEntry[]; stats: SkillStats; edited_by_user: boolean; created_at: string; updated_at: string; produced_node_ids: string[]; body: string }
+export type SkillRefinementProposal = { parameter_schema: ParameterSlot[]; binding_corrections: BindingCorrection[]; description: string; name_suggestion: string | null }
+export type SkillScope = "project_local" | "global"
+export type SkillState = "draft" | "confirmed" | "promoted"
+export type SkillStats = { occurrence_count: number; success_rate: number; last_seen_at: string | null; last_invoked_at: string | null }
+/**
+ * Lightweight projection of [`Skill`] for the Skills panel listing.
+ * The full canvas + frontmatter are loaded on demand when the user
+ * opens a detail view, so the panel index stays small.
+ */
+export type SkillSummary = { id: string; version: number; name: string; description: string; state: SkillState; scope: SkillScope; tags: string[]; parameter_schema: ParameterSlot[]; applicability: ApplicabilityHints; action_sketch: ActionSketchStep[]; proposal: SkillRefinementProposal | null; occurrence_count: number; success_rate: number; edited_by_user: boolean }
+export type Subgoal = { id: SubgoalId; text: string; pushed_at_step: number; parent: SubgoalId | null }
+export type SubgoalId = string
+export type SubgoalSignature = string
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
-export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } | 
+export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } |
 /**
  * Label identified by a vision language model from a screenshot crop.
  */
-{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number } | 
+{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number } |
 /**
  * Element captured via Chrome DevTools Protocol click listener.
  */
-{ type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null } | 
+{ type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null } |
 /**
  * macOS accessibility element reached via the native AX tree — the
  * target descriptor for `ax_click` / `ax_set_value` / `ax_select`.
@@ -641,24 +774,25 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
  * execution time, so no generation-tagged uid is carried on the
  * candidate.
  */
-{ type: "AxElement"; role: string; name: string; parent_name?: string | null } | 
+{ type: "AxElement"; role: string; name: string; parent_name?: string | null } |
 /**
  * macOS window control button (close, minimize, maximize).
  * Resolved at execution time to a window-relative click.
  */
 { type: "WindowControl"; action: WindowControlAction }
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
+export type TaskState = { goal: string; subgoal_stack: Subgoal[]; watch_slots: WatchSlot[]; hypotheses: Hypothesis[]; phase: Phase; milestones: Milestone[] }
 export type TraceEvent = { timestamp: number; event_type: TraceEventKind; payload: JsonValue }
 /**
  * The canonical set of trace event kinds emitted by the executor.
- * 
+ *
  * Serialized as snake_case strings so the on-disk shape matches the literal
  * event-type strings that the engine has emitted historically. Legacy
  * `events.jsonl` files therefore load unchanged. Unknown strings deserialize
  * as [`TraceEventKind::Unknown`] so forward-compatible additions don't break
  * old readers.
  */
-export type TraceEventKind = "node_started" | "tool_call" | "tool_result" | "step_completed" | "step_failed" | "branch_evaluated" | "loop_iteration" | "target_resolved" | "action_verification" | "ambiguity_resolved" | "element_resolved" | "match_disambiguated" | "app_resolved" | "cdp_connected" | "cdp_click" | "cdp_hover" | "cdp_fill" | "ax_click" | "ax_set_value" | "ax_select" | "vision_summary" | "variable_set" | "retry" | "supervision_retry" | 
+export type TraceEventKind = "node_started" | "tool_call" | "tool_result" | "step_completed" | "step_failed" | "branch_evaluated" | "loop_iteration" | "target_resolved" | "action_verification" | "ambiguity_resolved" | "element_resolved" | "match_disambiguated" | "app_resolved" | "cdp_connected" | "cdp_click" | "cdp_hover" | "cdp_fill" | "ax_click" | "ax_set_value" | "ax_select" | "vision_summary" | "variable_set" | "retry" | "supervision_retry" |
 /**
  * Forward-compatibility catch-all for event kinds that aren't in this
  * enum yet. `#[serde(other)]` parses any unknown string into `Unknown`.
@@ -672,11 +806,11 @@ export type VariablePromotion = { node_id: string; variable_name: string }
  * Method used to verify an action node's effect.
  */
 export type VerificationMethod = "Vlm" | "Dom" | "AccessibilityTree"
-export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_name: string | null; window_title: string | null; target_candidates: TargetCandidate[]; artifact_paths: string[]; source_event_ids: string[]; confidence: ActionConfidence; warnings: string[]; 
+export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_name: string | null; window_title: string | null; target_candidates: TargetCandidate[]; artifact_paths: string[]; source_event_ids: string[]; confidence: ActionConfidence; warnings: string[];
 /**
  * Screenshot coordinate metadata for VLM click target resolution.
  */
-screenshot_meta?: ScreenshotMeta | null; 
+screenshot_meta?: ScreenshotMeta | null;
 /**
  * Whether this action is a candidate (e.g. detected hover) that needs
  * explicit user confirmation before inclusion in the draft.
@@ -684,16 +818,18 @@ screenshot_meta?: ScreenshotMeta | null;
 candidate?: boolean }
 export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number } | { type: "Hover"; x: number; y: number; dwell_ms: number }
 export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
-export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
+export type WalkthroughDraftResponse = { session_id: string; actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
+export type WatchSlot = { name: WatchSlotName; note: string; set_at_step: number }
+export type WatchSlotName = "pending_modal" | "pending_auth" | "pending_focus_shift"
 /**
  * macOS window control button (traffic light) actions.
- * 
+ *
  * At execution time these are resolved to window-relative clicks by
  * querying the focused window's position and applying a fixed pixel offset.
  * This is more reliable than keyboard shortcuts — e.g. Cmd+W closes a tab
  * in tabbed apps, not the window.
  */
-export type WindowControlAction = "Close" | "Minimize" | "Maximize" | 
+export type WindowControlAction = "Close" | "Minimize" | "Maximize" |
 /**
  * Green button in "zoom" mode — resizes/maximizes the window without
  * entering full screen. Same physical button as Maximize but different
@@ -701,6 +837,21 @@ export type WindowControlAction = "Close" | "Minimize" | "Maximize" |
  */
 "Zoom"
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[]; groups?: NodeGroup[]; next_id_counters?: Partial<{ [key in string]: number }>; intent?: string | null }
+/**
+ * Per-step diff of the harness-owned `WorldModel`. Carries the field
+ * names whose freshness-wrapped value changed during the current
+ * step's `observe` pass (D17). Intentionally minimal — the frontend
+ * only needs a re-render hint, not the full snapshot. Field order
+ * matches `WorldModel`'s definition.
+ */
+export type WorldModelDiff = {
+/**
+ * Names of `WorldModel` fields whose value changed this step.
+ * Stable field names: `focused_app`, `window_list`, `cdp_page`,
+ * `elements`, `modal_present`, `dialog_present`,
+ * `last_screenshot`, `last_native_ax_snapshot`, `uncertainty`.
+ */
+changed_fields: string[] }
 
 /** tauri-specta globals **/
 

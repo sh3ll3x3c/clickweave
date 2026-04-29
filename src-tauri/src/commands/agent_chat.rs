@@ -1,21 +1,20 @@
 //! Commands that back the conversational-agent surface:
 //! - `load_agent_chat` / `save_agent_chat` — per-workflow transcript
-//! - `prune_agent_cache_for_nodes` — selective eviction on node delete
-//! - `clear_agent_conversation` — one-click wipe of cache + variant index + transcript
+//! - `prune_skill_lineage_for_nodes` — selective draft-skill lineage pruning on node delete
+//! - `clear_agent_conversation` — one-click wipe of draft skills + variant index + transcript
 //!
 //! All file mutations are gated on the privacy kill switch: when
-//! `store_traces` is false, on-disk writes are skipped. In-memory
-//! eviction is handled by the engine on the next run when it reloads
-//! the on-disk cache — no in-memory handle is reachable from these
-//! commands because the agent is idle by contract while they run.
+//! `store_traces` is false, on-disk writes are skipped.
 
 use super::error::CommandError;
 use super::types::resolve_storage;
-use clickweave_engine::agent::AgentCache;
+use clickweave_engine::agent::skills::{SkillState, SkillStore, slugify};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::path::Path;
 use uuid::Uuid;
 
-/// Persisted transcript — a sibling file to `agent_cache.json`.
+/// Persisted transcript — a sibling file to the workflow run metadata.
 /// Kept deliberately minimal (no schema version) until the format
 /// changes; versioning is added lazily when it matters.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, specta::Type)]
@@ -57,7 +56,7 @@ pub struct SaveAgentChatRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, specta::Type)]
-pub struct PruneAgentCacheRequest {
+pub struct PruneSkillLineageRequest {
     pub project_path: Option<String>,
     pub workflow_name: String,
     pub workflow_id: String,
@@ -71,6 +70,78 @@ pub struct ClearAgentConversationRequest {
     pub workflow_name: String,
     pub workflow_id: String,
     pub store_traces: bool,
+}
+
+fn proposal_filename(skill_id: &str, version: u32) -> String {
+    format!("{}-v{}.proposal.json", slugify(skill_id), version)
+}
+
+fn remove_proposal_if_present(
+    dir: &std::path::Path,
+    skill_id: &str,
+    version: u32,
+) -> Result<(), CommandError> {
+    let path = dir.join(proposal_filename(skill_id, version));
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(CommandError::io(format!("remove skill proposal: {e}"))),
+    }
+}
+
+fn prune_skill_lineage_in_dir(
+    skills_dir: &Path,
+    deleted: &HashSet<Uuid>,
+) -> Result<(), CommandError> {
+    let store = SkillStore::new(skills_dir.to_path_buf());
+    for path in store
+        .list_files()
+        .map_err(|e| CommandError::io(format!("list skill files: {e}")))?
+    {
+        let mut skill = store
+            .read_skill(&path)
+            .map_err(|e| CommandError::io(format!("read skill {}: {e}", path.display())))?;
+        if skill.state != SkillState::Draft {
+            continue;
+        }
+
+        let before = skill.produced_node_ids.len();
+        skill.produced_node_ids.retain(|id| !deleted.contains(id));
+        if before == skill.produced_node_ids.len() {
+            continue;
+        }
+
+        if skill.produced_node_ids.is_empty() {
+            store
+                .delete_skill(&path)
+                .map_err(|e| CommandError::io(format!("delete empty draft skill: {e}")))?;
+            remove_proposal_if_present(skills_dir, &skill.id, skill.version)?;
+        } else {
+            store
+                .write_skill(&skill)
+                .map_err(|e| CommandError::io(format!("persist pruned skill lineage: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
+fn clear_draft_skills_in_dir(skills_dir: &Path) -> Result<(), CommandError> {
+    let store = SkillStore::new(skills_dir.to_path_buf());
+    for path in store
+        .list_files()
+        .map_err(|e| CommandError::io(format!("list skill files: {e}")))?
+    {
+        let skill = store
+            .read_skill(&path)
+            .map_err(|e| CommandError::io(format!("read skill {}: {e}", path.display())))?;
+        if skill.state == SkillState::Draft {
+            store
+                .delete_skill(&path)
+                .map_err(|e| CommandError::io(format!("delete draft skill: {e}")))?;
+            remove_proposal_if_present(skills_dir, &skill.id, skill.version)?;
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the `agent_chat.json` path for the current project + workflow.
@@ -137,13 +208,12 @@ pub async fn save_agent_chat(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn prune_agent_cache_for_nodes(
+pub async fn prune_skill_lineage_for_nodes(
     app: tauri::AppHandle,
-    request: PruneAgentCacheRequest,
+    request: PruneSkillLineageRequest,
 ) -> Result<(), CommandError> {
-    // Privacy kill switch: don't touch the file. The next run still
-    // picks up the unmutated cache and applies `evict_for_node` before
-    // use. Must run before any std::fs:: call.
+    // Privacy kill switch: don't touch the skill files. Must run before any
+    // std::fs:: call.
     if !request.store_traces {
         return Ok(());
     }
@@ -157,15 +227,11 @@ pub async fn prune_agent_cache_for_nodes(
         &request.workflow_name,
         workflow_uuid,
     );
-    let cache_path = storage.agent_cache_path();
-    let mut cache = AgentCache::load_from_path(&cache_path);
-    for node_id in &request.node_ids {
-        cache.evict_for_node(*node_id);
-    }
-    cache
-        .save_to_path(&cache_path)
-        .map_err(|e| CommandError::io(format!("persist pruned cache: {e}")))?;
-    Ok(())
+    let skills_dir = storage
+        .project_skills_dir()
+        .map_err(|e| CommandError::io(format!("resolve project skills dir: {e}")))?;
+    let deleted: HashSet<Uuid> = request.node_ids.into_iter().collect();
+    prune_skill_lineage_in_dir(&skills_dir, &deleted)
 }
 
 #[tauri::command]
@@ -188,12 +254,12 @@ pub async fn clear_agent_conversation(
         &request.workflow_name,
         workflow_uuid,
     );
-    // Truncate agent_cache.json to an empty object.
-    let cache_path = storage.agent_cache_path();
-    if cache_path.exists() {
-        std::fs::write(&cache_path, "{}")
-            .map_err(|e| CommandError::io(format!("truncate agent_cache.json: {e}")))?;
-    }
+    // Remove draft skills derived from the current agent conversation.
+    let skills_dir = storage
+        .project_skills_dir()
+        .map_err(|e| CommandError::io(format!("resolve project skills dir: {e}")))?;
+    clear_draft_skills_in_dir(&skills_dir)?;
+
     // Truncate variant_index.jsonl to empty. `VariantIndex::load_existing`
     // will read an empty file as "no prior runs" on the next run.
     let variant_path = storage.variant_index_path();
@@ -213,6 +279,10 @@ pub async fn clear_agent_conversation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clickweave_engine::agent::skills::{
+        ApplicabilityHints, ApplicabilitySignature, OutcomePredicate, Skill, SkillScope,
+        SkillStats, SubgoalSignature,
+    };
 
     #[test]
     fn chat_serialize_round_trip_preserves_roles_and_run_ids() {
@@ -258,6 +328,80 @@ mod tests {
     }
 
     #[test]
+    fn prune_skill_lineage_updates_drafts_and_deletes_empty_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(tmp.path().to_path_buf());
+        let deleted = Uuid::from_u128(10);
+        let kept = Uuid::from_u128(11);
+
+        let partial_path = store
+            .write_skill(&sample_skill(
+                "partial-draft",
+                SkillState::Draft,
+                vec![deleted, kept],
+            ))
+            .unwrap();
+        let empty_path = store
+            .write_skill(&sample_skill(
+                "empty-draft",
+                SkillState::Draft,
+                vec![deleted],
+            ))
+            .unwrap();
+        let confirmed_path = store
+            .write_skill(&sample_skill(
+                "confirmed",
+                SkillState::Confirmed,
+                vec![deleted],
+            ))
+            .unwrap();
+        std::fs::write(tmp.path().join(proposal_filename("empty-draft", 1)), "{}").unwrap();
+
+        prune_skill_lineage_in_dir(tmp.path(), &HashSet::from([deleted])).unwrap();
+
+        let partial = store.read_skill(&partial_path).unwrap();
+        assert_eq!(partial.produced_node_ids, vec![kept]);
+        assert!(!empty_path.exists());
+        assert!(
+            !tmp.path()
+                .join(proposal_filename("empty-draft", 1))
+                .exists()
+        );
+        let confirmed = store.read_skill(&confirmed_path).unwrap();
+        assert_eq!(confirmed.produced_node_ids, vec![deleted]);
+    }
+
+    #[test]
+    fn clear_draft_skills_removes_only_drafts_and_their_proposals() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(tmp.path().to_path_buf());
+
+        let draft_path = store
+            .write_skill(&sample_skill(
+                "draft",
+                SkillState::Draft,
+                vec![Uuid::from_u128(20)],
+            ))
+            .unwrap();
+        let confirmed_path = store
+            .write_skill(&sample_skill(
+                "confirmed",
+                SkillState::Confirmed,
+                vec![Uuid::from_u128(21)],
+            ))
+            .unwrap();
+        std::fs::write(tmp.path().join(proposal_filename("draft", 1)), "{}").unwrap();
+        std::fs::write(tmp.path().join(proposal_filename("confirmed", 1)), "{}").unwrap();
+
+        clear_draft_skills_in_dir(tmp.path()).unwrap();
+
+        assert!(!draft_path.exists());
+        assert!(!tmp.path().join(proposal_filename("draft", 1)).exists());
+        assert!(confirmed_path.exists());
+        assert!(tmp.path().join(proposal_filename("confirmed", 1)).exists());
+    }
+
+    #[test]
     fn privacy_kill_switch_branches_return_before_file_io() {
         // The guard is `if !request.store_traces { return Ok(()); }`.
         // A change that moved file I/O above this guard would break the
@@ -266,7 +410,7 @@ mod tests {
         // (skipping comments) and assert the guard precedes it.
         let src = include_str!("agent_chat.rs");
         for fn_name in [
-            "pub async fn prune_agent_cache_for_nodes",
+            "pub async fn prune_skill_lineage_for_nodes",
             "pub async fn clear_agent_conversation",
             "pub async fn save_agent_chat",
         ] {
@@ -294,6 +438,38 @@ mod tests {
                 "privacy-flag guard must execute before any std::fs:: mutation in {}",
                 fn_name,
             );
+        }
+    }
+
+    fn sample_skill(id: &str, state: SkillState, produced_node_ids: Vec<Uuid>) -> Skill {
+        Skill {
+            id: id.into(),
+            version: 1,
+            state,
+            scope: SkillScope::ProjectLocal,
+            name: id.into(),
+            description: "desc".into(),
+            tags: vec![],
+            subgoal_text: "subgoal".into(),
+            subgoal_signature: SubgoalSignature("sig".into()),
+            applicability: ApplicabilityHints {
+                apps: vec![],
+                hosts: vec![],
+                signature: ApplicabilitySignature("appsig".into()),
+            },
+            parameter_schema: vec![],
+            action_sketch: vec![],
+            outputs: vec![],
+            outcome_predicate: OutcomePredicate::SubgoalCompleted {
+                post_state_world_model_signature: None,
+            },
+            provenance: vec![],
+            stats: SkillStats::default(),
+            edited_by_user: false,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            produced_node_ids,
+            body: String::new(),
         }
     }
 }

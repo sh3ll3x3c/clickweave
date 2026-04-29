@@ -3,6 +3,7 @@ import type { Node as RFNode, OnNodesChange } from "@xyflow/react";
 import type { Workflow } from "../bindings";
 import type { AppGroupMeta } from "./useAppGrouping";
 import type { UserGroupMeta } from "./useUserGrouping";
+import type { RunTrace } from "../store/slices/assistantSlice";
 import { useRfNodeBuilder } from "./node-sync/useRfNodeBuilder";
 import { useNodeChangeHandler } from "./node-sync/useNodeChangeHandler";
 
@@ -20,6 +21,10 @@ interface UseNodeSyncParams {
   nodeToAppGroup: Map<string, string>;
   appGroupMeta: Map<string, AppGroupMeta>;
   toggleAppCollapse: (groupId: string) => void;
+  // Agent-run grouping params
+  agentRunCollapsed: Record<string, boolean>;
+  runTraces: Record<string, RunTrace>;
+  toggleAgentRunCollapsed: (runId: string) => void;
   // User grouping params
   collapsedUserGroups: Set<string>;
   nodeToUserGroup: Map<string, string>;
@@ -48,6 +53,9 @@ export function useNodeSync({
   nodeToAppGroup,
   appGroupMeta,
   toggleAppCollapse,
+  agentRunCollapsed,
+  runTraces,
+  toggleAgentRunCollapsed,
   collapsedUserGroups,
   nodeToUserGroup,
   userGroupMeta,
@@ -77,6 +85,9 @@ export function useNodeSync({
     nodeToAppGroup,
     appGroupMeta,
     toggleAppCollapse,
+    agentRunCollapsed,
+    runTraces,
+    toggleAgentRunCollapsed,
     collapsedUserGroups,
     nodeToUserGroup,
     userGroupMeta,

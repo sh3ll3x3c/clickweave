@@ -16,6 +16,7 @@ export function isAppAnchorNode(n: WfNode | undefined): boolean {
 /** Extract the app name from an anchor node (FocusWindow or launch_app McpToolCall). */
 export function anchorAppName(n: WfNode): string | null {
   if (n.node_type.type === "FocusWindow") {
+    if (n.node_type.method !== "AppName") return null;
     // Treat an empty AppName value as unconfigured. A freshly-dropped
     // FocusWindow node has `value: ""`, which otherwise surfaces as a
     // blank-labelled app group in the graph.

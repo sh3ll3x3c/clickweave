@@ -4,6 +4,8 @@ import { useRef, useState } from "react";
 import type { Node as RFNode, NodeChange } from "@xyflow/react";
 import { useNodeChangeHandler } from "./useNodeChangeHandler";
 import { makeWorkflow, node } from "../test-helpers";
+import type { Workflow } from "../../bindings";
+import type { AppGroupMeta } from "../useAppGrouping";
 
 function rfNode(id: string, type: string, selected = false): RFNode {
   return {
@@ -22,6 +24,10 @@ function workflowNode(id: string, selected = false): RFNode {
 interface RenderOverrides {
   agentStatus?: "idle" | "running" | "complete" | "stopped" | "error";
   onRejectDuringRun?: () => void;
+  workflow?: Workflow;
+  appGroups?: Map<string, string[]>;
+  nodeToAppGroup?: Map<string, string>;
+  appGroupMeta?: Map<string, AppGroupMeta>;
 }
 
 function renderHandler(
@@ -34,7 +40,7 @@ function renderHandler(
   const onDeleteNodes = vi.fn();
   const onRejectDuringRun = overrides.onRejectDuringRun ?? vi.fn();
 
-  const wf = makeWorkflow(
+  const wf = overrides.workflow ?? makeWorkflow(
     initialRfNodes
       .filter((n) => n.type === "workflow")
       .map((n) => node(n.id, "Click")),
@@ -48,9 +54,9 @@ function renderHandler(
     const handler = useNodeChangeHandler({
       workflow: wf,
       collapsedApps: new Set(),
-      appGroups: new Map(),
-      nodeToAppGroup: new Map(),
-      appGroupMeta: new Map(),
+      appGroups: overrides.appGroups ?? new Map(),
+      nodeToAppGroup: overrides.nodeToAppGroup ?? new Map(),
+      appGroupMeta: overrides.appGroupMeta ?? new Map(),
       collapsedUserGroups: new Set(),
       nodeToUserGroup: new Map(),
       userGroupMeta: new Map(),
@@ -263,6 +269,32 @@ describe("useNodeChangeHandler — mid-run delete gate", () => {
     expect(onRejectDuringRun).not.toHaveBeenCalled();
   });
 
+  it("expands synthetic agent-run container deletion to its workflow nodes", async () => {
+    const wf = makeWorkflow(
+      [
+        { ...node("a", "Click"), source_run_id: "run-1" },
+        { ...node("b", "Click"), source_run_id: "run-1" },
+        { ...node("c", "Click"), source_run_id: "run-2" },
+      ],
+      [],
+    );
+    const { hook, onDeleteNodes } = renderHandler(
+      [
+        rfNode("agent-run-run-1", "agent_run_group"),
+        workflowNode("a"),
+        workflowNode("b"),
+        workflowNode("c"),
+      ],
+      { workflow: wf },
+    );
+
+    await dispatch(hook.result.current.handler, [
+      { type: "remove", id: "agent-run-run-1" },
+    ]);
+
+    expect(onDeleteNodes).toHaveBeenCalledWith(["a", "b"]);
+  });
+
   it("allows non-remove changes while agentStatus is running", async () => {
     const { hook, onNodePositionsChange, onRejectDuringRun } = renderHandler(
       [workflowNode("a")],
@@ -278,5 +310,61 @@ describe("useNodeChangeHandler — mid-run delete gate", () => {
 
     expect(onNodePositionsChange).toHaveBeenCalledTimes(1);
     expect(onRejectDuringRun).not.toHaveBeenCalled();
+  });
+
+  it("persists app-group member positions when dragging an agent-run container", async () => {
+    const wf = makeWorkflow(
+      [
+        { ...node("a", "Click"), source_run_id: "run-1" },
+        { ...node("b", "Click"), source_run_id: "run-1" },
+      ],
+      [],
+    );
+    const groupId = "appgroup-a";
+    const agentRunGroup = {
+      ...rfNode("agent-run-run-1", "agent_run_group"),
+      position: { x: 100, y: 100 },
+    };
+    const appGroup = {
+      ...rfNode(groupId, "appGroup"),
+      parentId: agentRunGroup.id,
+      position: { x: 20, y: 40 },
+    };
+    const nodeA = {
+      ...workflowNode("a"),
+      parentId: groupId,
+      position: { x: 20, y: 56 },
+    };
+    const nodeB = {
+      ...workflowNode("b"),
+      parentId: groupId,
+      position: { x: 60, y: 96 },
+    };
+    const { hook, onNodePositionsChange } = renderHandler(
+      [agentRunGroup, appGroup, nodeA, nodeB],
+      {
+        workflow: wf,
+        appGroups: new Map([[groupId, ["a", "b"]]]),
+        nodeToAppGroup: new Map([
+          ["a", groupId],
+          ["b", groupId],
+        ]),
+        appGroupMeta: new Map([
+          [groupId, { appName: "Chrome", color: "#22c55e", anchorId: "a" }],
+        ]),
+      },
+    );
+
+    await dispatch(hook.result.current.handler, [
+      { type: "position", id: "agent-run-run-1", position: { x: 200, y: 220 } },
+    ]);
+
+    const updates = onNodePositionsChange.mock.calls[0][0] as Map<
+      string,
+      { x: number; y: number }
+    >;
+    expect(updates.get("a")).toEqual({ x: 200, y: 204 });
+    expect(updates.get("b")).toEqual({ x: 240, y: 244 });
+    expect(updates.has(groupId)).toBe(false);
   });
 });
