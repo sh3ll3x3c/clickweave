@@ -84,6 +84,13 @@ tools. Use `required_tools` / `forbidden_tools` for the full MCP trace,
 `required_agent_tool_counts`, `forbidden_agent_tools`, and
 `max_agent_tool_calls` for the assistant's tool calls.
 
+Scenarios that intentionally succeed when the model chooses a recovery
+pseudo-tool can set `stop_after_agent_tools` (for example,
+`["agent_replan"]`). The harness records that assistant turn, adds
+`eval_halt` to the report, and stops before the production runner asks for
+another turn. This is eval-only; it does not change production
+`agent_replan` semantics.
+
 ## GEPA Loop
 
 Treat the JSON report as the objective function output:
