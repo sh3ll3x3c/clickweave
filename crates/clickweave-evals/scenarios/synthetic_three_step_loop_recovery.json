@@ -1,0 +1,164 @@
+{
+  "id": "synthetic_three_step_loop_recovery",
+  "description": "Synthetic CDP recovery check for longer no-progress loops. The target channel is absent from every structured surface, so the agent should widen inspection or replan before completing a second search/filter/cancel cycle.",
+  "goal": "In SyntheticMessenger, open the synthetic alpha channel and send alpha-test. If structured surfaces cannot confirm that channel, request a replan instead of cycling through search, filter, and cancel controls.",
+  "max_steps": 9,
+  "tools": [
+    {
+      "name": "cdp_find_elements",
+      "description": "Find visible elements on the connected synthetic messenger page.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "max_results": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "cdp_fill",
+      "description": "Fill a synthetic CDP input by uid.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid", "value"],
+        "properties": {
+          "uid": { "type": "string" },
+          "value": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "cdp_click",
+      "description": "Click a synthetic CDP element by uid.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid"],
+        "properties": { "uid": { "type": "string" } }
+      }
+    },
+    {
+      "name": "cdp_take_dom_snapshot",
+      "description": "Take a wider synthetic DOM snapshot.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "cdp_evaluate_script",
+      "description": "Query the synthetic page DOM directly.",
+      "parameters": {
+        "type": "object",
+        "properties": { "script": { "type": "string" } }
+      }
+    },
+    {
+      "name": "cdp_type_text",
+      "description": "Type text into the active synthetic editor.",
+      "parameters": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } }
+      }
+    },
+    {
+      "name": "click",
+      "description": "Coordinate click. This scenario treats it as forbidden fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "integer" },
+          "y": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "find_text",
+      "description": "OCR text search. This scenario treats it as forbidden fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } }
+      }
+    }
+  ],
+  "tool_behaviors": [
+    {
+      "tool": "cdp_find_elements",
+      "response": {
+        "page_url": "app://synthetic-messenger/main",
+        "source": "cdp",
+        "matches": [
+          {
+            "uid": "d-search",
+            "role": "textbox",
+            "label": "Search synthetic channels",
+            "tag": "input",
+            "disabled": false
+          },
+          {
+            "uid": "d-filter",
+            "role": "button",
+            "label": "Filter synthetic channels",
+            "tag": "button",
+            "disabled": false
+          },
+          {
+            "uid": "d-cancel",
+            "role": "button",
+            "label": "Cancel synthetic search",
+            "tag": "button",
+            "disabled": false
+          },
+          {
+            "uid": "d-composer",
+            "role": "textbox",
+            "label": "Message composer",
+            "tag": "textarea",
+            "disabled": false
+          }
+        ]
+      }
+    },
+    {
+      "tool": "cdp_fill",
+      "required_args": ["uid", "value"],
+      "response": "Synthetic search field updated. No matching channel became active."
+    },
+    {
+      "tool": "cdp_click",
+      "required_args": ["uid"],
+      "response": "Synthetic control toggled. The visible channel list and active channel are unchanged."
+    },
+    {
+      "tool": "cdp_take_dom_snapshot",
+      "response": "SyntheticMessenger DOM: search input, filter button, cancel button, composer for General. No synthetic alpha channel row is present or selected."
+    },
+    {
+      "tool": "cdp_evaluate_script",
+      "response": {
+        "found": false,
+        "active_channel": "General",
+        "target_channel_present": false
+      }
+    },
+    {
+      "tool": "cdp_type_text",
+      "response": "Typed into the active General composer"
+    },
+    {
+      "tool": "click",
+      "response": "Coordinate click ignored by synthetic page"
+    },
+    {
+      "tool": "find_text",
+      "response": "No OCR match in synthetic page"
+    }
+  ],
+  "scoring": {
+    "required_tools": ["cdp_find_elements"],
+    "forbidden_tools": ["click", "find_text"],
+    "required_agent_tools": ["agent_replan"],
+    "required_agent_tool_groups": [["cdp_take_dom_snapshot", "cdp_evaluate_script"]],
+    "forbidden_agent_tools": ["click", "find_text", "cdp_type_text", "agent_done"],
+    "stop_after_agent_tools": ["agent_replan"],
+    "max_agent_tool_calls": 6,
+    "max_repeated_action_warnings": 0,
+    "completion_required": false
+  }
+}

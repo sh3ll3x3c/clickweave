@@ -29,6 +29,7 @@ cargo run -p clickweave-evals -- \
   --scenario-dir crates/clickweave-evals/scenarios \
   --agent-base-url http://localhost:1234/v1 \
   --agent-model local-model \
+  --concurrency 2 \
   --out target/clickweave-eval-suite.json
 ```
 
@@ -60,6 +61,10 @@ The command also reads `CLICKWEAVE_EVAL_AGENT_BASE_URL`,
 `CLICKWEAVE_EVAL_JUDGE_BASE_URL`, `CLICKWEAVE_EVAL_JUDGE_MODEL`, and
 `CLICKWEAVE_EVAL_JUDGE_API_KEY`.
 
+`--concurrency` controls how many scenarios run at once in `--scenario-dir`
+mode. A single scenario still runs sequentially internally because each agent
+turn depends on the previous tool result and world model.
+
 ## Scenarios
 
 - `synthetic_electron_pre_cdp` checks launch -> auto-CDP attach -> CDP click, and forbids manual reconnects after attach.
@@ -68,6 +73,8 @@ The command also reads `CLICKWEAVE_EVAL_AGENT_BASE_URL`,
 - `synthetic_native_ax_required` checks native AX snapshot plus AX dispatch.
 - `synthetic_ax_snapshot_expired` checks fresh AX snapshot recovery after `snapshot_expired`.
 - `synthetic_no_progress_replan` checks structured probing followed by `agent_replan` when a target is absent.
+- `synthetic_search_cancel_loop_recovery` checks that a missing CDP target does not devolve into a repeated search/cancel action cycle.
+- `synthetic_three_step_loop_recovery` checks that a missing CDP target does not devolve into a longer search/filter/cancel action cycle.
 - `synthetic_applicable_skill_invocation` checks `invoke_skill` selection when a synthetic `<applicable_skills>` block is surfaced.
 
 Deterministic scoring distinguishes runner auto-actions from model-selected
@@ -76,6 +83,13 @@ tools. Use `required_tools` / `forbidden_tools` for the full MCP trace,
 `required_agent_tools`, `required_agent_tool_groups`,
 `required_agent_tool_counts`, `forbidden_agent_tools`, and
 `max_agent_tool_calls` for the assistant's tool calls.
+
+Scenarios that intentionally succeed when the model chooses a recovery
+pseudo-tool can set `stop_after_agent_tools` (for example,
+`["agent_replan"]`). The harness records that assistant turn, adds
+`eval_halt` to the report, and stops before the production runner asks for
+another turn. This is eval-only; it does not change production
+`agent_replan` semantics.
 
 ## GEPA Loop
 

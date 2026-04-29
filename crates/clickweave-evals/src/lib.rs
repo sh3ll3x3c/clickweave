@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::{error::Error, fmt};
 
 use anyhow::{Context, Result, bail};
 use clickweave_engine::Mcp;
@@ -110,7 +111,11 @@ pub struct ScoringSpec {
     #[serde(default)]
     pub forbidden_agent_tools: Vec<String>,
     #[serde(default)]
+    pub stop_after_agent_tools: Vec<String>,
+    #[serde(default)]
     pub max_agent_tool_calls: Option<usize>,
+    #[serde(default)]
+    pub max_repeated_action_warnings: Option<usize>,
     #[serde(default = "default_true")]
     pub completion_required: bool,
 }
@@ -162,6 +167,7 @@ pub struct DeterministicScore {
     pub repeated_action_warnings: usize,
     pub agent_tool_calls: usize,
     pub max_agent_tool_calls_excess: usize,
+    pub max_repeated_action_warnings_excess: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +193,7 @@ pub struct EvalReport {
     pub tool_trace: Vec<ToolTrace>,
     pub llm_trace: Vec<LlmTurnTrace>,
     pub events: Vec<Value>,
+    pub eval_halt: Option<EvalHalt>,
     pub privacy: PrivacyReport,
     pub run_error: Option<String>,
 }
@@ -198,6 +205,12 @@ pub struct EvalSuiteReport {
     pub deterministic_score_mean: f32,
     pub prompt_sha: Option<String>,
     pub reports: Vec<EvalReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalHalt {
+    pub reason: String,
+    pub agent_tool: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,6 +412,8 @@ fn response_text(value: &Value) -> String {
 pub struct RecordingBackend<B> {
     inner: B,
     turns: Mutex<Vec<LlmTurnTrace>>,
+    stop_after_agent_tools: HashSet<String>,
+    eval_halt: Mutex<Option<EvalHalt>>,
 }
 
 impl<B> RecordingBackend<B> {
@@ -406,13 +421,66 @@ impl<B> RecordingBackend<B> {
         Self {
             inner,
             turns: Mutex::new(Vec::new()),
+            stop_after_agent_tools: HashSet::new(),
+            eval_halt: Mutex::new(None),
+        }
+    }
+
+    pub fn with_stop_after_agent_tools(inner: B, stop_after_agent_tools: &[String]) -> Self {
+        Self {
+            inner,
+            turns: Mutex::new(Vec::new()),
+            stop_after_agent_tools: stop_after_agent_tools.iter().cloned().collect(),
+            eval_halt: Mutex::new(None),
         }
     }
 
     pub fn traces(&self) -> Vec<LlmTurnTrace> {
         self.turns.lock().unwrap().clone()
     }
+
+    pub fn eval_halt(&self) -> Option<EvalHalt> {
+        self.eval_halt.lock().unwrap().clone()
+    }
+
+    fn maybe_record_eval_halt(&self, assistant: &Option<AssistantTrace>) -> bool {
+        if self.stop_after_agent_tools.is_empty() {
+            return false;
+        }
+        let Some(tool) = assistant
+            .as_ref()
+            .and_then(|assistant| {
+                assistant
+                    .tool_calls
+                    .iter()
+                    .find(|call| self.stop_after_agent_tools.contains(&call.name))
+            })
+            .map(|call| call.name.clone())
+        else {
+            return false;
+        };
+        let mut halt = self.eval_halt.lock().unwrap();
+        if halt.is_none() {
+            *halt = Some(EvalHalt {
+                reason: "stop_after_agent_tools".to_string(),
+                agent_tool: tool,
+            });
+            return true;
+        }
+        false
+    }
 }
+
+#[derive(Debug)]
+struct EvalHaltTriggered;
+
+impl fmt::Display for EvalHaltTriggered {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("eval halted after configured agent tool")
+    }
+}
+
+impl Error for EvalHaltTriggered {}
 
 impl<B: ChatBackend> ChatBackend for RecordingBackend<B> {
     fn model_name(&self) -> &str {
@@ -440,9 +508,12 @@ impl<B: ChatBackend> ChatBackend for RecordingBackend<B> {
                 });
                 self.turns.lock().unwrap().push(LlmTurnTrace {
                     request_messages,
-                    assistant,
+                    assistant: assistant.clone(),
                     error: None,
                 });
+                if self.maybe_record_eval_halt(&assistant) {
+                    return Err(EvalHaltTriggered.into());
+                }
                 Ok(response)
             }
             Err(err) => {
@@ -480,7 +551,14 @@ where
     let default_prompt = include_str!("../../clickweave-engine/prompts/agent_system.md");
     let prompt_sha = prompt_sha(agent_system_prompt.as_deref().unwrap_or(default_prompt));
     let mcp = ScenarioMcp::new(&scenario);
-    let recording_agent = RecordingBackend::new(agent);
+    let recording_agent = if scenario.scoring.stop_after_agent_tools.is_empty() {
+        RecordingBackend::new(agent)
+    } else {
+        RecordingBackend::with_stop_after_agent_tools(
+            agent,
+            &scenario.scoring.stop_after_agent_tools,
+        )
+    };
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(256);
     let (approval_tx, _approval_rx) = tokio::sync::mpsc::channel(1);
 
@@ -513,9 +591,14 @@ where
         agent_system_prompt,
     )
     .await;
-
-    let (completed, steps, run_error) = match run {
+    let eval_halt = recording_agent.eval_halt();
+    let (completed, state_steps, run_error) = match run {
         Ok((state, _writer)) => (state.completed, state.steps.len(), None),
+        Err(err)
+            if eval_halt.is_some() && err.chain().any(|cause| cause.is::<EvalHaltTriggered>()) =>
+        {
+            (false, 0, None)
+        }
         Err(err) => (false, 0, Some(redact_text(&err.to_string()))),
     };
 
@@ -528,6 +611,11 @@ where
 
     let llm_trace = recording_agent.traces();
     let tool_trace = mcp.traces();
+    let steps = if eval_halt.is_some() {
+        count_step_events(&events)
+    } else {
+        state_steps
+    };
     let deterministic = score_deterministic(
         &scenario,
         completed,
@@ -568,6 +656,7 @@ where
         tool_trace,
         llm_trace,
         events,
+        eval_halt,
         privacy: PrivacyReport {
             synthetic_fixture_only: true,
             screenshots_omitted: true,
@@ -576,6 +665,18 @@ where
         },
         run_error,
     })
+}
+
+fn count_step_events(events: &[Value]) -> usize {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.get("type").and_then(Value::as_str),
+                Some("step_completed" | "step_failed")
+            )
+        })
+        .count()
 }
 
 fn score_deterministic(
@@ -673,6 +774,11 @@ fn score_deterministic(
         .max_agent_tool_calls
         .map(|max| agent_tool_calls.saturating_sub(max))
         .unwrap_or_default();
+    let max_repeated_action_warnings_excess = scenario
+        .scoring
+        .max_repeated_action_warnings
+        .map(|max| repeated_action_warnings.saturating_sub(max))
+        .unwrap_or_default();
 
     let mut score = 1.0_f32;
     if scenario.scoring.completion_required && !completed {
@@ -687,6 +793,7 @@ fn score_deterministic(
     score -= invalid_tool_errors as f32 * 0.12;
     score -= repeated_action_warnings as f32 * 0.05;
     score -= max_agent_tool_calls_excess as f32 * 0.04;
+    score -= max_repeated_action_warnings_excess as f32;
     if scenario.max_steps > 0 {
         score -= (steps as f32 / scenario.max_steps as f32).min(1.0) * 0.08;
     }
@@ -705,6 +812,7 @@ fn score_deterministic(
         repeated_action_warnings,
         agent_tool_calls,
         max_agent_tool_calls_excess,
+        max_repeated_action_warnings_excess,
     }
 }
 
@@ -1020,6 +1128,71 @@ mod tests {
                 .unwrap()
                 .contains("[SYSTEM_PROMPT_OMITTED]")
         );
+    }
+
+    #[tokio::test]
+    async fn stop_after_agent_tool_halts_after_recording_target_action() {
+        let mut scenario = scenario();
+        scenario.scoring.required_tools.clear();
+        scenario.scoring.required_agent_tools = vec!["agent_replan".to_string()];
+        scenario.scoring.required_agent_tool_groups.clear();
+        scenario.scoring.required_agent_tool_counts.clear();
+        scenario.scoring.forbidden_tools.clear();
+        scenario.scoring.forbidden_agent_tools.clear();
+        scenario.scoring.stop_after_agent_tools = vec!["agent_replan".to_string()];
+        scenario.scoring.max_agent_tool_calls = Some(1);
+        scenario.scoring.max_repeated_action_warnings = Some(0);
+        scenario.scoring.completion_required = false;
+
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("agent_replan", json!({"reason": "target absent"})),
+            llm_reply_tool("agent_done", json!({"summary": "should not run"})),
+        ]);
+
+        let report = run_eval::<_, ScriptedLlm>(scenario, llm, None, None)
+            .await
+            .unwrap();
+
+        let halt = report.eval_halt.as_ref().expect("eval should halt");
+        assert_eq!(halt.reason, "stop_after_agent_tools");
+        assert_eq!(halt.agent_tool, "agent_replan");
+        assert!(report.run_error.is_none());
+        assert_eq!(report.llm_trace.len(), 1);
+        assert_eq!(report.deterministic.agent_tool_calls, 1);
+        assert_eq!(report.deterministic.max_agent_tool_calls_excess, 0);
+        assert!(report.deterministic.required_agent_tools_missing.is_empty());
+        assert!(!report.deterministic.completed);
+        assert!(report.final_score > 0.99);
+    }
+
+    #[test]
+    fn deterministic_score_can_hard_fail_repeated_action_warnings() {
+        let mut scenario = scenario();
+        scenario.scoring.required_tools.clear();
+        scenario.scoring.required_agent_tools.clear();
+        scenario.scoring.required_agent_tool_groups.clear();
+        scenario.scoring.required_agent_tool_counts.clear();
+        scenario.scoring.forbidden_tools.clear();
+        scenario.scoring.forbidden_agent_tools.clear();
+        scenario.scoring.max_agent_tool_calls = None;
+        scenario.scoring.max_repeated_action_warnings = Some(0);
+        scenario.scoring.completion_required = false;
+
+        let score = score_deterministic(
+            &scenario,
+            false,
+            0,
+            &[],
+            &[],
+            &[json!({
+                "type": "warning",
+                "message": "no-progress: repeated action cycle `cdp_fill` -> `cdp_click`"
+            })],
+        );
+
+        assert_eq!(score.repeated_action_warnings, 1);
+        assert_eq!(score.max_repeated_action_warnings_excess, 1);
+        assert_eq!(score.score, 0.0);
     }
 
     #[test]

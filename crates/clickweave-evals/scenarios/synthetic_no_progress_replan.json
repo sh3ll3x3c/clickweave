@@ -179,6 +179,7 @@
     "required_agent_tools": ["launch_app", "agent_replan"],
     "required_agent_tool_groups": [["cdp_take_dom_snapshot", "cdp_evaluate_script"]],
     "forbidden_agent_tools": ["cdp_connect", "take_screenshot", "find_text", "click", "agent_done"],
+    "stop_after_agent_tools": ["agent_replan"],
     "max_agent_tool_calls": 5,
     "completion_required": false
   }

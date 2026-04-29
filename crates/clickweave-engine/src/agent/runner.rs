@@ -10,7 +10,7 @@
 
 #![allow(dead_code)] // Phase 2c: live wiring lands in Phase 3 cutover.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -35,7 +35,7 @@ use crate::agent::types::{
     AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest, RunnerOutput,
     StepOutcome, TerminalReason, WorldModelDiff,
 };
-use crate::agent::world_model::{InvalidationEvent, WorldModel};
+use crate::agent::world_model::{InvalidationEvent, ObservedElement, WorldModel};
 use crate::executor::Mcp;
 
 /// The one action an `AgentTurn` must carry (D10).
@@ -1555,6 +1555,15 @@ impl StateRunner {
                 }
                 Err(error) => {
                     self.consecutive_errors += 1;
+                    let stale_cdp_uid = is_stale_cdp_uid_error(tool_name, &error);
+                    if stale_cdp_uid {
+                        self.world_model.elements = None;
+                    }
+                    let error = if stale_cdp_uid {
+                        build_stale_cdp_uid_nudge(&error)
+                    } else {
+                        error
+                    };
                     self.queue_invalidation(InvalidationEvent::ToolFailed {
                         tool: tool_name.clone(),
                     });
@@ -1686,23 +1695,63 @@ impl StateRunner {
         tool_arguments: &Value,
         tool_body: &str,
         annotations_by_tool: &HashMap<String, ToolAnnotations>,
-        last_action: &mut Option<(String, Value, u32)>,
+        last_action: &mut Option<LastActionProgress>,
+        recent_actions: &mut VecDeque<ActionProgressSignature>,
     ) -> Option<String> {
         if is_observation_tool(tool_name, annotations_by_tool) {
             return None;
         }
+        let context_signature = stable_no_progress_context_signature(&self.world_model);
+        if last_action
+            .as_ref()
+            .is_some_and(|last| last.context_signature != context_signature)
+        {
+            *last_action = None;
+            recent_actions.clear();
+        }
+        let signature = ActionProgressSignature {
+            tool_name: tool_name.to_string(),
+            arguments: tool_arguments.clone(),
+            context_signature: context_signature.clone(),
+        };
+        if recent_actions.len() == ACTION_CYCLE_WINDOW {
+            recent_actions.pop_front();
+        }
+        recent_actions.push_back(signature);
         let same_as_last = matches!(
             last_action.as_ref(),
-            Some((prev_tool, prev_args, _))
-                if prev_tool == tool_name && prev_args == tool_arguments
+            Some(last)
+                if last.tool_name == tool_name
+                    && last.arguments == *tool_arguments
+                    && last.context_signature == context_signature
         );
         let count = if same_as_last {
-            last_action.as_ref().map(|(_, _, n)| *n).unwrap_or(0) + 1
+            last_action.as_ref().map(|last| last.count).unwrap_or(0) + 1
         } else {
             1
         };
-        *last_action = Some((tool_name.to_string(), tool_arguments.clone(), count));
+        *last_action = Some(LastActionProgress {
+            tool_name: tool_name.to_string(),
+            arguments: tool_arguments.clone(),
+            context_signature,
+            count,
+        });
         if count < REPEAT_ACTION_THRESHOLD {
+            if let Some(cycle) = detect_repeated_action_cycle(recent_actions) {
+                let cycle_summary = cycle.join(" -> ");
+                warn!(
+                    cycle = %cycle_summary,
+                    "state-spine: repeated action cycle detected — injecting no-progress nudge"
+                );
+                self.emit_event(AgentEvent::Warning {
+                    message: format!(
+                        "{}: repeated action cycle `{}`",
+                        NO_PROGRESS_WARNING_PREFIX, cycle_summary
+                    ),
+                })
+                .await;
+                return Some(build_action_cycle_nudge(&cycle_summary, tool_body));
+            }
             return None;
         }
         warn!(
@@ -1953,6 +2002,11 @@ const CDP_NAVIGATION_TOOLS: &[&str] = &["cdp_navigate", "cdp_new_page", "cdp_sel
 /// until the LLM picks a different action and the counter resets.
 const REPEAT_ACTION_THRESHOLD: u32 = 3;
 
+/// Largest repeated action-cycle body to detect. Observation tools are
+/// excluded before they reach this window.
+const ACTION_CYCLE_MAX_PATTERN_LEN: usize = 3;
+const ACTION_CYCLE_WINDOW: usize = ACTION_CYCLE_MAX_PATTERN_LEN * 2;
+
 /// Prefix on the synthetic observation injected back to the LLM when
 /// the repeat-action detector fires. Anchors the test assertion that
 /// the nudge actually reached `previous_result`.
@@ -1962,12 +2016,169 @@ pub(crate) const NO_PROGRESS_NUDGE_PREFIX: &str = "[NO-PROGRESS NUDGE]";
 /// nudge. Anchors the test assertion that subscribers see the event.
 pub(crate) const NO_PROGRESS_WARNING_PREFIX: &str = "no-progress";
 
+pub(crate) const NO_ACTION_MUTATION_ONLY_PREFIX: &str = "[NO ACTION DISPATCHED]";
+
+const NO_ACTION_MUTATION_ONLY_REASON: &str = "[NO ACTION DISPATCHED] You emitted only task-state mutation pseudo-tools. The harness updated the task state, but no MCP/environment action ran: no click, fill, typing, navigation, or selection happened. Do not infer that the UI changed; choose a real action next or emit agent_replan with a new tactic.";
+
+pub(crate) const STALE_CDP_UID_PREFIX: &str = "[STALE CDP UID]";
+
+#[derive(Debug, Clone)]
+struct LastActionProgress {
+    tool_name: String,
+    arguments: Value,
+    context_signature: String,
+    count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ActionProgressSignature {
+    tool_name: String,
+    arguments: Value,
+    context_signature: String,
+}
+
+fn reset_no_progress_tracking(
+    last_action: &mut Option<LastActionProgress>,
+    recent_actions: &mut VecDeque<ActionProgressSignature>,
+) {
+    *last_action = None;
+    recent_actions.clear();
+}
+
+fn stable_no_progress_context_signature(world_model: &WorldModel) -> String {
+    let focused_app = world_model.focused_app.as_ref().map(|fresh| {
+        serde_json::json!({
+            "name": &fresh.value.name,
+            "kind": fresh.value.kind,
+            "pid": fresh.value.pid,
+        })
+    });
+    let cdp_page_url = world_model
+        .cdp_page
+        .as_ref()
+        .map(|fresh| fresh.value.url.as_str());
+    let element_surface = world_model
+        .elements
+        .as_ref()
+        .map(|fresh| stable_element_surface_signature(&fresh.value));
+    let cdp_page_fingerprint = world_model.cdp_page.as_ref().and_then(|fresh| {
+        element_surface
+            .is_none()
+            .then_some(fresh.value.page_fingerprint.as_str())
+    });
+    let cdp_connect_status = world_model
+        .cdp_connect_status
+        .as_ref()
+        .map(|fresh| fresh.value.as_str());
+    let modal_present = world_model.modal_present.as_ref().map(|fresh| fresh.value);
+    let dialog_present = world_model.dialog_present.as_ref().map(|fresh| fresh.value);
+    let signature = serde_json::json!({
+        "focused_app": focused_app,
+        "cdp_page_url": cdp_page_url,
+        "cdp_page_fingerprint": cdp_page_fingerprint,
+        "cdp_connect_status": cdp_connect_status,
+        "element_surface": element_surface,
+        "modal_present": modal_present,
+        "dialog_present": dialog_present,
+    });
+    let bytes = serde_json::to_vec(&signature).unwrap_or_default();
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
+fn stable_element_surface_signature(elements: &[ObservedElement]) -> String {
+    let mut stable_entries: Vec<Value> = elements.iter().map(stable_observed_element_key).collect();
+    stable_entries.sort_by_key(|entry| serde_json::to_string(entry).unwrap_or_default());
+    let bytes = serde_json::to_vec(&stable_entries).unwrap_or_default();
+    blake3::hash(&bytes).to_hex()[..16].to_string()
+}
+
+fn stable_observed_element_key(element: &ObservedElement) -> Value {
+    match element {
+        ObservedElement::Cdp(el) => serde_json::json!({
+            "source": "cdp",
+            "role": &el.role,
+            "label": &el.label,
+            "tag": &el.tag,
+            "disabled": el.disabled,
+            "parent_role": &el.parent_role,
+            "parent_name": &el.parent_name,
+        }),
+        ObservedElement::Ax(el) => serde_json::json!({
+            "source": "ax",
+            "role": &el.role,
+            "name": &el.name,
+            "value": &el.value,
+            "depth": el.depth,
+            "focused": el.focused,
+            "disabled": el.disabled,
+            "parent_name": &el.parent_name,
+        }),
+        ObservedElement::Ocr(el) => serde_json::json!({
+            "source": "ocr",
+            "text": &el.text,
+            "x_bin": el.x.div_euclid(10),
+            "y_bin": el.y.div_euclid(10),
+            "width_bin": el.width.div_euclid(10),
+            "height_bin": el.height.div_euclid(10),
+        }),
+    }
+}
+
+fn detect_repeated_action_cycle(
+    recent_actions: &VecDeque<ActionProgressSignature>,
+) -> Option<Vec<String>> {
+    for pattern_len in 2..=ACTION_CYCLE_MAX_PATTERN_LEN {
+        let needed = pattern_len * 2;
+        if recent_actions.len() < needed {
+            continue;
+        }
+        let len = recent_actions.len();
+        let first: Vec<_> = recent_actions
+            .iter()
+            .skip(len - needed)
+            .take(pattern_len)
+            .collect();
+        let second: Vec<_> = recent_actions
+            .iter()
+            .skip(len - pattern_len)
+            .take(pattern_len)
+            .collect();
+        let has_distinct_actions = first.iter().skip(1).any(|sig| *sig != first[0]);
+        if has_distinct_actions && first == second {
+            return Some(first.iter().map(|sig| sig.tool_name.clone()).collect());
+        }
+    }
+    None
+}
+
 /// Build the no-progress nudge body. Pure function so the prompt copy
 /// stays out of the inner loop and can be exercised independently.
 fn build_no_progress_nudge(tool: &str, count: u32, prev_body: &str) -> String {
     format!(
-        "{prefix} You have issued `{tool}` with the same arguments {count} turns in a row, but the world model is not advancing. Stop repeating this call. Either (1) switch dispatch family — if `<world_model>` has a `cdp_page` block, use `cdp_*` tools (e.g. `cdp_find_elements`, `cdp_take_dom_snapshot`, `cdp_type_text`, `cdp_evaluate_script`); if it has an AX tree, take a fresh `take_ax_snapshot` and use `ax_*` tools — or (2) push a narrower subgoal via `push_subgoal` and try a different tactic, or (3) emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
+        "{prefix} You have issued `{tool}` with the same arguments {count} turns in a row in the same stable app/page context, but the task is not advancing. Stop repeating this call. Either (1) switch dispatch family — if `<world_model>` has a `cdp_page` block, use `cdp_*` tools (e.g. `cdp_find_elements`, `cdp_take_dom_snapshot`, `cdp_type_text`, `cdp_evaluate_script`); if it has an AX tree, take a fresh `take_ax_snapshot` and use `ax_*` tools — or (2) push a narrower subgoal via `push_subgoal` and try a different tactic, or (3) emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
         prefix = NO_PROGRESS_NUDGE_PREFIX,
+    )
+}
+
+fn build_action_cycle_nudge(cycle_summary: &str, prev_body: &str) -> String {
+    format!(
+        "{prefix} You are in a repeated action cycle in the same stable app/page context: `{cycle_summary}`. The task is not advancing. Do not run the same cycle again. Widen or change discovery with `cdp_take_dom_snapshot`/`cdp_evaluate_script`, verify the active context, or emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
+        prefix = NO_PROGRESS_NUDGE_PREFIX,
+    )
+}
+
+fn is_stale_cdp_uid_error(tool_name: &str, error: &str) -> bool {
+    tool_name.starts_with("cdp_")
+        && (error.contains("No node with given id found")
+            || error.contains("could not be resolved to a DOM node")
+            || error.contains("element is not attached")
+            || error.contains("stale element"))
+}
+
+fn build_stale_cdp_uid_nudge(error: &str) -> String {
+    format!(
+        "{prefix} The CDP element id from a previous observation is no longer valid. No click, fill, selection, or typing happened. Rediscover the target with `cdp_find_elements`, `cdp_take_dom_snapshot`, or `cdp_evaluate_script` before the next `cdp_click`/`cdp_fill`; do not reuse prior `d<N>` ids.\n\nOriginal error:\n{error}",
+        prefix = STALE_CDP_UID_PREFIX,
     )
 }
 
@@ -3307,7 +3518,7 @@ pub fn parse_agent_turn(message: &Message) -> anyhow::Result<AgentTurn> {
         }
 
         let action = action.unwrap_or_else(|| AgentAction::AgentReplan {
-            reason: "LLM emitted only state mutations and no action — re-observing".to_string(),
+            reason: NO_ACTION_MUTATION_ONLY_REASON.to_string(),
         });
 
         return Ok(AgentTurn { mutations, action });
@@ -3636,9 +3847,8 @@ impl StateRunner {
         // No-progress detector for the success path. Failures already
         // abort on identical-error repeats via `last_failure` above;
         // this covers successful calls that don't advance the world.
-        // Tuple `(tool, args, count)` is one slot so count cannot drift
-        // out of sync with the key it counts.
-        let mut last_action: Option<(String, Value, u32)> = None;
+        let mut last_action: Option<LastActionProgress> = None;
+        let mut recent_actions: VecDeque<ActionProgressSignature> = VecDeque::new();
 
         for _step_index in 0..self.config.max_steps {
             if self.state.completed {
@@ -3857,6 +4067,7 @@ impl StateRunner {
             if outer_milestones_appended > 0 {
                 self.write_subgoal_completed_records(outer_milestones_appended, &turn)
                     .await;
+                reset_no_progress_tracking(&mut last_action, &mut recent_actions);
             }
 
             // 4''-bis. Spec 3: skill retrieval on `push_subgoal`.
@@ -3975,6 +4186,7 @@ impl StateRunner {
                         &skip_body,
                         &annotations_by_tool,
                         &mut last_action,
+                        &mut recent_actions,
                     )
                     .await
                 {
@@ -4084,6 +4296,7 @@ impl StateRunner {
                         &skip_body,
                         &annotations_by_tool,
                         &mut last_action,
+                        &mut recent_actions,
                     )
                     .await
                 {
@@ -4190,7 +4403,7 @@ impl StateRunner {
                     });
                     break;
                 }
-                last_action = None;
+                reset_no_progress_tracking(&mut last_action, &mut recent_actions);
                 continue;
             }
 
@@ -4282,7 +4495,7 @@ impl StateRunner {
                     });
                     break;
                 }
-                last_action = None;
+                reset_no_progress_tracking(&mut last_action, &mut recent_actions);
                 continue;
             }
 
@@ -4383,7 +4596,7 @@ impl StateRunner {
                             // intended action did not run, so any prior
                             // `last_action` no longer represents a consecutive
                             // chain.
-                            last_action = None;
+                            reset_no_progress_tracking(&mut last_action, &mut recent_actions);
                             continue;
                         }
                         PermissionAction::Allow => {
@@ -4429,7 +4642,10 @@ impl StateRunner {
                                         previous_result.as_deref(),
                                     );
                                     // Rejected dispatch breaks the streak.
-                                    last_action = None;
+                                    reset_no_progress_tracking(
+                                        &mut last_action,
+                                        &mut recent_actions,
+                                    );
                                     continue;
                                 }
                                 Some(ApprovalResult::Unavailable) => {
@@ -4686,6 +4902,7 @@ impl StateRunner {
                             &tool_body,
                             &annotations_by_tool,
                             &mut last_action,
+                            &mut recent_actions,
                         )
                         .await
                     {
@@ -4751,7 +4968,7 @@ impl StateRunner {
                     }
                     last_failure = Some((tool_name, tool_arguments, error));
                     // Failures use `last_failure`; clear the success-side tracker.
-                    last_action = None;
+                    reset_no_progress_tracking(&mut last_action, &mut recent_actions);
 
                     // Recovery strategy: `Abort` halts with MaxErrorsReached;
                     // `Continue` falls through to the next iteration which
@@ -4817,7 +5034,7 @@ impl StateRunner {
                     // to replan.
                     previous_result = Some(format!("replan: {}", reason));
                     // Replan = explicit tactic change; reset the streak.
-                    last_action = None;
+                    reset_no_progress_tracking(&mut last_action, &mut recent_actions);
                 }
             }
 
@@ -5593,7 +5810,13 @@ mod parse_agent_turn_tool_calls_tests {
         )]);
         let turn = parse_agent_turn(&msg).unwrap();
         assert_eq!(turn.mutations.len(), 1);
-        assert!(matches!(turn.action, AgentAction::AgentReplan { .. }));
+        match turn.action {
+            AgentAction::AgentReplan { reason } => {
+                assert!(reason.starts_with(NO_ACTION_MUTATION_ONLY_PREFIX));
+                assert!(reason.contains("no MCP/environment action ran"));
+            }
+            other => panic!("expected mutation-only replan, got {:?}", other),
+        }
     }
 
     #[test]
@@ -5660,6 +5883,243 @@ mod parse_agent_turn_tool_calls_tests {
             }
             _ => panic!("expected agent_replan fallback"),
         }
+    }
+}
+
+#[cfg(test)]
+mod no_progress_guard_tests {
+    use super::*;
+    use crate::agent::world_model::{CdpPageState, Fresh, FreshnessSource, OcrMatch};
+    use clickweave_core::cdp::CdpFindElementMatch;
+    use serde_json::json;
+
+    fn sig(
+        tool_name: &str,
+        arguments: serde_json::Value,
+        context: &str,
+    ) -> ActionProgressSignature {
+        ActionProgressSignature {
+            tool_name: tool_name.to_string(),
+            arguments,
+            context_signature: context.to_string(),
+        }
+    }
+
+    #[test]
+    fn detects_two_action_cycle_in_same_stable_context() {
+        let recent = VecDeque::from(vec![
+            sig(
+                "cdp_fill",
+                json!({"uid": "d1", "value": "synthetic"}),
+                "ctx",
+            ),
+            sig("cdp_click", json!({"uid": "d2"}), "ctx"),
+            sig(
+                "cdp_fill",
+                json!({"uid": "d1", "value": "synthetic"}),
+                "ctx",
+            ),
+            sig("cdp_click", json!({"uid": "d2"}), "ctx"),
+        ]);
+
+        assert_eq!(
+            detect_repeated_action_cycle(&recent),
+            Some(vec!["cdp_fill".to_string(), "cdp_click".to_string()])
+        );
+    }
+
+    #[test]
+    fn detects_three_action_cycle_in_same_stable_context() {
+        let recent = VecDeque::from(vec![
+            sig(
+                "cdp_fill",
+                json!({"uid": "d-search", "value": "synthetic"}),
+                "ctx",
+            ),
+            sig("cdp_click", json!({"uid": "d-filter"}), "ctx"),
+            sig("cdp_click", json!({"uid": "d-cancel"}), "ctx"),
+            sig(
+                "cdp_fill",
+                json!({"uid": "d-search", "value": "synthetic"}),
+                "ctx",
+            ),
+            sig("cdp_click", json!({"uid": "d-filter"}), "ctx"),
+            sig("cdp_click", json!({"uid": "d-cancel"}), "ctx"),
+        ]);
+
+        assert_eq!(
+            detect_repeated_action_cycle(&recent),
+            Some(vec![
+                "cdp_fill".to_string(),
+                "cdp_click".to_string(),
+                "cdp_click".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn ignores_same_pair_after_context_progress() {
+        let recent = VecDeque::from(vec![
+            sig(
+                "cdp_fill",
+                json!({"uid": "d1", "value": "synthetic"}),
+                "ctx-a",
+            ),
+            sig("cdp_click", json!({"uid": "d2"}), "ctx-a"),
+            sig(
+                "cdp_fill",
+                json!({"uid": "d1", "value": "synthetic"}),
+                "ctx-b",
+            ),
+            sig("cdp_click", json!({"uid": "d2"}), "ctx-b"),
+        ]);
+
+        assert_eq!(detect_repeated_action_cycle(&recent), None);
+    }
+
+    #[test]
+    fn stable_context_falls_back_to_page_fingerprint_without_elements() {
+        let mut wm = WorldModel::default();
+        wm.cdp_page = Some(Fresh {
+            value: CdpPageState {
+                url: "app://synthetic/page".to_string(),
+                page_fingerprint: "count=1;hash=a".to_string(),
+            },
+            written_at: 1,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        let before = stable_no_progress_context_signature(&wm);
+
+        wm.cdp_page.as_mut().unwrap().value.page_fingerprint = "count=2;hash=b".to_string();
+        let after = stable_no_progress_context_signature(&wm);
+
+        assert_ne!(
+            before, after,
+            "CDP element-surface progress must reset no-progress tracking"
+        );
+    }
+
+    fn cdp(uid: &str, role: &str, label: &str, tag: &str) -> ObservedElement {
+        ObservedElement::Cdp(CdpFindElementMatch {
+            uid: uid.to_string(),
+            role: role.to_string(),
+            label: label.to_string(),
+            tag: tag.to_string(),
+            disabled: false,
+            parent_role: None,
+            parent_name: None,
+        })
+    }
+
+    fn wm_with_cdp_elements(page_fingerprint: &str, elements: Vec<ObservedElement>) -> WorldModel {
+        let mut wm = WorldModel::default();
+        wm.cdp_page = Some(Fresh {
+            value: CdpPageState {
+                url: "app://synthetic/page".to_string(),
+                page_fingerprint: page_fingerprint.to_string(),
+            },
+            written_at: 1,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        wm.elements = Some(Fresh {
+            value: elements,
+            written_at: 1,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        wm
+    }
+
+    #[test]
+    fn stable_context_ignores_cdp_order_and_uid_churn_when_elements_exist() {
+        let before = wm_with_cdp_elements(
+            "count=2;hash=uid-a",
+            vec![
+                cdp("d1", "textbox", "Search synthetic channels", "input"),
+                cdp("d2", "button", "Cancel search", "button"),
+            ],
+        );
+        let after = wm_with_cdp_elements(
+            "count=2;hash=uid-b",
+            vec![
+                cdp("d9", "button", "Cancel search", "button"),
+                cdp("d8", "textbox", "Search synthetic channels", "input"),
+            ],
+        );
+
+        assert_eq!(
+            stable_no_progress_context_signature(&before),
+            stable_no_progress_context_signature(&after),
+            "element order, uid churn, and derived page-fingerprint churn must not look like progress"
+        );
+    }
+
+    #[test]
+    fn stable_context_changes_when_semantic_element_surface_changes() {
+        let before = wm_with_cdp_elements(
+            "count=1;hash=a",
+            vec![cdp("d1", "button", "Open synthetic item", "button")],
+        );
+        let after = wm_with_cdp_elements(
+            "count=1;hash=b",
+            vec![cdp("d1", "button", "Synthetic item open", "button")],
+        );
+
+        assert_ne!(
+            stable_no_progress_context_signature(&before),
+            stable_no_progress_context_signature(&after),
+            "semantic element changes must still reset no-progress tracking"
+        );
+    }
+
+    #[test]
+    fn stable_context_ignores_ocr_confidence_jitter() {
+        let mut before = WorldModel::default();
+        before.elements = Some(Fresh {
+            value: vec![ObservedElement::Ocr(OcrMatch {
+                text: "Synthetic status".to_string(),
+                x: 101,
+                y: 202,
+                width: 98,
+                height: 19,
+                confidence: 0.91,
+            })],
+            written_at: 1,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        let mut after = before.clone();
+        if let Some(elements) = after.elements.as_mut()
+            && let Some(ObservedElement::Ocr(match_)) = elements.value.first_mut()
+        {
+            match_.x = 104;
+            match_.y = 206;
+            match_.confidence = 0.73;
+        }
+
+        assert_eq!(
+            stable_no_progress_context_signature(&before),
+            stable_no_progress_context_signature(&after),
+            "small OCR coordinate jitter and confidence changes must not reset the guard"
+        );
+    }
+
+    #[test]
+    fn stale_cdp_uid_errors_are_recognized_and_wrapped() {
+        assert!(is_stale_cdp_uid_error(
+            "cdp_fill",
+            "No node with given id found"
+        ));
+        assert!(!is_stale_cdp_uid_error(
+            "ax_click",
+            "No node with given id found"
+        ));
+
+        let nudge = build_stale_cdp_uid_nudge("No node with given id found");
+        assert!(nudge.starts_with(STALE_CDP_UID_PREFIX));
+        assert!(nudge.contains("Rediscover the target"));
     }
 }
 
