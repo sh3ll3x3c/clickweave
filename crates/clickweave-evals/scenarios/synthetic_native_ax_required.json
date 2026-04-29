@@ -1,0 +1,125 @@
+{
+  "id": "synthetic_native_ax_required",
+  "description": "Synthetic native-app routing check. The agent should use AX snapshot and AX dispatch for a native app, not visual or coordinate fallback.",
+  "goal": "Launch SyntheticNotes and open a new note using the native accessibility surface.",
+  "max_steps": 6,
+  "tools": [
+    {
+      "name": "launch_app",
+      "description": "Launch a synthetic native app by name.",
+      "parameters": {
+        "type": "object",
+        "required": ["app_name"],
+        "properties": { "app_name": { "type": "string" } }
+      }
+    },
+    {
+      "name": "take_ax_snapshot",
+      "description": "Capture a synthetic native accessibility tree.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "ax_click",
+      "description": "Click a synthetic AX element by uid.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid"],
+        "properties": { "uid": { "type": "string" } }
+      }
+    },
+    {
+      "name": "ax_set_value",
+      "description": "Set a synthetic AX value.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid", "value"],
+        "properties": {
+          "uid": { "type": "string" },
+          "value": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "ax_select",
+      "description": "Select a synthetic AX element.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid"],
+        "properties": { "uid": { "type": "string" } }
+      }
+    },
+    {
+      "name": "take_screenshot",
+      "description": "Screenshot observation. This scenario treats it as visual fallback.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "find_text",
+      "description": "OCR text search. This scenario treats it as visual fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } }
+      }
+    },
+    {
+      "name": "click",
+      "description": "Coordinate click. This scenario treats it as forbidden fallback.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "integer" },
+          "y": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "cdp_connect",
+      "description": "CDP connection. This scenario treats it as the wrong family.",
+      "parameters": {
+        "type": "object",
+        "properties": { "port": { "type": "integer" } }
+      }
+    }
+  ],
+  "tool_behaviors": [
+    {
+      "tool": "launch_app",
+      "required_args": ["app_name"],
+      "response": { "app_name": "SyntheticNotes", "kind": "Native", "pid": 3001 }
+    },
+    {
+      "tool": "take_ax_snapshot",
+      "response": "uid=a1g1 window \"SyntheticNotes\"\n  uid=a1g2 button \"New Note\" enabled=true\n  uid=a1g3 text \"Recent Notes\""
+    },
+    {
+      "tool": "ax_click",
+      "required_args": ["uid"],
+      "response": "Synthetic note editor opened"
+    },
+    {
+      "tool": "take_screenshot",
+      "response": "Synthetic screenshot omitted"
+    },
+    {
+      "tool": "find_text",
+      "response": "No OCR match in synthetic native app"
+    },
+    {
+      "tool": "click",
+      "response": "Coordinate click ignored by synthetic native app"
+    },
+    {
+      "tool": "cdp_connect",
+      "error": true,
+      "response": "Synthetic native app has no CDP endpoint"
+    }
+  ],
+  "scoring": {
+    "required_tools": ["launch_app", "take_ax_snapshot", "ax_click"],
+    "forbidden_tools": ["take_screenshot", "find_text", "click", "cdp_connect"],
+    "required_agent_tools": ["launch_app", "take_ax_snapshot", "ax_click", "agent_done"],
+    "forbidden_agent_tools": ["take_screenshot", "find_text", "click", "cdp_connect"],
+    "max_agent_tool_calls": 4,
+    "completion_required": true
+  }
+}

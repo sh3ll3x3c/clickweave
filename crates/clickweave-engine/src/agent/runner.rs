@@ -229,6 +229,10 @@ pub struct StateRunner {
     /// cleared by `build_user_turn_message`'s caller at the next
     /// iteration.
     pub(crate) pending_applicable_skills: Vec<RetrievedSkill>,
+    /// Optional eval-only override for the stable system-prompt header.
+    /// Production callers leave this as `None` and use the file-backed
+    /// default in `prompts/agent_system.md`.
+    pub(crate) agent_system_prompt_override: Option<String>,
     /// Frame held while the runner is waiting on an LLM fallback turn
     /// during a skill replay. Phase 3 always leaves this `None`; Phase
     /// 4 lands the real consumer.
@@ -392,6 +396,7 @@ impl StateRunner {
             completed_subgoal_extraction_queue: Vec::new(),
             produced_node_ids_stack: Vec::new(),
             pending_applicable_skills: Vec::new(),
+            agent_system_prompt_override: None,
             suspended_skill_frame: None,
             skill_watcher_handle: None,
         }
@@ -399,6 +404,14 @@ impl StateRunner {
 
     pub fn with_run_id(mut self, run_id: uuid::Uuid) -> Self {
         self.run_id = run_id;
+        self
+    }
+
+    /// Override the stable system-prompt header. Intended for the eval
+    /// harness and prompt-optimization experiments only; production runs
+    /// use the checked-in default prompt file.
+    pub fn with_agent_system_prompt_override(mut self, prompt: impl Into<String>) -> Self {
+        self.agent_system_prompt_override = Some(prompt.into());
         self
     }
 
@@ -3333,7 +3346,8 @@ impl StateRunner {
     {
         use crate::agent::context::{CompactBudget, compact};
         use crate::agent::prompt::{
-            build_system_prompt, build_user_turn_message, build_user_turn_message_with_skills,
+            build_system_prompt, build_system_prompt_with_header, build_user_turn_message,
+            build_user_turn_message_with_skills,
         };
 
         // Reset the visible state tuple to match the freshly-provided
@@ -3353,7 +3367,11 @@ impl StateRunner {
         // at the caller seam (`build_goal_block`) so they land in
         // `messages[1]`, preserving the `messages[0]` cache prefix.
         let tool_list_for_prompt = openai_tools_to_mcp_tool_list(&mcp_tools);
-        let system_text = build_system_prompt(&tool_list_for_prompt);
+        let system_text = if let Some(prompt) = self.agent_system_prompt_override.as_deref() {
+            build_system_prompt_with_header(prompt, &tool_list_for_prompt)
+        } else {
+            build_system_prompt(&tool_list_for_prompt)
+        };
 
         // Stable list of advertised MCP tool names for the per-turn
         // `<tools_in_scope>` filter. Computed once per run since `mcp_tools`

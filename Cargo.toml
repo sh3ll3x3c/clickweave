@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/clickweave-core",
+    "crates/clickweave-evals",
     "crates/clickweave-engine",
     "crates/clickweave-llm",
     "crates/clickweave-mcp",

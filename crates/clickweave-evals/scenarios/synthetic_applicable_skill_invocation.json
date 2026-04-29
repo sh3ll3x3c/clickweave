@@ -1,0 +1,14 @@
+{
+  "id": "synthetic_applicable_skill_invocation",
+  "description": "Synthetic applicable-skill routing check. When an applicable skill is explicitly surfaced, the agent should use invoke_skill rather than manually solving the subgoal.",
+  "goal": "Use the applicable synthetic skill to open the synthetic composer.\n\n<applicable_skills>\n  <skill id=\"synthetic_open_composer\" version=\"1\" scope=\"project_local\" success_rate=\"0.95\" occurrence_count=\"3\">\n    name: Open synthetic composer\n    description: Opens the composer in the current synthetic app.\n    subgoal: open synthetic composer\n    parameters: {}\n    invocation_template: { skill_id: \"synthetic_open_composer\", version: 1, parameters: {} }\n  </skill>\n</applicable_skills>",
+  "max_steps": 1,
+  "tools": [],
+  "tool_behaviors": [],
+  "scoring": {
+    "required_agent_tools": ["invoke_skill"],
+    "forbidden_agent_tools": ["launch_app", "cdp_click", "ax_click", "take_screenshot", "find_text", "click", "agent_done"],
+    "max_agent_tool_calls": 1,
+    "completion_required": false
+  }
+}

@@ -114,6 +114,95 @@ where
     B: ChatBackend,
     M: Mcp + ?Sized,
 {
+    run_agent_workflow_inner(
+        llm,
+        config,
+        goal,
+        mcp,
+        channels,
+        vision,
+        permissions,
+        run_id,
+        anchor_node_id,
+        verification_artifacts_dir,
+        storage,
+        episodic_ctx,
+        skill_ctx,
+        None,
+    )
+    .await
+}
+
+/// Eval-only variant of [`run_agent_workflow`] that can substitute the stable
+/// system prompt header. Production callers should use `run_agent_workflow`
+/// so the checked-in default prompt remains the app contract.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_agent_workflow_with_prompt_override<B, M>(
+    llm: &B,
+    config: AgentConfig,
+    goal: String,
+    mcp: &M,
+    channels: Option<AgentChannels>,
+    vision: Option<Arc<dyn DynChatBackend>>,
+    permissions: Option<PermissionPolicy>,
+    run_id: uuid::Uuid,
+    anchor_node_id: Option<uuid::Uuid>,
+    verification_artifacts_dir: Option<PathBuf>,
+    storage: Option<RunStorageHandle>,
+    episodic_ctx: Option<crate::agent::episodic::EpisodicContext>,
+    skill_ctx: Option<crate::agent::skills::SkillContext>,
+    agent_system_prompt_override: Option<String>,
+) -> anyhow::Result<(
+    AgentState,
+    Option<tokio::sync::mpsc::Sender<crate::agent::episodic::types::WriteRequest>>,
+)>
+where
+    B: ChatBackend,
+    M: Mcp + ?Sized,
+{
+    run_agent_workflow_inner(
+        llm,
+        config,
+        goal,
+        mcp,
+        channels,
+        vision,
+        permissions,
+        run_id,
+        anchor_node_id,
+        verification_artifacts_dir,
+        storage,
+        episodic_ctx,
+        skill_ctx,
+        agent_system_prompt_override,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_agent_workflow_inner<B, M>(
+    llm: &B,
+    config: AgentConfig,
+    goal: String,
+    mcp: &M,
+    channels: Option<AgentChannels>,
+    vision: Option<Arc<dyn DynChatBackend>>,
+    permissions: Option<PermissionPolicy>,
+    run_id: uuid::Uuid,
+    anchor_node_id: Option<uuid::Uuid>,
+    verification_artifacts_dir: Option<PathBuf>,
+    storage: Option<RunStorageHandle>,
+    episodic_ctx: Option<crate::agent::episodic::EpisodicContext>,
+    skill_ctx: Option<crate::agent::skills::SkillContext>,
+    agent_system_prompt_override: Option<String>,
+) -> anyhow::Result<(
+    AgentState,
+    Option<tokio::sync::mpsc::Sender<crate::agent::episodic::types::WriteRequest>>,
+)>
+where
+    B: ChatBackend,
+    M: Mcp + ?Sized,
+{
     // Phase 3b Task 3.3 deleted the legacy runner; this entry point now
     // drives `StateRunner` directly. The `vision` parameter shape follows
     // D-PR1: `Arc<dyn DynChatBackend>` so primary and VLM can be different
@@ -139,6 +228,9 @@ where
     let mut runner =
         StateRunner::new_with_episodic_and_skills(goal.clone(), config, episodic_ctx, skill_ctx);
     runner = runner.with_run_id(run_id);
+    if let Some(prompt) = agent_system_prompt_override {
+        runner = runner.with_agent_system_prompt_override(prompt);
+    }
     if let Some(ch) = channels {
         runner = runner
             .with_events(ch.event_tx)
