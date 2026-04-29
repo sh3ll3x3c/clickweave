@@ -238,6 +238,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       episodicEnabled,
       retrievedEpisodesK,
       episodicGlobalParticipation,
+      skillsEnabled,
+      applicableSkillsK,
+      skillsGlobalParticipation,
       messages,
       pushAssistantMessage,
     } = priorState;
@@ -336,6 +339,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           episodic_enabled: episodicEnabled,
           retrieved_episodes_k: retrievedEpisodesK,
           episodic_global_participation: episodicGlobalParticipation,
+          skills_enabled: skillsEnabled,
+          applicable_skills_k: applicableSkillsK,
+          skills_global_participation: skillsGlobalParticipation,
         },
       });
     } catch (err) {
@@ -459,9 +465,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       // handler in useAgentEvents when `agent://complete` arrives.
     } catch (err) {
       set({ completionDisagreement: null });
-      pushLog(
-        `Completion confirm invoke rejected: ${formatAgentError(err)}`,
-      );
+      pushLog(`Completion confirm invoke rejected: ${formatAgentError(err)}`);
     }
   },
 
@@ -484,9 +488,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         agentStatus: "stopped",
         pendingApproval: null,
       });
-      pushLog(
-        `Completion cancel invoke rejected: ${formatAgentError(err)}`,
-      );
+      pushLog(`Completion cancel invoke rejected: ${formatAgentError(err)}`);
     }
   },
 

@@ -31,6 +31,9 @@ function makeSettings(overrides: Partial<PersistedSettings> = {}): PersistedSett
         episodicEnabled: true,
         retrievedEpisodesK: 2,
         episodicGlobalParticipation: false,
+        skillsEnabled: true,
+        applicableSkillsK: 2,
+        skillsGlobalParticipation: false,
         ...overrides,
     };
 }

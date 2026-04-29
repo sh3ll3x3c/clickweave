@@ -400,6 +400,33 @@ export function useAgentEvents() {
       }),
     );
 
+    sub(
+      listen<{
+        run_id: string;
+        event_run_id: string;
+        skill_id: string;
+        version: number;
+        state: "draft" | "confirmed" | "promoted";
+        scope: "project_local" | "global";
+      }>("agent://skill_extracted", (e) => {
+        if (isStale(e.payload.run_id)) return;
+        useStore.getState().applySkillExtracted(e.payload);
+      }),
+    );
+
+    sub(
+      listen<{
+        run_id: string;
+        event_run_id: string;
+        skill_id: string;
+        version: number;
+      }>("agent://skill_confirmed", (e) => {
+        // skill_confirmed can arrive outside an active run (user
+        // confirms a skill from the panel). Don't gate on isStale.
+        useStore.getState().applySkillConfirmed(e.payload);
+      }),
+    );
+
     return () => {
       cancelled = true;
       unlisteners.forEach((u) => u());

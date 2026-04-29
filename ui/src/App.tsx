@@ -9,6 +9,8 @@ import { GraphCanvas } from "./components/GraphCanvas";
 import { NodeDetailModal } from "./components/node-detail/NodeDetailModal";
 import { AssistantPanel } from "./components/AssistantPanel";
 import { WalkthroughPanel } from "./components/WalkthroughPanel";
+import { SkillsPanel } from "./components/skills/SkillsPanel";
+import { SkillDetailView } from "./components/skills/SkillDetailView";
 import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
@@ -43,7 +45,13 @@ function App() {
     })),
   );
 
-  const { executorState, lastRunStatus, executionMode, supervisionPause, activeNode } = useStore(
+  const {
+    executorState,
+    lastRunStatus,
+    executionMode,
+    supervisionPause,
+    activeNode,
+  } = useStore(
     useShallow((s) => ({
       executorState: s.executorState,
       lastRunStatus: s.lastRunStatus,
@@ -53,7 +61,16 @@ function App() {
     })),
   );
 
-  const { selectedNode, canvasSelectionResetTick, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
+  const {
+    selectedNode,
+    canvasSelectionResetTick,
+    sidebarCollapsed,
+    logsDrawerOpen,
+    nodeSearch,
+    showSettings,
+    detailTab,
+    logs,
+  } = useStore(
     useShallow((s) => ({
       selectedNode: s.selectedNode,
       canvasSelectionResetTick: s.canvasSelectionResetTick,
@@ -66,14 +83,16 @@ function App() {
     })),
   );
 
-  const { assistantOpen, assistantError, messages, agentStatus } = useStore(
-    useShallow((s) => ({
-      assistantOpen: s.assistantOpen,
-      assistantError: s.assistantError,
-      messages: s.messages,
-      agentStatus: s.agentStatus,
-    })),
-  );
+  const { assistantOpen, assistantError, messages, agentStatus, agentRunId } =
+    useStore(
+      useShallow((s) => ({
+        assistantOpen: s.assistantOpen,
+        assistantError: s.assistantError,
+        messages: s.messages,
+        agentStatus: s.agentStatus,
+        agentRunId: s.agentRunId,
+      })),
+    );
 
   const {
     supervisorConfig,
@@ -89,6 +108,9 @@ function App() {
     episodicEnabled,
     retrievedEpisodesK,
     episodicGlobalParticipation,
+    skillsEnabled,
+    applicableSkillsK,
+    skillsGlobalParticipation,
   } = useStore(
     useShallow((s) => ({
       supervisorConfig: s.supervisorConfig,
@@ -104,19 +126,24 @@ function App() {
       episodicEnabled: s.episodicEnabled,
       retrievedEpisodesK: s.retrievedEpisodesK,
       episodicGlobalParticipation: s.episodicGlobalParticipation,
+      skillsEnabled: s.skillsEnabled,
+      applicableSkillsK: s.applicableSkillsK,
+      skillsGlobalParticipation: s.skillsGlobalParticipation,
     })),
   );
 
-  const { walkthroughStatus, walkthroughPanelOpen, cdpModalOpen, cdpProgress } = useStore(
-    useShallow((s) => ({
-      walkthroughStatus: s.walkthroughStatus,
-      walkthroughPanelOpen: s.walkthroughPanelOpen,
-      cdpModalOpen: s.walkthroughCdpModalOpen,
-      cdpProgress: s.walkthroughCdpProgress,
-    })),
-  );
+  const { walkthroughStatus, walkthroughPanelOpen, cdpModalOpen, cdpProgress } =
+    useStore(
+      useShallow((s) => ({
+        walkthroughStatus: s.walkthroughStatus,
+        walkthroughPanelOpen: s.walkthroughPanelOpen,
+        cdpModalOpen: s.walkthroughCdpModalOpen,
+        cdpProgress: s.walkthroughCdpProgress,
+      })),
+    );
 
   const walkthroughEventCount = useStore((s) => s.walkthroughEvents.length);
+  const selectedSkill = useStore((s) => s.selectedSkill);
 
   // ── Action selectors ─────────────────────────────────────────────
   const setWorkflow = useStore((s) => s.setWorkflow);
@@ -157,12 +184,29 @@ function App() {
   const setEpisodicGlobalParticipation = useStore(
     (s) => s.setEpisodicGlobalParticipation,
   );
+  const setSkillsEnabled = useStore((s) => s.setSkillsEnabled);
+  const setApplicableSkillsK = useStore((s) => s.setApplicableSkillsK);
+  const setSkillsGlobalParticipation = useStore(
+    (s) => s.setSkillsGlobalParticipation,
+  );
+  const loadSkillsForPanel = useStore((s) => s.loadSkillsForPanel);
+  const setSkillsList = useStore((s) => s.setSkillsList);
 
   // ── Workflow mutations ───────────────────────────────────────────
   const {
-    addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge,
-    createGroup, removeGroup, deleteGroupWithContents,
-    renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
+    addNode,
+    removeNodes,
+    removeEdgesOnly,
+    updateNodePositions,
+    updateNode,
+    addEdge,
+    createGroup,
+    removeGroup,
+    deleteGroupWithContents,
+    renameGroup,
+    recolorGroup,
+    addNodesToGroup,
+    removeNodesFromGroup,
   } = useWorkflowActions();
 
   // Conversational side-effects: prune cache, annotate, redact on
@@ -178,7 +222,7 @@ function App() {
   const selectedNodeData = useMemo(
     () =>
       selectedNode
-        ? workflow.nodes.find((n) => n.id === selectedNode) ?? null
+        ? (workflow.nodes.find((n) => n.id === selectedNode) ?? null)
         : null,
     [selectedNode, workflow.nodes],
   );
@@ -193,6 +237,27 @@ function App() {
 
   useEscapeKey();
   useUndoRedoKeyboard(undo, redo);
+
+  useEffect(() => {
+    if (!skillsEnabled) {
+      setSkillsList([]);
+      return;
+    }
+    loadSkillsForPanel({
+      projectPath,
+      workflowName: workflow.name,
+      workflowId: workflow.id,
+      includeGlobal: skillsGlobalParticipation,
+    }).catch((e) => console.error("Failed to load skills panel", e));
+  }, [
+    loadSkillsForPanel,
+    projectPath,
+    setSkillsList,
+    skillsEnabled,
+    skillsGlobalParticipation,
+    workflow.id,
+    workflow.name,
+  ]);
 
   const hasAiNodes = useMemo(
     () => workflow.nodes.some((n) => n.node_type.type === "AiStep"),
@@ -247,6 +312,7 @@ function App() {
                 onAdd={addNode}
                 onToggle={toggleSidebar}
               />
+              {skillsEnabled && <SkillsPanel />}
 
               <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
                 <GraphCanvas
@@ -284,9 +350,7 @@ function App() {
                   walkthroughPanelOpen={walkthroughPanelOpen}
                   onToggleLogs={toggleLogsDrawer}
                   onRunStop={
-                    executorState === "running"
-                      ? stopWorkflow
-                      : runWorkflow
+                    executorState === "running" ? stopWorkflow : runWorkflow
                   }
                   onAssistant={toggleAssistant}
                   onSetExecutionMode={setExecutionMode}
@@ -295,6 +359,29 @@ function App() {
                   onRecord={() => useStore.getState().openCdpModal()}
                 />
               </div>
+
+              {skillsEnabled && selectedSkill && (
+                <div className="w-[420px] shrink-0 border-l border-[var(--border)] bg-[var(--bg-panel)]">
+                  <SkillDetailView
+                    skillId={selectedSkill.id}
+                    version={selectedSkill.version}
+                    projectPath={projectPath}
+                    workflowName={workflow.name}
+                    workflowId={workflow.id}
+                    runId={agentRunId}
+                    onChanged={() =>
+                      loadSkillsForPanel({
+                        projectPath,
+                        workflowName: workflow.name,
+                        workflowId: workflow.id,
+                        includeGlobal: skillsGlobalParticipation,
+                      }).catch((e) =>
+                        console.error("Failed to reload skills panel", e),
+                      )
+                    }
+                  />
+                </div>
+              )}
 
               <AssistantPanel
                 open={assistantOpen}
@@ -345,6 +432,9 @@ function App() {
         episodicEnabled={episodicEnabled}
         retrievedEpisodesK={retrievedEpisodesK}
         episodicGlobalParticipation={episodicGlobalParticipation}
+        skillsEnabled={skillsEnabled}
+        applicableSkillsK={applicableSkillsK}
+        skillsGlobalParticipation={skillsGlobalParticipation}
         onClose={() => setShowSettings(false)}
         onSupervisorConfigChange={setSupervisorConfig}
         onAgentConfigChange={setAgentConfig}
@@ -360,6 +450,9 @@ function App() {
         onEpisodicEnabledChange={setEpisodicEnabled}
         onRetrievedEpisodesKChange={setRetrievedEpisodesK}
         onEpisodicGlobalParticipationChange={setEpisodicGlobalParticipation}
+        onSkillsEnabledChange={setSkillsEnabled}
+        onApplicableSkillsKChange={setApplicableSkillsK}
+        onSkillsGlobalParticipationChange={setSkillsGlobalParticipation}
       />
 
       <VerdictModal />
@@ -375,10 +468,12 @@ function App() {
         open={cdpModalOpen}
         cdpProgress={cdpProgress}
         onStart={(cdpApps) => useStore.getState().startWalkthrough(cdpApps)}
-        onSkip={() => { useStore.getState().closeCdpModal(); useStore.getState().startWalkthrough([]); }}
+        onSkip={() => {
+          useStore.getState().closeCdpModal();
+          useStore.getState().startWalkthrough([]);
+        }}
         onCancel={() => useStore.getState().closeCdpModal()}
       />
-
     </div>
   );
 }

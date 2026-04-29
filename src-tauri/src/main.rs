@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod llm;
 mod mcp_resolve;
 mod menu;
 mod platform;
@@ -129,6 +130,12 @@ fn main() {
         commands::agent_chat::save_agent_chat,
         commands::agent_chat::prune_agent_cache_for_nodes,
         commands::agent_chat::clear_agent_conversation,
+        commands::skills::confirm_skill_proposal,
+        commands::skills::reject_skill_proposal,
+        commands::skills::promote_skill_to_global,
+        commands::skills::fork_skill,
+        commands::skills::delete_skill,
+        commands::skills::list_skills_for_panel,
     ]);
 
     #[cfg(debug_assertions)]

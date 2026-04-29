@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
+  DEFAULT_APPLICABLE_SKILLS_K,
+  DEFAULT_SKILLS_ENABLED,
+  DEFAULT_SKILLS_GLOBAL_PARTICIPATION,
   DEFAULT_STORE_TRACES,
   DEFAULT_TRACE_RETENTION_DAYS,
   normalizeToolPermissions,
@@ -69,5 +72,19 @@ describe("privacy defaults", () => {
 
   it("keeps the store-traces kill switch on by default", () => {
     expect(DEFAULT_STORE_TRACES).toBe(true);
+  });
+});
+
+describe("procedural-skill defaults", () => {
+  it("enables procedural skills by default", () => {
+    expect(DEFAULT_SKILLS_ENABLED).toBe(true);
+  });
+
+  it("retrieves two applicable skills per subgoal by default", () => {
+    expect(DEFAULT_APPLICABLE_SKILLS_K).toBe(2);
+  });
+
+  it("keeps cross-project skill sharing off by default (privacy)", () => {
+    expect(DEFAULT_SKILLS_GLOBAL_PARTICIPATION).toBe(false);
   });
 });

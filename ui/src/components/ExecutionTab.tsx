@@ -7,11 +7,17 @@ interface ExecutionTabProps {
   episodicEnabled: boolean;
   retrievedEpisodesK: number;
   episodicGlobalParticipation: boolean;
+  skillsEnabled: boolean;
+  applicableSkillsK: number;
+  skillsGlobalParticipation: boolean;
   onMaxRepairAttemptsChange: (n: number) => void;
   onSupervisionDelayMsChange: (ms: number) => void;
   onEpisodicEnabledChange: (enabled: boolean) => void;
   onRetrievedEpisodesKChange: (n: number) => void;
   onEpisodicGlobalParticipationChange: (enabled: boolean) => void;
+  onSkillsEnabledChange: (enabled: boolean) => void;
+  onApplicableSkillsKChange: (n: number) => void;
+  onSkillsGlobalParticipationChange: (enabled: boolean) => void;
 }
 
 export function ExecutionTab({
@@ -20,11 +26,17 @@ export function ExecutionTab({
   episodicEnabled,
   retrievedEpisodesK,
   episodicGlobalParticipation,
+  skillsEnabled,
+  applicableSkillsK,
+  skillsGlobalParticipation,
   onMaxRepairAttemptsChange,
   onSupervisionDelayMsChange,
   onEpisodicEnabledChange,
   onRetrievedEpisodesKChange,
   onEpisodicGlobalParticipationChange,
+  onSkillsEnabledChange,
+  onApplicableSkillsKChange,
+  onSkillsGlobalParticipationChange,
 }: ExecutionTabProps) {
   return (
     <div className="space-y-4 p-4">
@@ -142,6 +154,72 @@ export function ExecutionTab({
           <p className="ml-5 text-[10px] text-[var(--text-muted)]">
             When on, recovery episodes from one workflow can be surfaced in another.
             Default off keeps workflows isolated.
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+          Agent Skills
+        </h3>
+        <p className="mb-2 text-[10px] text-[var(--text-muted)]">
+          Skills are reusable, parameterized procedures the agent learns from
+          validated runs. Confirmed skills can be browsed and replayed in the
+          Skills panel.
+        </p>
+
+        <div className="mb-3">
+          <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <input
+              type="checkbox"
+              checked={skillsEnabled}
+              onChange={(e) => onSkillsEnabledChange(e.target.checked)}
+              className="accent-[var(--accent-coral)]"
+            />
+            Enable procedural skills
+          </label>
+        </div>
+
+        <div className="mb-3">
+          <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+            Skills shown per subgoal (1–10)
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={10}
+            value={applicableSkillsK}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              const clamped = Number.isFinite(n)
+                ? Math.max(1, Math.min(10, Math.floor(n)))
+                : 2;
+              onApplicableSkillsKChange(clamped);
+            }}
+            disabled={!skillsEnabled}
+            className={inputClass}
+          />
+          <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+            How many candidate skills the agent considers each time it
+            declares a new subgoal. Default: 2.
+          </p>
+        </div>
+
+        <div className="mb-3">
+          <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <input
+              type="checkbox"
+              checked={skillsGlobalParticipation}
+              onChange={(e) =>
+                onSkillsGlobalParticipationChange(e.target.checked)
+              }
+              disabled={!skillsEnabled}
+              className="accent-[var(--accent-coral)]"
+            />
+            Share skills across projects
+          </label>
+          <p className="ml-5 text-[10px] text-[var(--text-muted)]">
+            When on, confirmed skills can be promoted to the global tier.
           </p>
         </div>
       </div>

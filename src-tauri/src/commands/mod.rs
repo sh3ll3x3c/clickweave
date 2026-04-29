@@ -5,6 +5,7 @@ pub mod error;
 mod executor;
 mod project;
 mod runs;
+pub mod skills;
 mod types;
 mod walkthrough;
 mod walkthrough_enrichment;

@@ -1,6 +1,7 @@
 use super::error::CommandError;
 use super::types::*;
 use clickweave_core::variant_index::{VariantEntry, VariantIndex};
+use clickweave_engine::agent::skills::{SkillContext, SkillScope, SkillState, SkillStore, slugify};
 use clickweave_engine::agent::{
     AgentCache, AgentChannels, AgentConfig, AgentEvent, ApprovalRequest,
     DisagreementResolutionAction, PermissionAction, PermissionPolicy, PermissionRule,
@@ -20,6 +21,18 @@ fn app_data_episodic_path(
 ) -> Result<std::path::PathBuf, super::error::CommandError> {
     let base = app.state::<crate::commands::types::AppDataDir>().0.clone();
     Ok(base.join("episodic.sqlite"))
+}
+
+/// Resolve the global procedural-skills directory. Shares the app-data
+/// root used by unsaved projects and trace retention.
+fn app_data_global_skills_dir(
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, super::error::CommandError> {
+    let base = app.state::<crate::commands::types::AppDataDir>().0.clone();
+    let dir = base.join("skills_global");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| super::error::CommandError::io(format!("create global skills dir: {e}")))?;
+    Ok(dir)
 }
 
 // ── Request / payload types ─────────────────────────────────────
@@ -162,6 +175,19 @@ pub struct AgentRunRequest {
     /// Default off keeps workflows isolated.
     #[serde(default)]
     pub episodic_global_participation: Option<bool>,
+    /// Spec 3 master kill switch for procedural skills on this run.
+    /// `None` = inherit the engine default (`true`); `Some(false)` =
+    /// run with skill extraction/retrieval/replay disabled.
+    #[serde(default)]
+    pub skills_enabled: Option<bool>,
+    /// Spec 3 retrieval depth — top-k applicable skills returned per
+    /// `push_subgoal` boundary. Clamped to `[1, 10]` at the Tauri seam.
+    #[serde(default)]
+    pub applicable_skills_k: Option<usize>,
+    /// Spec 3 privacy opt-in: when `true`, confirmed global skills may
+    /// participate in retrieval for this run.
+    #[serde(default)]
+    pub skills_global_participation: Option<bool>,
 }
 
 /// Wire form of a prior-turn entry (matches
@@ -614,6 +640,67 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
     }
 }
 
+fn maybe_spawn_skill_proposal_task(
+    event: &AgentEvent,
+    skill_ctx: &SkillContext,
+    agent_config: clickweave_llm::LlmConfig,
+) {
+    let AgentEvent::SkillExtracted {
+        skill_id,
+        version,
+        state,
+        scope,
+        ..
+    } = event
+    else {
+        return;
+    };
+    if !skill_ctx.enabled || *state != SkillState::Draft || *scope != SkillScope::ProjectLocal {
+        return;
+    }
+
+    let skills_dir = skill_ctx.project_skills_dir.clone();
+    let skill_id = skill_id.clone();
+    let version = *version;
+    tauri::async_runtime::spawn(async move {
+        let store = SkillStore::new(skills_dir.clone());
+        let skill_path = skills_dir.join(format!("{}-v{}.md", slugify(&skill_id), version));
+        let Ok(skill) = store.read_skill(&skill_path) else {
+            tracing::warn!(%skill_id, version, "skills: proposal task could not read skill file");
+            return;
+        };
+        if skill.state != SkillState::Draft || skill.stats.occurrence_count < 3 {
+            return;
+        }
+        let proposal_path = crate::llm::skill_proposal::proposal_path(&skills_dir, &skill);
+        if proposal_path.exists() {
+            return;
+        }
+
+        let mut provenance = skill.provenance.clone();
+        provenance.sort_by_key(|p| p.completed_at);
+        let start = provenance.len().saturating_sub(3);
+        let contributing = provenance[start..].to_vec();
+
+        let llm =
+            clickweave_llm::LlmClient::new(agent_config.with_thinking(false).with_max_tokens(2048));
+        match crate::llm::skill_proposal::propose_skill_refinement(&skill, &contributing, &llm)
+            .await
+        {
+            Ok(proposal) => {
+                if let Err(err) =
+                    crate::llm::skill_proposal::write_skill_proposal(&skills_dir, &skill, &proposal)
+                {
+                    tracing::warn!(%skill_id, version, error = %err, "skills: failed to write proposal");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(%skill_id, version, error = %err, "skills: proposal generation failed");
+            }
+        }
+    });
+}
+
 // ── Commands ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -695,6 +782,9 @@ pub async fn run_agent(
     let episodic_settings_enabled = request.episodic_enabled.unwrap_or(true);
     let retrieved_episodes_k_override = request.retrieved_episodes_k;
     let episodic_global_participation = request.episodic_global_participation.unwrap_or(false);
+    let skills_settings_enabled = request.skills_enabled.unwrap_or(true);
+    let applicable_skills_k_override = request.applicable_skills_k;
+    let skills_global_participation = request.skills_global_participation.unwrap_or(false);
 
     // Spec 2 D34: construct the per-run EpisodicContext. The context is
     // disabled when persistence is off (the privacy kill switch flips
@@ -719,6 +809,34 @@ pub async fn run_agent(
         }
     } else {
         clickweave_engine::agent::episodic::EpisodicContext::disabled()
+    };
+
+    // Spec 3: construct a per-run SkillContext at the Tauri boundary.
+    // The skills layer follows the same privacy gate as episodic memory:
+    // when trace persistence is off, no skill files are read or written.
+    let skill_ctx = {
+        let project_skills_dir = {
+            let guard = storage.lock().unwrap();
+            if persist_traces && skills_settings_enabled {
+                guard
+                    .project_skills_dir()
+                    .map_err(|e| CommandError::io(format!("resolve project skills dir: {e}")))?
+            } else {
+                guard.base_path().join("skills")
+            }
+        };
+        let global_skills_dir =
+            if persist_traces && skills_settings_enabled && skills_global_participation {
+                Some(app_data_global_skills_dir(&app)?)
+            } else {
+                None
+            };
+        SkillContext {
+            enabled: persist_traces && skills_settings_enabled,
+            project_skills_dir,
+            global_skills_dir,
+            project_id: request.workflow_id.clone(),
+        }
     };
 
     // Capture the run-start timestamp so PromotePass scopes promotion
@@ -749,6 +867,9 @@ pub async fn run_agent(
     let event_run_id = run_id.clone();
     let approval_run_id = run_id.clone();
     let task_episodic_ctx = episodic_ctx.clone();
+    let task_skill_ctx = skill_ctx.clone();
+    let proposal_skill_ctx = skill_ctx.clone();
+    let proposal_agent_config = agent_config.clone();
     let promotion_episodic_ctx = episodic_ctx.clone();
     let promotion_workflow_hash = episodic_ctx.workflow_hash.clone();
 
@@ -828,6 +949,11 @@ pub async fn run_agent(
         if let Some(k) = retrieved_episodes_k_override {
             config.retrieved_episodes_k = k.clamp(1, 10);
         }
+        config.skills_enabled = skills_settings_enabled;
+        if let Some(k) = applicable_skills_k_override {
+            config.applicable_skills_k = k.clamp(1, 10);
+        }
+        config.skills_global_participation = skills_global_participation;
 
         // Begin storage execution and load cross-run state under a single lock.
         // Storage init failure prevents the run from starting — durable tracing
@@ -908,12 +1034,7 @@ pub async fn run_agent(
                 // Spec 2 P4: thread the per-run EpisodicContext into the
                 // engine. Disabled context = no episodic stores opened.
                 Some(task_episodic_ctx.clone()),
-                // Spec 3: per-run SkillContext lands in Phase 5 when the
-                // Tauri command surface (`commands/skills.rs`) and the
-                // settings UI ship. Until then, the runner gets a
-                // disabled context so the procedural-skills hooks are
-                // no-ops in production.
-                None,
+                Some(task_skill_ctx.clone()),
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
@@ -1158,6 +1279,11 @@ pub async fn run_agent(
                             // mapping — extracted so the run-agent smoke test
                             // can drive it against a mock `AppHandle`.
                             forward_agent_event(&event_emit_handle, &event_run_id, &event);
+                            maybe_spawn_skill_proposal_task(
+                                &event,
+                                &proposal_skill_ctx,
+                                proposal_agent_config.clone(),
+                            );
                         }
                         None => break,
                     }

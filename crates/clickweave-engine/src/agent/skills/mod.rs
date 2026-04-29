@@ -34,11 +34,11 @@ pub mod watcher_consumer;
 
 pub use index::SkillIndex;
 pub use replay::SkillFrame;
-pub use store::SkillStore;
+pub use store::{SkillStore, filename_for, slugify};
 pub use types::{
-    ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, BindingRef, CaptureClause,
-    CaptureSource, ExpectedWorldModelDelta, LoopPredicate, MaybeExtracted, OutcomePredicate,
-    OutputDeclaration, ParameterSlot, ProvenanceEntry, RecordedStep, RetrievedSkill, Skill,
-    SkillContext, SkillError, SkillRefinementProposal, SkillScope, SkillState, SkillStats,
-    SubgoalSignature,
+    ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, BindingCorrection, BindingRef,
+    CaptureClause, CaptureSource, ExpectedWorldModelDelta, LoopPredicate, MaybeExtracted,
+    OutcomePredicate, OutputDeclaration, ParameterSlot, ProvenanceEntry, RecordedStep,
+    RetrievedSkill, Skill, SkillContext, SkillError, SkillRefinementProposal, SkillScope,
+    SkillState, SkillStats, SubgoalSignature,
 };

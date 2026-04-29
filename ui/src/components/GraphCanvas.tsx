@@ -5,12 +5,13 @@ import {
   Controls,
   SelectionMode,
   type Node as RFNode,
+  type Edge as RFEdge,
   type NodeTypes,
   type EdgeTypes,
   MarkerType,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { Workflow, Edge } from "../bindings";
+import type { Workflow, Edge as WorkflowEdge } from "../bindings";
 import { useAppGrouping } from "../hooks/useAppGrouping";
 import { useUserGrouping } from "../hooks/useUserGrouping";
 import { useNodeSync } from "../hooks/useNodeSync";
@@ -24,8 +25,26 @@ import { validateGroupCreation, topologicalSortMembers, expandCollapsedSelection
 import { isTextInput } from "../hooks/useUndoRedoKeyboard";
 import { useStore } from "../store/useAppStore";
 import { isAgentActive } from "../store/slices/agentSlice";
+import { SkillLoopNode } from "./skills/SkillLoopNode";
+import { SkillSubSkillNode } from "./skills/SkillSubSkillNode";
+import { SkillToolCallNode } from "./skills/SkillToolCallNode";
 
-interface GraphCanvasProps {
+export interface SkillCanvasSource {
+  nodes: RFNode[];
+  edges: RFEdge[];
+  readOnly: true;
+}
+
+export function buildSkillRfNodes(
+  skillSource: SkillCanvasSource,
+): { nodes: RFNode[]; edges: RFEdge[] } {
+  return {
+    nodes: skillSource.nodes,
+    edges: skillSource.edges,
+  };
+}
+
+interface WorkflowGraphCanvasProps {
   workflow: Workflow;
   selectedNode: string | null;
   activeNode: string | null;
@@ -33,10 +52,10 @@ interface GraphCanvasProps {
   onSelectNode: (id: string | null) => void;
   onCanvasSelectionChange: (hasMulti: boolean) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
-  onEdgesChange: (edges: Edge[]) => void;
+  onEdgesChange: (edges: WorkflowEdge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
   onDeleteNodes: (ids: string[]) => void;
-  onRemoveExtraEdges: (edges: Edge[]) => void;
+  onRemoveExtraEdges: (edges: WorkflowEdge[]) => void;
   onBeforeNodeDrag?: () => void;
   onCreateGroup: (name: string, color: string, nodeIds: string[], parentGroupId: string | null) => void;
   onRemoveGroup: (groupId: string) => void;
@@ -47,7 +66,68 @@ interface GraphCanvasProps {
   onRemoveNodesFromGroup: (groupId: string, nodeIds: string[]) => void;
 }
 
-export function GraphCanvas({
+type GraphCanvasProps =
+  | WorkflowGraphCanvasProps
+  | {
+      skillSource: SkillCanvasSource;
+    };
+
+export function GraphCanvas(props: GraphCanvasProps) {
+  if ("skillSource" in props) {
+    return <SkillGraphCanvas skillSource={props.skillSource} />;
+  }
+
+  return <WorkflowGraphCanvas {...props} />;
+}
+
+function SkillGraphCanvas({ skillSource }: { skillSource: SkillCanvasSource }) {
+  const nodeTypes: NodeTypes = useMemo(
+    () => ({
+      skillToolCall: SkillToolCallNode,
+      skillSubSkill: SkillSubSkillNode,
+      skillLoop: SkillLoopNode,
+    }),
+    [],
+  );
+
+  const edgeTypes: EdgeTypes = useMemo(() => ({}), []);
+  const { nodes, edges } = useMemo(
+    () => buildSkillRfNodes(skillSource),
+    [skillSource],
+  );
+
+  return (
+    <div className="relative h-full w-full" data-graph-canvas-wrapper>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        nodesDraggable={!skillSource.readOnly}
+        nodesConnectable={!skillSource.readOnly}
+        elementsSelectable
+        fitView
+        fitViewOptions={{ maxZoom: 1 }}
+        defaultEdgeOptions={{
+          type: "smoothstep",
+          selectable: false,
+          markerEnd: { type: MarkerType.ArrowClosed, color: "#666" },
+          style: { stroke: "#555", strokeWidth: 2 },
+        }}
+        proOptions={{ hideAttribution: true }}
+        style={{ background: "var(--bg-dark)" }}
+      >
+        <Background color="#333" gap={20} />
+        <Controls
+          showInteractive={false}
+          style={{ background: "var(--bg-panel)", borderColor: "var(--border)" }}
+        />
+      </ReactFlow>
+    </div>
+  );
+}
+
+function WorkflowGraphCanvas({
   workflow,
   selectedNode,
   activeNode,
@@ -67,7 +147,7 @@ export function GraphCanvas({
   onRecolorGroup,
   onAddNodesToGroup,
   onRemoveNodesFromGroup,
-}: GraphCanvasProps) {
+}: WorkflowGraphCanvasProps) {
   const nodeTypes: NodeTypes = useMemo(
     () => ({ workflow: WorkflowNode, appGroup: AppGroupNode, userGroup: UserGroupNode }),
     [],

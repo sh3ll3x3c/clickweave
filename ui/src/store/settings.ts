@@ -46,6 +46,12 @@ export interface PersistedSettings {
   retrievedEpisodesK: number;
   /** Spec 2 D35 privacy opt-in for the global cross-workflow store. */
   episodicGlobalParticipation: boolean;
+  /** Spec 3 master kill switch for procedural-skill memory. */
+  skillsEnabled: boolean;
+  /** Spec 3 retrieval depth — top-k applicable skills per push_subgoal. */
+  applicableSkillsK: number;
+  /** Spec 3 privacy opt-in for the global cross-workflow skills tier. */
+  skillsGlobalParticipation: boolean;
 }
 
 export const DEFAULT_TRACE_RETENTION_DAYS = 30;
@@ -53,6 +59,9 @@ export const DEFAULT_STORE_TRACES = true;
 export const DEFAULT_EPISODIC_ENABLED = true;
 export const DEFAULT_RETRIEVED_EPISODES_K = 2;
 export const DEFAULT_EPISODIC_GLOBAL_PARTICIPATION = false;
+export const DEFAULT_SKILLS_ENABLED = true;
+export const DEFAULT_APPLICABLE_SKILLS_K = 2;
+export const DEFAULT_SKILLS_GLOBAL_PARTICIPATION = false;
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
   supervisorConfig: DEFAULT_ENDPOINT,
@@ -68,6 +77,9 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   episodicEnabled: DEFAULT_EPISODIC_ENABLED,
   retrievedEpisodesK: DEFAULT_RETRIEVED_EPISODES_K,
   episodicGlobalParticipation: DEFAULT_EPISODIC_GLOBAL_PARTICIPATION,
+  skillsEnabled: DEFAULT_SKILLS_ENABLED,
+  applicableSkillsK: DEFAULT_APPLICABLE_SKILLS_K,
+  skillsGlobalParticipation: DEFAULT_SKILLS_GLOBAL_PARTICIPATION,
 };
 
 export async function loadSettings(): Promise<PersistedSettings> {
@@ -136,6 +148,29 @@ export async function loadSettings(): Promise<PersistedSettings> {
     "episodicGlobalParticipation",
   );
 
+  // Spec 3 procedural-skill settings. One-shot migration: a stored
+  // `useCache: false` from before the cache cutover (Phase 6) maps to
+  // `skillsEnabled: false` so opt-out users keep their preference. The
+  // `useCache` key is dropped after migration; all subsequent loads
+  // skip the compat path.
+  const storedSkillsEnabled = await store.get<boolean>("skillsEnabled");
+  const legacyUseCache = await store.get<boolean>("useCache");
+  let skillsEnabled = storedSkillsEnabled ?? SETTINGS_DEFAULTS.skillsEnabled;
+  if (storedSkillsEnabled === null || storedSkillsEnabled === undefined) {
+    if (legacyUseCache === false) {
+      skillsEnabled = false;
+      await store.set("skillsEnabled", false);
+    }
+  }
+  if (legacyUseCache !== null && legacyUseCache !== undefined) {
+    await store.delete("useCache");
+    await store.save();
+  }
+  const applicableSkillsK = await store.get<number>("applicableSkillsK");
+  const skillsGlobalParticipation = await store.get<boolean>(
+    "skillsGlobalParticipation",
+  );
+
   return {
     supervisorConfig,
     agentConfig: agentConfig ?? fallback,
@@ -153,6 +188,12 @@ export async function loadSettings(): Promise<PersistedSettings> {
     episodicGlobalParticipation:
       episodicGlobalParticipation ??
       SETTINGS_DEFAULTS.episodicGlobalParticipation,
+    skillsEnabled,
+    applicableSkillsK:
+      applicableSkillsK ?? SETTINGS_DEFAULTS.applicableSkillsK,
+    skillsGlobalParticipation:
+      skillsGlobalParticipation ??
+      SETTINGS_DEFAULTS.skillsGlobalParticipation,
   };
 }
 
