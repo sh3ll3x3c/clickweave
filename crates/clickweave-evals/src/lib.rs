@@ -111,6 +111,8 @@ pub struct ScoringSpec {
     pub forbidden_agent_tools: Vec<String>,
     #[serde(default)]
     pub max_agent_tool_calls: Option<usize>,
+    #[serde(default)]
+    pub max_repeated_action_warnings: Option<usize>,
     #[serde(default = "default_true")]
     pub completion_required: bool,
 }
@@ -162,6 +164,7 @@ pub struct DeterministicScore {
     pub repeated_action_warnings: usize,
     pub agent_tool_calls: usize,
     pub max_agent_tool_calls_excess: usize,
+    pub max_repeated_action_warnings_excess: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -673,6 +676,11 @@ fn score_deterministic(
         .max_agent_tool_calls
         .map(|max| agent_tool_calls.saturating_sub(max))
         .unwrap_or_default();
+    let max_repeated_action_warnings_excess = scenario
+        .scoring
+        .max_repeated_action_warnings
+        .map(|max| repeated_action_warnings.saturating_sub(max))
+        .unwrap_or_default();
 
     let mut score = 1.0_f32;
     if scenario.scoring.completion_required && !completed {
@@ -687,6 +695,7 @@ fn score_deterministic(
     score -= invalid_tool_errors as f32 * 0.12;
     score -= repeated_action_warnings as f32 * 0.05;
     score -= max_agent_tool_calls_excess as f32 * 0.04;
+    score -= max_repeated_action_warnings_excess as f32;
     if scenario.max_steps > 0 {
         score -= (steps as f32 / scenario.max_steps as f32).min(1.0) * 0.08;
     }
@@ -705,6 +714,7 @@ fn score_deterministic(
         repeated_action_warnings,
         agent_tool_calls,
         max_agent_tool_calls_excess,
+        max_repeated_action_warnings_excess,
     }
 }
 
@@ -1020,6 +1030,36 @@ mod tests {
                 .unwrap()
                 .contains("[SYSTEM_PROMPT_OMITTED]")
         );
+    }
+
+    #[test]
+    fn deterministic_score_can_hard_fail_repeated_action_warnings() {
+        let mut scenario = scenario();
+        scenario.scoring.required_tools.clear();
+        scenario.scoring.required_agent_tools.clear();
+        scenario.scoring.required_agent_tool_groups.clear();
+        scenario.scoring.required_agent_tool_counts.clear();
+        scenario.scoring.forbidden_tools.clear();
+        scenario.scoring.forbidden_agent_tools.clear();
+        scenario.scoring.max_agent_tool_calls = None;
+        scenario.scoring.max_repeated_action_warnings = Some(0);
+        scenario.scoring.completion_required = false;
+
+        let score = score_deterministic(
+            &scenario,
+            false,
+            0,
+            &[],
+            &[],
+            &[json!({
+                "type": "warning",
+                "message": "no-progress: repeated action cycle `cdp_fill` -> `cdp_click`"
+            })],
+        );
+
+        assert_eq!(score.repeated_action_warnings, 1);
+        assert_eq!(score.max_repeated_action_warnings_excess, 1);
+        assert_eq!(score.score, 0.0);
     }
 
     #[test]

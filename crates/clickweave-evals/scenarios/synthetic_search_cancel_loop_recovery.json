@@ -150,6 +150,7 @@
     "required_agent_tool_groups": [["cdp_take_dom_snapshot", "cdp_evaluate_script"]],
     "forbidden_agent_tools": ["click", "find_text", "cdp_type_text", "agent_done"],
     "max_agent_tool_calls": 6,
+    "max_repeated_action_warnings": 0,
     "completion_required": false
   }
 }
