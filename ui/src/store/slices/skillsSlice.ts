@@ -120,6 +120,7 @@ export interface LoadSkillsForPanelRequest {
   workflowName: string;
   workflowId: string;
   includeGlobal: boolean;
+  storeTraces: boolean;
 }
 
 function bucketize(list: SkillSummary[]): {
@@ -157,11 +158,17 @@ export const createSkillsSlice: StateCreator<
     workflowName,
     workflowId,
     includeGlobal,
+    storeTraces,
   }) => {
+    if (!storeTraces) {
+      set(bucketize([]));
+      return;
+    }
     const baseRequest = {
       project_path: projectPath,
       workflow_name: workflowName,
       workflow_id: workflowId,
+      store_traces: storeTraces,
     };
     const projectLocal = await invoke<SkillSummary[]>("list_skills_for_panel", {
       request: { ...baseRequest, scope: "project_local" },

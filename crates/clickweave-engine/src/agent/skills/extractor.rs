@@ -6,12 +6,13 @@
 //! sketch via [`provenance::build_action_sketch`], computes the
 //! subgoal + applicability signatures, and either:
 //!
-//! - **Merges** into an existing skill in the same `(id, version)`
-//!   family when the new sketch matches byte-for-byte (bumps
-//!   `occurrence_count`, appends a `ProvenanceEntry`, and re-emits the
-//!   file at `version + 1`).
-//! - **Inserts** a fresh `(id, v + 1)` row when an existing skill at
-//!   the same signature has a structurally different sketch.
+//! - **Merges** into an existing project-local draft skill in the same
+//!   `(id, version)` family when the new sketch matches byte-for-byte
+//!   (bumps `occurrence_count`, appends a `ProvenanceEntry`, and
+//!   re-emits the file at `version + 1`).
+//! - **Inserts** a fresh `(id, v + 1)` row when an existing
+//!   project-local draft skill at the same signature has a structurally
+//!   different sketch.
 //! - **Inserts** a brand new draft skill at `version 1` when no
 //!   skill at that signature exists yet.
 //!
@@ -82,6 +83,11 @@ pub async fn maybe_extract_skill(
     let candidates = skill_index
         .read()
         .skills_with_signature(&pre_state_signature);
+    let mergeable_draft_candidates: Vec<_> = candidates
+        .iter()
+        .filter(|skill| is_mergeable_project_local_draft(skill.as_ref()))
+        .cloned()
+        .collect();
 
     let now = Utc::now();
     let provenance_entry = ProvenanceEntry {
@@ -91,9 +97,10 @@ pub async fn maybe_extract_skill(
         workflow_hash: workflow_hash.to_string(),
     };
 
-    if let Some(existing) = candidates
+    if let Some(existing) = mergeable_draft_candidates
         .iter()
-        .find(|s| sketches_equivalent(&s.action_sketch, &new_sketch))
+        .filter(|s| sketches_equivalent(&s.action_sketch, &new_sketch))
+        .max_by_key(|s| s.version)
     {
         // Same family + same sketch → merge into a new version with
         // bumped occurrence_count + appended provenance + recomputed
@@ -127,9 +134,10 @@ pub async fn maybe_extract_skill(
         });
     }
 
-    if let Some(divergent) = candidates.iter().max_by_key(|s| s.version) {
+    if let Some(divergent) = mergeable_draft_candidates.iter().max_by_key(|s| s.version) {
         // Same signature, divergent sketch → emit a new version on
-        // top of the highest existing version in the family.
+        // top of the highest existing project-local draft version in
+        // the family.
         let id = divergent.id.clone();
         let version = divergent.version + 1;
         let skill = build_draft_skill(
@@ -151,8 +159,15 @@ pub async fn maybe_extract_skill(
         });
     }
 
-    // Fresh signature → brand-new draft skill at version 1.
-    let id = synthesize_skill_id(&completed.text);
+    // No mergeable project-local draft → brand-new draft skill at
+    // version 1. Existing confirmed/promoted/global skills at the
+    // signature remain immutable retrieval sources.
+    let id = synthesize_unique_draft_skill_id(
+        &completed.text,
+        &pre_state_signature,
+        &candidates,
+        skill_index,
+    );
     let skill = build_draft_skill(
         id.clone(),
         1,
@@ -170,6 +185,12 @@ pub async fn maybe_extract_skill(
         skill_id: id,
         version: 1,
     })
+}
+
+fn is_mergeable_project_local_draft(skill: &Skill) -> bool {
+    skill.scope == SkillScope::ProjectLocal
+        && skill.state == SkillState::Draft
+        && !skill.edited_by_user
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -288,6 +309,51 @@ pub fn synthesize_skill_id(subgoal_text: &str) -> String {
     } else {
         slug
     }
+}
+
+/// Convert a freeform subgoal text plus the context signature that made it
+/// applicable into a stable skill id. Including the signature prevents two
+/// equal labels in different apps/hosts from racing onto the same `*-v1.md`
+/// file.
+pub fn synthesize_skill_id_for_signature(
+    subgoal_text: &str,
+    signature: &SubgoalSignature,
+) -> String {
+    let slug = super::store::slugify(subgoal_text);
+    let suffix = signature.0.chars().take(8).collect::<String>();
+    let suffix = if suffix.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        suffix
+    };
+    if slug.is_empty() {
+        format!("skill-{suffix}")
+    } else {
+        format!("{slug}-{suffix}")
+    }
+}
+
+fn synthesize_unique_draft_skill_id(
+    subgoal_text: &str,
+    signature: &SubgoalSignature,
+    candidates: &[Arc<Skill>],
+    skill_index: &Arc<RwLock<SkillIndex>>,
+) -> String {
+    let base = synthesize_skill_id_for_signature(subgoal_text, signature);
+    let candidate_id_exists = candidates.iter().any(|skill| skill.id == base);
+    if !candidate_id_exists && skill_index.read().get(&base, 1).is_none() {
+        return base;
+    }
+
+    for _ in 0..16 {
+        let suffix = Uuid::new_v4().simple().to_string();
+        let id = format!("{}-draft-{}", base, &suffix[..8]);
+        if skill_index.read().get(&id, 1).is_none() {
+            return id;
+        }
+    }
+
+    format!("{}-draft-{}", base, Uuid::new_v4().simple())
 }
 
 fn humanize_id(id: &str) -> String {

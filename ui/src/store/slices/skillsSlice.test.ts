@@ -15,6 +15,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 import { useStore } from "../useAppStore";
+import { invoke } from "@tauri-apps/api/core";
 import type { SkillSummary } from "./skillsSlice";
 
 function reset() {
@@ -112,6 +113,61 @@ describe("skillsSlice.applySkillConfirmed", () => {
     const s = useStore.getState();
     expect(s.drafts).toHaveLength(0);
     expect(s.confirmed.map((x) => x.id)).toEqual(["x"]);
+  });
+});
+
+describe("skillsSlice.loadSkillsForPanel", () => {
+  beforeEach(() => {
+    reset();
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("does not read skill files when trace persistence is disabled", async () => {
+    useStore
+      .getState()
+      .setSkillsList([summary({ id: "existing", version: 1 })]);
+
+    await useStore.getState().loadSkillsForPanel({
+      projectPath: null,
+      workflowName: "Workflow",
+      workflowId: "workflow-1",
+      includeGlobal: true,
+      storeTraces: false,
+    });
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useStore.getState().drafts).toHaveLength(0);
+  });
+
+  it("passes the privacy gate to both project and global list commands", async () => {
+    vi.mocked(invoke).mockResolvedValue([]);
+
+    await useStore.getState().loadSkillsForPanel({
+      projectPath: "/tmp/project.json",
+      workflowName: "Workflow",
+      workflowId: "workflow-1",
+      includeGlobal: true,
+      storeTraces: true,
+    });
+
+    expect(invoke).toHaveBeenCalledWith("list_skills_for_panel", {
+      request: {
+        project_path: "/tmp/project.json",
+        workflow_name: "Workflow",
+        workflow_id: "workflow-1",
+        scope: "project_local",
+        store_traces: true,
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith("list_skills_for_panel", {
+      request: {
+        project_path: "/tmp/project.json",
+        workflow_name: "Workflow",
+        workflow_id: "workflow-1",
+        scope: "global",
+        store_traces: true,
+      },
+    });
   });
 });
 

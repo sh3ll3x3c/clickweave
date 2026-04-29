@@ -608,9 +608,9 @@ export type CommandError = { kind: ErrorKind; message: string }
  * TypeScript binding picks it up.
  */
 export type CompletionDisagreementActionWire = "confirm" | "cancel"
-export type ConfirmSkillProposalRequest = { skill_id: string; version: number; accepted_proposal: SkillRefinementProposal; project_path: string | null; workflow_name: string; workflow_id: string; run_id: string | null }
+export type ConfirmSkillProposalRequest = { skill_id: string; version: number; accepted_proposal: SkillRefinementProposal; project_path: string | null; workflow_name: string; workflow_id: string; run_id: string | null; store_traces: boolean }
 export type ConfirmableTool = { name: string; description: string }
-export type DeleteSkillRequest = { skill_id: string; version: number; scope: SkillScope; project_path: string | null; workflow_name: string; workflow_id: string }
+export type DeleteSkillRequest = { skill_id: string; version: number; scope: SkillScope; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 /**
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
  */
@@ -632,13 +632,13 @@ export type FindAppParams = { search: string }
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text?: string; scope?: string | null }
 export type FocusWindowParams = ({ method: "AppName"; value: string } | { method: "WindowId"; value: number } | { method: "Pid"; value: number }) & ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null }
-export type ForkSkillRequest = { skill_id: string; version: number; new_name: string; project_path: string | null; workflow_name: string; workflow_id: string }
+export type ForkSkillRequest = { skill_id: string; version: number; new_name: string; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type HoverParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target?: ClickTarget | null; dwell_ms: number }
 export type Hypothesis = { text: string; recorded_at_step: number; refuted: boolean }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type LaunchAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
-export type ListSkillsRequest = { scope: SkillScope; project_path: string | null; workflow_name: string; workflow_id: string }
+export type ListSkillsRequest = { scope: SkillScope; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type LoadAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string }
 export type LoopPredicate = { kind: "world_model_delta"; expr: string } | { kind: "step_count_reached"; count: number }
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
@@ -711,11 +711,11 @@ export type PressKeyParams = ({ verification_method?: VerificationMethod | null;
  */
 export type PriorTurnWire = { goal: string; summary: string; run_id: string }
 export type ProjectData = { path: string; workflow: Workflow }
-export type PromoteSkillToGlobalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string }
+export type PromoteSkillToGlobalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type ProvenanceEntry = { run_id: string; step_index: number; completed_at: string; workflow_hash: string }
 export type PruneSkillLineageRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
 export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
-export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string }
+export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null;
 /**
@@ -731,7 +731,7 @@ store_traces?: boolean | null }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 export type SaveAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string; chat: AgentChat; store_traces: boolean }
-export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; workflow_name: string; workflow_id: string }
+export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; workflow_name: string; workflow_id: string; reviewed_draft: Workflow | null; reviewed_actions: WalkthroughAction[] | null; store_traces: boolean }
 /**
  * Screenshot coordinate metadata for mapping screen coordinates to image pixels.
  *

@@ -14,14 +14,14 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use tracing::warn;
 
 use super::retrieval::{ScoringWeights, is_retrieval_eligible, merge_tiers, score};
-use super::store::SkillStore;
+use super::store::{SkillStore, filename_for};
 use super::types::{
     ApplicabilitySignature, RetrievedSkill, Skill, SkillContext, SkillError, SkillState,
     SubgoalSignature,
@@ -57,13 +57,13 @@ impl SkillIndex {
             ctx.project_skills_dir.clone(),
             ctx.global_skills_dir.clone(),
         );
-        if ctx.project_skills_dir.exists() {
-            idx.load_dir(&ctx.project_skills_dir);
-        }
         if let Some(global) = ctx.global_skills_dir.as_ref()
             && global.exists()
         {
             idx.load_dir(global);
+        }
+        if ctx.project_skills_dir.exists() {
+            idx.load_dir(&ctx.project_skills_dir);
         }
         Ok(idx)
     }
@@ -131,6 +131,28 @@ impl SkillIndex {
         }
     }
 
+    pub fn remove_by_path(&mut self, path: &Path) -> bool {
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        let keys: Vec<_> = self
+            .by_id
+            .iter()
+            .filter_map(|(key, skill)| {
+                if filename_for(skill.as_ref()) == file_name {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let removed = !keys.is_empty();
+        for (id, version) in keys {
+            self.remove(&id, version);
+        }
+        removed
+    }
+
     fn remove_subgoal_pointer(&mut self, sig: &SubgoalSignature, key: &(String, u32)) {
         if let Some(entries) = self.by_subgoal_signature.get_mut(sig) {
             entries.retain(|k| k != key);
@@ -149,10 +171,10 @@ impl SkillIndex {
     pub fn lookup(
         &self,
         subgoal_sig: &SubgoalSignature,
-        _applicability_sig: &ApplicabilitySignature,
+        applicability_sig: &ApplicabilitySignature,
         k: usize,
     ) -> Vec<RetrievedSkill> {
-        self.lookup_at(subgoal_sig, _applicability_sig, "", k, Utc::now())
+        self.lookup_at(subgoal_sig, applicability_sig, "", k, Utc::now())
     }
 
     /// Lookup variant exposing the query subgoal text (so the text
@@ -161,7 +183,7 @@ impl SkillIndex {
     pub fn lookup_at(
         &self,
         subgoal_sig: &SubgoalSignature,
-        _applicability_sig: &ApplicabilitySignature,
+        applicability_sig: &ApplicabilitySignature,
         query_subgoal_text: &str,
         k: usize,
         now: DateTime<Utc>,
@@ -182,6 +204,7 @@ impl SkillIndex {
             .iter()
             .filter_map(|key| self.by_id.get(key))
             .filter(|skill| is_retrieval_eligible(skill))
+            .filter(|skill| &skill.applicability.signature == applicability_sig)
             .map(|skill| {
                 let skill_embedding = self.embedder.embed(&skill.subgoal_text);
                 let raw = score(
@@ -332,6 +355,36 @@ mod tests {
     }
 
     #[test]
+    fn build_prefers_project_local_when_global_copy_has_same_id_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("project");
+        let global_dir = tmp.path().join("global");
+        let project_store = SkillStore::new(project_dir.clone());
+        let global_store = SkillStore::new(global_dir.clone());
+
+        let mut local = skill_with("same", 1, "sig", SkillState::Confirmed);
+        local.scope = SkillScope::ProjectLocal;
+        local.description = "local".into();
+        let mut global = skill_with("same", 1, "sig", SkillState::Promoted);
+        global.scope = SkillScope::Global;
+        global.description = "global".into();
+        global_store.write_skill(&global).unwrap();
+        project_store.write_skill(&local).unwrap();
+
+        let ctx = SkillContext {
+            enabled: true,
+            project_skills_dir: project_dir,
+            global_skills_dir: Some(global_dir),
+            project_id: "p".into(),
+        };
+        let idx = SkillIndex::build(&ctx, Arc::new(HashedShingleEmbedder::default())).unwrap();
+        let selected = idx.get("same", 1).expect("skill loaded");
+
+        assert_eq!(selected.scope, SkillScope::ProjectLocal);
+        assert_eq!(selected.description, "local");
+    }
+
+    #[test]
     fn lookup_excludes_draft_state() {
         let mut idx = SkillIndex::empty(Arc::new(HashedShingleEmbedder::default()));
         idx.upsert(skill_with("draft", 1, "sig-a", SkillState::Draft));
@@ -415,6 +468,44 @@ mod tests {
             )
             .len(),
             1,
+        );
+    }
+
+    #[test]
+    fn lookup_filters_by_applicability_signature() {
+        let mut idx = SkillIndex::empty(Arc::new(HashedShingleEmbedder::default()));
+        let mut telegram = skill_with("telegram", 1, "sig-shared", SkillState::Confirmed);
+        telegram.applicability.signature = ApplicabilitySignature("app-telegram".into());
+        let mut slack = skill_with("slack", 1, "sig-shared", SkillState::Confirmed);
+        slack.applicability.signature = ApplicabilitySignature("app-slack".into());
+        idx.upsert(telegram);
+        idx.upsert(slack);
+
+        let hits = idx.lookup(
+            &SubgoalSignature("sig-shared".into()),
+            &ApplicabilitySignature("app-telegram".into()),
+            5,
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].skill.id, "telegram");
+    }
+
+    #[test]
+    fn remove_by_path_drops_deleted_skill_from_index() {
+        let mut idx = SkillIndex::empty(Arc::new(HashedShingleEmbedder::default()));
+        idx.upsert(skill_with("delete-me", 3, "sig", SkillState::Confirmed));
+
+        assert!(idx.remove_by_path(Path::new("delete-me-v3.md")));
+
+        assert!(idx.get("delete-me", 3).is_none());
+        assert!(
+            idx.lookup(
+                &SubgoalSignature("sig".into()),
+                &ApplicabilitySignature("appsig".into()),
+                5,
+            )
+            .is_empty()
         );
     }
 

@@ -578,6 +578,9 @@ pub struct SaveWalkthroughAsSkillRequest {
     pub project_path: Option<String>,
     pub workflow_name: String,
     pub workflow_id: String,
+    pub reviewed_draft: Option<clickweave_core::Workflow>,
+    pub reviewed_actions: Option<Vec<WalkthroughAction>>,
+    pub store_traces: bool,
 }
 
 #[tauri::command]
@@ -628,10 +631,16 @@ pub async fn save_walkthrough_as_skill(
     app: tauri::AppHandle,
     request: SaveWalkthroughAsSkillRequest,
 ) -> Result<Skill, CommandError> {
+    if !request.store_traces {
+        return Err(CommandError::validation(
+            "Skill file access is disabled while trace persistence is off",
+        ));
+    }
+
     let session_id = parse_uuid(&request.session_id, "walkthrough session")?;
     let workflow_id = parse_uuid(&request.workflow_id, "workflow")?;
 
-    let (actions, draft_path) = {
+    let (session_actions, draft_path) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let guard = handle.lock().unwrap();
         guard.ensure_status(&[WalkthroughStatus::Review])?;
@@ -646,16 +655,19 @@ pub async fn save_walkthrough_as_skill(
         (session.actions.clone(), draft_path)
     };
 
-    let draft = match draft_path {
-        Some(path) => match std::fs::read_to_string(&path) {
-            Ok(data) => Some(
-                serde_json::from_str::<Workflow>(&data)
-                    .map_err(|e| CommandError::validation(format!("Failed to parse draft: {e}")))?,
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(CommandError::io(format!("Failed to read draft: {e}"))),
+    let actions = request.reviewed_actions.clone().unwrap_or(session_actions);
+    let draft = match request.reviewed_draft.clone() {
+        Some(reviewed) => Some(reviewed),
+        None => match draft_path {
+            Some(path) => match std::fs::read_to_string(&path) {
+                Ok(data) => Some(serde_json::from_str::<Workflow>(&data).map_err(|e| {
+                    CommandError::validation(format!("Failed to parse draft: {e}"))
+                })?),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(CommandError::io(format!("Failed to read draft: {e}"))),
+            },
+            None => None,
         },
-        None => None,
     };
 
     let skill = walkthrough_to_skill(

@@ -7,6 +7,7 @@ import type { AppKind, WalkthroughAction } from "../bindings";
 import { APP_KIND_LABELS, usesCdp } from "../utils/appKind";
 import { ImageLightbox, CrosshairOverlay, type LightboxImage } from "./ImageLightbox";
 import { computeAppGroups, type AppGroup, type RenderItem } from "../utils/walkthroughGrouping";
+import { applyAnnotationsToDraft } from "../utils/walkthroughDraft";
 import {
   ACTIONABLE_AX_ROLES,
   actionIcon,
@@ -51,6 +52,8 @@ export function WalkthroughPanel() {
   const assistantOpen = useStore((s) => s.assistantOpen);
   const projectPath = useStore((s) => s.projectPath);
   const workflow = useStore((s) => s.workflow);
+  const storeTraces = useStore((s) => s.storeTraces);
+  const skillsEnabled = useStore((s) => s.skillsEnabled);
   const skillsGlobalParticipation = useStore((s) => s.skillsGlobalParticipation);
   const loadSkillsForPanel = useStore((s) => s.loadSkillsForPanel);
 
@@ -60,19 +63,44 @@ export function WalkthroughPanel() {
   const [saveSkillState, setSaveSkillState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveSkillMessage, setSaveSkillMessage] = useState<string | null>(null);
 
-  const canSaveAsSkill = Boolean(walkthrough.sessionId) && walkthrough.actions.some((action) => !action.candidate);
+  const canSaveAsSkill =
+    skillsEnabled &&
+    storeTraces &&
+    Boolean(walkthrough.sessionId) &&
+    walkthrough.actions.some((action) => !action.candidate);
 
   const saveAsSkill = useCallback(async () => {
     if (!walkthrough.sessionId || !canSaveAsSkill) return;
     setSaveSkillState("saving");
     setSaveSkillMessage(null);
     try {
+      const reviewedDraft = walkthrough.draft
+        ? (() => {
+            const { nodes, edges } = applyAnnotationsToDraft(
+              walkthrough.draft,
+              walkthrough.annotations,
+              walkthrough.actions,
+              walkthrough.actionNodeMap,
+              walkthrough.nodeOrder,
+            );
+            return {
+              ...walkthrough.draft,
+              id: workflow.id,
+              name: workflow.name,
+              nodes,
+              edges,
+            };
+          })()
+        : null;
       const skill = await invoke<SavedWalkthroughSkill>("save_walkthrough_as_skill", {
         request: {
           session_id: walkthrough.sessionId,
           project_path: projectPath,
           workflow_name: workflow.name,
           workflow_id: workflow.id,
+          reviewed_draft: reviewedDraft,
+          reviewed_actions: walkthrough.actions,
+          store_traces: storeTraces,
         },
       });
       setSaveSkillState("saved");
@@ -82,6 +110,7 @@ export function WalkthroughPanel() {
         workflowName: workflow.name,
         workflowId: workflow.id,
         includeGlobal: skillsGlobalParticipation,
+        storeTraces,
       }).catch(() => {});
     } catch (error) {
       setSaveSkillState("error");
@@ -91,8 +120,15 @@ export function WalkthroughPanel() {
     canSaveAsSkill,
     loadSkillsForPanel,
     projectPath,
+    storeTraces,
+    skillsEnabled,
     skillsGlobalParticipation,
     walkthrough.sessionId,
+    walkthrough.actionNodeMap,
+    walkthrough.actions,
+    walkthrough.annotations,
+    walkthrough.draft,
+    walkthrough.nodeOrder,
     workflow.id,
     workflow.name,
   ]);

@@ -19,6 +19,7 @@ interface SkillDetailViewProps {
   workflowName: string;
   workflowId: string;
   runId?: string | null;
+  storeTraces: boolean;
   onChanged?: () => void;
 }
 
@@ -29,6 +30,7 @@ export function SkillDetailView({
   workflowName,
   workflowId,
   runId,
+  storeTraces,
   onChanged,
 }: SkillDetailViewProps) {
   const { breadcrumb, drafts, confirmed, promoted } = useStore(
@@ -73,6 +75,7 @@ export function SkillDetailView({
         workflow_name: workflowName,
         workflow_id: workflowId,
         run_id: runId ?? "",
+        store_traces: storeTraces,
       },
     });
     applySkillConfirmed({
@@ -92,6 +95,7 @@ export function SkillDetailView({
         project_path: projectPath,
         workflow_name: workflowName,
         workflow_id: workflowId,
+        store_traces: storeTraces,
       },
     });
     onChanged?.();

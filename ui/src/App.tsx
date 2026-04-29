@@ -191,6 +191,7 @@ function App() {
   );
   const loadSkillsForPanel = useStore((s) => s.loadSkillsForPanel);
   const setSkillsList = useStore((s) => s.setSkillsList);
+  const clearSelectedSkill = useStore((s) => s.clearSelectedSkill);
 
   // ── Workflow mutations ───────────────────────────────────────────
   const {
@@ -238,9 +239,12 @@ function App() {
   useEscapeKey();
   useUndoRedoKeyboard(undo, redo);
 
+  const skillsAvailable = skillsEnabled && storeTraces;
+
   useEffect(() => {
-    if (!skillsEnabled) {
+    if (!skillsAvailable) {
       setSkillsList([]);
+      clearSelectedSkill();
       return;
     }
     loadSkillsForPanel({
@@ -248,13 +252,16 @@ function App() {
       workflowName: workflow.name,
       workflowId: workflow.id,
       includeGlobal: skillsGlobalParticipation,
+      storeTraces,
     }).catch((e) => console.error("Failed to load skills panel", e));
   }, [
+    clearSelectedSkill,
     loadSkillsForPanel,
     projectPath,
     setSkillsList,
-    skillsEnabled,
+    skillsAvailable,
     skillsGlobalParticipation,
+    storeTraces,
     workflow.id,
     workflow.name,
   ]);
@@ -312,7 +319,7 @@ function App() {
                 onAdd={addNode}
                 onToggle={toggleSidebar}
               />
-              {skillsEnabled && <SkillsPanel />}
+              {skillsAvailable && <SkillsPanel />}
 
               <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
                 <GraphCanvas
@@ -360,7 +367,7 @@ function App() {
                 />
               </div>
 
-              {skillsEnabled && selectedSkill && (
+              {skillsAvailable && selectedSkill && (
                 <div className="w-[420px] shrink-0 border-l border-[var(--border)] bg-[var(--bg-panel)]">
                   <SkillDetailView
                     skillId={selectedSkill.id}
@@ -369,12 +376,14 @@ function App() {
                     workflowName={workflow.name}
                     workflowId={workflow.id}
                     runId={agentRunId}
+                    storeTraces={storeTraces}
                     onChanged={() =>
                       loadSkillsForPanel({
                         projectPath,
                         workflowName: workflow.name,
                         workflowId: workflow.id,
                         includeGlobal: skillsGlobalParticipation,
+                        storeTraces,
                       }).catch((e) =>
                         console.error("Failed to reload skills panel", e),
                       )

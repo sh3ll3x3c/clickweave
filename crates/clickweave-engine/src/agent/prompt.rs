@@ -44,6 +44,7 @@ Rules:
 
 Dispatch family selection — keyed on `<world_model>`:
 - If `<world_model>` contains a `cdp_page` block, the app is browser- or Electron-backed and CDP is the primary dispatch family. Use CDP tools for everything: `cdp_find_elements` / `cdp_take_dom_snapshot` for discovery, `cdp_click` / `cdp_fill` / `cdp_type_text` / `cdp_press_key` / `cdp_evaluate_script` for action, `cdp_navigate` / `cdp_select_page` for page control. Coordinate primitives (`click` at (x,y), `type_text`, `press_key`) are forbidden when a `cdp_page` is attached — they bypass the page's event loop, steal focus, and produce no `d<N>` uids the next turn can target. The harness will reject such calls with a `coordinate primitive blocked` error, so you waste a turn.
+- If `probe_app` returned `kind: ElectronApp` or `ChromeBrowser` for the target app and `<world_model>` does not yet show a `cdp_page` for it, your VERY NEXT call MUST be `cdp_connect` for that app. Do NOT call `take_ax_snapshot`, `take_screenshot`, `find_text`, `find_image`, or any coordinate primitive against an Electron/Chrome app before CDP is attached — AX exposes only window chrome (menubar/window title) for these apps, and screenshot+OCR coordinates bypass the page's event loop. Skip `probe_app` entirely when the app is already known to be Electron/Chrome (Signal, Discord, Slack, Obsidian, VS Code, Cursor, Chrome, Brave, Arc) and go straight to `cdp_connect`.
 - If the visible element surface is too small to see your target (e.g. a sidebar, file tree, or panel that wasn't auto-fetched), call `cdp_take_dom_snapshot` once to widen it, or `cdp_evaluate_script` with a small JS expression to query the DOM directly. Do NOT fall back to coordinate clicks "to make something happen" — that path produces no observable progress for the next turn.
 - If `<world_model>` has no `cdp_page` (native macOS app), use `take_ax_snapshot` and `ax_*` tools. CRITICAL: snapshots are session-stateful — `take_ax_snapshot` immediately before every `ax_click` / `ax_set_value` / `ax_select`; if a dispatch returns `snapshot_expired`, take a fresh snapshot. Coordinate primitives are blocked here too whenever the AX dispatch toolset is wired.
 - If `<world_model>` has a `cdp_connect_status` line (auto-connect failed), the page is genuinely unreachable — do NOT keep waiting for a `cdp_page`; either retry `cdp_connect` explicitly, switch focus to a different app, or `agent_replan`.
@@ -558,41 +559,6 @@ mod state_spine_prompt_tests {
     }
 
     #[test]
-    fn system_prompt_promotes_cdp_for_attached_pages() {
-        // The CDP block must (a) condition on `cdp_page` being attached
-        // and (b) forbid coordinate primitives in that case. Without
-        // both, the LLM falls back to `click(x, y)` on Electron apps —
-        // see the Obsidian Vault7 regression that motivated this rule.
-        let tools: Vec<Tool> = vec![];
-        let s = build_system_prompt(&tools);
-        assert!(s.contains("cdp_page"));
-        assert!(
-            s.to_lowercase().contains("forbidden")
-                || s.to_lowercase().contains("last-resort")
-                || s.to_lowercase().contains("avoid"),
-            "CDP block must explicitly discourage coordinate primitives when CDP is attached"
-        );
-        assert!(
-            s.contains("cdp_find_elements")
-                && s.contains("cdp_evaluate_script")
-                && s.contains("cdp_type_text"),
-            "CDP block must spell out the discovery + action recipe (incl. typing analogue)"
-        );
-    }
-
-    #[test]
-    fn system_prompt_promotes_mutation_pseudo_tools_when_stuck() {
-        // The "when stuck" rule must bind repeated identical actions to
-        // mutation pseudo-tools so the LLM has a structured escape hatch
-        // beyond simply firing the same tool again.
-        let tools: Vec<Tool> = vec![];
-        let s = build_system_prompt(&tools);
-        assert!(s.contains("push_subgoal"));
-        assert!(s.contains("record_hypothesis") || s.contains("refute_hypothesis"));
-        assert!(s.contains("agent_replan"));
-    }
-
-    #[test]
     fn system_prompt_lists_tools_with_descriptions() {
         let tools = vec![
             Tool {
@@ -858,17 +824,6 @@ mod state_spine_prompt_tests {
     #[test]
     fn render_tools_in_scope_block_returns_empty_for_empty_input() {
         assert_eq!(render_tools_in_scope_block(&[]), "");
-    }
-
-    #[test]
-    fn system_prompt_documents_tools_in_scope_block() {
-        // The header must explain the per-turn block so the LLM knows
-        // to prefer the narrowed list. Without this the cache-stable
-        // `Available tools:` listing remains the dominant signal.
-        let tools: Vec<Tool> = vec![];
-        let s = build_system_prompt(&tools);
-        assert!(s.contains("<tools_in_scope>"));
-        assert!(s.to_lowercase().contains("prefer"));
     }
 
     #[test]

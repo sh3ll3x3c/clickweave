@@ -14,16 +14,28 @@ use crate::agent::world_model::WorldModel;
 const SIGNATURE_LEN: usize = 16;
 
 /// Subgoal-keyed signature: subgoal text (whitespace-trimmed +
-/// lowercased) plus the focused app name plus the CDP page host. The
-/// signature is stable across runs that share the same subgoal text
-/// and surface context.
+/// lowercased) plus the focused app name and CDP page host (also
+/// normalized). The signature is stable across runs that share the
+/// same subgoal text and surface context.
 pub fn compute_subgoal_signature(subgoal_text: &str, world_model: &WorldModel) -> SubgoalSignature {
+    compute_subgoal_signature_from_parts(
+        subgoal_text,
+        focused_app_name(world_model),
+        &cdp_host(world_model),
+    )
+}
+
+pub fn compute_subgoal_signature_from_parts(
+    subgoal_text: &str,
+    focused_app_name: &str,
+    cdp_host: &str,
+) -> SubgoalSignature {
     let mut h = Hasher::new();
     h.update(subgoal_text.trim().to_lowercase().as_bytes());
     h.update(b"|");
-    h.update(focused_app_name(world_model).as_bytes());
+    h.update(focused_app_name.trim().to_lowercase().as_bytes());
     h.update(b"|");
-    h.update(cdp_host(world_model).as_bytes());
+    h.update(cdp_host.trim().to_lowercase().as_bytes());
     SubgoalSignature(prefix_hex(&h, SIGNATURE_LEN))
 }
 
@@ -32,10 +44,20 @@ pub fn compute_subgoal_signature(subgoal_text: &str, world_model: &WorldModel) -
 /// share an applicability signature, which is what retrieval scoring
 /// uses for the cross-subgoal "applicable here" merge.
 pub fn compute_applicability_signature(world_model: &WorldModel) -> ApplicabilitySignature {
+    compute_applicability_signature_from_parts(
+        focused_app_name(world_model),
+        &cdp_host(world_model),
+    )
+}
+
+pub fn compute_applicability_signature_from_parts(
+    focused_app_name: &str,
+    cdp_host: &str,
+) -> ApplicabilitySignature {
     let mut h = Hasher::new();
-    h.update(focused_app_name(world_model).as_bytes());
+    h.update(focused_app_name.trim().to_lowercase().as_bytes());
     h.update(b"|");
-    h.update(cdp_host(world_model).as_bytes());
+    h.update(cdp_host.trim().to_lowercase().as_bytes());
     ApplicabilitySignature(prefix_hex(&h, SIGNATURE_LEN))
 }
 
@@ -139,7 +161,7 @@ mod tests {
     #[test]
     fn subgoal_signature_normalizes_whitespace_and_case() {
         let a = compute_subgoal_signature("  Open Chat  ", &wm(Some("Telegram"), None));
-        let b = compute_subgoal_signature("open chat", &wm(Some("Telegram"), None));
+        let b = compute_subgoal_signature("open chat", &wm(Some("telegram"), None));
         assert_eq!(a, b);
     }
 

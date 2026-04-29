@@ -22,11 +22,11 @@ use tracing::warn;
 
 use super::index::SkillIndex;
 use super::store::SkillStore;
-use super::watcher::SkillFileEvent;
+use super::watcher::{SkillFileEvent, SkillWatcher};
 
 pub struct WatcherConsumer {
     index: Arc<RwLock<SkillIndex>>,
-    store: Arc<SkillStore>,
+    stores: Vec<Arc<SkillStore>>,
     rx: mpsc::Receiver<SkillFileEvent>,
 }
 
@@ -36,9 +36,29 @@ impl WatcherConsumer {
         store: Arc<SkillStore>,
         rx: mpsc::Receiver<SkillFileEvent>,
     ) -> JoinHandle<()> {
+        Self::spawn_with_stores(index, vec![store], rx)
+    }
+
+    pub fn spawn_with_stores(
+        index: Arc<RwLock<SkillIndex>>,
+        stores: Vec<Arc<SkillStore>>,
+        rx: mpsc::Receiver<SkillFileEvent>,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            let mut consumer = WatcherConsumer { index, store, rx };
+            let mut consumer = WatcherConsumer { index, stores, rx };
             consumer.run().await;
+        })
+    }
+
+    pub fn spawn_watcher(
+        index: Arc<RwLock<SkillIndex>>,
+        stores: Vec<Arc<SkillStore>>,
+        mut watcher: SkillWatcher,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(event) = watcher.events.recv().await {
+                Self::handle_event(&index, &stores, event);
+            }
         })
     }
 
@@ -49,31 +69,61 @@ impl WatcherConsumer {
     }
 
     fn handle(&self, event: SkillFileEvent) {
+        Self::handle_event(&self.index, &self.stores, event);
+    }
+
+    fn handle_event(
+        index: &Arc<RwLock<SkillIndex>>,
+        stores: &[Arc<SkillStore>],
+        event: SkillFileEvent,
+    ) {
         match event {
             SkillFileEvent::Created(path) | SkillFileEvent::Modified(path) => {
-                if self.store.was_recently_written(&path) {
+                let Some(store) = store_for_path(stores, &path) else {
+                    warn!(?path, "skill watcher: no store for path");
+                    return;
+                };
+                if store.was_recently_written(&path) {
                     return;
                 }
-                match self.store.read_skill(&path) {
+                match store.read_skill(&path) {
                     Ok(mut skill) => {
                         if !skill.edited_by_user {
                             skill.edited_by_user = true;
-                            if let Err(err) = self.store.write_skill(&skill) {
+                            if let Err(err) = store.write_skill(&skill) {
                                 warn!(?path, ?err, "skill watcher: persist edited_by_user failed");
                             }
                         }
-                        self.index.write().upsert(skill);
+                        index.write().upsert(skill);
                     }
                     Err(err) => warn!(?path, ?err, "skill watcher: parse failed"),
                 }
             }
             SkillFileEvent::Deleted(path) => {
-                if let Ok(skill) = self.store.read_skill(&path) {
-                    self.index.write().remove(&skill.id, skill.version);
-                }
+                index.write().remove_by_path(&path);
             }
         }
     }
+}
+
+fn store_for_path<'a>(
+    stores: &'a [Arc<SkillStore>],
+    path: &std::path::Path,
+) -> Option<&'a SkillStore> {
+    stores
+        .iter()
+        .find(|store| path_is_under_dir(path, store.dir()))
+        .map(Arc::as_ref)
+}
+
+fn path_is_under_dir(path: &std::path::Path, dir: &std::path::Path) -> bool {
+    if path.starts_with(dir) {
+        return true;
+    }
+
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    path.starts_with(dir)
 }
 
 #[cfg(test)]
@@ -183,6 +233,8 @@ mod tests {
         let dir = tmp.path().to_path_buf();
         let store = Arc::new(SkillStore::new(dir.clone()));
         let path = store.write_skill(&fixture("c", 1, false)).unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        std::fs::remove_file(&path).unwrap();
 
         let index = Arc::new(RwLock::new(SkillIndex::empty(Arc::new(
             HashedShingleEmbedder::default(),
@@ -193,8 +245,6 @@ mod tests {
         let (tx, rx) = mpsc::channel::<SkillFileEvent>(8);
         let handle = WatcherConsumer::spawn(index.clone(), store.clone(), rx);
 
-        // Pre-condition: file still exists so the consumer can read
-        // its (id, version) before we ask it to drop the index entry.
         tx.send(SkillFileEvent::Deleted(path.clone()))
             .await
             .unwrap();
@@ -233,5 +283,35 @@ mod tests {
             !store.was_recently_written(&path),
             "consumer should not have written the file again"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn canonicalized_event_path_still_matches_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real_dir = tmp.path().join("real-skills");
+        let alias_dir = tmp.path().join("alias-skills");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &alias_dir).unwrap();
+
+        let store = Arc::new(SkillStore::new(alias_dir));
+        let path = store.write_skill(&fixture("e", 1, false)).unwrap();
+        let canonical_path = std::fs::canonicalize(&path).unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let index = Arc::new(RwLock::new(SkillIndex::empty(Arc::new(
+            HashedShingleEmbedder::default(),
+        ))));
+        let (tx, rx) = mpsc::channel::<SkillFileEvent>(8);
+        let handle = WatcherConsumer::spawn(index.clone(), store.clone(), rx);
+
+        tx.send(SkillFileEvent::Modified(canonical_path))
+            .await
+            .unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        let in_index = index.read().get("e", 1).expect("indexed");
+        assert!(in_index.edited_by_user);
     }
 }

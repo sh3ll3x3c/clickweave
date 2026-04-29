@@ -24,6 +24,7 @@ pub struct ConfirmSkillProposalRequest {
     pub workflow_name: String,
     pub workflow_id: String,
     pub run_id: Option<String>,
+    pub store_traces: bool,
 }
 
 #[derive(Debug, Deserialize, Type)]
@@ -33,6 +34,7 @@ pub struct RejectSkillProposalRequest {
     pub project_path: Option<String>,
     pub workflow_name: String,
     pub workflow_id: String,
+    pub store_traces: bool,
 }
 
 #[derive(Debug, Deserialize, Type)]
@@ -42,6 +44,7 @@ pub struct PromoteSkillToGlobalRequest {
     pub project_path: Option<String>,
     pub workflow_name: String,
     pub workflow_id: String,
+    pub store_traces: bool,
 }
 
 #[derive(Debug, Deserialize, Type)]
@@ -52,6 +55,7 @@ pub struct ForkSkillRequest {
     pub project_path: Option<String>,
     pub workflow_name: String,
     pub workflow_id: String,
+    pub store_traces: bool,
 }
 
 #[derive(Debug, Deserialize, Type)]
@@ -62,6 +66,7 @@ pub struct DeleteSkillRequest {
     pub project_path: Option<String>,
     pub workflow_name: String,
     pub workflow_id: String,
+    pub store_traces: bool,
 }
 
 #[derive(Debug, Deserialize, Type)]
@@ -70,6 +75,7 @@ pub struct ListSkillsRequest {
     pub project_path: Option<String>,
     pub workflow_name: String,
     pub workflow_id: String,
+    pub store_traces: bool,
 }
 
 /// Lightweight projection of [`Skill`] for the Skills panel listing.
@@ -173,12 +179,23 @@ fn read_skill_at(
     Ok((skill, path))
 }
 
+fn ensure_skill_file_io_enabled(store_traces: bool) -> Result<(), CommandError> {
+    if store_traces {
+        Ok(())
+    } else {
+        Err(CommandError::validation(
+            "Skill file access is disabled while trace persistence is off",
+        ))
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn confirm_skill_proposal(
     app: tauri::AppHandle,
     request: ConfirmSkillProposalRequest,
 ) -> Result<(), CommandError> {
+    ensure_skill_file_io_enabled(request.store_traces)?;
     let dir = project_skills_dir_for(
         &app,
         &request.project_path,
@@ -236,6 +253,7 @@ pub async fn reject_skill_proposal(
     app: tauri::AppHandle,
     request: RejectSkillProposalRequest,
 ) -> Result<(), CommandError> {
+    ensure_skill_file_io_enabled(request.store_traces)?;
     let dir = project_skills_dir_for(
         &app,
         &request.project_path,
@@ -260,6 +278,7 @@ pub async fn promote_skill_to_global(
     app: tauri::AppHandle,
     request: PromoteSkillToGlobalRequest,
 ) -> Result<(), CommandError> {
+    ensure_skill_file_io_enabled(request.store_traces)?;
     let project_dir = project_skills_dir_for(
         &app,
         &request.project_path,
@@ -292,6 +311,7 @@ pub async fn fork_skill(
     app: tauri::AppHandle,
     request: ForkSkillRequest,
 ) -> Result<Skill, CommandError> {
+    ensure_skill_file_io_enabled(request.store_traces)?;
     let dir = project_skills_dir_for(
         &app,
         &request.project_path,
@@ -341,6 +361,7 @@ pub async fn delete_skill(
     app: tauri::AppHandle,
     request: DeleteSkillRequest,
 ) -> Result<(), CommandError> {
+    ensure_skill_file_io_enabled(request.store_traces)?;
     let dir = match request.scope {
         SkillScope::Global => global_skills_dir(&app)?,
         SkillScope::ProjectLocal => project_skills_dir_for(
@@ -366,6 +387,9 @@ pub async fn list_skills_for_panel(
     app: tauri::AppHandle,
     request: ListSkillsRequest,
 ) -> Result<Vec<SkillSummary>, CommandError> {
+    if !request.store_traces {
+        return Ok(Vec::new());
+    }
     let dir = match request.scope {
         SkillScope::Global => global_skills_dir(&app)?,
         SkillScope::ProjectLocal => project_skills_dir_for(
@@ -429,5 +453,11 @@ mod tests {
             skill_filename("Click Login Button", 3),
             "click-login-button-v3.md"
         );
+    }
+
+    #[test]
+    fn skill_file_io_guard_blocks_when_trace_persistence_is_off() {
+        let err = ensure_skill_file_io_enabled(false).unwrap_err();
+        assert!(err.message.contains("trace persistence is off"));
     }
 }

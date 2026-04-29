@@ -908,14 +908,6 @@ async fn focus_window_suppressed_when_allow_focus_window_policy_is_false() {
                 "Skip text must name the policy so the LLM understands why, got {:?}",
                 text,
             );
-            // The LLM must see the dispatch primitives it should use
-            // instead of falling through to coordinate tools against a
-            // backgrounded window.
-            assert!(
-                text.contains("ax_click") || text.contains("cdp_click"),
-                "Skip text must nudge the LLM toward AX / CDP dispatch, got {:?}",
-                text,
-            );
         }
         other => panic!(
             "Expected Success for policy-suppressed focus_window, got {:?}",

@@ -5,21 +5,20 @@
 //! the synthesized workflow nodes back to MCP tool calls, preserving the
 //! existing target-resolution choices from walkthrough synthesis.
 
-use blake3::Hasher;
 use chrono::Utc;
 use clickweave_core::tool_mapping::{ToolMappingError, node_type_to_tool_invocation};
 use clickweave_core::walkthrough::WalkthroughAction;
 use clickweave_core::{Workflow, walkthrough};
 use uuid::Uuid;
 
-use super::extractor::synthesize_skill_id;
-use super::types::{
-    ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, ExpectedWorldModelDelta,
-    OutcomePredicate, ProvenanceEntry, Skill, SkillError, SkillScope, SkillState, SkillStats,
-    SubgoalSignature,
+use super::extractor::synthesize_skill_id_for_signature;
+use super::signature::{
+    compute_applicability_signature_from_parts, compute_subgoal_signature_from_parts,
 };
-
-const SIGNATURE_LEN: usize = 16;
+use super::types::{
+    ActionSketchStep, ApplicabilityHints, ExpectedWorldModelDelta, OutcomePredicate,
+    ProvenanceEntry, Skill, SkillError, SkillScope, SkillState, SkillStats,
+};
 
 pub fn walkthrough_to_skill(
     actions: &[WalkthroughAction],
@@ -71,12 +70,13 @@ pub fn walkthrough_to_skill(
     };
     let now = Utc::now();
     let apps = action_apps(actions);
-    let id = synthesize_skill_id(title);
-    let subgoal_signature = SubgoalSignature(signature(&[title], &apps));
+    let focused_app = first_action_app(actions).unwrap_or_default();
+    let subgoal_signature = compute_subgoal_signature_from_parts(title, &focused_app, "");
+    let id = synthesize_skill_id_for_signature(title, &subgoal_signature);
     let applicability = ApplicabilityHints {
         apps,
         hosts: vec![],
-        signature: ApplicabilitySignature(signature(&[], &action_apps(actions))),
+        signature: compute_applicability_signature_from_parts(&focused_app, ""),
     };
 
     Ok(Skill {
@@ -129,18 +129,14 @@ fn action_apps(actions: &[WalkthroughAction]) -> Vec<String> {
     apps
 }
 
-fn signature(seed_parts: &[&str], apps: &[String]) -> String {
-    let mut h = Hasher::new();
-    for part in seed_parts {
-        h.update(part.trim().to_lowercase().as_bytes());
-        h.update(b"|");
-    }
-    for app in apps {
-        h.update(app.trim().to_lowercase().as_bytes());
-        h.update(b"|");
-    }
-    let hex = h.finalize().to_hex();
-    hex.as_str()[..SIGNATURE_LEN].to_string()
+fn first_action_app(actions: &[WalkthroughAction]) -> Option<String> {
+    actions
+        .iter()
+        .filter(|action| !action.candidate)
+        .filter_map(|action| action.app_name.as_deref())
+        .map(str::trim)
+        .find(|name| !name.is_empty())
+        .map(str::to_string)
 }
 
 fn map_tool_mapping_error(err: ToolMappingError) -> SkillError {
@@ -210,6 +206,14 @@ mod tests {
         assert_eq!(skill.stats.occurrence_count, 1);
         assert_eq!(skill.produced_node_ids.len(), 2);
         assert_eq!(skill.applicability.apps, vec!["Calculator"]);
+        assert_eq!(
+            skill.subgoal_signature,
+            compute_subgoal_signature_from_parts("Enter answer", "Calculator", "")
+        );
+        assert_eq!(
+            skill.applicability.signature,
+            compute_applicability_signature_from_parts("Calculator", "")
+        );
         assert!(matches!(
             &skill.action_sketch[0],
             ActionSketchStep::ToolCall { tool, .. } if tool == "click"
@@ -218,6 +222,89 @@ mod tests {
             &skill.action_sketch[1],
             ActionSketchStep::ToolCall { tool, .. } if tool == "type_text"
         ));
+    }
+
+    #[test]
+    fn walkthrough_to_skill_ids_include_app_signature() {
+        let workflow_id = Uuid::new_v4();
+        let calc_actions = vec![action(
+            WalkthroughActionKind::Click {
+                x: 12.0,
+                y: 34.0,
+                button: MouseButton::Left,
+                click_count: 1,
+            },
+            Some("Calculator"),
+        )];
+        let notes_actions = vec![action(
+            WalkthroughActionKind::Click {
+                x: 12.0,
+                y: 34.0,
+                button: MouseButton::Left,
+                click_count: 1,
+            },
+            Some("Notes"),
+        )];
+        let calc_draft = walkthrough::synthesize_draft(&calc_actions, workflow_id, "Save result");
+        let notes_draft = walkthrough::synthesize_draft(&notes_actions, workflow_id, "Save result");
+
+        let calc = walkthrough_to_skill(
+            &calc_actions,
+            Some(&calc_draft),
+            "550e8400-e29b-41d4-a716-446655440000",
+            &workflow_id.to_string(),
+        )
+        .unwrap();
+        let notes = walkthrough_to_skill(
+            &notes_actions,
+            Some(&notes_draft),
+            "550e8400-e29b-41d4-a716-446655440001",
+            &workflow_id.to_string(),
+        )
+        .unwrap();
+
+        assert_ne!(calc.subgoal_signature, notes.subgoal_signature);
+        assert_ne!(calc.id, notes.id);
+    }
+
+    #[test]
+    fn walkthrough_signature_uses_first_action_app_not_sorted_app_list() {
+        let workflow_id = Uuid::new_v4();
+        let actions = vec![
+            action(
+                WalkthroughActionKind::Click {
+                    x: 1.0,
+                    y: 1.0,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                Some("Zeta"),
+            ),
+            action(
+                WalkthroughActionKind::Click {
+                    x: 2.0,
+                    y: 2.0,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                Some("Alpha"),
+            ),
+        ];
+        let draft = walkthrough::synthesize_draft(&actions, workflow_id, "Cross app");
+
+        let skill = walkthrough_to_skill(
+            &actions,
+            Some(&draft),
+            "550e8400-e29b-41d4-a716-446655440002",
+            &workflow_id.to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(skill.applicability.apps, vec!["Alpha", "Zeta"]);
+        assert_eq!(
+            skill.applicability.signature,
+            compute_applicability_signature_from_parts("Zeta", "")
+        );
     }
 
     #[test]

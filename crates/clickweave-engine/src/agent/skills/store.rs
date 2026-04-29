@@ -115,9 +115,9 @@ impl SkillStore {
         // Opportunistic GC of stale entries — the table never grows
         // unbounded as long as the watcher drains regularly.
         guard.retain(|_, ts| ts.elapsed() <= RECENT_WRITE_TOLERANCE * 4);
-        guard
-            .get(path)
-            .is_some_and(|ts| ts.elapsed() <= RECENT_WRITE_TOLERANCE)
+        guard.iter().any(|(written_path, ts)| {
+            ts.elapsed() <= RECENT_WRITE_TOLERANCE && paths_equivalent(written_path, path)
+        })
     }
 
     fn record_write(&self, path: &Path) {
@@ -125,6 +125,16 @@ impl SkillStore {
             .lock()
             .insert(path.to_path_buf(), Instant::now());
     }
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+
+    let left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    left == right
 }
 
 pub fn filename_for(skill: &Skill) -> String {
@@ -269,6 +279,27 @@ mod tests {
 
         assert_eq!(report, MoveReport { moved: 0 });
         assert!(!tmp.path().join("saved-project/.clickweave/skills").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recent_write_matches_canonicalized_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real_dir = tmp.path().join("real-skills");
+        let alias_dir = tmp.path().join("alias-skills");
+        fs::create_dir_all(&real_dir).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &alias_dir).unwrap();
+
+        let store = SkillStore::new(alias_dir);
+        let path = store
+            .write_skill(&sample_skill_minimal("alias", 1))
+            .unwrap();
+        let canonical_path = fs::canonicalize(&path).unwrap();
+
+        assert!(
+            store.was_recently_written(&canonical_path),
+            "recent-write suppression should survive watcher canonicalization"
+        );
     }
 
     fn sample_skill_minimal(id: &str, version: u32) -> Skill {
