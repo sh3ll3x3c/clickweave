@@ -144,6 +144,7 @@ export interface WalkthroughSlice {
   walkthroughStatus: WalkthroughStatus;
   walkthroughPanelOpen: boolean;
   walkthroughError: string | null;
+  walkthroughSessionId: string | null;
   walkthroughEvents: WalkthroughCapturedEvent[];
   walkthroughActions: WalkthroughAction[];
   walkthroughDraft: Workflow | null;
@@ -159,6 +160,7 @@ export interface WalkthroughSlice {
   setWalkthroughStatus: (status: WalkthroughStatus) => void;
   setWalkthroughPanelOpen: (open: boolean) => void;
   setWalkthroughDraft: (payload: {
+    session_id: string;
     actions: WalkthroughAction[];
     draft: Workflow | null;
     warnings: string[];
@@ -200,6 +202,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   walkthroughStatus: "Idle",
   walkthroughPanelOpen: false,
   walkthroughError: null,
+  walkthroughSessionId: null,
   walkthroughEvents: [],
   walkthroughActions: [],
   walkthroughDraft: null,
@@ -222,7 +225,8 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   },
   setWalkthroughPanelOpen: (open) => set({ walkthroughPanelOpen: open }),
 
-  setWalkthroughDraft: ({ actions, draft, warnings, action_node_map }) => set({
+  setWalkthroughDraft: ({ session_id, actions, draft, warnings, action_node_map }) => set({
+    walkthroughSessionId: session_id,
     walkthroughActions: actions,
     walkthroughDraft: draft,
     walkthroughWarnings: warnings,
@@ -265,6 +269,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     set({
       walkthroughStatus: "Recording",
       walkthroughError: null,
+      walkthroughSessionId: null,
       walkthroughEvents: [],
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughExpandedAction: null,
@@ -336,6 +341,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     // task don't repopulate the freshly cleared walkthroughEvents array.
     set({
       walkthroughStatus: "Processing",
+      walkthroughSessionId: null,
       walkthroughEvents: [],
       walkthroughActions: [],
       walkthroughDraft: null,
@@ -535,6 +541,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     set({
       walkthroughStatus: "Idle",
       walkthroughPanelOpen: false,
+      walkthroughSessionId: null,
       walkthroughActions: [],
       walkthroughDraft: null,
       walkthroughWarnings: [],
@@ -556,6 +563,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     set({
       walkthroughStatus: "Idle",
       walkthroughPanelOpen: false,
+      walkthroughSessionId: null,
       walkthroughActions: [],
       walkthroughDraft: null,
       walkthroughWarnings: [],

@@ -1,17 +1,22 @@
 use std::sync::Mutex;
 
 use clickweave_core::AppKind;
+use clickweave_core::Workflow;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
     WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind,
     WalkthroughSessionRuntime, WalkthroughStatus, WalkthroughStorage,
 };
+use clickweave_engine::agent::skills::walkthrough::walkthrough_to_skill;
+use clickweave_engine::agent::skills::{Skill, SkillError, SkillStore};
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
 use super::error::CommandError;
-use super::types::{AppDataDir, WalkthroughDraftPayload, WalkthroughStatePayload, parse_uuid};
+use super::types::{
+    AppDataDir, WalkthroughDraftPayload, WalkthroughStatePayload, parse_uuid, resolve_storage,
+};
 use crate::platform::CaptureCommand;
 
 #[cfg(target_os = "macos")]
@@ -545,6 +550,7 @@ pub async fn stop_walkthrough(
         let _ = app.emit(
             "walkthrough://draft_ready",
             WalkthroughDraftPayload {
+                session_id: session_id.to_string(),
                 actions,
                 draft,
                 warnings,
@@ -560,9 +566,18 @@ pub async fn stop_walkthrough(
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct WalkthroughDraftResponse {
+    pub session_id: String,
     pub actions: Vec<WalkthroughAction>,
     pub draft: Option<clickweave_core::Workflow>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+pub struct SaveWalkthroughAsSkillRequest {
+    pub session_id: String,
+    pub project_path: Option<String>,
+    pub workflow_name: String,
+    pub workflow_id: String,
 }
 
 #[tauri::command]
@@ -573,12 +588,17 @@ pub async fn get_walkthrough_draft(
     let handle = app.state::<Mutex<WalkthroughHandle>>();
 
     // Extract needed data under lock, then drop it before doing file I/O.
-    let (actions, warnings, draft_path) = {
+    let (session_id, actions, warnings, draft_path) = {
         let guard = handle.lock().unwrap();
         guard.ensure_status(&[WalkthroughStatus::Review])?;
         let session = guard.session.as_ref().unwrap();
         let path = guard.session_dir.as_ref().map(|dir| dir.join("draft.json"));
-        (session.actions.clone(), session.meta.warnings.clone(), path)
+        (
+            session.meta.id.to_string(),
+            session.actions.clone(),
+            session.meta.warnings.clone(),
+            path,
+        )
     };
 
     // Read draft from disk if available (no lock held).
@@ -595,10 +615,90 @@ pub async fn get_walkthrough_draft(
     };
 
     Ok(WalkthroughDraftResponse {
+        session_id,
         actions,
         draft,
         warnings,
     })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn save_walkthrough_as_skill(
+    app: tauri::AppHandle,
+    request: SaveWalkthroughAsSkillRequest,
+) -> Result<Skill, CommandError> {
+    let session_id = parse_uuid(&request.session_id, "walkthrough session")?;
+    let workflow_id = parse_uuid(&request.workflow_id, "workflow")?;
+
+    let (actions, draft_path) = {
+        let handle = app.state::<Mutex<WalkthroughHandle>>();
+        let guard = handle.lock().unwrap();
+        guard.ensure_status(&[WalkthroughStatus::Review])?;
+        let session = guard.session.as_ref().unwrap();
+        if session.meta.id != session_id {
+            return Err(CommandError::validation("Walkthrough session ID mismatch"));
+        }
+        if session.meta.workflow_id != workflow_id {
+            return Err(CommandError::validation("Workflow ID mismatch"));
+        }
+        let draft_path = guard.session_dir.as_ref().map(|dir| dir.join("draft.json"));
+        (session.actions.clone(), draft_path)
+    };
+
+    let draft = match draft_path {
+        Some(path) => match std::fs::read_to_string(&path) {
+            Ok(data) => Some(
+                serde_json::from_str::<Workflow>(&data)
+                    .map_err(|e| CommandError::validation(format!("Failed to parse draft: {e}")))?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(CommandError::io(format!("Failed to read draft: {e}"))),
+        },
+        None => None,
+    };
+
+    let skill = walkthrough_to_skill(
+        &actions,
+        draft.as_ref(),
+        &request.session_id,
+        &request.workflow_id,
+    )
+    .map_err(skill_error_to_command)?;
+    let storage = resolve_storage(
+        &app,
+        &request.project_path,
+        &request.workflow_name,
+        workflow_id,
+    );
+    let skills_dir = storage
+        .project_skills_dir()
+        .map_err(|e| CommandError::io(format!("resolve project skills dir: {e}")))?;
+    SkillStore::new(skills_dir)
+        .write_skill(&skill)
+        .map_err(skill_error_to_command)?;
+
+    let _ = app.emit(
+        "agent://skill_extracted",
+        serde_json::json!({
+            "run_id": request.session_id,
+            "event_run_id": request.session_id,
+            "skill_id": skill.id.clone(),
+            "version": skill.version,
+            "state": skill.state,
+            "scope": skill.scope,
+        }),
+    );
+
+    Ok(skill)
+}
+
+fn skill_error_to_command(error: SkillError) -> CommandError {
+    match error {
+        SkillError::Io(e) => CommandError::io(format!("{e}")),
+        SkillError::InvalidParameters(message) => CommandError::validation(message),
+        other => CommandError::validation(format!("{other}")),
+    }
 }
 
 #[tauri::command]

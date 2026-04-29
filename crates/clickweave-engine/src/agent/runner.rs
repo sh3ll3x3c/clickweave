@@ -31,8 +31,8 @@ use crate::agent::skills::{
 };
 use crate::agent::task_state::{Milestone, SubgoalId, TaskState, TaskStateMutation};
 use crate::agent::types::{
-    AgentCache, AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest,
-    StepOutcome, TerminalReason, WorldModelDiff,
+    AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest, StepOutcome,
+    TerminalReason, WorldModelDiff,
 };
 use crate::agent::world_model::{InvalidationEvent, WorldModel};
 use crate::executor::Mcp;
@@ -79,10 +79,9 @@ pub struct AgentTurn {
 /// dispatch -> continuity -> invalidate.
 ///
 /// Phase 2c: the struct carries a superset of fields — the minimum the new
-/// control loop exercises plus the "compatibility fields" the Phase 3 cutover
-/// needs to preserve the existing `run_agent_workflow` seam
-/// (`(AgentState, AgentCache)` tuple). Fields the live Phase 2c tests don't
-/// touch are covered by the module-wide `#![allow(dead_code)]`.
+/// control loop exercises plus compatibility fields needed by the public
+/// `run_agent_workflow` seam. Fields the live tests don't touch are covered by
+/// the module-wide `#![allow(dead_code)]`.
 pub struct StateRunner {
     // --- Core state-spine fields ---
     pub world_model: WorldModel,
@@ -98,7 +97,6 @@ pub struct StateRunner {
     pub config: AgentConfig,
     pub state: AgentState,
     pub workflow: clickweave_core::Workflow,
-    pub cache: AgentCache,
     pub last_node_id: Option<uuid::Uuid>,
     pub recent_destructive_tools: Vec<String>,
 
@@ -168,8 +166,8 @@ pub struct StateRunner {
     /// Authoritative gate for D24 run-start retrieval: set true the
     /// first time `try_retrieve_episodic` reaches its trigger-decision
     /// slot, regardless of whether retrieval returned hits. Decoupled
-    /// from `step_index` so cache-replay / synthetic-skip / policy-deny
-    /// / approval-reject paths cannot let `step_index == 0` re-fire
+    /// from `step_index` so synthetic-skip / policy-deny / approval-reject
+    /// paths cannot let `step_index == 0` re-fire
     /// run-start retrieval after the run has already taken actions.
     pub(crate) episodic_run_start_retrieved: bool,
 
@@ -353,7 +351,6 @@ impl StateRunner {
             config,
             state,
             workflow,
-            cache: AgentCache::default(),
             last_node_id: None,
             recent_destructive_tools: Vec::new(),
             storage: None,
@@ -390,11 +387,6 @@ impl StateRunner {
             suspended_skill_frame: None,
             skill_watcher_handle: None,
         }
-    }
-
-    pub fn with_cache(mut self, cache: AgentCache) -> Self {
-        self.cache = cache;
-        self
     }
 
     pub fn with_run_id(mut self, run_id: uuid::Uuid) -> Self {
@@ -513,13 +505,6 @@ impl StateRunner {
         Some(s)
     }
 
-    /// Consume the runner and return the accumulated [`AgentCache`].
-    /// API parity with `AgentRunner::into_cache` — the Phase 3b cutover
-    /// keeps `run_agent_workflow`'s `(AgentState, AgentCache)` contract.
-    pub fn into_cache(self) -> AgentCache {
-        self.cache
-    }
-
     /// Clone the episodic writer's channel sender, if a writer is active.
     ///
     /// The returned sender shares the same worker task as the writer owned
@@ -546,13 +531,6 @@ impl StateRunner {
         {
             let _ = guard.append_agent_event(record);
         }
-    }
-
-    /// Consume the runner and return `(AgentState, AgentCache)` — matches the
-    /// existing `run_agent_workflow` seam so the Tauri call site keeps
-    /// working without a public-surface change at cutover.
-    pub fn into_state_and_cache(self) -> (AgentState, AgentCache) {
-        (self.state, self.cache)
     }
 
     #[cfg(test)]
@@ -685,8 +663,8 @@ impl StateRunner {
 
         // D24: run-start retrieval fires once per run, full stop.
         // `episodic_run_start_retrieved` is the authoritative gate (not
-        // `step_index == 0`, which lied on cache-replay / synthetic-skip
-        // / policy-deny / approval-reject paths because none of those
+        // `step_index == 0`, which lied on synthetic-skip / policy-deny /
+        // approval-reject paths because none of those
         // ticked the counter). Marked consumed on first reach so a
         // zero-hit retrieval still counts as "the run-start slot was
         // used" and can never fire a second time.
@@ -808,16 +786,6 @@ impl StateRunner {
             last_replan_step: self.last_replan_step,
             current_step: self.step_index,
         });
-    }
-
-    /// Whether the step is eligible to be served from `AgentCache` without
-    /// asking the LLM (D17). Only in `Phase::Exploring` with an empty
-    /// subgoal stack and no active watch slots — anything else means the
-    /// LLM has in-flight intent that a cached decision would clobber.
-    pub fn is_replay_eligible(&self) -> bool {
-        self.task_state.phase == crate::agent::phase::Phase::Exploring
-            && self.task_state.subgoal_stack.is_empty()
-            && self.task_state.watch_slots.is_empty()
     }
 
     /// Apply the batch of task-state mutations from an `AgentTurn`, in
@@ -1454,7 +1422,7 @@ impl StateRunner {
     /// 4. Advance `step_index`.
     ///
     /// Integration tests drive this with deterministic `AgentTurn`s; Phase 3
-    /// will wrap this with the LLM loop + compaction + cache replay.
+    /// is wrapped by the LLM loop + compaction in [`Self::run_inner`].
     ///
     /// Return tuple: `(outcome, warnings, milestones_appended)`.
     /// `milestones_appended` counts `CompleteSubgoal` mutations that
@@ -1584,8 +1552,8 @@ impl StateRunner {
         // `step_index` is owned by the outer-loop call sites that record
         // an `AgentStep` (via `advance_recorded_step_index`). `run_turn`
         // intentionally does not advance it — early-continue paths
-        // (cache replay, synthetic focus skip, policy deny, approval
-        // reject) record their own steps without going through
+        // (synthetic focus skip, policy deny, approval reject) record
+        // their own steps without going through
         // `run_turn`, and prior to this fix the divergent advancement
         // let `step_index == 0` re-fire D24 run-start retrieval after
         // the run had already taken actions.
@@ -1604,8 +1572,7 @@ impl StateRunner {
 
     /// Emit a per-step `WorldModelChanged` event for an early-exit step
     /// path that recorded an `AgentStep` without going through
-    /// `run_turn`. Cache-replay branches (Continue / Break), live
-    /// policy-deny, live approval-reject, and the synthetic
+    /// `run_turn`. Live policy-deny, live approval-reject, and the synthetic
     /// `focus_window` skip all record steps but skip `run_turn`
     /// entirely; without this hook, the `turn_pre_signatures` baseline
     /// would be carried into the next iteration and the
@@ -1634,9 +1601,7 @@ impl StateRunner {
     /// `(failed_tool, error_kind)` pair instead of the empty defaults.
     /// `error_kind` is the stable string `"policy_denied"` so episodic
     /// retrieval can group denied-tool recoveries by failure family
-    /// without parsing the human-readable message. Shared helper for
-    /// cached-replay deny + live deny so the two branches can't
-    /// drift on the kind string.
+    /// without parsing the human-readable message.
     pub(crate) fn record_policy_deny_failure(&mut self, tool_name: &str) {
         self.last_failed_tool_name = Some(tool_name.to_string());
         self.last_failed_error_kind = Some("policy_denied".to_string());
@@ -1644,7 +1609,7 @@ impl StateRunner {
 
     /// Mirror of `record_policy_deny_failure`'s clear half. Called by
     /// every recovery-success path (live ToolSuccess in `run_turn`,
-    /// cache-replay success, synthetic focus-window skip) so a prior
+    /// synthetic focus-window skip) so a prior
     /// deny / tool-error doesn't bleed into a later Recovering snapshot
     /// after the agent has demonstrably recovered.
     pub(crate) fn clear_last_failure_tracking(&mut self) {
@@ -1659,9 +1624,8 @@ impl StateRunner {
     /// the next turn renders it as the observation; the warning event
     /// is emitted here.
     ///
-    /// Shared between the live `ToolSuccess` arm and the cache-replay
-    /// success branch so cached dispatches contribute to the same
-    /// streak count as live dispatches.
+    /// Called by the live `ToolSuccess` arm so repeated live dispatches
+    /// contribute to the same streak count.
     async fn track_repeat_action(
         &mut self,
         tool_name: &str,
@@ -1703,24 +1667,8 @@ impl StateRunner {
     }
 }
 
-/// Control signal returned from [`StateRunner::try_replay_cache`].
-///
-/// Mirrors the legacy `ReplayResult` semantics: `Continue` means the
-/// replay handled this iteration (success, policy-reject, or approval-
-/// reject) and the outer loop should `continue`; `Break` means a terminal
-/// condition was reached (approval unavailable, max-errors, destructive
-/// cap); `FellThrough` means the LLM path should run this iteration.
-enum ReplayResult {
-    Continue,
-    Break,
-    FellThrough,
-}
-
 /// Result of requesting user approval for a tool action. Shared by both
-/// the cache-replay path (Task 3a.2) and the live dispatch path
-/// (Task 3a.3) — the only behavioural difference between the two is the
-/// `" (cached)"` suffix in the human-facing description, enforced by the
-/// single helper [`StateRunner::request_approval`] below.
+/// policy evaluation and the live dispatch path.
 enum ApprovalResult {
     Approved,
     Rejected,
@@ -1847,7 +1795,7 @@ fn is_coordinate_primitive(name: &str) -> bool {
     )
 }
 
-/// Observation tools whose cached entries are stale on read. Mirrors
+/// Observation tools that do not become workflow action nodes. Mirrors
 /// the legacy `OBSERVATION_TOOLS` list — duplicated here because the
 /// legacy list was a private `const` on `AgentRunner`, and lifting it to
 /// a shared module is out of scope for Task 3a.2 (refactoring pass
@@ -1871,13 +1819,13 @@ const OBSERVATION_TOOLS: &[&str] = &[
     "android_list_devices",
 ];
 
-/// AX dispatch tools whose cached uid goes stale on every
+/// AX dispatch tools whose uid arguments are scoped to one
 /// `take_ax_snapshot`. See the legacy `AX_DISPATCH_TOOLS`.
 const AX_DISPATCH_TOOLS: &[&str] = &["ax_click", "ax_set_value", "ax_select"];
 
-/// Tools that transition app / window / CDP state. Their cache key
-/// reflects the pre-state, so replay would fire the transition a second
-/// time on unchanged elements. See the legacy `STATE_TRANSITION_TOOLS`.
+/// Tools that transition app / window / CDP state. They are unsafe for
+/// skill replay because replaying them against unchanged elements would
+/// fire the transition a second time. See the legacy `STATE_TRANSITION_TOOLS`.
 const STATE_TRANSITION_TOOLS: &[&str] = &[
     "launch_app",
     "focus_window",
@@ -1951,8 +1899,8 @@ pub(crate) fn is_observation_tool(
 }
 
 // `pub(crate)` so the ported `observation_union_tests` in
-// `crate::agent::world_model` can verify cache-eligibility without reaching
-// through `StateRunner`'s private API (Task 3a.7.d).
+// `crate::agent::world_model` can verify dispatch classification without
+// reaching through `StateRunner`'s private API (Task 3a.7.d).
 pub(crate) fn is_ax_dispatch_tool(tool_name: &str) -> bool {
     AX_DISPATCH_TOOLS.contains(&tool_name)
 }
@@ -2265,8 +2213,8 @@ impl StateRunner {
     /// Defense-in-depth behind the per-turn `<tools_in_scope>` filter:
     /// the filter narrows the LLM's *advertised* tool list, but this
     /// guard rejects the *dispatched* call so a wrong-family choice
-    /// (cached replay from a different state, malformed turn, future
-    /// LLM regression) cannot reach MCP. Returns `Some(reason)` when the
+    /// (malformed turn, future replay path, future LLM regression)
+    /// cannot reach MCP. Returns `Some(reason)` when the
     /// dispatch must be blocked; `None` otherwise.
     fn coordinate_primitive_blocked<M: Mcp + ?Sized>(
         &self,
@@ -2770,7 +2718,7 @@ impl StateRunner {
         }
     }
 
-    /// Evaluate the permission policy for a cached tool call.
+    /// Evaluate the permission policy for a tool call.
     fn policy_for(
         &self,
         tool_name: &str,
@@ -2788,11 +2736,8 @@ impl StateRunner {
     /// legacy `AgentRunner::request_approval`. Returns `None` when no
     /// approval gate is configured (auto-approve).
     ///
-    /// `description_suffix` is appended to the human-facing description so
-    /// callers can distinguish live calls from cached replays (the cache
-    /// path passes `" (cached)"`; the live path passes `""`). This is the
-    /// only behavioural difference between cached and live approval —
-    /// sharing this helper avoids drift between the two paths.
+    /// `description_suffix` is appended to the human-facing description for
+    /// callers that need extra context.
     async fn request_approval(
         &self,
         tool_name: &str,
@@ -2833,19 +2778,6 @@ impl StateRunner {
             warn!(tool = %tool_name, "state-spine: approval channel send failed");
             Some(ApprovalResult::Unavailable)
         }
-    }
-
-    /// Convenience wrapper for the cache-replay path — tags the approval
-    /// request description as `(cached)` so the UI can distinguish a live
-    /// dispatch from a replay.
-    async fn request_cached_approval(
-        &self,
-        tool_name: &str,
-        arguments: &Value,
-        step_index: usize,
-    ) -> Option<ApprovalResult> {
-        self.request_approval(tool_name, arguments, step_index, " (cached)")
-            .await
     }
 
     /// Verify an agent-reported completion against a fresh screenshot via
@@ -2945,345 +2877,6 @@ impl StateRunner {
             VlmVerdict::No => {
                 tracing::info!(reply = %reply, "state-spine: VLM rejected completion");
                 Some((prepared_b64, reply))
-            }
-        }
-    }
-
-    /// Attempt to serve the current iteration from the [`AgentCache`]
-    /// instead of asking the LLM. Port of the legacy
-    /// `AgentRunner::try_replay_cache` — preserves every branch of the
-    /// legacy semantics per D11.
-    ///
-    /// **Nine-branch catalogue (4 fall-through × 3 approval × 2 execution
-    /// — approval Allow collapses with execution since it shares the
-    /// dispatch tail):**
-    ///
-    /// 1. Fall-through: `!use_cache` or no elements.
-    /// 2. Fall-through: same cache key as the last replay.
-    /// 3. Fall-through: cache miss / unknown tool.
-    /// 4. Fall-through: cached tool is observation-only / AX dispatch /
-    ///    state-transition (stale on read).
-    /// 5. Approval Deny: evict entry, record error step, bump
-    ///    `consecutive_errors`, consult recovery strategy.
-    /// 6. Approval Ask → Rejected: evict, record Replan step.
-    /// 7. Approval Ask → Unavailable: set `TerminalReason::ApprovalUnavailable`
-    ///    and break.
-    /// 8. Execute → success: rebuild node (stubbed for Task 3a.5), bump
-    ///    hit_count + produced_node_ids lineage, append
-    ///    assistant_tool_calls + tool_result to the transcript, emit
-    ///    `StepCompleted`, maybe_cdp_connect (stubbed for Task 3a.6),
-    ///    destructive-cap check (stubbed for Task 3a.4). Continue.
-    /// 9. Execute → tool_error / call_error: null `last_cache_key`, fall
-    ///    through to the LLM.
-    ///
-    /// Preconditions: caller has already consulted
-    /// [`Self::is_replay_eligible`]. Replay still verifies `use_cache`
-    /// internally for parity with the legacy runner.
-    #[allow(clippy::too_many_arguments)]
-    async fn try_replay_cache<M: Mcp + ?Sized>(
-        &mut self,
-        goal: &str,
-        elements: &[clickweave_core::cdp::CdpFindElementMatch],
-        step_index: usize,
-        // Threaded through for `add_workflow_node` (Task 3a.5 wiring):
-        // the tool-to-NodeType mapping consults the advertised tool schemas.
-        mcp_tools: &[Value],
-        annotations_by_tool: &HashMap<String, ToolAnnotations>,
-        mcp: &M,
-        messages: &mut Vec<Message>,
-        previous_result: &mut Option<String>,
-        last_cache_key: &mut Option<String>,
-        last_failure: &mut Option<(String, Value, String)>,
-        last_action: &mut Option<(String, Value, u32)>,
-    ) -> ReplayResult {
-        // Branch 1: cache disabled or nothing to fingerprint.
-        if !self.config.use_cache || elements.is_empty() {
-            return ReplayResult::FellThrough;
-        }
-        let current_key = super::cache::cache_key(goal, elements);
-
-        // Branch 2: same key as the last replay — break the loop so the
-        // LLM picks the next action.
-        if last_cache_key.as_ref() == Some(&current_key) {
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        }
-
-        // Branch 3: cache miss.
-        let Some(cached) = self.cache.lookup(goal, elements) else {
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        };
-
-        // Branch 4a: observation-only entries (stale-on-read).
-        if is_observation_tool(&cached.tool_name, annotations_by_tool) {
-            debug!(
-                tool = %cached.tool_name,
-                "state-spine: skipping cached observation tool (stale entry)"
-            );
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        }
-        // Branch 4b: AX dispatch uids are generation-scoped.
-        if is_ax_dispatch_tool(&cached.tool_name) {
-            debug!(
-                tool = %cached.tool_name,
-                "state-spine: skipping cached AX dispatch entry (uid is generation-scoped)"
-            );
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        }
-        // Branch 4c: state-transition tools must never replay.
-        if is_state_transition_tool(&cached.tool_name) {
-            debug!(
-                tool = %cached.tool_name,
-                "state-spine: skipping cached state-transition entry (not safe to replay)"
-            );
-            *last_cache_key = None;
-            return ReplayResult::FellThrough;
-        }
-
-        let cached_tool = cached.tool_name.clone();
-        let cached_args = cached.arguments.clone();
-        debug!(
-            tool = %cached_tool,
-            hits = cached.hit_count,
-            "state-spine: cache hit — replaying cached decision"
-        );
-
-        // Approval gating (branches 5–7). Observation tools already bailed
-        // above, so every surviving entry is approval-gated.
-        let needs_approval = !is_observation_tool(&cached_tool, annotations_by_tool);
-        if needs_approval {
-            let policy_action = self.policy_for(&cached_tool, &cached_args, annotations_by_tool);
-            if matches!(policy_action, PermissionAction::Deny) {
-                // Branch 5: hard policy reject.
-                self.cache.remove(goal, elements);
-                *last_cache_key = None;
-                let err_msg = format!("Tool `{}` denied by permission policy", cached_tool);
-                warn!(
-                    tool = %cached_tool,
-                    "state-spine: cached tool denied by permission policy"
-                );
-                let command = AgentCommand::ToolCall {
-                    tool_name: cached_tool.clone(),
-                    arguments: cached_args.clone(),
-                    tool_call_id: format!("cache-{}", step_index),
-                };
-                self.emit_event(AgentEvent::StepFailed {
-                    step_index,
-                    tool_name: cached_tool.clone(),
-                    error: err_msg.clone(),
-                })
-                .await;
-                let step = AgentStep {
-                    index: step_index,
-                    elements: elements.to_vec(),
-                    command,
-                    outcome: StepOutcome::Error(err_msg.clone()),
-                    page_url: self.state.current_url.clone(),
-                };
-                self.state.steps.push(step);
-                self.advance_recorded_step_index();
-                self.emit_world_model_changed_for_recorded_step().await;
-                // A denied tool is the recovery-trigger event. Capture
-                // it as the last failure so the next `Recovering`-entry
-                // snapshot has a real `(failed_tool, error_kind)` pair.
-                self.record_policy_deny_failure(&cached_tool);
-                self.state.consecutive_errors += 1;
-                self.consecutive_errors = self.state.consecutive_errors;
-                *previous_result = Some(format!("Error: {}", err_msg));
-                let action = recovery_strategy(
-                    self.state.consecutive_errors,
-                    self.config.max_consecutive_errors,
-                );
-                if matches!(action, RecoveryAction::Abort) {
-                    self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
-                        consecutive_errors: self.state.consecutive_errors,
-                    });
-                    return ReplayResult::Break;
-                }
-                // Denied cached dispatch breaks the streak; mirror of the live policy-deny path.
-                *last_action = None;
-                return ReplayResult::Continue;
-            }
-            if matches!(policy_action, PermissionAction::Ask) {
-                match self
-                    .request_cached_approval(&cached_tool, &cached_args, step_index)
-                    .await
-                {
-                    Some(ApprovalResult::Rejected) => {
-                        // Branch 6: operator rejected — evict + replan.
-                        self.cache.remove(goal, elements);
-                        *last_cache_key = None;
-                        let command = AgentCommand::ToolCall {
-                            tool_name: cached_tool.clone(),
-                            arguments: cached_args.clone(),
-                            tool_call_id: format!("cache-{}", step_index),
-                        };
-                        let step = AgentStep {
-                            index: step_index,
-                            elements: elements.to_vec(),
-                            command,
-                            outcome: StepOutcome::Replan("User rejected cached action".to_string()),
-                            page_url: self.state.current_url.clone(),
-                        };
-                        self.state.steps.push(step);
-                        self.advance_recorded_step_index();
-                        self.emit_world_model_changed_for_recorded_step().await;
-                        *previous_result = Some("Replan: user rejected cached action".to_string());
-                        // Rejected cached dispatch breaks the streak.
-                        *last_action = None;
-                        return ReplayResult::Continue;
-                    }
-                    Some(ApprovalResult::Unavailable) => {
-                        // Branch 7: approval channel gone — terminal.
-                        self.state.terminal_reason = Some(TerminalReason::ApprovalUnavailable);
-                        return ReplayResult::Break;
-                    }
-                    // Approved or no gate configured — fall through to execute.
-                    _ => {}
-                }
-            }
-            // PermissionAction::Allow: no prompt.
-        }
-
-        // Branches 8 & 9: execute the cached tool call against MCP.
-        match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
-            Ok(result) if !result.is_error.unwrap_or(false) => {
-                // Branch 8: success path.
-                let result_text = extract_result_text(&result);
-                let tool_call_id = format!("cache-{}", step_index);
-                let command = AgentCommand::ToolCall {
-                    tool_name: cached_tool.clone(),
-                    arguments: cached_args.clone(),
-                    tool_call_id: tool_call_id.clone(),
-                };
-
-                // Rebuild the workflow node for this run — the cache stores
-                // decisions across runs, so the current workflow needs the
-                // replayed action as a node. The produced node id is
-                // appended to the cached entry's lineage so selective-delete
-                // can evict the right cross-run rows later.
-                let produced_node_id_on_replay = self
-                    .add_workflow_node(&cached_tool, &cached_args, mcp_tools, annotations_by_tool)
-                    .await;
-                if let Some(entry) = self.cache.entries.get_mut(&current_key) {
-                    if let Some(node_id) = produced_node_id_on_replay {
-                        entry.produced_node_ids.push(node_id);
-                    }
-                    entry.hit_count += 1;
-                }
-
-                // Reconstruct transcript so the LLM sees the full action
-                // history, not just the raw result text.
-                messages.push(Message::assistant_tool_calls(vec![
-                    clickweave_llm::ToolCall {
-                        id: tool_call_id.clone(),
-                        call_type: clickweave_llm::CallType::Function,
-                        function: clickweave_llm::FunctionCall {
-                            name: cached_tool.clone(),
-                            arguments: cached_args.clone(),
-                        },
-                    },
-                ]));
-                messages.push(Message::tool_result(&tool_call_id, &result_text));
-
-                self.emit_event(AgentEvent::StepCompleted {
-                    step_index,
-                    tool_name: cached_tool.clone(),
-                    summary: crate::agent::prompt::truncate_summary(&result_text, 120),
-                })
-                .await;
-
-                // Auto-CDP-connect after a cached launch_app /
-                // focus_window replay. State-transition tools already
-                // fall through above (branch 4c) today, but the hook
-                // stays here so behaviour parity with the live path
-                // survives any future cache-filter relaxation, and so
-                // that a cached `quit_app` still clears CDP state.
-                self.maybe_cdp_connect(&cached_tool, &cached_args, &result_text, mcp)
-                    .await;
-
-                // Continuity + invalidation parity with the live
-                // ToolSuccess branch: a cached take_ax_snapshot /
-                // take_screenshot must also refresh
-                // `last_native_ax_snapshot` / `last_screenshot`, and a
-                // cached focus / lifecycle / navigation tool must queue
-                // the matching invalidation event so the next observe
-                // drops the stale fields. Without this the cache replay
-                // path silently lies about world-model freshness.
-                self.update_continuity_after_tool_success(&cached_tool, &result_text);
-                self.queue_invalidations_for_tool_success(&cached_tool, &cached_args);
-
-                let step = AgentStep {
-                    index: step_index,
-                    elements: elements.to_vec(),
-                    command,
-                    outcome: StepOutcome::Success(result_text.clone()),
-                    page_url: self.state.current_url.clone(),
-                };
-                self.state.steps.push(step);
-                self.advance_recorded_step_index();
-                self.emit_world_model_changed_for_recorded_step().await;
-                self.state.consecutive_errors = 0;
-                self.consecutive_errors = 0;
-                *last_failure = None;
-                // Clear the per-turn failure tracking so a prior
-                // policy-deny / tool-error doesn't bleed into a later
-                // `Recovering`-entry snapshot after the agent has
-                // demonstrably recovered via cache replay.
-                self.clear_last_failure_tracking();
-
-                // Cached successful dispatches must contribute to the
-                // same repeat-action streak as live dispatches, otherwise
-                // an LLM looping on a cacheable action would alternate
-                // live / cached and never trip the threshold via the
-                // live arm alone.
-                let nudge = self
-                    .track_repeat_action(
-                        &cached_tool,
-                        &cached_args,
-                        &result_text,
-                        annotations_by_tool,
-                        last_action,
-                    )
-                    .await;
-                *previous_result = Some(nudge.unwrap_or(result_text));
-                *last_cache_key = Some(current_key);
-
-                // Destructive-cap accounting: the cached replay counts toward
-                // the streak just like a live tool call. State-transition
-                // tools (the common destructive case) already fall through at
-                // branch 4c, so this guards the narrow tail where a cached
-                // non-transition tool carries `destructive_hint == Some(true)`.
-                if matches!(
-                    self.maybe_halt_on_destructive_cap(&cached_tool, annotations_by_tool),
-                    CapStatus::CapReached
-                ) {
-                    self.emit_destructive_cap_hit().await;
-                    return ReplayResult::Break;
-                }
-                ReplayResult::Continue
-            }
-            Ok(result) => {
-                // Branch 9a: tool returned is_error=true.
-                let err_text = extract_result_text(&result);
-                debug!(
-                    error = %err_text,
-                    "state-spine: cached decision returned error, falling through to LLM"
-                );
-                *last_cache_key = None;
-                ReplayResult::FellThrough
-            }
-            Err(e) => {
-                // Branch 9b: the call itself failed.
-                debug!(
-                    error = %e,
-                    "state-spine: cached decision execution failed, falling through to LLM"
-                );
-                *last_cache_key = None;
-                ReplayResult::FellThrough
             }
         }
     }
@@ -3514,16 +3107,14 @@ impl<M: Mcp + ?Sized> ToolExecutor for McpToolExecutor<'_, M> {
 impl StateRunner {
     /// Top-level observe → compose → LLM → parse → apply → dispatch →
     /// compact control loop. Task 3a.1 ships the minimum skeleton; later
-    /// tasks (flagged by `TODO(task-3a.N)` markers inline) wire cache
-    /// replay, VLM verification, approval, loop detection,
+    /// tasks (flagged by `TODO(task-3a.N)` markers inline) wire VLM
+    /// verification, approval, loop detection,
     /// consecutive-destructive cap, workflow-graph emission, CDP
     /// auto-connect, synthetic `focus_window` skip, recovery strategy,
     /// and boundary `StepRecord` writes.
     ///
-    /// The signature mirrors `AgentRunner::run` so `run_agent_workflow`
-    /// can pivot onto `StateRunner` without a caller-side change. Crate-
-    /// private because the `Mcp` trait is `pub(crate)`; the public entry
-    /// point stays [`crate::agent::run_agent_workflow`].
+    /// Crate-private because the `Mcp` trait is `pub(crate)`; the public
+    /// entry point stays [`crate::agent::run_agent_workflow`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run<B, M>(
         mut self,
@@ -3533,7 +3124,7 @@ impl StateRunner {
         workflow: clickweave_core::Workflow,
         mcp_tools: Vec<Value>,
         anchor_node_id: Option<uuid::Uuid>,
-    ) -> anyhow::Result<(AgentState, AgentCache)>
+    ) -> anyhow::Result<AgentState>
     where
         B: ChatBackend + ?Sized,
         M: Mcp + ?Sized,
@@ -3571,7 +3162,7 @@ impl StateRunner {
             handle.abort();
         }
         match result {
-            Ok(()) => Ok((self.state, self.cache)),
+            Ok(()) => Ok(self.state),
             Err(e) => Err(e),
         }
     }
@@ -3651,20 +3242,15 @@ impl StateRunner {
             .chain(crate::agent::prompt::pseudo_tools())
             .collect();
 
-        // Annotations index is seeded once per run so the cache-replay
-        // gate, permission-policy evaluation, and (Task 3a.4) destructive
-        // cap see the same `read_only_hint` / `destructive_hint` view.
+        // Annotations index is seeded once per run so permission-policy
+        // evaluation and the destructive cap see the same `read_only_hint`
+        // / `destructive_hint` view.
         let annotations_by_tool = build_annotations_index(&mcp_tools);
 
         let budget = CompactBudget::default();
         let mut previous_result: Option<String> = None;
-        // Tracks the cache key of the previous successful replay so the
-        // next iteration can detect a same-key repeat and fall through to
-        // the LLM instead of thrashing on one cached decision.
-        let mut last_cache_key: Option<String> = None;
-        // Reserved for Task 3a.4 loop detection: `(tool_name, arguments,
-        // error)` from the last failing live call. Carried here so the
-        // cache-replay success path can clear it (parity with legacy).
+        // Loop detection: `(tool_name, arguments, error)` from the last
+        // failing live call.
         let mut last_failure: Option<(String, Value, String)> = None;
         // No-progress detector for the success path. Failures already
         // abort on identical-error repeats via `last_failure` above;
@@ -3682,8 +3268,8 @@ impl StateRunner {
             //    Capture the pre-mirror world-model signatures so the
             //    `WorldModelChanged` diff emitted by `run_turn` sees the
             //    direct-observation writes below. Only seed the
-            //    baseline when it is empty: early-exit branches (cache
-            //    replay `Continue`/`Break`, policy deny, approval reject)
+            //    baseline when it is empty: early-exit branches (policy
+            //    deny, approval reject)
             //    skip `run_turn` entirely, so the baseline must persist
             //    across iterations until `run_turn.take()` consumes it.
             //    `run_turn` falls back to an internal snapshot when
@@ -3769,8 +3355,8 @@ impl StateRunner {
             // Top-of-loop observe — unconditional. Drains pending
             // invalidation events queued by the prior iteration's
             // dispatch (focus shift, navigation, app lifecycle, tool
-            // failure) and re-infers `phase` so the cache-replay gate,
-            // episodic retrieval, and prompt render all see the
+            // failure) and re-infers `phase` so episodic retrieval and
+            // prompt render both see the
             // post-event state. `run_turn` runs another `observe()`
             // after dispatch; the two passes are idempotent — events
             // are drained once per queue-and-observe cycle, so a second
@@ -3787,43 +3373,15 @@ impl StateRunner {
             self.queue_snapshot_stale_if_aged();
             self.observe();
 
-            // 1a. Cache-replay gate. `is_replay_eligible` enforces D17
-            // (Phase::Exploring, empty subgoal stack, no watch slots);
-            // `try_replay_cache` layers in the per-entry stale-on-read
-            // guards, approval gating, and live MCP re-dispatch.
-            if self.is_replay_eligible() {
-                let replay = self
-                    .try_replay_cache(
-                        &goal,
-                        &elements,
-                        self.state.steps.len(),
-                        &mcp_tools,
-                        &annotations_by_tool,
-                        mcp,
-                        &mut messages,
-                        &mut previous_result,
-                        &mut last_cache_key,
-                        &mut last_failure,
-                        &mut last_action,
-                    )
-                    .await;
-                match replay {
-                    ReplayResult::Continue => continue,
-                    ReplayResult::Break => break,
-                    ReplayResult::FellThrough => {}
-                }
-            }
             // No pre-step CDP maybe-connect — legacy also defers the
             // decision to the post-tool hook (`maybe_cdp_connect` after
             // a successful `launch_app` / `focus_window`). CDP tools the
             // LLM picks before a connection exists return a "not
             // connected" MCP error that the recovery strategy absorbs.
 
-            // Spec 2: episodic retrieval on cache miss. Cache
-            // hits fast-pathed via `Continue` above, so we only land
-            // here on miss / fall-through. `try_retrieve_episodic`
-            // returns an empty vec when episodic is inactive or no
-            // trigger condition fires.
+            // Spec 2: episodic retrieval. `try_retrieve_episodic` returns
+            // an empty vec when episodic is inactive or no trigger condition
+            // fires.
             let retrieved = self.try_retrieve_episodic(prev_phase_at_top).await;
 
             // 2. Compose the per-turn user message with the state block +
@@ -3861,7 +3419,7 @@ impl StateRunner {
             // 4. Parse the LLM response into an AgentTurn carrying any
             //    `0..N` task-state mutations followed by exactly one
             //    action.
-            let turn = parse_agent_turn(&choice.message)?;
+            let mut turn = parse_agent_turn(&choice.message)?;
 
             // 4'. Apply task-state mutations BEFORE any early-exit
             //     branching. Synthetic focus-skip / live policy-deny /
@@ -3956,6 +3514,59 @@ impl StateRunner {
                     );
                     self.pending_applicable_skills.extend(candidates);
                 }
+            }
+
+            // 4''-ter. Spec 3: expand a resolved `invoke_skill` into
+            // the first replayed tool call. Phase 4's full replay
+            // engine still owns nested sub-skills, loops, capture
+            // propagation, and divergence recovery; this bridge covers
+            // confirmed leaf tool-call skills.
+            if let AgentAction::InvokeSkill {
+                skill_id,
+                version,
+                parameters,
+            } = turn.action.clone()
+            {
+                turn.action = match self.dispatch_skill(&skill_id, version, parameters).await {
+                    Ok(frame) => match frame.skill.action_sketch.first() {
+                        Some(crate::agent::skills::ActionSketchStep::ToolCall {
+                            tool,
+                            args,
+                            ..
+                        }) => {
+                            match crate::agent::skills::substitution::substitute_value(
+                                args,
+                                &frame.params,
+                                &frame.captured,
+                            ) {
+                                Ok(arguments) => AgentAction::ToolCall {
+                                    tool_name: tool.clone(),
+                                    arguments,
+                                    tool_call_id: format!(
+                                        "skill-{}-v{}-step-{}",
+                                        frame.skill.id, frame.skill.version, frame.next_step
+                                    ),
+                                },
+                                Err(err) => AgentAction::AgentReplan {
+                                    reason: format!("skill replay substitution failed: {err}"),
+                                },
+                            }
+                        }
+                        Some(_) => AgentAction::AgentReplan {
+                            reason: format!(
+                                "skill {}@v{} resolved but non-tool replay steps are pending",
+                                frame.skill.id, frame.skill.version
+                            ),
+                        },
+                        None => AgentAction::AgentReplan {
+                            reason: format!(
+                                "skill {}@v{} has no replay steps",
+                                frame.skill.id, frame.skill.version
+                            ),
+                        },
+                    },
+                    Err(reason) => AgentAction::AgentReplan { reason },
+                };
             }
 
             // 4a'. Synthetic `focus_window` skip. When the MCP surface +
@@ -4075,8 +3686,8 @@ impl StateRunner {
             // 4a-bis. Coordinate-primitive guard. Defense-in-depth
             // behind the per-turn `<tools_in_scope>` filter: the filter
             // narrows the LLM-facing tool list, but a wrong-family
-            // dispatch can still reach this point via cached replay
-            // from a different state or a malformed turn. When a
+            // dispatch can still reach this point via a malformed turn
+            // or future replay path. When a
             // structured surface is wired (CDP page attached, or
             // Native focus + AX dispatch toolset), reject the
             // coordinate primitive with a synthetic `StepOutcome::Error`
@@ -4166,9 +3777,7 @@ impl StateRunner {
 
             // 4a. Permission policy + approval gate for live `ToolCall`
             // actions. Mirrors the legacy `AgentRunner::execute_response`
-            // pre-dispatch policy check. The cache-replay path has its
-            // own identical gate at `try_replay_cache`; observation
-            // tools bypass approval entirely on both paths.
+            // pre-dispatch policy check. Observation tools bypass approval.
             if let AgentAction::ToolCall {
                 tool_name,
                 arguments,
@@ -4196,7 +3805,7 @@ impl StateRunner {
                             });
                             self.advance_recorded_step_index();
                             self.emit_world_model_changed_for_recorded_step().await;
-                            // Shared with the cached-deny branch — see
+                            // Shared with other policy-deny paths — see
                             // `record_policy_deny_failure` for rationale.
                             self.record_policy_deny_failure(tool_name);
                             self.state.consecutive_errors += 1;
@@ -4210,9 +3819,8 @@ impl StateRunner {
                                 previous_result.as_deref(),
                             );
 
-                            // Parity with the `TurnOutcome::ToolError` path
-                            // and the cache-replay Deny branch: emit
-                            // `StepFailed`, honor loop-detection on the
+                            // Parity with the `TurnOutcome::ToolError` path:
+                            // emit `StepFailed`, honor loop-detection on the
                             // identical `(tool, args, error)` tuple, and
                             // respect the `recovery_strategy` so repeated
                             // policy denials hit the same `MaxErrorsReached`
@@ -4283,8 +3891,7 @@ impl StateRunner {
                                 Some(ApprovalResult::Rejected) => {
                                     // Operator rejected: record a Replan
                                     // step and re-observe next iteration
-                                    // — matches the cache-replay branch
-                                    // and the legacy `StepOutcome::Replan`
+                                    // — matches the legacy `StepOutcome::Replan`
                                     // return from `execute_response`.
                                     self.state.steps.push(AgentStep {
                                         index: self.state.steps.len(),
@@ -4507,18 +4114,15 @@ impl StateRunner {
                     previous_result = Some(tool_body.clone());
                     // Clear the loop-detection tracker on any success.
                     last_failure = None;
-                    // Emit the live StepCompleted event so subscribers see a
-                    // successful turn (cache-replay has its own emission in
-                    // `try_replay_cache`).
+                    // Emit StepCompleted so subscribers see a successful turn.
                     self.emit_event(AgentEvent::StepCompleted {
                         step_index: step_idx_for_event,
                         tool_name: tool_name.clone(),
                         summary: crate::agent::prompt::truncate_summary(&tool_body, 120),
                     })
                     .await;
-                    // Destructive-cap accounting on the live path. Mirrors
-                    // `AgentRunner::handle_step_outcome`'s cap branch. The
-                    // cache-replay path has the same guard inline.
+                    // Destructive-cap accounting mirrors
+                    // `AgentRunner::handle_step_outcome`'s cap branch.
                     if matches!(
                         self.maybe_halt_on_destructive_cap(&tool_name, &annotations_by_tool),
                         CapStatus::CapReached
@@ -4530,10 +4134,9 @@ impl StateRunner {
                     // Workflow-graph emission. Non-observation tools become
                     // nodes on `state.workflow`; the first node chains from
                     // `state.last_node_id` (seeded by `anchor_node_id` at
-                    // the top of `run`). Cache writes stamp the produced
-                    // node id into the cache entry's `produced_node_ids`
-                    // lineage so selective-delete can evict the right rows
-                    // later.
+                    // the top of `run`). Boundary extraction records produced
+                    // node ids into draft-skill lineage so selective-delete
+                    // can prune derived skills later.
                     let tool_arguments = match &turn.action {
                         AgentAction::ToolCall { arguments, .. } => arguments.clone(),
                         _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
@@ -4554,36 +4157,6 @@ impl StateRunner {
                         self.produced_node_ids_for_this_subgoal.push(node_id);
                     }
 
-                    // Cache write. Mirrors the legacy filter: only cache
-                    // action tools, never observation / AX dispatch /
-                    // state-transition tools, and only when the page
-                    // fingerprint is non-empty.
-                    if self.config.use_cache
-                        && !is_observation_tool(&tool_name, &annotations_by_tool)
-                        && !is_ax_dispatch_tool(&tool_name)
-                        && !is_state_transition_tool(&tool_name)
-                        && !elements.is_empty()
-                    {
-                        match produced_node_id {
-                            Some(node_id) => {
-                                self.cache.store_with_node(
-                                    &goal,
-                                    &elements,
-                                    tool_name.clone(),
-                                    tool_arguments.clone(),
-                                    node_id,
-                                );
-                            }
-                            None => {
-                                self.cache.store(
-                                    &goal,
-                                    &elements,
-                                    tool_name.clone(),
-                                    tool_arguments.clone(),
-                                );
-                            }
-                        }
-                    }
                     // Auto-connect CDP after a successful `launch_app`
                     // / `focus_window` (Electron / Chrome targets only;
                     // native apps short-circuit inside the helper).
@@ -4637,9 +4210,7 @@ impl StateRunner {
                     self.state.consecutive_errors = self.consecutive_errors;
                     previous_result = Some(error.clone());
 
-                    // Emit StepFailed so subscribers see the failing turn;
-                    // the cache-replay policy-deny branch emits the same
-                    // event for its synthetic errors.
+                    // Emit StepFailed so subscribers see the failing turn.
                     self.emit_event(AgentEvent::StepFailed {
                         step_index: step_idx_for_event,
                         tool_name: tool_name.clone(),
@@ -4959,13 +4530,6 @@ mod builder_tests {
             Some(std::path::Path::new("/tmp/artifacts"))
         );
     }
-
-    #[test]
-    fn into_cache_returns_empty_cache_by_default() {
-        let r = StateRunner::new_for_test("g".to_string());
-        let cache = r.into_cache();
-        assert!(cache.entries.is_empty());
-    }
 }
 
 #[cfg(test)]
@@ -4983,58 +4547,6 @@ mod observe_tests {
             runner.task_state.phase,
             crate::agent::phase::Phase::Exploring
         );
-    }
-}
-
-#[cfg(test)]
-mod cache_gate_tests {
-    use super::*;
-    use crate::agent::task_state::{TaskStateMutation, WatchSlotName};
-
-    #[test]
-    fn replay_eligible_only_in_exploring_with_empty_state() {
-        let mut r = StateRunner::new_for_test("g".to_string());
-        r.observe();
-        assert!(r.is_replay_eligible());
-    }
-
-    #[test]
-    fn replay_not_eligible_with_active_subgoal() {
-        let mut r = StateRunner::new_for_test("g".to_string());
-        r.task_state
-            .apply(
-                &TaskStateMutation::PushSubgoal {
-                    text: "x".to_string(),
-                },
-                1,
-            )
-            .unwrap();
-        r.observe();
-        assert!(!r.is_replay_eligible());
-    }
-
-    #[test]
-    fn replay_not_eligible_with_active_watch_slot() {
-        let mut r = StateRunner::new_for_test("g".to_string());
-        r.task_state
-            .apply(
-                &TaskStateMutation::SetWatchSlot {
-                    name: WatchSlotName::PendingModal,
-                    note: "n".to_string(),
-                },
-                1,
-            )
-            .unwrap();
-        r.observe();
-        assert!(!r.is_replay_eligible());
-    }
-
-    #[test]
-    fn replay_not_eligible_when_recovering() {
-        let mut r = StateRunner::new_for_test("g".to_string());
-        r.consecutive_errors = 1;
-        r.observe();
-        assert!(!r.is_replay_eligible());
     }
 }
 
@@ -6617,8 +6129,8 @@ mod cdp_connect_status_tests {
 /// The gate (`episodic_run_start_retrieved`) replaces the drift-prone
 /// `step_index == 0` proxy; the helper (`advance_recorded_step_index`)
 /// is the single owner of `step_index` updates so the counter matches
-/// `state.steps.len()` across all recording paths (cache replay,
-/// synthetic skip, policy deny, approval reject, normal LLM turn).
+/// `state.steps.len()` across all recording paths (synthetic skip,
+/// policy deny, approval reject, normal LLM turn).
 #[cfg(test)]
 mod retrieval_gate_tests {
     use super::*;
@@ -6667,7 +6179,7 @@ mod retrieval_gate_tests {
 
         // Second call with no Recovering transition: must skip
         // entirely. Previously `step_index == 0` would have re-fired
-        // RunStart on cache-replay / policy-deny early-continue paths.
+        // RunStart on policy-deny early-continue paths.
         // Force `step_index` back to 0 to prove the gate (not the
         // counter) is what blocks re-fire.
         r.step_index = 0;
@@ -6710,8 +6222,7 @@ mod retrieval_gate_tests {
 
     #[tokio::test]
     async fn record_policy_deny_failure_sets_stable_kind() {
-        // Both cached-deny and live-deny branches funnel through
-        // this helper, and the snapshot derived from
+        // Policy-deny branches funnel through this helper, and the snapshot derived from
         // `last_failed_*` populates `FailureSignature` on the
         // eventual write. The `error_kind` must be the stable
         // snake_case `policy_denied`, not a free-form string.

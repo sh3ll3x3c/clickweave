@@ -2,7 +2,8 @@ use super::error::CommandError;
 use super::types::*;
 use clickweave_core::permissions::CONFIRMABLE_TOOLS;
 use clickweave_core::{NodeType, Workflow, validate_workflow};
-use std::path::PathBuf;
+use clickweave_engine::agent::skills::move_skills_to_project;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -66,9 +67,21 @@ pub fn open_project(path: String) -> Result<ProjectData, CommandError> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn save_project(path: String, workflow: Workflow) -> Result<(), CommandError> {
-    let file_path = PathBuf::from(path);
+pub fn save_project(
+    app: tauri::AppHandle,
+    path: String,
+    workflow: Workflow,
+) -> Result<(), CommandError> {
+    let app_data = app.state::<AppDataDir>().0.clone();
+    save_project_with_app_data(&app_data, path, workflow)
+}
 
+fn save_project_with_app_data(
+    app_data_dir: &Path,
+    path: String,
+    workflow: Workflow,
+) -> Result<(), CommandError> {
+    let file_path = PathBuf::from(&path);
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| CommandError::io(format!("Failed to create directory: {}", e)))?;
@@ -79,6 +92,15 @@ pub fn save_project(path: String, workflow: Workflow) -> Result<(), CommandError
 
     std::fs::write(&file_path, content)
         .map_err(|e| CommandError::io(format!("Failed to write file: {}", e)))?;
+
+    let unsaved_skills_root = app_data_dir.join("skills");
+    let saved_project_dir = project_dir(&path);
+    move_skills_to_project(
+        &unsaved_skills_root,
+        &workflow.id.to_string(),
+        &saved_project_dir,
+    )
+    .map_err(|e| CommandError::io(format!("Failed to move skills to project: {e}")))?;
 
     Ok(())
 }
@@ -179,4 +201,46 @@ pub async fn import_asset(
         relative_path,
         absolute_path,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_project_moves_unsaved_skills_to_saved_project_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_data = tmp.path().join("app-data");
+        let mut workflow = Workflow::default();
+        workflow.id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        workflow.name = "Saved Workflow".to_string();
+
+        let unsaved_dir = app_data.join("skills").join(workflow.id.to_string());
+        std::fs::create_dir_all(&unsaved_dir).unwrap();
+        std::fs::write(unsaved_dir.join("alpha-v1.md"), b"alpha").unwrap();
+        std::fs::write(unsaved_dir.join("alpha-v1.proposal.json"), b"{}").unwrap();
+
+        let workflow_path = tmp.path().join("saved").join("workflow.json");
+        save_project_with_app_data(
+            &app_data,
+            workflow_path.to_string_lossy().into_owned(),
+            workflow,
+        )
+        .unwrap();
+
+        assert!(workflow_path.exists());
+        assert!(!unsaved_dir.exists());
+        assert_eq!(
+            std::fs::read(tmp.path().join("saved/.clickweave/skills/alpha-v1.md")).unwrap(),
+            b"alpha"
+        );
+        assert_eq!(
+            std::fs::read(
+                tmp.path()
+                    .join("saved/.clickweave/skills/alpha-v1.proposal.json")
+            )
+            .unwrap(),
+            b"{}"
+        );
+    }
 }

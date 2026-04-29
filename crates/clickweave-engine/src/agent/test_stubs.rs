@@ -1,7 +1,7 @@
 //! Shared test doubles for the state-spine runner tests.
 //!
 //! These fixtures are consumed by Task 3a.1's `top_level_loop_tests` and
-//! reused by Tasks 3a.2–3a.8 (cache replay, VLM, approval, loop detection,
+//! reused by Tasks 3a.2–3a.8 (VLM, approval, loop detection,
 //! CDP lifecycle, boundary writes, end-to-end). Keeping them in one module
 //! prevents the later tasks from drifting their own bespoke stubs.
 //!

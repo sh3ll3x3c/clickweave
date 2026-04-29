@@ -327,9 +327,9 @@ async saveAgentChat(request: SaveAgentChatRequest) : Promise<Result<null, Comman
     else return { status: "error", error: e  as any };
 }
 },
-async pruneAgentCacheForNodes(request: PruneAgentCacheRequest) : Promise<Result<null, CommandError>> {
+async pruneSkillLineageForNodes(request: PruneSkillLineageRequest) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("prune_agent_cache_for_nodes", { request }) };
+    return { status: "ok", data: await TAURI_INVOKE("prune_skill_lineage_for_nodes", { request }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -357,7 +357,7 @@ async clearAgentConversation(request: ClearAgentConversationRequest) : Promise<R
 
 export type ActionConfidence = "High" | "Medium" | "Low"
 /**
- * Persisted transcript — a sibling file to `agent_cache.json`.
+ * Persisted transcript — a sibling file to the workflow run metadata.
  * Kept deliberately minimal (no schema version) until the format
  * changes; versioning is added lazily when it matters.
  */
@@ -388,7 +388,7 @@ allow_focus_window?: boolean | null;
 /**
  * Privacy kill switch: when false, the run is entirely in-memory.
  * No `.clickweave/runs/` directory is created and no trace files
- * or cache files are written. When `None`, persistence is on —
+ * or agent metadata files are written. When `None`, persistence is on —
  * matches the UI default (`storeTraces: true`).
  */
 store_traces?: boolean | null; 
@@ -596,7 +596,7 @@ export type PressKeyParams = ({ verification_method?: VerificationMethod | null;
  */
 export type PriorTurnWire = { goal: string; summary: string; run_id: string }
 export type ProjectData = { path: string; workflow: Workflow }
-export type PruneAgentCacheRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
+export type PruneSkillLineageRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
 export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
@@ -684,7 +684,7 @@ screenshot_meta?: ScreenshotMeta | null;
 candidate?: boolean }
 export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number } | { type: "Hover"; x: number; y: number; dwell_ms: number }
 export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
-export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
+export type WalkthroughDraftResponse = { session_id: string; actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
 /**
  * macOS window control button (traffic light) actions.
  * 

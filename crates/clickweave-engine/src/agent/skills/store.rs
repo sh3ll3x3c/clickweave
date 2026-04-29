@@ -27,6 +27,11 @@ use super::types::{Skill, SkillError};
 
 const RECENT_WRITE_TOLERANCE: Duration = Duration::from_millis(100);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveReport {
+    pub moved: usize,
+}
+
 #[derive(Debug)]
 pub struct SkillStore {
     dir: PathBuf,
@@ -126,6 +131,72 @@ pub fn filename_for(skill: &Skill) -> String {
     format!("{}-v{}.md", slugify(&skill.id), skill.version)
 }
 
+pub fn move_skills_to_project(
+    app_data_skills_root: &Path,
+    project_uuid: &str,
+    project_path: &Path,
+) -> Result<MoveReport, SkillError> {
+    let src = app_data_skills_root.join(project_uuid);
+    if !src.exists() {
+        return Ok(MoveReport { moved: 0 });
+    }
+
+    let moved = count_files(&src)?;
+    let dest = project_path.join(".clickweave").join("skills");
+    fs::create_dir_all(&dest)?;
+
+    match fs::rename(&src, &dest) {
+        Ok(()) => {}
+        Err(_) => {
+            copy_dir_with_integrity_check(&src, &dest)?;
+            fs::remove_dir_all(&src)?;
+        }
+    }
+
+    Ok(MoveReport { moved })
+}
+
+fn copy_dir_with_integrity_check(src: &Path, dest: &Path) -> Result<(), SkillError> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_dir_with_integrity_check(&src_path, &dest_path)?;
+        } else if file_type.is_file() {
+            let bytes = fs::read(&src_path)?;
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&dest_path, &bytes)?;
+            let written = fs::read(&dest_path)?;
+            if written != bytes {
+                return Err(SkillError::InvalidFrontmatter(format!(
+                    "copied skill file integrity check failed for {}",
+                    dest_path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn count_files(dir: &Path) -> Result<usize, SkillError> {
+    let mut count = 0;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            count += count_files(&entry.path())?;
+        } else if file_type.is_file() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 pub fn slugify(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut last_was_dash = false;
@@ -159,6 +230,45 @@ mod tests {
     fn filename_for_combines_slug_and_version() {
         let skill = sample_skill_minimal("open-vesna-chat", 3);
         assert_eq!(filename_for(&skill), "open-vesna-chat-v3.md");
+    }
+
+    #[test]
+    fn move_skills_to_project_moves_unsaved_skill_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_data_skills_root = tmp.path().join("app-data").join("skills");
+        let workflow_id = "550e8400-e29b-41d4-a716-446655440000";
+        let src = app_data_skills_root.join(workflow_id);
+        fs::create_dir_all(src.join("nested")).unwrap();
+        fs::write(src.join("alpha-v1.md"), b"alpha").unwrap();
+        fs::write(src.join("nested").join("beta-v1.md"), b"beta").unwrap();
+
+        let project = tmp.path().join("saved-project");
+        let report = move_skills_to_project(&app_data_skills_root, workflow_id, &project).unwrap();
+
+        assert_eq!(report, MoveReport { moved: 2 });
+        assert!(!src.exists());
+        assert_eq!(
+            fs::read(project.join(".clickweave/skills/alpha-v1.md")).unwrap(),
+            b"alpha"
+        );
+        assert_eq!(
+            fs::read(project.join(".clickweave/skills/nested/beta-v1.md")).unwrap(),
+            b"beta"
+        );
+    }
+
+    #[test]
+    fn move_skills_to_project_is_noop_when_unsaved_dir_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let report = move_skills_to_project(
+            &tmp.path().join("app-data").join("skills"),
+            "missing",
+            &tmp.path().join("saved-project"),
+        )
+        .unwrap();
+
+        assert_eq!(report, MoveReport { moved: 0 });
+        assert!(!tmp.path().join("saved-project/.clickweave/skills").exists());
     }
 
     fn sample_skill_minimal(id: &str, version: u32) -> Skill {

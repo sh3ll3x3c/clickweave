@@ -385,7 +385,7 @@ pub fn set_watch_slot_tool() -> Value {
         "type": "function",
         "function": {
             "name": "set_watch_slot",
-            "description": "Mark a background concern (modal, auth, focus shift) so the harness will not replay cached actions while it is active. Mutation only — does not dispatch to MCP.",
+            "description": "Mark a background concern (modal, auth, focus shift) that the harness should keep active while planning. Mutation only — does not dispatch to MCP.",
             "parameters": {
                 "type": "object",
                 "properties": {

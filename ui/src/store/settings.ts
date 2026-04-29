@@ -93,9 +93,11 @@ export async function loadSettings(): Promise<PersistedSettings> {
   // tombstone from the removed planner pipeline; the config drives the
   // supervisor (step verdict) model. Migrate on next load, then delete the
   // old key so subsequent loads skip the compat path.
-  const supervisorConfigStored = await store.get<EndpointConfig>("supervisorConfig");
+  const supervisorConfigStored =
+    await store.get<EndpointConfig>("supervisorConfig");
   const legacyPlannerConfig = await store.get<EndpointConfig>("plannerConfig");
-  const supervisorConfig = supervisorConfigStored ?? legacyPlannerConfig ?? fallback;
+  const supervisorConfig =
+    supervisorConfigStored ?? legacyPlannerConfig ?? fallback;
   if (!supervisorConfigStored && legacyPlannerConfig) {
     await store.set("supervisorConfig", legacyPlannerConfig);
     await store.delete("plannerConfig");
@@ -134,7 +136,11 @@ export async function loadSettings(): Promise<PersistedSettings> {
     await store.delete("vlmConfig");
     await store.save();
   }
-  if (legacyVlmEnabled !== null && legacyVlmEnabled !== undefined && !(await store.get<boolean>("fastEnabled"))) {
+  if (
+    legacyVlmEnabled !== null &&
+    legacyVlmEnabled !== undefined &&
+    !(await store.get<boolean>("fastEnabled"))
+  ) {
     await store.set("fastEnabled", fastEnabled);
     await store.delete("vlmEnabled");
     await store.save();
@@ -148,24 +154,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
     "episodicGlobalParticipation",
   );
 
-  // Spec 3 procedural-skill settings. One-shot migration: a stored
-  // `useCache: false` from before the cache cutover (Phase 6) maps to
-  // `skillsEnabled: false` so opt-out users keep their preference. The
-  // `useCache` key is dropped after migration; all subsequent loads
-  // skip the compat path.
-  const storedSkillsEnabled = await store.get<boolean>("skillsEnabled");
-  const legacyUseCache = await store.get<boolean>("useCache");
-  let skillsEnabled = storedSkillsEnabled ?? SETTINGS_DEFAULTS.skillsEnabled;
-  if (storedSkillsEnabled === null || storedSkillsEnabled === undefined) {
-    if (legacyUseCache === false) {
-      skillsEnabled = false;
-      await store.set("skillsEnabled", false);
-    }
-  }
-  if (legacyUseCache !== null && legacyUseCache !== undefined) {
-    await store.delete("useCache");
-    await store.save();
-  }
+  const skillsEnabled = await store.get<boolean>("skillsEnabled");
   const applicableSkillsK = await store.get<number>("applicableSkillsK");
   const skillsGlobalParticipation = await store.get<boolean>(
     "skillsGlobalParticipation",
@@ -177,10 +166,13 @@ export async function loadSettings(): Promise<PersistedSettings> {
     fastConfig,
     fastEnabled,
     maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
-    hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
-    supervisionDelayMs: supervisionDelayMs ?? SETTINGS_DEFAULTS.supervisionDelayMs,
+    hoverDwellThreshold:
+      hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
+    supervisionDelayMs:
+      supervisionDelayMs ?? SETTINGS_DEFAULTS.supervisionDelayMs,
     toolPermissions: toolPermissions ?? SETTINGS_DEFAULTS.toolPermissions,
-    traceRetentionDays: traceRetentionDays ?? SETTINGS_DEFAULTS.traceRetentionDays,
+    traceRetentionDays:
+      traceRetentionDays ?? SETTINGS_DEFAULTS.traceRetentionDays,
     storeTraces: storeTraces ?? SETTINGS_DEFAULTS.storeTraces,
     episodicEnabled: episodicEnabled ?? SETTINGS_DEFAULTS.episodicEnabled,
     retrievedEpisodesK:
@@ -188,12 +180,10 @@ export async function loadSettings(): Promise<PersistedSettings> {
     episodicGlobalParticipation:
       episodicGlobalParticipation ??
       SETTINGS_DEFAULTS.episodicGlobalParticipation,
-    skillsEnabled,
-    applicableSkillsK:
-      applicableSkillsK ?? SETTINGS_DEFAULTS.applicableSkillsK,
+    skillsEnabled: skillsEnabled ?? SETTINGS_DEFAULTS.skillsEnabled,
+    applicableSkillsK: applicableSkillsK ?? SETTINGS_DEFAULTS.applicableSkillsK,
     skillsGlobalParticipation:
-      skillsGlobalParticipation ??
-      SETTINGS_DEFAULTS.skillsGlobalParticipation,
+      skillsGlobalParticipation ?? SETTINGS_DEFAULTS.skillsGlobalParticipation,
   };
 }
 

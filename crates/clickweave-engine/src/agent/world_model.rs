@@ -982,8 +982,8 @@ mod refresh_tests {
 
 #[cfg(test)]
 mod observation_union_tests {
-    //! Coverage for the observation / cacheability predicates that gate
-    //! approval bypass, cache eligibility, and workflow-node inclusion.
+    //! Coverage for the observation / dispatch-safety predicates that gate
+    //! approval bypass, skill replay eligibility, and workflow-node inclusion.
     //!
     //! Ported verbatim from the legacy runner's observation-union tests
     //! for Task 3a.7.d. Legacy tests hit `AgentRunner::<B>::is_observation_tool`
@@ -1096,7 +1096,7 @@ mod observation_union_tests {
     fn extract_result_text_joins_all_text_blocks_for_transcript() {
         // Agent transcript must see every text block the tool returned.
         // Dropping later blocks silently hides data from the LLM and from
-        // cache replay. JSON-parse sites use cdp_lifecycle::extract_text
+        // skill replay. JSON-parse sites use cdp_lifecycle::extract_text
         // instead.
         let result = clickweave_mcp::ToolCallResult {
             content: vec![
@@ -1194,10 +1194,9 @@ mod observation_union_tests {
     }
 
     #[test]
-    fn ax_dispatch_tools_are_not_cacheable() {
-        // Cache eligibility on the write side AND replay on the read side
-        // must skip AX dispatch tools — their `uid` argument is scoped to
-        // one snapshot generation.
+    fn ax_dispatch_tools_are_not_skill_replay_safe() {
+        // Skill replay must treat AX dispatch tools carefully because their
+        // `uid` argument is scoped to one snapshot generation.
         assert!(is_ax_dispatch_tool("ax_click"));
         assert!(is_ax_dispatch_tool("ax_set_value"));
         assert!(is_ax_dispatch_tool("ax_select"));
@@ -1208,13 +1207,11 @@ mod observation_union_tests {
     }
 
     #[test]
-    fn state_transition_tools_are_not_cacheable() {
-        // Cache eligibility on the write side AND replay on the read side
-        // must skip state-transition tools. Their cache key encodes the
-        // pre-transition page, so replay re-fires the transition against
-        // unchanged elements — which caused double `step_completed` events
-        // and duplicate workflow nodes after the LLM issued a `launch_app`
-        // or `focus_window` that switched away from the current CDP target.
+    fn state_transition_tools_are_not_skill_replay_safe() {
+        // Skill replay must treat state-transition tools carefully. Replaying
+        // them against unchanged elements can re-fire the transition, causing
+        // duplicate workflow nodes after the LLM issued a `launch_app` or
+        // `focus_window` that switched away from the current CDP target.
         assert!(is_state_transition_tool("launch_app"));
         assert!(is_state_transition_tool("focus_window"));
         assert!(is_state_transition_tool("quit_app"));

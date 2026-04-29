@@ -53,8 +53,8 @@ pub fn detect_transition(
 
 /// Generate a combined fingerprint for an entire page of elements.
 ///
-/// This is used as a cache key for decision caching — if the page
-/// fingerprint matches, we can reuse a previous decision.
+/// This is used in the world model and skill applicability signatures to
+/// decide whether the observed page still matches a prior plan.
 pub fn page_fingerprint(elements: &[CdpFindElementMatch]) -> String {
     let mut fps: Vec<String> = elements.iter().map(element_fingerprint).collect();
     fps.sort();

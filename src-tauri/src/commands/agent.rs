@@ -3,9 +3,8 @@ use super::types::*;
 use clickweave_core::variant_index::{VariantEntry, VariantIndex};
 use clickweave_engine::agent::skills::{SkillContext, SkillScope, SkillState, SkillStore, slugify};
 use clickweave_engine::agent::{
-    AgentCache, AgentChannels, AgentConfig, AgentEvent, ApprovalRequest,
-    DisagreementResolutionAction, PermissionAction, PermissionPolicy, PermissionRule,
-    TerminalReason,
+    AgentChannels, AgentConfig, AgentEvent, ApprovalRequest, DisagreementResolutionAction,
+    PermissionAction, PermissionPolicy, PermissionRule, TerminalReason,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -142,7 +141,7 @@ pub struct AgentRunRequest {
     pub allow_focus_window: Option<bool>,
     /// Privacy kill switch: when false, the run is entirely in-memory.
     /// No `.clickweave/runs/` directory is created and no trace files
-    /// or cache files are written. When `None`, persistence is on —
+    /// or agent metadata files are written. When `None`, persistence is on —
     /// matches the UI default (`storeTraces: true`).
     #[serde(default)]
     pub store_traces: Option<bool>,
@@ -959,7 +958,7 @@ pub async fn run_agent(
         // Storage init failure prevents the run from starting — durable tracing
         // must be available before executing any agent actions.
         let storage = task_storage;
-        let (variant_context, cache, verification_artifacts_dir) = {
+        let (variant_context, verification_artifacts_dir) = {
             let mut guard = storage.lock().unwrap();
             match guard.begin_execution() {
                 Ok(_) => {}
@@ -983,13 +982,8 @@ pub async fn run_agent(
             // failures, and hand-cleanup.
             let variant_index =
                 VariantIndex::load_existing(&guard.variant_index_path(), guard.base_path());
-            let cache = AgentCache::load_from_path(&guard.agent_cache_path());
             let verification_artifacts_dir = guard.execution_artifacts_dir();
-            (
-                variant_index.as_context_text(),
-                cache,
-                verification_artifacts_dir,
-            )
+            (variant_index.as_context_text(), verification_artifacts_dir)
         };
 
         let channels = AgentChannels {
@@ -1019,7 +1013,6 @@ pub async fn run_agent(
                 config,
                 goal_block,
                 &mcp,
-                Some(cache),
                 Some(channels),
                 Some(vision.clone()),
                 // Permission policy is threaded from the UI via the
@@ -1047,14 +1040,7 @@ pub async fn run_agent(
         };
 
         match result {
-            Ok((state, updated_cache, writer_tx)) => {
-                // Persist the updated cache — skipped when the privacy
-                // kill switch is off so the workflow-level cache file
-                // stays as it was before the run.
-                if persist_traces {
-                    let _ = updated_cache.save_to_path(&storage.lock().unwrap().agent_cache_path());
-                }
-
+            Ok((state, writer_tx)) => {
                 // If the engine halted on a pending VLM disagreement, block
                 // here until the operator resolves it (confirm / cancel) via
                 // `resolve_completion_disagreement`, or until `stop_agent`
@@ -1757,9 +1743,8 @@ mod run_agent_smoke_tests {
 
         // ── Arrange: scripted LLM + MCP stubs ──────────────────────
         // Two tool calls then agent_done. `cdp_find_elements` returns
-        // an empty matches set so no cache replay interferes with the
-        // step count (mirrors the stable fixture in the engine-side
-        // end-to-end happy-path test).
+        // an empty matches set, mirroring the stable fixture in the
+        // engine-side end-to-end happy-path test.
         let llm = ScriptedLlm::new(vec![
             llm_reply_tool(
                 "cdp_find_elements",
@@ -1823,12 +1808,11 @@ mod run_agent_smoke_tests {
         });
 
         // ── Act: drive the engine ──────────────────────────────────
-        let (state, _cache, _writer_tx) = run_agent_workflow(
+        let (state, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             "rubric-10 gate: forwarder + persistence contract".to_string(),
             &mcp,
-            None,
             Some(channels),
             None,
             // Permission policy: `allow_all` so scripted destructive-ish

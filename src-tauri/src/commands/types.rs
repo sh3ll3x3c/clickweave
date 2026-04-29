@@ -214,6 +214,7 @@ pub struct WalkthroughStatePayload {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WalkthroughDraftPayload {
+    pub session_id: String,
     pub actions: Vec<clickweave_core::WalkthroughAction>,
     pub draft: clickweave_core::Workflow,
     pub warnings: Vec<String>,

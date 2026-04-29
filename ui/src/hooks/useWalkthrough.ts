@@ -15,6 +15,7 @@ export function useWalkthrough() {
       status: s.walkthroughStatus,
       panelOpen: s.walkthroughPanelOpen,
       error: s.walkthroughError,
+      sessionId: s.walkthroughSessionId,
       events: s.walkthroughEvents,
       actions: s.walkthroughActions,
       draft: s.walkthroughDraft,

@@ -25,13 +25,12 @@ async fn sequential_runs_chain_via_anchor() {
     let run_id_1 = Uuid::new_v4();
     let config = AgentConfig {
         build_workflow: true,
-        use_cache: false,
         ..Default::default()
     };
 
     let runner1 = StateRunner::new("send test".to_string(), config.clone()).with_run_id(run_id_1);
     let mcp_tools = mcp1.tools_as_openai();
-    let (state1, _cache1) = runner1
+    let state1 = runner1
         .run(
             &llm1,
             &mcp1,
@@ -71,7 +70,7 @@ async fn sequential_runs_chain_via_anchor() {
     // D18: caller composes prior-turn log + variant context into the
     // goal string. Tests exercise the same seam.
     let goal2 = crate::agent::build_goal_block("wait for reply", &prior, None, 1000);
-    let (state2, _cache2) = runner2
+    let state2 = runner2
         .run(
             &llm2,
             &mcp2,

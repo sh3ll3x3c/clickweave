@@ -95,11 +95,11 @@ UI
   -> run_agent_workflow builds a StateRunner
      - observe: drain pending InvalidationEvents into WorldModel, refresh stale fields
      - phase-infer: derive Phase { Exploring | Executing | Recovering } from signals
-     - cache-gate: replay AgentCache only when Phase::Exploring with empty stack / watch slots
-     - render: state block (<world_model> + <task_state>) at top of user turn
+     - skill retrieval: refresh applicable skills after push_subgoal mutations
+     - render: state block (<world_model> + <task_state> + optional <applicable_skills>) at top of user turn
      - decide: one LLM call -> AgentTurn { mutations, action }
      - apply mutations: TaskStateMutation batch (push/complete subgoal, watch slots, hypotheses)
-     - dispatch: AgentAction::ToolCall via MCP, or AgentDone / AgentReplan
+     - dispatch: AgentAction::ToolCall via MCP, InvokeSkill expansion, or AgentDone / AgentReplan
      - continuity hooks: update WorldModel.last_screenshot / last_native_ax_snapshot
      - invalidation: queue InvalidationEvents for the next observe
      - boundary record: write StepRecord at Terminal / SubgoalCompleted / RecoverySucceeded

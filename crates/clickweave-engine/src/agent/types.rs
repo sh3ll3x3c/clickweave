@@ -1,7 +1,6 @@
 use clickweave_core::Workflow;
 use clickweave_core::cdp::CdpFindElementMatch;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::agent::skills::{SkillScope, SkillState};
@@ -270,8 +269,6 @@ pub struct AgentConfig {
     pub max_consecutive_errors: usize,
     /// Whether to build a workflow graph as the agent executes.
     pub build_workflow: bool,
-    /// Whether to use the decision cache for repeated page states.
-    pub use_cache: bool,
     /// Halt the run after this many consecutive destructive tool calls.
     /// `0` disables the cap entirely.
     pub consecutive_destructive_cap: usize,
@@ -366,7 +363,6 @@ impl Default for AgentConfig {
             max_steps: DEFAULT_MAX_STEPS,
             max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
             build_workflow: true,
-            use_cache: true,
             consecutive_destructive_cap: DEFAULT_CONSECUTIVE_DESTRUCTIVE_CAP,
             allow_focus_window: false,
             state_block_max_elements: 300,
@@ -576,32 +572,6 @@ pub enum StepOutcome {
     Replan(String),
 }
 
-/// A cached decision for a previously seen page state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedDecision {
-    /// The tool name that was called.
-    pub tool_name: String,
-    /// The tool arguments.
-    pub arguments: serde_json::Value,
-    /// Fingerprint of the page elements at the time of the decision.
-    pub element_fingerprint: String,
-    /// Number of times this cache entry has been used.
-    pub hit_count: u32,
-    /// Node UUIDs this cached decision has produced over its lifetime.
-    /// A single decision can produce multiple nodes when replayed across
-    /// runs. Eviction-on-delete removes the decision only when this Vec
-    /// becomes empty. Legacy entries deserialize as empty.
-    #[serde(default)]
-    pub produced_node_ids: Vec<Uuid>,
-}
-
-/// In-memory cache mapping page fingerprints to past decisions.
-#[derive(Debug, Default)]
-pub struct AgentCache {
-    /// Map from cache key to cached decision.
-    pub entries: HashMap<String, CachedDecision>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,34 +640,5 @@ mod tests {
             let parsed: DisagreementResolutionAction = serde_json::from_str(&s).unwrap();
             assert_eq!(parsed, expected);
         }
-    }
-
-    #[test]
-    fn cached_decision_default_produced_node_ids_is_empty() {
-        let d = CachedDecision {
-            tool_name: "click".to_string(),
-            arguments: serde_json::Value::Null,
-            element_fingerprint: String::new(),
-            hit_count: 0,
-            produced_node_ids: Vec::new(),
-        };
-        assert!(d.produced_node_ids.is_empty());
-    }
-
-    #[test]
-    fn cached_decision_missing_produced_node_ids_defaults_to_empty() {
-        // Cache entries serialized before the `produced_node_ids` field
-        // was introduced must still deserialize (with an empty lineage Vec).
-        let json = r#"{
-            "tool_name": "click",
-            "arguments": {"uid": "1_0"},
-            "element_fingerprint": "abc",
-            "hit_count": 1
-        }"#;
-        let d: CachedDecision = serde_json::from_str(json).unwrap();
-        assert!(
-            d.produced_node_ids.is_empty(),
-            "entries missing the field must deserialize with empty produced_node_ids"
-        );
     }
 }

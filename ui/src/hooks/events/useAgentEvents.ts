@@ -406,6 +406,24 @@ export function useAgentEvents() {
         event_run_id: string;
         skill_id: string;
         version: number;
+        parameter_count: number;
+      }>("agent://skill_invoked", (e) => {
+        if (isStale(e.payload.run_id)) return;
+        const suffix = e.payload.parameter_count === 1 ? "" : "s";
+        useStore
+          .getState()
+          .pushLog(
+            `Agent invoked skill ${e.payload.skill_id} v${e.payload.version} (${e.payload.parameter_count} parameter${suffix})`,
+          );
+      }),
+    );
+
+    sub(
+      listen<{
+        run_id: string;
+        event_run_id: string;
+        skill_id: string;
+        version: number;
         state: "draft" | "confirmed" | "promoted";
         scope: "project_local" | "global";
       }>("agent://skill_extracted", (e) => {

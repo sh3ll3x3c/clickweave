@@ -45,6 +45,13 @@ ui/src/
 │   ├── IntentEmptyState.tsx
 │   ├── AssistantPanel.tsx
 │   ├── ExecutionTab.tsx
+│   ├── skills/
+│   │   ├── SkillsPanel.tsx
+│   │   ├── SkillDetailView.tsx
+│   │   ├── SkillRefinementForm.tsx
+│   │   ├── SkillToolCallNode.tsx
+│   │   ├── SkillSubSkillNode.tsx
+│   │   └── SkillLoopNode.tsx
 │   ├── PermissionsTab.tsx
 │   ├── CreateGroupPopover.tsx
 │   ├── GroupContextMenu.tsx
@@ -96,6 +103,7 @@ ui/src/
 │       ├── assistantSlice.ts
 │       ├── historySlice.ts
 │       ├── settingsSlice.ts
+│       ├── skillsSlice.ts
 │       ├── logSlice.ts
 │       ├── verdictSlice.ts
 │       ├── walkthroughSlice.ts
@@ -120,6 +128,7 @@ ui/src/
 - `AssistantSlice`
 - `HistorySlice`
 - `SettingsSlice`
+- `SkillsSlice`
 - `LogSlice`
 - `VerdictSlice`
 - `WalkthroughSlice`
@@ -141,7 +150,7 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **AgentSlice** (`agentSlice.ts`)
 
-The agent slice owns the live state of the state-spine agent loop. The backend `StateRunner` emits `agent://*` events as it runs; the slice folds them into UI state. `AgentStep` / `AgentCommand` remain the wire shape the slice renders from (for backward compatibility — Spec 3 migrates the UI off them).
+The agent slice owns the live state of the state-spine agent loop. The backend `StateRunner` emits `agent://*` events as it runs; the slice folds them into UI state. `AgentStep` / `AgentCommand` remain the current projection rendered by existing panels while Spec 3 surfaces are landing.
 
 - `agentStatus: "idle" | "running" | "complete" | "stopped" | "error"`
 - `agentGoal: string`, `agentSteps: AgentStep[]`, `agentError: string | null`, `currentAgentStep: number`
@@ -154,6 +163,8 @@ The new state-spine events (`agent://task_state_changed`, `agent://world_model_c
 
 The Spec 2 episodic-memory events (`agent://episodes_retrieved`, `agent://episode_written`, `agent://episode_promoted`) are emitted by the engine and the background `EpisodicWriter` task, fan out through the same `forward_agent_event` seam, and carry the active `run_id` so the stale-run filter drops late events from a previous run. The slice itself does not yet consume them — they currently support telemetry / future inspector surfaces only. The fields the UI threads into `AgentRunRequest` to control the layer (`episodic_enabled`, `retrieved_episodes_k`, `episodic_global_participation`) are sourced from the SettingsSlice fields documented below.
 
+The Spec 3 skill events are also subscribed in `useAgentEvents`: `agent://skill_extracted` updates the Skills panel index, `agent://skill_confirmed` moves a draft into Confirmed even when confirmation happens outside an active run, and `agent://skill_invoked` records a log line for the active run.
+
 **AssistantSlice** (`assistantSlice.ts`)
 
 Owns the conversational surface. `messages` is the source of truth for continuation: each `user` + `assistant` pair shares a `runId` so the backend can build `prior_turns` for the next turn. `system` messages are deletion annotations (center-aligned, muted blue) with no `runId`.
@@ -161,12 +172,19 @@ Owns the conversational surface. `messages` is the source of truth for continuat
 - `messages: AssistantMessage[]` where `AssistantMessage.role` is `"user" | "assistant" | "system"` and `runId?: string` is present for user/assistant pairs
 - `assistantOpen: boolean`, `assistantError: string | null`
 - actions: `setAssistantOpen`, `toggleAssistant`, `setAssistantError`, `pushAssistantMessage(role, content, runId?)`, `pushSystemAnnotation`, `clearConversation`, `clearConversationFlow`, `setMessages`, `mapMessagesByRunIds`, `dropTurnsByRunIds`
-- persisted per-workflow to `agent_chat.json` (sibling to `agent_cache.json`), hydrated on project open; saves are best-effort and gated on `storeTraces`
+- persisted per-workflow to `agent_chat.json`, hydrated on project open; saves are best-effort and gated on `storeTraces`
 - opening the panel while a walkthrough is `Recording` or `Paused` cancels it; `Review`/`Processing` state is kept and just hidden behind the assistant
+
+**SkillsSlice** (`skillsSlice.ts`)
+
+- `drafts`, `confirmed`, `promoted` — bucketed `SkillSummary` entries loaded from the backend panel index
+- `selectedSkill` and `breadcrumb` — selection state plus deterministic sub-skill navigation
+- actions: `loadSkillsForPanel`, `setSkillsList`, `setSelectedSkill`, `clearSelectedSkill`, `findSkill`, `applySkillExtracted`, `applySkillConfirmed`, breadcrumb push/pop helpers
+- `loadSkillsForPanel` calls `list_skills_for_panel` for project-local skills and, when `skillsGlobalParticipation` is enabled, the global tier; the two result sets are bucketed client-side
 
 **SettingsSlice** (`settingsSlice.ts`)
 
-- `supervisorConfig`, `agentConfig`, `fastConfig`, `fastEnabled`, `maxRepairAttempts`, `hoverDwellThreshold`, `supervisionDelayMs`, `toolPermissions`, `traceRetentionDays`, `storeTraces`, `episodicEnabled`, `retrievedEpisodesK`, `episodicGlobalParticipation`
+- `supervisorConfig`, `agentConfig`, `fastConfig`, `fastEnabled`, `maxRepairAttempts`, `hoverDwellThreshold`, `supervisionDelayMs`, `toolPermissions`, `traceRetentionDays`, `storeTraces`, `episodicEnabled`, `retrievedEpisodesK`, `episodicGlobalParticipation`, `skillsEnabled`, `applicableSkillsK`, `skillsGlobalParticipation`
 - persistence via `store/settings.ts` (`settings.json` through Tauri plugin-store)
 
 `supervisorConfig` is the supervisor LLM endpoint used for Test-mode step verdicts and walkthrough-enrichment VLM fallback. `agentConfig` drives the agent loop. `fastConfig` (enabled by `fastEnabled`) is the fast-VLM used for screenshot description before the supervisor runs its judge pass.
@@ -180,6 +198,14 @@ The Spec 2 episodic-memory controls are surfaced under the Execution settings ta
 - `episodicGlobalParticipation` (default `false`, **privacy opt-in**) — when on, recovery episodes from this workflow may be promoted into the cross-workflow `<app_data_dir>/episodic.sqlite` store. Default off keeps every workflow's recoveries strictly isolated; the global path is only opened when this flag is true.
 
 All three flow through `AgentRunRequest` (`episodic_enabled`, `retrieved_episodes_k`, `episodic_global_participation`) and are persisted to `settings.json` via `saveSetting` per-key.
+
+The Spec 3 procedural-skills controls are surfaced under the Execution settings tab's "Agent Skills" subsection:
+
+- `skillsEnabled` (default `true`) — master kill switch. When off, the backend receives `skills_enabled = false` and builds a disabled `SkillContext`; no extraction, retrieval, or replay runs for that agent execution.
+- `applicableSkillsK` (default `2`, range `[1, 10]`) — top-k procedural skills rendered per `push_subgoal` retrieval trigger.
+- `skillsGlobalParticipation` (default `false`, privacy opt-in) — when on, panel listing and agent runs can include the global skill tier; default off keeps project-local skills isolated.
+
+All three flow through `AgentRunRequest` (`skills_enabled`, `applicable_skills_k`, `skills_global_participation`) and are persisted to `settings.json` via `saveSetting` per-key.
 
 **UiSlice** (`uiSlice.ts`)
 
@@ -205,11 +231,12 @@ All three flow through `AgentRunRequest` (`episodic_enabled`, `retrieved_episode
 
 **WalkthroughSlice** (`walkthroughSlice.ts`)
 
-- `walkthroughStatus`, `walkthroughPanelOpen`, `walkthroughError`, `walkthroughEvents`, `walkthroughActions`, `walkthroughDraft`, `walkthroughWarnings`, `walkthroughCdpModalOpen`, `walkthroughCdpProgress`, `walkthroughAnnotations`, `walkthroughActionNodeMap`, `walkthroughExpandedAction`, `walkthroughNodeOrder`
+- `walkthroughStatus`, `walkthroughPanelOpen`, `walkthroughError`, `walkthroughSessionId`, `walkthroughEvents`, `walkthroughActions`, `walkthroughDraft`, `walkthroughWarnings`, `walkthroughCdpModalOpen`, `walkthroughCdpProgress`, `walkthroughAnnotations`, `walkthroughActionNodeMap`, `walkthroughExpandedAction`, `walkthroughNodeOrder`
 - recording actions: `startWalkthrough(cdpApps?)`, `pauseWalkthrough`, `resumeWalkthrough`, `stopWalkthrough`, `cancelWalkthrough`
 - review actions: annotation editing (`deleteNode`, `restoreNode`, `renameNode`, `overrideTarget`, `promoteToVariable`, etc.), `applyDraftToCanvas`
 - manages recording bar overlay window lifecycle and CDP app selection modal
 - `useWalkthrough` hook provides a focused selector for WalkthroughPanel
+- `WalkthroughPanel` can call `save_walkthrough_as_skill` during Review using `walkthroughSessionId`, then refresh the Skills panel index
 
 ## App Event Wiring
 
@@ -227,6 +254,10 @@ All three flow through `AgentRunRequest` (`episodic_enabled`, `retrieved_episode
   - `agent://episodes_retrieved` — payload `{ trigger: "run_start" | "recovering_entry", count, episode_ids: string[], scope_breakdown: { workflow, global } }`. Fired by the runner when a retrieval pass returned at least one candidate.
   - `agent://episode_written` — payload `{ outcome: "inserted" | "merged" | "dropped: <reason>", episode_id, scope: "workflow_local" | "global", occurrence_count }`. Fired by the background `EpisodicWriter` task after each successful insert / merge.
   - `agent://episode_promoted` — payload `{ promoted_episode_ids: string[], skipped_count }`. Fired once at run-terminal when the promotion pass copies eligible workflow-local episodes into the global cross-workflow store. IDs in `promoted_episode_ids` are the actual global-store row IDs (existing IDs on dedup-merge, freshly minted IDs on insert), so they always resolve in the global store.
+- Spec 3 procedural-skill additions:
+  - `agent://skill_extracted` — payload `{ run_id, event_run_id, skill_id, version, state, scope }`. Updates the Skills panel buckets without polling.
+  - `agent://skill_confirmed` — payload `{ run_id, event_run_id, skill_id, version }`. Moves a draft into Confirmed; this event is not stale-run gated because panel-driven confirmation can happen outside an active run.
+  - `agent://skill_invoked` — payload `{ run_id, event_run_id, skill_id, version, parameter_count }`. Stale-run gated and logged for the active run.
 - `walkthrough://state`, `walkthrough://event`, `walkthrough://draft_ready`, `walkthrough://cdp-setup`
 - `recording-bar://action`
 - `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`
@@ -244,11 +275,17 @@ All `agent://*` payloads carry a `run_id` field. Events whose `run_id` does not 
 
 ### Node type keys
 
-Registered node types:
+Workflow canvas node types:
 
 - `workflow` -> `WorkflowNode`
 - `appGroup` -> `AppGroupNode` (auto-generated groups by app)
 - `userGroup` -> `UserGroupNode` (user-created groups)
+
+Skill-detail canvas node types are selected when `GraphCanvas` receives a `skillSource` prop. The canvas is read-only and uses:
+
+- `skillToolCall` -> `SkillToolCallNode`
+- `skillSubSkill` -> `SkillSubSkillNode`
+- `skillLoop` -> `SkillLoopNode`
 
 ### Behavior
 
@@ -258,6 +295,16 @@ Registered node types:
 - Node selection drives detail modal visibility
 
 Workflows are persisted as a linear sequence of tool-call nodes — there are no control-flow nodes (If / Switch / Loop / EndLoop) and no conditional edge labels. Edges carry only their source/target, with `from` and `to` fields on `Edge`.
+
+## Skills Panel
+
+`ui/src/components/skills/SkillsPanel.tsx` is the left-rail index for procedural skills. It renders three buckets from `SkillsSlice`: Drafts, Confirmed, and Promoted. Each entry shows skill name plus version and writes `(skill_id, version)` into `selectedSkill` when clicked.
+
+`SkillDetailView.tsx` renders the selected skill's metadata and projects its `action_sketch` into a read-only `GraphCanvas` `skillSource`. Tool calls, sub-skills, and loops use the skill-specific React Flow node registry. Clicking a sub-skill pushes the parent onto the breadcrumb stack and selects the pinned child `(skill_id, version)` so navigation is deterministic.
+
+Draft skills can carry a sibling proposal payload. When present, `SkillDetailView` renders `SkillRefinementForm`, whose Confirm path calls `confirm_skill_proposal` with the edited parameter schema and binding corrections; Reject calls `reject_skill_proposal`.
+
+Walkthrough Review exposes `Save as Skill`, which calls `save_walkthrough_as_skill` with the current `walkthroughSessionId`, workflow identity, and project path. On success it reloads `list_skills_for_panel` so the new draft appears in the Skills panel.
 
 ## Node Detail Modal
 
@@ -317,8 +364,13 @@ Do not edit manually.
 | `ui/src/store/useWorkflowMutations.ts` | node/edge mutation helpers with history push (`removeEdgesOnly` for silent edge removal) |
 | `ui/src/store/slices/types.ts` | `StoreState` composition |
 | `ui/src/store/slices/agentSlice.ts` | agent loop live state (status, steps, pending approval, completion-disagreement card, run id) |
+| `ui/src/store/slices/skillsSlice.ts` | procedural-skill panel buckets, selection, breadcrumb navigation, event reducers |
 | `ui/src/store/slices/walkthroughSlice.ts` | walkthrough lifecycle state and CDP modal |
 | `ui/src/hooks/useWalkthrough.ts` | focused walkthrough selector hook for WalkthroughPanel |
+| `ui/src/components/skills/SkillsPanel.tsx` | left-rail procedural-skill index |
+| `ui/src/components/skills/SkillDetailView.tsx` | selected skill metadata, read-only skill canvas, refinement proposal surface |
+| `ui/src/components/skills/SkillRefinementForm.tsx` | draft-skill proposal review form |
+| `ui/src/components/skills/Skill*Node.tsx` | skill-canvas node renderers for tool calls, sub-skills, and loops |
 | `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
 | `ui/src/store/settings.ts` | persisted settings I/O |
 | `ui/src/components/SupervisionModal.tsx` | supervision pause modal (retry / skip / abort) |

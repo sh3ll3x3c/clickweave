@@ -18,7 +18,6 @@ pub mod extractor;
 pub mod frontmatter;
 pub mod index;
 pub mod loop_folding;
-pub mod migrate;
 pub mod outcome;
 pub mod provenance;
 pub mod render;
@@ -34,7 +33,7 @@ pub mod watcher_consumer;
 
 pub use index::SkillIndex;
 pub use replay::SkillFrame;
-pub use store::{SkillStore, filename_for, slugify};
+pub use store::{MoveReport, SkillStore, filename_for, move_skills_to_project, slugify};
 pub use types::{
     ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, BindingCorrection, BindingRef,
     CaptureClause, CaptureSource, ExpectedWorldModelDelta, LoopPredicate, MaybeExtracted,

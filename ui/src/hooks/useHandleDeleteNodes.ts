@@ -15,7 +15,7 @@ type DeleteGroupWithContents = (groupId: string) => void;
  *
  * Shared between the plain React-Flow remove path and the
  * `Delete Group + Contents` context-menu path so neither escapes the
- * cache-prune / annotation / redact contract.
+ * skill-lineage prune / annotation / redact contract.
  */
 function applyDeletionSideEffects(
   deletedAgentNodes: Array<{ id: string; name: string; source_run_id: string }>,
@@ -36,7 +36,7 @@ function applyDeletionSideEffects(
   const { projectPath, workflow, storeTraces, setAssistantError } =
     useStore.getState();
   void commands
-    .pruneAgentCacheForNodes({
+    .pruneSkillLineageForNodes({
       project_path: projectPath,
       workflow_name: workflow.name,
       workflow_id: workflow.id,
@@ -44,7 +44,7 @@ function applyDeletionSideEffects(
       store_traces: storeTraces,
     })
     .catch((e: unknown) => {
-      setAssistantError(`Failed to prune cache: ${String(e)}`);
+      setAssistantError(`Failed to prune skill lineage: ${String(e)}`);
     });
 
   // Scan the post-delete workflow for surviving agent nodes per run
@@ -118,8 +118,8 @@ function expandGroupNodeIds(
  *
  * 1. Mutate the workflow via the underlying `removeNodes` callback.
  * 2. For the subset of deleted nodes that carry `source_run_id`
- *    (agent-built), invoke `prune_agent_cache_for_nodes` so the
- *    on-disk cache evicts entries produced by those nodes.
+ *    (agent-built), invoke `prune_skill_lineage_for_nodes` so draft
+ *    skills drop lineage for deleted nodes.
  * 3. Append a centered `system` chat annotation summarizing the
  *    deletion, grouped by run ID.
  * 4. Redact partial-turn assistant summaries and drop fully-gone
@@ -145,7 +145,7 @@ export function useHandleDeleteNodes(removeNodes: RemoveNodes) {
  * Wrap `deleteGroupWithContents` with the same conversational
  * side-effects as `useHandleDeleteNodes`. The group's direct members
  * plus every sub-group's members are considered "deleted" — if any
- * of those nodes carry `source_run_id`, we prune their cache entries
+ * of those nodes carry `source_run_id`, we prune their skill lineage
  * and annotate / redact the transcript accordingly. Also enforces
  * the mid-run delete gate so grouped deletions don't bypass the
  * safety rails that protect plain deletions.
