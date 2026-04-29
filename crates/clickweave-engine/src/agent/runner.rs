@@ -2061,21 +2061,36 @@ fn stable_no_progress_context_signature(world_model: &WorldModel) -> String {
         .cdp_page
         .as_ref()
         .map(|fresh| fresh.value.url.as_str());
+    let cdp_page_fingerprint = world_model
+        .cdp_page
+        .as_ref()
+        .map(|fresh| fresh.value.page_fingerprint.as_str());
     let cdp_connect_status = world_model
         .cdp_connect_status
         .as_ref()
         .map(|fresh| fresh.value.as_str());
+    let element_surface = world_model
+        .elements
+        .as_ref()
+        .map(|fresh| hashed_json_signature(&fresh.value));
     let modal_present = world_model.modal_present.as_ref().map(|fresh| fresh.value);
     let dialog_present = world_model.dialog_present.as_ref().map(|fresh| fresh.value);
     let signature = serde_json::json!({
         "focused_app": focused_app,
         "cdp_page_url": cdp_page_url,
+        "cdp_page_fingerprint": cdp_page_fingerprint,
         "cdp_connect_status": cdp_connect_status,
+        "element_surface": element_surface,
         "modal_present": modal_present,
         "dialog_present": dialog_present,
     });
     let bytes = serde_json::to_vec(&signature).unwrap_or_default();
     blake3::hash(&bytes).to_hex().to_string()
+}
+
+fn hashed_json_signature<T: Serialize>(value: &T) -> String {
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    blake3::hash(&bytes).to_hex()[..16].to_string()
 }
 
 fn detect_two_action_cycle(
@@ -5831,6 +5846,7 @@ mod parse_agent_turn_tool_calls_tests {
 #[cfg(test)]
 mod no_progress_guard_tests {
     use super::*;
+    use crate::agent::world_model::{CdpPageState, Fresh, FreshnessSource};
     use serde_json::json;
 
     fn sig(
@@ -5886,6 +5902,29 @@ mod no_progress_guard_tests {
         ]);
 
         assert_eq!(detect_two_action_cycle(&recent), None);
+    }
+
+    #[test]
+    fn stable_context_changes_when_page_fingerprint_changes() {
+        let mut wm = WorldModel::default();
+        wm.cdp_page = Some(Fresh {
+            value: CdpPageState {
+                url: "app://synthetic/page".to_string(),
+                page_fingerprint: "count=1;hash=a".to_string(),
+            },
+            written_at: 1,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: Some(2),
+        });
+        let before = stable_no_progress_context_signature(&wm);
+
+        wm.cdp_page.as_mut().unwrap().value.page_fingerprint = "count=2;hash=b".to_string();
+        let after = stable_no_progress_context_signature(&wm);
+
+        assert_ne!(
+            before, after,
+            "CDP element-surface progress must reset no-progress tracking"
+        );
     }
 
     #[test]
