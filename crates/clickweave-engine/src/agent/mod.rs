@@ -4,6 +4,7 @@ mod completion_check;
 mod context;
 pub mod episodic;
 pub mod permissions;
+pub mod skills;
 // Phase is part of `TaskState`'s public surface (used to construct
 // `task_state_at_entry` snapshots in the episodic memory layer's
 // integration tests), so the module surfaces as `pub mod`.
