@@ -39,7 +39,7 @@ export function CanvasView() {
     walkthroughEventCount,
     selectedSkill,
     skillsAvailable,
-    assistantOpen,
+    drawerOpen,
     assistantError,
     messages,
     agentStatus,
@@ -67,7 +67,7 @@ export function CanvasView() {
       walkthroughEventCount: s.walkthroughEvents.length,
       selectedSkill: s.selectedSkill,
       skillsAvailable: s.skillsEnabled && s.storeTraces,
-      assistantOpen: s.assistantOpen,
+      drawerOpen: s.assistantSurface === "drawer",
       assistantError: s.assistantError,
       messages: s.messages,
       agentStatus: s.agentStatus,
@@ -237,7 +237,7 @@ export function CanvasView() {
       )}
 
       <AssistantPanel
-        open={assistantOpen}
+        open={drawerOpen}
         error={assistantError}
         messages={messages}
         onSendMessage={startAgent}

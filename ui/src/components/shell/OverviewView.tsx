@@ -11,14 +11,14 @@ export function OverviewView() {
       isNewWorkflow: s.isNewWorkflow,
     })),
   );
-  const { assistantOpen, assistantError, messages } = useStore(
+  const { drawerOpen, assistantError, messages } = useStore(
     useShallow((s) => ({
-      assistantOpen: s.assistantOpen,
+      drawerOpen: s.assistantSurface === "drawer",
       assistantError: s.assistantError,
       messages: s.messages,
     })),
   );
-  const setAssistantOpen = useStore((s) => s.setAssistantOpen);
+  const setAssistantSurface = useStore((s) => s.setAssistantSurface);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
   const startAgent = useStore((s) => s.startAgent);
   const agentStatus = useStore((s) => s.agentStatus);
@@ -27,7 +27,7 @@ export function OverviewView() {
     return (
       <IntentEmptyState
         onGenerate={(intent) => {
-          setAssistantOpen(true);
+          setAssistantSurface("overview-card");
           skipIntentEntry();
           startAgent(intent);
         }}
@@ -49,11 +49,11 @@ export function OverviewView() {
       <WorkflowRow />
       <div className="flex flex-1 items-stretch justify-center overflow-hidden">
         <AssistantPanel
-          open={assistantOpen}
+          open={drawerOpen}
           error={assistantError}
           messages={messages}
           onSendMessage={startAgent}
-          onClose={() => setAssistantOpen(false)}
+          onClose={() => setAssistantSurface(null)}
         />
       </div>
     </div>

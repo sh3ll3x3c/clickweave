@@ -109,7 +109,7 @@ vi.mock("../hooks/useWalkthrough", () => ({
 vi.mock("../store/useAppStore", () => ({
   useStore: (selector: (state: unknown) => unknown) =>
     selector({
-      assistantOpen: false,
+      assistantSurface: null,
       projectPath: null,
       workflow: {
         id: "workflow-1",

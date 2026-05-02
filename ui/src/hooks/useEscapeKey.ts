@@ -25,12 +25,12 @@ export function useEscapeKey() {
         cancelWalkthrough,
         discardDraft,
         setWalkthroughPanelOpen,
-        assistantOpen,
+        assistantSurface,
         logsDrawerOpen,
         setShowSettings,
         selectNode,
         clearCanvasSelection,
-        setAssistantOpen,
+        setAssistantSurface,
         toggleLogsDrawer,
       } = useStore.getState();
 
@@ -47,9 +47,11 @@ export function useEscapeKey() {
         clearCanvasSelection();
       } else if (selectedNode !== null) {
         selectNode(null);
-      } else if (assistantOpen) {
-        // Close assistant first — if walkthrough review is behind it, this reveals it.
-        setAssistantOpen(false);
+      } else if (assistantSurface === "drawer") {
+        // Only the Canvas drawer is closable via Esc; the Overview embedded
+        // card has no Esc-close affordance (it's always live on Overview).
+        // Closing here also reveals any walkthrough review hidden behind it.
+        setAssistantSurface(null);
       } else if (walkthroughActive && walkthroughPanelOpen) {
         // Close the panel first; a second Escape will discard.
         setWalkthroughPanelOpen(false);

@@ -34,6 +34,77 @@ vi.mock("../../bindings", async () => {
 import { useStore } from "../useAppStore";
 import { commands } from "../../bindings";
 
+describe("assistantSlice.setAssistantOpen / toggleAssistant (D21)", () => {
+  beforeEach(() => {
+    useStore.setState({
+      assistantSurface: null,
+      currentView: "canvas",
+      walkthroughStatus: "Idle",
+    });
+  });
+
+  it("setAssistantOpen(true) opens the drawer surface on Canvas", () => {
+    useStore.getState().setAssistantOpen(true);
+    expect(useStore.getState().assistantSurface).toBe("drawer");
+  });
+
+  it("setAssistantOpen(false) closes the drawer surface on Canvas", () => {
+    useStore.setState({ assistantSurface: "drawer" });
+    useStore.getState().setAssistantOpen(false);
+    expect(useStore.getState().assistantSurface).toBeNull();
+  });
+
+  it("setAssistantOpen(true) is a no-op on Overview", () => {
+    useStore.setState({ currentView: "overview", assistantSurface: null });
+    useStore.getState().setAssistantOpen(true);
+    expect(useStore.getState().assistantSurface).toBeNull();
+  });
+
+  it("toggleAssistant flips between drawer and null on Canvas", () => {
+    useStore.getState().toggleAssistant();
+    expect(useStore.getState().assistantSurface).toBe("drawer");
+    useStore.getState().toggleAssistant();
+    expect(useStore.getState().assistantSurface).toBeNull();
+  });
+
+  it("toggleAssistant is a no-op on Overview", () => {
+    useStore.setState({ currentView: "overview", assistantSurface: null });
+    useStore.getState().toggleAssistant();
+    expect(useStore.getState().assistantSurface).toBeNull();
+  });
+
+  it("setAssistantOpen(true) on Canvas does NOT cancel a Review walkthrough", () => {
+    useStore.setState({ currentView: "canvas", walkthroughStatus: "Review" });
+    useStore.getState().setAssistantOpen(true);
+    expect(useStore.getState().walkthroughStatus).toBe("Review");
+    expect(useStore.getState().assistantSurface).toBe("drawer");
+  });
+
+  it("setAssistantOpen(true) on Canvas cancels a Recording walkthrough", () => {
+    const cancelSpy = vi.fn();
+    useStore.setState({
+      currentView: "canvas",
+      walkthroughStatus: "Recording",
+      cancelWalkthrough: cancelSpy as unknown as () => Promise<void>,
+    });
+    useStore.getState().setAssistantOpen(true);
+    expect(cancelSpy).toHaveBeenCalled();
+  });
+
+  it("setCurrentView('overview') from a Recording walkthrough does NOT cancel it", () => {
+    const cancelSpy = vi.fn();
+    useStore.setState({
+      currentView: "canvas",
+      walkthroughStatus: "Recording",
+      assistantSurface: null,
+      cancelWalkthrough: cancelSpy as unknown as () => Promise<void>,
+    });
+    useStore.getState().setCurrentView("overview");
+    expect(useStore.getState().walkthroughStatus).toBe("Recording");
+    expect(cancelSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("assistantSlice.pushAssistantMessage", () => {
   beforeEach(() => {
     useStore.setState({ messages: [] });

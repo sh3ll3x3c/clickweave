@@ -70,10 +70,19 @@ export interface RunTrace {
 
 export interface AssistantSlice {
   messages: AssistantMessage[];
-  assistantOpen: boolean;
   assistantError: string | null;
   runTraces: Record<string, RunTrace>;
 
+  /**
+   * D21 — `setAssistantOpen` / `toggleAssistant` no longer mutate a bare
+   * boolean. They now drive `assistantSurface` (lives on `uiSlice`):
+   *  - On Overview both actions are no-ops (the embedded card is always
+   *    live, so toggling has no surface to act on).
+   *  - On Canvas they flip `assistantSurface` between `"drawer"` and
+   *    `null`.
+   * The walkthrough cancellation side-effect (Recording / Paused) is
+   * preserved on Canvas only.
+   */
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
   setAssistantError: (error: string | null) => void;
@@ -189,11 +198,18 @@ export const createAssistantSlice: StateCreator<
 
   return {
   messages: [],
-  assistantOpen: false,
   assistantError: null,
   runTraces: {},
 
   setAssistantOpen: (open) => {
+    // D21 — the legacy boolean is now derived from `assistantSurface`.
+    // Setting "open" maps to opening the **drawer** surface; the
+    // Overview embedded card has its own surface and is not toggled
+    // by this action.
+    if (get().currentView === "overview") {
+      // No drawer to toggle on Overview — the embedded card is always live.
+      return;
+    }
     if (open && isWalkthroughActive(get().walkthroughStatus)) {
       const status = get().walkthroughStatus;
       if (status === "Recording" || status === "Paused") {
@@ -202,10 +218,11 @@ export const createAssistantSlice: StateCreator<
       // Review/Processing: don't discard — just hide the walkthrough panel
       // while the assistant is open. Closing the assistant restores it.
     }
-    set({ assistantOpen: open });
+    get().setAssistantSurface(open ? "drawer" : null);
   },
   toggleAssistant: () => {
-    const opening = !get().assistantOpen;
+    if (get().currentView === "overview") return;
+    const opening = get().assistantSurface !== "drawer";
     if (opening && isWalkthroughActive(get().walkthroughStatus)) {
       const status = get().walkthroughStatus;
       if (status === "Recording" || status === "Paused") {
@@ -214,7 +231,7 @@ export const createAssistantSlice: StateCreator<
       // Review/Processing: don't discard — just hide the walkthrough panel
       // while the assistant is open. Closing the assistant restores it.
     }
-    set({ assistantOpen: opening });
+    get().setAssistantSurface(opening ? "drawer" : null);
   },
 
   setAssistantError: (error) => set({ assistantError: error }),

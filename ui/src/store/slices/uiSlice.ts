@@ -30,7 +30,7 @@ export interface UiSlice {
    * - `null`: no drawer surface; on Canvas no thread chrome is mounted,
    *   on Overview the embedded card is unaffected.
    *
-   * Replaces the legacy boolean `assistantOpen` flag. Switching to
+   * Replaces the legacy boolean `assistant-open` flag. Switching to
    * Overview does NOT cancel a Recording/Paused walkthrough because
    * `setAssistantOpen` / `toggleAssistant` are no-ops on Overview.
    */

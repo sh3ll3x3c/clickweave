@@ -174,9 +174,9 @@ The Spec 3 skill events are also subscribed in `useAgentEvents`: `agent://skill_
 Owns the conversational surface. `messages` is the source of truth for continuation: each `user` + `assistant` pair shares a `runId` so the backend can build `prior_turns` for the next turn. `system` messages are deletion annotations (center-aligned, muted blue) with no `runId`.
 
 - `messages: AssistantMessage[]` where `AssistantMessage.role` is `"user" | "assistant" | "system"` and `runId?: string` is present for user/assistant pairs
-- `assistantOpen: boolean`, `assistantError: string | null`
+- `assistantSurface: "overview-card" | "drawer" | null` (lives on `UiSlice`), `assistantError: string | null`
 - `runTraces: Record<string, RunTrace>` — live trace state keyed by agent `run_id`. `RunTrace` contains `{ runId, phase, activeSubgoal, steps, worldModelDeltas, milestones, terminalFrame }`, where steps carry tool name/body/failure state, deltas carry changed world-model field names, milestones mirror completed-subgoal/recovery boundaries, and terminal frames distinguish complete/stopped/error/disagreement-cancelled endings.
-- actions: `setAssistantOpen`, `toggleAssistant`, `setAssistantError`, `pushAssistantMessage(role, content, runId?)`, `pushSystemAnnotation`, `clearConversation`, `clearConversationFlow`, `setMessages`, `mapMessagesByRunIds`, `dropTurnsByRunIds`, `applyTaskStateUpdate`, `applyWorldModelDelta`, `applyBoundary`, `pushTraceStep`, `setTerminalFrame`, `clearTrace`
+- actions: `setAssistantOpen`, `toggleAssistant`, `setAssistantError`, `pushAssistantMessage(role, content, runId?)`, `pushSystemAnnotation`, `clearConversation`, `clearConversationFlow`, `setMessages`, `mapMessagesByRunIds`, `dropTurnsByRunIds`, `applyTaskStateUpdate`, `applyWorldModelDelta`, `applyBoundary`, `pushTraceStep`, `setTerminalFrame`, `clearTrace`. `setAssistantOpen` / `toggleAssistant` no-op on Overview; on Canvas they toggle `assistantSurface` between `'drawer'` and `null`.
 - persisted per-workflow to `agent_chat.json`, hydrated on project open; saves are best-effort and gated on `storeTraces`
 - opening the panel while a walkthrough is `Recording` or `Paused` cancels it; `Review`/`Processing` state is kept and just hidden behind the assistant
 

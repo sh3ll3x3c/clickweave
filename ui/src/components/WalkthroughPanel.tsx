@@ -49,7 +49,7 @@ function groupBorderStyle(group: AppGroup): React.CSSProperties {
 
 export function WalkthroughPanel() {
   const walkthrough = useWalkthrough();
-  const assistantOpen = useStore((s) => s.assistantOpen);
+  const assistantSurface = useStore((s) => s.assistantSurface);
   const projectPath = useStore((s) => s.projectPath);
   const workflow = useStore((s) => s.workflow);
   const storeTraces = useStore((s) => s.storeTraces);
@@ -227,8 +227,11 @@ export function WalkthroughPanel() {
   // Recording/Paused/Processing states are now handled by RecordingBar overlay
   if (walkthrough.status !== "Review") return null;
 
-  // Hide while assistant panel is open to avoid rendering both side panels.
-  if (assistantOpen) return null;
+  // Hide while the Canvas drawer surface is open to avoid rendering both
+  // side panels simultaneously. The Overview embedded card is its own
+  // surface and never hides the Canvas walkthrough panel (which only
+  // mounts on Canvas anyway).
+  if (assistantSurface === "drawer") return null;
 
   // Hide when user closed the panel via X. State is preserved; can reopen from toolbar.
   if (!walkthrough.panelOpen) return null;

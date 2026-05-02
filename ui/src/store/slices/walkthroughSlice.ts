@@ -281,7 +281,9 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughCdpProgress: [],
       walkthroughNodeOrder: [],
 
-      assistantOpen: false,
+      // P2.H2 — legacy bare-boolean removed; drive the surface enum so any
+      // open drawer hides while the walkthrough records.
+      assistantSurface: null,
     });
     const supervisor = supervisorConfig.baseUrl && supervisorConfig.model
       ? toEndpoint(supervisorConfig)
