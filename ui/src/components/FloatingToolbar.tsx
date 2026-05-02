@@ -61,6 +61,8 @@ interface FloatingToolbarProps {
   walkthroughStatus: WalkthroughStatus;
   walkthroughPanelOpen: boolean;
   walkthroughEventCount: number;
+  lastRunStatus: "completed" | "failed" | null;
+  runningHint: boolean;
   onToggleLogs: () => void;
   onRunStop: () => void;
   onAssistant: () => void;
@@ -77,6 +79,8 @@ export function FloatingToolbar({
   hasNodes,
   walkthroughStatus,
   walkthroughPanelOpen,
+  lastRunStatus,
+  runningHint,
   onToggleLogs,
   onRunStop,
   onAssistant,
@@ -187,6 +191,34 @@ export function FloatingToolbar({
               Logs
             </button>
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
+            {runningHint && executorState === "running" ? (
+              <span className="flex items-center gap-1.5 px-1.5 text-[11px] text-[var(--accent-green)] shrink-0">
+                <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-green)] animate-pulse" />
+                Running
+                <span className="text-[var(--text-muted)] text-[10px]">(⌘⇧Esc to stop)</span>
+              </span>
+            ) : !runningHint && lastRunStatus ? (
+              <span
+                className="flex items-center gap-1.5 px-1.5 text-[11px] shrink-0"
+                style={{
+                  color:
+                    lastRunStatus === "completed"
+                      ? "var(--accent-green)"
+                      : "var(--accent-coral)",
+                }}
+              >
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{
+                    backgroundColor:
+                      lastRunStatus === "completed"
+                        ? "var(--accent-green)"
+                        : "var(--accent-coral)",
+                  }}
+                />
+                Last run: {lastRunStatus === "completed" ? "Completed" : "Failed"}
+              </span>
+            ) : null}
             {hasAiNodes && !isRunning && (
               <span className="rounded bg-[var(--accent-blue)]/20 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent-blue)]">
                 AI

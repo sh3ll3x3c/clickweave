@@ -355,6 +355,8 @@ function App() {
                   hasNodes={workflow.nodes.length > 0}
                   walkthroughStatus={walkthroughStatus}
                   walkthroughPanelOpen={walkthroughPanelOpen}
+                  lastRunStatus={lastRunStatus}
+                  runningHint={true}
                   onToggleLogs={toggleLogsDrawer}
                   onRunStop={
                     executorState === "running" ? stopWorkflow : runWorkflow
