@@ -663,6 +663,103 @@ describe("startAgent — blocked during pending completion-disagreement", () => 
   });
 });
 
+describe("elapsed timestamps (D24)", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+    useStore.setState({ messages: [] });
+  });
+
+  it("startAgent sets agentRunStartedAt to a recent epoch and clears agentRunFinishedAt", async () => {
+    // Pre-populate a stale finished timestamp from a prior run.
+    useStore.setState({ agentRunStartedAt: 1, agentRunFinishedAt: 999 });
+    invokeMock.mockResolvedValueOnce(undefined);
+    const before = Date.now();
+
+    await useStore.getState().startAgent("goal");
+
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).not.toBeNull();
+    expect(s.agentRunStartedAt!).toBeGreaterThanOrEqual(before);
+    expect(s.agentRunFinishedAt).toBeNull();
+  });
+
+  it("stopAgent stamps agentRunFinishedAt without clearing agentRunStartedAt", async () => {
+    useStore.setState({ agentRunStartedAt: 100, agentRunFinishedAt: null });
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().stopAgent();
+
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).toBe(100);
+    expect(s.agentRunFinishedAt).not.toBeNull();
+  });
+
+  it("resetAgent clears both timestamps", () => {
+    useStore.setState({ agentRunStartedAt: 100, agentRunFinishedAt: 200 });
+    useStore.getState().resetAgent();
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).toBeNull();
+    expect(s.agentRunFinishedAt).toBeNull();
+  });
+
+  it("startAgent on a fresh run zeros both fields together (next-start contract)", async () => {
+    useStore.setState({
+      agentRunStartedAt: 100,
+      agentRunFinishedAt: 200,
+      agentStatus: "stopped",
+    });
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().startAgent("goal");
+
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).not.toBe(100);
+    expect(s.agentRunFinishedAt).toBeNull();
+  });
+
+  it("confirmDisagreementAsComplete stamps agentRunFinishedAt before invoke (D24)", async () => {
+    useStore.setState({
+      agentRunStartedAt: 100,
+      agentRunFinishedAt: null,
+      completionDisagreement: {
+        screenshotBase64: "",
+        vlmReasoning: "",
+        agentSummary: "",
+      },
+    });
+    invokeMock.mockRejectedValueOnce({
+      kind: "Validation",
+      message: "no resolver",
+    });
+
+    await useStore.getState().confirmDisagreementAsComplete();
+
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
+  });
+
+  it("cancelDisagreement stamps agentRunFinishedAt before invoke (D24)", async () => {
+    useStore.setState({
+      agentRunStartedAt: 100,
+      agentRunFinishedAt: null,
+      completionDisagreement: {
+        screenshotBase64: "",
+        vlmReasoning: "",
+        agentSummary: "",
+      },
+      agentRunId: "run-1",
+    });
+    invokeMock.mockRejectedValueOnce({
+      kind: "Validation",
+      message: "no resolver",
+    });
+
+    await useStore.getState().cancelDisagreement();
+
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
+  });
+});
+
 describe("isAgentActive", () => {
   it("is true when status is running", async () => {
     const { isAgentActive } = await import("./agentSlice");

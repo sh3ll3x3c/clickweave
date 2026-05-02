@@ -164,6 +164,16 @@ export interface AgentSlice {
   consecutiveDestructiveCapHit: ConsecutiveDestructiveCapHit | null;
   /** Generation ID for the active run — used to reject stale events. */
   agentRunId: string | null;
+  /** Epoch ms when `startAgent` flipped the slice into the running state.
+   *  Used by `LiveRuntimeCard` to compute the Elapsed metric. Cleared on
+   *  the next `startAgent` (or `clearConversationFlow`) — never on terminal
+   *  events alone, so the freeze duration stays visible. */
+  agentRunStartedAt: number | null;
+  /** Epoch ms when the active run reached a terminal state (stop, complete,
+   *  error, or completion-disagreement resolution). Drives the frozen
+   *  Elapsed display in `LiveRuntimeCard` between runs. Cleared together
+   *  with `agentRunStartedAt` on the next start. */
+  agentRunFinishedAt: number | null;
   /** Ambiguity resolution records, newest first. Persists across agent
    *  completion so the user can inspect past resolutions. */
   ambiguityResolutions: AmbiguityResolution[];
@@ -237,6 +247,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   pendingRunNodes: {},
   pendingRunEdges: {},
   agentRunCollapsed: {},
+  agentRunStartedAt: null,
+  agentRunFinishedAt: null,
 
   startAgent: async (goal) => {
     const priorState = get();
@@ -326,6 +338,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         // and any late in-flight events from the prior run (which
         // carry a different run_id) get rejected by `isStaleRunId`.
         agentRunId: runId,
+        // D24 — both elapsed fields zero together on every fresh
+        // start. The "cleared together only on the next start" rule
+        // is achieved by writing both fields here; terminal events
+        // only set `agentRunFinishedAt`, never `agentRunStartedAt`.
+        agentRunStartedAt: Date.now(),
+        agentRunFinishedAt: null,
       });
       // Push the user bubble stamped with the new run ID. This is
       // the single producer for the user side of the conversation —
@@ -388,6 +406,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentStatus: "stopped",
       pendingApproval: null,
       consecutiveDestructiveCapHit: null,
+      // D24 — freeze elapsed at the user-initiated stop. Terminal
+      // event handlers will overwrite with their own Date.now() if
+      // they fire (within microseconds), but stamping here keeps the
+      // Live Runtime card frozen even if the backend never emits a
+      // terminal event (e.g. force-kill path).
+      agentRunFinishedAt: Date.now(),
     });
     try {
       await invoke("stop_agent");
@@ -514,6 +538,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
    */
   confirmDisagreementAsComplete: async () => {
     const { pushLog } = get();
+    // D24 — freeze elapsed at the moment of resolution. The terminal
+    // event will overwrite this with its own Date.now() if it fires
+    // (within microseconds), but the optimistic stamp ensures the
+    // Live Runtime card freezes immediately even if the catch path
+    // runs (resolver-rejected race) and only sets `completionDisagreement`.
+    set({ agentRunFinishedAt: Date.now() });
     try {
       await invoke("resolve_completion_disagreement", { action: "confirm" });
       pushLog(
@@ -538,6 +568,11 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     if (agentRunId) {
       get().dropRunBuffer(agentRunId);
     }
+    // D24 — freeze elapsed at resolution (mirrors confirm path). The
+    // terminal `agent://stopped` event overwrites this if it fires;
+    // stamping here guarantees the Live Runtime card freezes even on
+    // the resolver-rejected catch path.
+    set({ agentRunFinishedAt: Date.now() });
     try {
       await invoke("resolve_completion_disagreement", { action: "cancel" });
       pushLog("Agent run cancelled by user (VLM disagreement)");
@@ -548,6 +583,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         completionDisagreement: null,
         agentStatus: "stopped",
         pendingApproval: null,
+        agentRunFinishedAt: Date.now(),
       });
       pushLog(`Completion cancel invoke rejected: ${formatAgentError(err)}`);
     }
@@ -573,6 +609,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       pendingRunNodes: {},
       pendingRunEdges: {},
       agentRunCollapsed: {},
+      agentRunStartedAt: null,
+      agentRunFinishedAt: null,
       // Ambiguity records are intentionally NOT cleared — they persist across
       // runs so the user can still inspect past resolutions until they
       // explicitly clear them or start a new project.
