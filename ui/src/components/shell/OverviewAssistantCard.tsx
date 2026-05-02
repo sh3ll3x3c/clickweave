@@ -14,10 +14,9 @@ import { AssistantThread } from "./AssistantThread";
  * is coral; the embedded `AssistantThread` keeps its existing palette.
  */
 export function OverviewAssistantCard() {
-  // P1.C1 — `activeSubgoal` is NOT a top-level store field; it lives
-  // on each per-run `RunTrace`. Read it through `runTraces[agentRunId]
-  // ?.activeSubgoal` and fall back to `workflow.intent` per the design
-  // data table.
+  // `activeSubgoal` is NOT a top-level store field; it lives on each
+  // per-run `RunTrace`. Read through `runTraces[agentRunId]?.activeSubgoal`
+  // and fall back to `workflow.intent`.
   const {
     assistantError,
     messages,

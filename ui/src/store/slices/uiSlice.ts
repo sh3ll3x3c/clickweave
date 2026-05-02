@@ -17,9 +17,8 @@ export interface UiSlice {
   allowAgentSteps: boolean;
   nodeTypes: NodeTypeInfo[];
   _nodeTypesLoaded: boolean;
-  /** P1.H1 — root-hoisted ConfirmClearConversationModal open state.
-   *  Was `useState` inside AssistantPanel; lifted so AppShell can mount
-   *  the modal at root per D15. */
+  /** Root-hoisted `ConfirmClearConversationModal` open state per D15.
+   *  Lifted from AssistantPanel so AppShell can mount the modal at root. */
   confirmClearOpen: boolean;
   /**
    * D21 — source of truth for "is the assistant thread visible right now,

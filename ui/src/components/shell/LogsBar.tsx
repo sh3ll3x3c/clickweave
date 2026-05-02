@@ -5,8 +5,7 @@ import { useStore } from "../../store/useAppStore";
 const HEADER_HEIGHT = 36;
 const EXPANDED_HEIGHT = 240;
 
-// P1.M2 — keep the same substring color rules as LogsDrawer.tsx:15-18 so
-// the row-rendering "reuse" claim from the design (reused-as-is) holds.
+// Mirror LogsDrawer.tsx's substring color rules for visual consistency.
 function logColor(log: string): string {
   if (log.includes("Error") || log.includes("failed")) return "text-red-400";
   if (log.includes("completed") || log.includes("Saved")) return "text-[var(--accent-green)]";
@@ -28,7 +27,7 @@ export function LogsBar() {
     return logs.filter((l) => l.toLowerCase().includes(q));
   }, [logs, search]);
 
-  // P1.M2 — auto-scroll to the bottom on new lines (mirrors LogsDrawer.tsx:24-28).
+  // Auto-scroll to the bottom on new log lines.
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;

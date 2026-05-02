@@ -139,7 +139,7 @@ export function AppShell() {
         }}
         onCancel={() => useStore.getState().closeCdpModal()}
       />
-      {/* D15 root-mounted modals (P1.H1 — hoisted out of AssistantThread). */}
+      {/* D15 — root-mounted modals (hoisted out of AssistantThread). */}
       {activeAmbiguity && (
         <AmbiguityResolutionModal
           resolution={activeAmbiguity}

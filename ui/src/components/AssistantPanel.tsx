@@ -3,14 +3,13 @@ import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import { AssistantThread } from "./shell/AssistantThread";
 
 /**
- * D21 / Task 3.4 — thin drawer wrapper. The body (intent bar, messages,
+ * D21 — thin drawer wrapper. The body (intent bar, messages,
  * cards, run trace, composer) lives in `AssistantThread.tsx`. The
  * resize handle and drawer-only layout chrome stay here.
  *
- * Modal hoist (D15 / P1.H1): `AmbiguityResolutionModal` and
- * `ConfirmClearConversationModal` are now mounted at `AppShell` root
- * and read their open state from the store — they are NOT mounted by
- * this wrapper.
+ * D15: `AmbiguityResolutionModal` and `ConfirmClearConversationModal`
+ * are mounted at `AppShell` root and read their open state from the
+ * store — they are NOT mounted by this wrapper.
  */
 interface AssistantPanelProps {
   open: boolean;
