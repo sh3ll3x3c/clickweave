@@ -26,6 +26,7 @@ export function useEscapeKey() {
         discardDraft,
         setWalkthroughPanelOpen,
         assistantSurface,
+        currentView,
         logsDrawerOpen,
         setShowSettings,
         selectNode,
@@ -35,19 +36,20 @@ export function useEscapeKey() {
       } = useStore.getState();
 
       const walkthroughActive = isWalkthroughActive(walkthroughStatus);
+      const canvasVisible = currentView === "canvas";
 
       if (verdictModalOpen) {
         closeVerdictModal();
       } else if (showSettings) {
         setShowSettings(false);
-      } else if (hasCanvasSelection) {
+      } else if (canvasVisible && hasCanvasSelection) {
         // Canvas-only selections (groups, or 2+ nodes) are not represented
         // by `selectedNode`, so prefer this branch before the single-node
         // one. `clearCanvasSelection` also resets `selectedNode` to null.
         clearCanvasSelection();
-      } else if (selectedNode !== null) {
+      } else if (canvasVisible && selectedNode !== null) {
         selectNode(null);
-      } else if (assistantSurface === "drawer") {
+      } else if (canvasVisible && assistantSurface === "drawer") {
         // Only the Canvas drawer is closable via Esc; the Overview embedded
         // card has no Esc-close affordance (it's always live on Overview).
         // Closing here also reveals any walkthrough review hidden behind it.
