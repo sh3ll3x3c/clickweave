@@ -7,6 +7,7 @@ import type { StoreState } from "./types";
 export interface UiSlice {
   selectedNode: string | null;
   activeNode: string | null;
+  currentView: "overview" | "canvas";
   detailTab: DetailTab;
   sidebarCollapsed: boolean;
   logsDrawerOpen: boolean;
@@ -16,6 +17,10 @@ export interface UiSlice {
   allowAgentSteps: boolean;
   nodeTypes: NodeTypeInfo[];
   _nodeTypesLoaded: boolean;
+  /** P1.H1 — root-hoisted ConfirmClearConversationModal open state.
+   *  Was `useState` inside AssistantPanel; lifted so AppShell can mount
+   *  the modal at root per D15. */
+  confirmClearOpen: boolean;
   /**
    * True when the canvas has a selection (one or more nodes, including group
    * containers) that is NOT represented by `selectedNode`. `selectedNode`
@@ -32,6 +37,7 @@ export interface UiSlice {
 
   selectNode: (id: string | null) => void;
   setActiveNode: (id: string | null) => void;
+  setCurrentView: (view: "overview" | "canvas") => void;
   setDetailTab: (tab: DetailTab) => void;
   toggleSidebar: () => void;
   toggleLogsDrawer: () => void;
@@ -42,11 +48,13 @@ export interface UiSlice {
   loadNodeTypes: () => void;
   setHasCanvasSelection: (has: boolean) => void;
   clearCanvasSelection: () => void;
+  setConfirmClearOpen: (open: boolean) => void;
 }
 
 export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, get) => ({
   selectedNode: null,
   activeNode: null,
+  currentView: "overview",
   detailTab: "setup" as DetailTab,
   sidebarCollapsed: false,
   logsDrawerOpen: false,
@@ -58,9 +66,11 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   _nodeTypesLoaded: false,
   hasCanvasSelection: false,
   canvasSelectionResetTick: 0,
+  confirmClearOpen: false,
 
   selectNode: (id) => set({ selectedNode: id }),
   setActiveNode: (id) => set({ activeNode: id }),
+  setCurrentView: (view) => set({ currentView: view }),
   setDetailTab: (tab) => set({ detailTab: tab }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   toggleLogsDrawer: () => set((s) => ({ logsDrawerOpen: !s.logsDrawerOpen })),
@@ -88,4 +98,5 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
       hasCanvasSelection: false,
       canvasSelectionResetTick: s.canvasSelectionResetTick + 1,
     })),
+  setConfirmClearOpen: (open) => set({ confirmClearOpen: open }),
 });
