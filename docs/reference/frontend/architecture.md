@@ -34,7 +34,20 @@ ui/src/
 │   ├── NodePalette.tsx
 │   ├── LogsDrawer.tsx
 │   ├── FloatingToolbar.tsx
-│   ├── shell/                    # AppShell, TitleBar, Sidebar, view router (see Phase 5 detail)
+│   ├── shell/                    # two-view shell and Overview composition
+│   │   ├── AppShell.tsx          # root orchestrator, view router, mounts global overlays
+│   │   ├── TitleBar.tsx          # in-app bar below OS chrome; wordmark + settings + save
+│   │   ├── Sidebar.tsx           # UTILITY label, Overview / Canvas nav
+│   │   ├── WorkflowRow.tsx       # workflow-name pencil-edit row (wraps pushHistory)
+│   │   ├── StatsStrip.tsx        # three skills-lifecycle cards + Skills Manager pill
+│   │   ├── OverviewView.tsx      # Overview composition; branches on IntentEmptyState
+│   │   ├── CanvasView.tsx        # wraps GraphCanvas + NodePalette + FloatingToolbar
+│   │   ├── LiveRuntimeCard.tsx   # phase chip, Step N, elapsed, active tool, run-status pill
+│   │   ├── CanvasPreviewCard.tsx # header chrome for the read-only canvas preview
+│   │   ├── CanvasPreviewCanvas.tsx # dedicated read-only ReactFlow renderer (D12)
+│   │   ├── OverviewAssistantCard.tsx # Overview chrome around AssistantThread
+│   │   ├── AssistantThread.tsx   # extracted chat-thread body (shared by drawer + Overview card)
+│   │   └── LogsBar.tsx           # collapsible chrome: title, count, search, copy, clear
 │   ├── VerdictBar.tsx
 │   ├── VerdictModal.tsx
 │   ├── SettingsModal.tsx
@@ -367,10 +380,24 @@ Notable types:
 
 Do not edit manually.
 
+## Shell Components (`components/shell/`)
+
+The `shell/` directory was introduced to replace the single-mode canvas-first layout with a two-view shell (Overview + Canvas). `AppShell` is the root orchestrator: it mounts `TitleBar`, `Sidebar`, and a view router that renders either `OverviewView` or `CanvasView` based on `uiSlice.currentView`. True global overlays (`SettingsModal`, `VerdictModal`, `SupervisionModal`, `CdpAppSelectModal`, `AmbiguityResolutionModal`, `ConfirmClearConversationModal`) mount at `AppShell` root per D15. Layout-aware panels (`NodeDetailModal`, `SkillDetailView`, `WalkthroughPanel`) remain inside `CanvasView` at the same flex positions they held previously.
+
+`AssistantPanel.tsx` is now a thin drawer wrapper (resize handle + close button) that delegates its body to `AssistantThread.tsx`. `AssistantThread` is also embedded directly in `OverviewAssistantCard` so the same thread renders in both surfaces without duplication.
+
+`LogsBar` replaces the legacy `LogsDrawer` in `AppShell`; it provides title + count, search (client-side substring filter), copy, and clear — with no level-filter pill (D26). Row coloring follows the same substring rules as `LogsDrawer`.
+
+`Header.tsx` was removed. Its responsibilities were redistributed: workflow rename → `WorkflowRow` (with `pushHistory("Rename Workflow")` wrap); save icon + settings gear → `TitleBar`; running-status pulse + last-run pill + ⌘⇧Esc hint → `LiveRuntimeCard` (Overview) and `FloatingToolbar` props `lastRunStatus` / `runningHint` (Canvas).
+
 ## Key Files
 
 | File | Role |
 |------|------|
+| `ui/src/components/shell/AppShell.tsx` | root orchestrator, view router, global overlay mounts |
+| `ui/src/components/shell/OverviewView.tsx` | Overview composition (assistant + live runtime + canvas preview) |
+| `ui/src/components/shell/CanvasView.tsx` | Canvas view wrapper |
+| `ui/src/components/shell/LogsBar.tsx` | collapsible log chrome (search, copy, clear) |
 | `ui/src/App.tsx` | top-level layout, menu event listeners, app kind map |
 | `ui/src/components/GraphCanvas.tsx` | React Flow graph editor |
 | `ui/src/components/WorkflowNode.tsx` | standard node renderer |
