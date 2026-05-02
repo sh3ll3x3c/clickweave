@@ -29,6 +29,7 @@ export function OverviewView() {
     })),
   );
   const setAssistantSurface = useStore((s) => s.setAssistantSurface);
+  const setCurrentView = useStore((s) => s.setCurrentView);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
   const startAgent = useStore((s) => s.startAgent);
 
@@ -43,6 +44,7 @@ export function OverviewView() {
         onSkip={skipIntentEntry}
         onRecordWalkthrough={() => {
           skipIntentEntry();
+          setCurrentView("canvas");
           useStore.getState().openCdpModal();
         }}
         loading={agentStatus === "running"}

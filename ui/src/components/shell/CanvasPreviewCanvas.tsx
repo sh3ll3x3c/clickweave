@@ -1,23 +1,28 @@
 import { useMemo } from "react";
 import type { ComponentType } from "react";
 import { ReactFlow, Background } from "@xyflow/react";
+import type { Edge as WorkflowEdge } from "../../bindings";
+import { useAppGrouping } from "../../hooks/useAppGrouping";
+import { useEdgeSync } from "../../hooks/useEdgeSync";
+import { useNodeSync } from "../../hooks/useNodeSync";
+import { useUserGrouping } from "../../hooks/useUserGrouping";
 import { useStore } from "../../store/useAppStore";
 import { WorkflowNode } from "../WorkflowNode";
 import { AppGroupNode } from "../AppGroupNode";
 import { UserGroupNode } from "../UserGroupNode";
 import { AgentRunGroupNode } from "../AgentRunGroupNode";
-import { toRFNode, buildAppKindMap } from "../../hooks/node-sync/nodeBuilders";
 import "@xyflow/react/dist/style.css";
 
 /**
  * D12 — dedicated read-only React Flow renderer for the Overview's
  * Canvas Preview. Reuses `WorkflowNode` / `AppGroupNode` /
  * `UserGroupNode` / `AgentRunGroupNode` so the rounded-tile node
- * visual stays identical to the editor, but every interactive flag
- * is disabled. The custom node components themselves still mount
- * their internal `useEffect` hooks (no side-effect mutations
- * verified at write time); a `pointer-events: none` wrapper around
- * each prevents stray click handlers from firing.
+ * visual stays identical to the editor, and reuses the editor's
+ * grouping projection hooks without mounting React Flow mutation
+ * listeners. The custom node components themselves still mount their
+ * internal `useEffect` hooks (no side-effect mutations verified at
+ * write time); a `pointer-events: none` wrapper around each prevents
+ * stray click handlers from firing.
  *
  * Critical: do NOT modify `GraphCanvas.tsx` to add a `readOnly` prop —
  * the editor and preview have diverged enough that a single component
@@ -47,31 +52,69 @@ const PREVIEW_NODE_TYPES = {
   ),
 };
 
+const noop = () => {};
+const noopSelectNode = (_id: string | null) => {};
+const noopSelectionChange = (_hasMulti: boolean) => {};
+const noopPositionChange = (
+  _updates: Map<string, { x: number; y: number }>,
+) => {};
+const noopDeleteNodes = (_ids: string[]) => {};
+const noopEdgesChange = (_edges: WorkflowEdge[]) => {};
+const noopConnect = (_from: string, _to: string, _sourceHandle?: string) => {};
+const noopRename = (_groupId: string, _newName: string) => {};
+
 export function CanvasPreviewCanvas() {
   const workflow = useStore((s) => s.workflow);
-  const appKindMap = useMemo(() => buildAppKindMap(workflow), [workflow]);
+  const appState = useAppGrouping(workflow);
+  const userGroupState = useUserGrouping(workflow);
+  const agentRunCollapsed = useStore((s) => s.agentRunCollapsed);
+  const runTraces = useStore((s) => s.runTraces);
+  const toggleAgentRunCollapsed = useStore((s) => s.toggleAgentRunCollapsed);
 
-  // Reuse the editor's projection so custom nodes receive the full
-  // data payload they expect (label, app_kind, role, autoId, etc.).
-  // Selection / activeNode / onDelete are wired to inert values:
-  // nothing in the preview can be selected, set active, or deleted.
-  const noop = () => {};
-  const rfNodes = useMemo(
-    () =>
-      workflow.nodes.map((n) =>
-        toRFNode(n, null, null, noop, appKindMap.get(n.id)),
-      ),
-    [workflow.nodes, appKindMap],
-  );
-  const rfEdges = useMemo(
-    () =>
-      workflow.edges.map((e) => ({
-        id: `${e.from}-${e.to}`,
-        source: e.from,
-        target: e.to,
-      })),
-    [workflow.edges],
-  );
+  const { rfNodes, deletedNodeIdsRef } = useNodeSync({
+    workflow,
+    selectedNode: null,
+    activeNode: null,
+    canvasSelectionResetTick: 0,
+    collapsedApps: appState.collapsedApps,
+    appGroups: appState.appGroups,
+    nodeToAppGroup: appState.nodeToAppGroup,
+    appGroupMeta: appState.appGroupMeta,
+    toggleAppCollapse: appState.toggleAppCollapse,
+    agentRunCollapsed,
+    runTraces,
+    toggleAgentRunCollapsed,
+    collapsedUserGroups: userGroupState.collapsedUserGroups,
+    nodeToUserGroup: userGroupState.nodeToUserGroup,
+    userGroupMeta: userGroupState.userGroupMeta,
+    toggleUserGroupCollapse: userGroupState.toggleUserGroupCollapse,
+    renamingGroupId: null,
+    onRenameConfirm: noopRename,
+    onRenameCancel: noop,
+    onSelectNode: noopSelectNode,
+    onCanvasSelectionChange: noopSelectionChange,
+    onNodePositionsChange: noopPositionChange,
+    onDeleteNodes: noopDeleteNodes,
+    agentStatus: "idle",
+    onRejectDeleteDuringRun: noop,
+  });
+
+  const hiddenNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const id of userGroupState.hiddenUserGroupNodeIds) ids.add(id);
+    return ids;
+  }, [userGroupState.hiddenUserGroupNodeIds]);
+
+  const { rfEdges } = useEdgeSync({
+    workflow,
+    hiddenNodeIds,
+    collapsedAppEdgeRewrites: appState.collapsedAppEdgeRewrites,
+    collapsedUserGroupEdgeRewrites: userGroupState.userGroupEdgeRewrites,
+    deletedNodeIdsRef,
+    onEdgesChange: noopEdgesChange,
+    onRemoveExtraEdges: noopEdgesChange,
+    onConnect: noopConnect,
+  });
 
   return (
     <div className="h-full w-full">

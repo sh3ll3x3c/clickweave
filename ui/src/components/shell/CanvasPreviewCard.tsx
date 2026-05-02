@@ -12,7 +12,7 @@ import { CanvasPreviewCanvas } from "./CanvasPreviewCanvas";
 export function CanvasPreviewCard() {
   const setCurrentView = useStore((s) => s.setCurrentView);
   return (
-    <section className="flex flex-col overflow-hidden rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)]">
+    <section className="flex h-full flex-col overflow-hidden rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)]">
       <header className="flex items-center justify-between border-b border-[var(--hairline)] px-4 py-2.5">
         <h2 className="text-[12px] font-medium tracking-[0.06em] text-[var(--text-primary)]">
           Canvas Preview

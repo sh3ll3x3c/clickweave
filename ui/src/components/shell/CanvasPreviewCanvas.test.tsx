@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 // `?raw` is Vite's first-class file-as-string import — no Node types
 // needed at typecheck time.
 import graphCanvasSource from "../GraphCanvas.tsx?raw";
@@ -77,6 +77,60 @@ describe("CanvasPreviewCanvas (D12)", () => {
       ".react-flow__node > div[style*='pointer-events']",
     );
     expect(wrapper).not.toBeNull();
+  });
+
+  it("renders user group containers through the editor projection", async () => {
+    useStore.setState({
+      workflow: {
+        ...useStore.getState().workflow,
+        nodes: [
+          {
+            id: "n1",
+            name: "First",
+            node_type: { type: "ManualStep" },
+            position: { x: 0, y: 0 },
+            enabled: true,
+            timeout_ms: null,
+            settle_ms: null,
+            retries: 0,
+            trace_level: "Minimal",
+            role: "Default",
+            expected_outcome: null,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+          {
+            id: "n2",
+            name: "Second",
+            node_type: { type: "ManualStep" },
+            position: { x: 200, y: 0 },
+            enabled: true,
+            timeout_ms: null,
+            settle_ms: null,
+            retries: 0,
+            trace_level: "Minimal",
+            role: "Default",
+            expected_outcome: null,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        ],
+        edges: [],
+        groups: [
+          {
+            id: "group-1",
+            name: "Review steps",
+            color: "#22c55e",
+            node_ids: ["n1", "n2"],
+            parent_group_id: null,
+          },
+        ],
+      },
+    });
+
+    render(<CanvasPreviewCanvas />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Review steps")).toBeTruthy();
+    });
   });
 
   it("registers nodeTypes keys that match the editor's GraphCanvas keys (P2.M2)", () => {

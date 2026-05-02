@@ -47,13 +47,13 @@ export function LiveRuntimeCard() {
   const phase = runTrace?.phase ?? null;
   const stepN = runTrace?.steps.length ?? 0;
   const lastStep = runTrace?.steps.at(-1);
-  const activeTool = lastStep?.toolName ?? pendingApproval?.toolName ?? null;
+  const activeTool = pendingApproval?.toolName ?? lastStep?.toolName ?? null;
 
   // Tick once per second while live; freezes when finished.
   const elapsed = useElapsed(agentRunStartedAt, agentRunFinishedAt, live);
 
   return (
-    <section className="flex flex-col overflow-hidden rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)]">
+    <section className="flex h-full flex-col overflow-hidden rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)]">
       <header className="flex items-center justify-between border-b border-[var(--hairline)] px-4 py-2.5">
         <div className="flex items-center gap-2">
           <span

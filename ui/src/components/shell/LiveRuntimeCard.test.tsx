@@ -38,6 +38,44 @@ describe("LiveRuntimeCard elapsed (D24)", () => {
     expect(monoDashes.length).toBeGreaterThan(0);
   });
 
+  it("shows the pending approval tool before the last completed tool", () => {
+    useStore.setState({
+      agentStatus: "running",
+      pendingApproval: {
+        stepIndex: 2,
+        toolName: "approve_next_tool",
+        arguments: {},
+        description: "Approve next tool",
+      },
+      agentRunId: "run-1",
+      runTraces: {
+        "run-1": {
+          runId: "run-1",
+          phase: "executing",
+          activeSubgoal: "",
+          steps: [
+            {
+              stepIndex: 1,
+              toolName: "previous_tool",
+              phase: "executing",
+              body: "{}",
+              failed: false,
+            },
+          ],
+          worldModelDeltas: [],
+          milestones: [],
+          terminalFrame: null,
+        },
+      },
+    });
+
+    render(<LiveRuntimeCard />);
+
+    const activeToolStat = screen.getByText("Active Tool").parentElement;
+    expect(activeToolStat?.textContent).toContain("approve_next_tool");
+    expect(activeToolStat?.textContent).not.toContain("previous_tool");
+  });
+
   it("ticks elapsed while live and freezes when finished (D24)", () => {
     const t0 = 1_000_000_000_000;
     vi.setSystemTime(t0);
