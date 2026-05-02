@@ -28,4 +28,13 @@ describe("LogsBar", () => {
     expect(screen.getByText(/gamma completed/)).toHaveClass("text-[var(--accent-green)]");
     expect(screen.getByText(/alpha started/)).toHaveClass("text-[var(--text-secondary)]");
   });
+
+  it("wraps unbroken log lines instead of widening the bar", () => {
+    const longLog = `log-${"UnbrokenLogLine".repeat(20)}`;
+    useStore.setState({ logs: [longLog], logsDrawerOpen: true });
+
+    render(<LogsBar />);
+
+    expect(screen.getByText(longLog)).toHaveClass("break-words");
+  });
 });

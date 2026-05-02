@@ -79,7 +79,12 @@ export function LogsBar() {
             <div className="text-[var(--text-muted)]">{search ? "No matches" : "No logs"}</div>
           ) : (
             filtered.map((l, i) => (
-              <div key={i} className={`cw-log-slide whitespace-pre-wrap ${logColor(l)}`}>{l}</div>
+              <div
+                key={i}
+                className={`cw-log-slide break-words whitespace-pre-wrap ${logColor(l)}`}
+              >
+                {l}
+              </div>
             ))
           )}
         </div>
