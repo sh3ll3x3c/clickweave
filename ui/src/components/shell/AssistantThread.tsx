@@ -6,12 +6,11 @@ import { isAgentActive } from "../../store/slices/agentSlice";
 import { RunTraceView } from "../RunTraceView";
 
 /**
- * D21 / Task 3.4 — body of the assistant conversation surface, extracted
- * from `AssistantPanel.tsx`. Renders intent bar, messages, error banner,
- * the ambiguity / disagreement / destructive-cap / approval cards, the
- * live run trace, and the composer. Mounts NO modals — the global
- * `AmbiguityResolutionModal` and `ConfirmClearConversationModal` are
- * root-mounted by `AppShell` per D15 / P1.H1.
+ * D21 — body of the assistant conversation surface. Renders intent bar,
+ * messages, error banner, the ambiguity / disagreement / destructive-cap /
+ * approval cards, the live run trace, and the composer. Mounts NO modals —
+ * the global `AmbiguityResolutionModal` and `ConfirmClearConversationModal`
+ * are root-mounted by `AppShell` per D15.
  *
  * Two layout flags let the same body render in both surfaces:
  *  - `showHeader`: drawer header (Clear button + ×). Used by the
@@ -386,11 +385,9 @@ function IntentBar() {
     if (isRunning && editing) setEditing(false);
   }, [isRunning, editing]);
 
-  const displayIntent = workflowIntent;
-
   const startEdit = () => {
     if (isRunning) return;
-    setDraft(displayIntent ?? "");
+    setDraft(workflowIntent ?? "");
     setEditing(true);
   };
 
@@ -434,7 +431,7 @@ function IntentBar() {
         Intent:
       </span>
       <span className="text-[11px] text-[var(--text-secondary)] truncate">
-        {displayIntent || "Click to set intent for outcome verification..."}
+        {workflowIntent || "Click to set intent for outcome verification..."}
       </span>
     </button>
   );

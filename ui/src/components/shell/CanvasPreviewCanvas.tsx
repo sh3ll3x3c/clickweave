@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import type { ComponentType } from "react";
 import { ReactFlow, Background } from "@xyflow/react";
-import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store/useAppStore";
 import { WorkflowNode } from "../WorkflowNode";
 import { AppGroupNode } from "../AppGroupNode";
@@ -49,9 +48,7 @@ const PREVIEW_NODE_TYPES = {
 };
 
 export function CanvasPreviewCanvas() {
-  const { workflow } = useStore(
-    useShallow((s) => ({ workflow: s.workflow })),
-  );
+  const workflow = useStore((s) => s.workflow);
   const appKindMap = useMemo(() => buildAppKindMap(workflow), [workflow]);
 
   // Reuse the editor's projection so custom nodes receive the full
