@@ -207,7 +207,7 @@ export function AssistantThread({
 
         {/* Error */}
         {error && (
-          <div className="mx-3 mb-2 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-400">
+          <div className="mx-3 mb-2 break-words rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-400">
             {error}
           </div>
         )}

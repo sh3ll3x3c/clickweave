@@ -46,6 +46,7 @@ describe("AssistantThread", () => {
     storeMock.state.confirmClearOpen = false;
     storeMock.state.setConfirmClearOpen = vi.fn();
     storeMock.state.workflow = { intent: null, nodes: [] };
+    storeMock.state.runTraces = {};
   });
 
   it("dispatches setConfirmClearOpen(true) when the showClearIcon trash is clicked (D14)", () => {
@@ -91,6 +92,20 @@ describe("AssistantThread", () => {
       />,
     );
     expect(container.textContent).not.toContain("Clear conversation?");
+  });
+
+  it("wraps long assistant errors inside the thread", () => {
+    const error = `Error-${"UnbrokenAssistantError".repeat(20)}`;
+    render(
+      <AssistantThread
+        error={error}
+        messages={[]}
+        onSendMessage={() => {}}
+        showHeader={false}
+      />,
+    );
+
+    expect(screen.getByText(error)).toHaveClass("break-words");
   });
 
   it("renders the active run trace when agentStatus is running and a runId is set", () => {
