@@ -165,7 +165,11 @@ export function CanvasView() {
         onAdd={addNode}
         onToggle={toggleSidebar}
       />
-      {skillsAvailable && <SkillsPanel />}
+      {skillsAvailable && (
+        <div className="hidden h-full shrink-0 min-[980px]:flex">
+          <SkillsPanel />
+        </div>
+      )}
 
       <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
         <GraphCanvas
@@ -214,7 +218,7 @@ export function CanvasView() {
       </div>
 
       {skillsAvailable && selectedSkill && (
-        <div className="w-[420px] shrink-0 border-l border-[var(--border)] bg-[var(--bg-panel)]">
+        <div className="hidden w-[420px] shrink-0 border-l border-[var(--border)] bg-[var(--bg-panel)] min-[980px]:block">
           <SkillDetailView
             skillId={selectedSkill.id}
             version={selectedSkill.version}
