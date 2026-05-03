@@ -1,7 +1,5 @@
 use super::*;
 
-use super::*;
-
 #[test]
 fn click_target_text_serde_roundtrip() {
     let target = ClickTarget::Text {

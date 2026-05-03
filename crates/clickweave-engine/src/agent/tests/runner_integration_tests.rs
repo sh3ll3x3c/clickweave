@@ -507,7 +507,7 @@ mod top_level_loop_tests {
     /// they never planted markers here.
     #[test]
     fn runner_source_has_no_deferred_task_markers() {
-        let runner_src = include_str!("../runner.rs");
+        let runner_src = include_str!("../runner/mod.rs");
         // Scan only the non-doc portion of the file — the doc-comment on
         // `parse_agent_turn` historically references `TODO(task-3a.2)` as
         // forward-looking narrative, which must not be interpreted as a
@@ -520,7 +520,7 @@ mod top_level_loop_tests {
             .collect();
         assert!(
             offenders.is_empty(),
-            "expected zero `// TODO(task-3a.N):` markers in runner.rs but found: {:?}",
+            "expected zero `// TODO(task-3a.N):` markers in runner/mod.rs but found: {:?}",
             offenders,
         );
     }

@@ -1,7 +1,5 @@
 use super::*;
 
-use super::*;
-
 fn temp_storage() -> (RunStorage, PathBuf) {
     let dir = std::env::temp_dir()
         .join("clickweave_test")

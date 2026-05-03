@@ -53,9 +53,8 @@ mod tool_classification;
 
 pub(crate) use focus::FocusSkipReason;
 #[cfg(test)]
-pub(crate) use progress::{
-    NO_ACTION_MUTATION_ONLY_PREFIX, NO_PROGRESS_NUDGE_PREFIX, STALE_CDP_UID_PREFIX,
-};
+pub(crate) use progress::{NO_ACTION_MUTATION_ONLY_PREFIX, STALE_CDP_UID_PREFIX};
+pub(crate) use progress::{NO_PROGRESS_WARNING_PREFIX, UNVERIFIED_SIDE_EFFECT_PREFIX};
 pub(crate) use tool_classification::{
     diff_world_model_signatures, extract_result_text, is_observation_tool,
 };
@@ -68,9 +67,8 @@ use focus::{
 };
 use progress::{
     ACTION_CYCLE_WINDOW, ActionProgressSignature, LastActionProgress,
-    NO_ACTION_MUTATION_ONLY_REASON, NO_PROGRESS_WARNING_PREFIX, REPEAT_ACTION_THRESHOLD,
-    TEXT_SUBMIT_SEARCH_THRESHOLD, TextSubmitSearchProgress,
-    UNVERIFIED_SIDE_EFFECT_COMPLETION_BLOCKED_REASON, UNVERIFIED_SIDE_EFFECT_PREFIX,
+    NO_ACTION_MUTATION_ONLY_REASON, REPEAT_ACTION_THRESHOLD, TEXT_SUBMIT_SEARCH_THRESHOLD,
+    TextSubmitSearchProgress, UNVERIFIED_SIDE_EFFECT_COMPLETION_BLOCKED_REASON,
     build_action_cycle_nudge, build_no_progress_nudge, build_post_text_submit_nudge,
     build_stale_cdp_uid_nudge, build_unverified_side_effect_nudge, cdp_find_elements_has_matches,
     combine_with_side_effect_nudge, detect_repeated_action_cycle,
