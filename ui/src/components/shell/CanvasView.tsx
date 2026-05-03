@@ -7,7 +7,6 @@ import { GraphCanvas } from "../GraphCanvas";
 import { IntentEmptyState } from "../IntentEmptyState";
 import { NodeDetailModal } from "../node-detail/NodeDetailModal";
 import { NodePalette } from "../NodePalette";
-import { SkillsPanel } from "../skills/SkillsPanel";
 import { SkillDetailView } from "../skills/SkillDetailView";
 import { WalkthroughPanel } from "../WalkthroughPanel";
 import { useWorkflowActions } from "../../hooks/useWorkflowActions";
@@ -173,12 +172,6 @@ export function CanvasView() {
           onToggle={toggleSidebar}
         />
       </div>
-      {skillsAvailable && (
-        <div className="hidden h-full shrink-0 min-[980px]:flex">
-          <SkillsPanel />
-        </div>
-      )}
-
       <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
         <GraphCanvas
           workflow={workflow}
