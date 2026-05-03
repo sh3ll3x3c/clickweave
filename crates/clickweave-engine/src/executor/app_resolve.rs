@@ -39,82 +39,118 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_run: Option<&NodeRun>,
         cache_mode: CacheMode,
     ) -> ExecutorResult<ResolvedApp> {
-        // Check in-memory cache first (populated during this execution).
-        let cached_app = self.app_cache.get(user_input).cloned();
-        if let Some(cached) = cached_app {
-            debug!(user_input, resolved_name = %cached.name, "app_cache hit");
-            // Verify the cached PID is still valid — the app may have been quit and relaunched
-            if let Ok(fresh_pid) = self.lookup_app_pid(&cached.name, mcp).await {
-                if fresh_pid == cached.pid {
-                    self.log(format!(
-                        "App resolved (cached): \"{}\" -> {} (pid {})",
-                        user_input, cached.name, cached.pid
-                    ));
-                    return Ok(cached);
-                }
-                // PID changed — app was restarted; update cache and return fresh entry
+        if let Some(resolved) = self.resolve_from_app_cache(user_input, mcp).await {
+            return Ok(resolved);
+        }
+
+        // Check persistent decision cache (replays Test-mode app name decisions).
+        // Skip in Bypass mode so a retry after eviction re-resolves via LLM.
+        let ck = decision_cache::cache_key(node_id, user_input, None);
+        if let Some(resolved) = self
+            .resolve_from_decision_cache(user_input, &ck, mcp, cache_mode)
+            .await
+        {
+            return Ok(resolved);
+        }
+
+        let (apps_text, windows_text) = self.load_app_resolution_context(user_input, mcp).await?;
+        let parsed = self
+            .ask_llm_to_resolve_app(user_input, &apps_text, &windows_text)
+            .await?;
+        let resolved = resolved_app_from_llm_value(user_input, &apps_text, &parsed)?;
+
+        self.record_resolved_app(user_input, node_run, &ck, &resolved);
+        Ok(resolved)
+    }
+
+    async fn resolve_from_app_cache(
+        &mut self,
+        user_input: &str,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<ResolvedApp> {
+        let cached = self.app_cache.get(user_input).cloned()?;
+        debug!(user_input, resolved_name = %cached.name, "app_cache hit");
+        match self.lookup_app_pid(&cached.name, mcp).await {
+            Ok(fresh_pid) if fresh_pid == cached.pid => {
+                self.log(format!(
+                    "App resolved (cached): \"{}\" -> {} (pid {})",
+                    user_input, cached.name, cached.pid
+                ));
+                Some(cached)
+            }
+            Ok(fresh_pid) => {
+                let updated = ResolvedApp {
+                    name: cached.name.clone(),
+                    pid: fresh_pid,
+                };
                 debug!(
                     user_input,
                     old_pid = cached.pid,
                     new_pid = fresh_pid,
                     "app_cache PID stale, updating"
                 );
-                let updated = ResolvedApp {
-                    name: cached.name.clone(),
-                    pid: fresh_pid,
-                };
                 self.app_cache
                     .insert(user_input.to_string(), updated.clone());
                 self.log(format!(
                     "App resolved (cached, refreshed PID): \"{}\" -> {} (pid {})",
                     user_input, updated.name, updated.pid
                 ));
-                return Ok(updated);
+                Some(updated)
             }
-            // App is no longer running — evict stale entry and fall through to full resolution
-            debug!(
-                user_input,
-                "app_cache hit but app no longer running, evicting"
-            );
-            self.app_cache.remove(user_input);
-        }
-
-        // Check persistent decision cache (replays Test-mode app name decisions).
-        // Skip in Bypass mode so a retry after eviction re-resolves via LLM.
-        let ck = decision_cache::cache_key(node_id, user_input, None);
-        let cached_app = if cache_mode.is_bypass() {
-            None
-        } else {
-            self.decision_cache.app_resolution.get(&ck).cloned()
-        };
-        if let Some(cached) = cached_app {
-            debug!(user_input, resolved_name = %cached.resolved_name, "decision_cache app hit");
-            // We have the app name but need a fresh PID — look it up
-            match self.lookup_app_pid(&cached.resolved_name, mcp).await {
-                Ok(pid) => {
-                    let resolved = ResolvedApp {
-                        name: cached.resolved_name.clone(),
-                        pid,
-                    };
-                    self.log(format!(
-                        "App resolved (decision cache): \"{}\" -> {} (pid {})",
-                        user_input, resolved.name, resolved.pid
-                    ));
-                    self.app_cache
-                        .insert(user_input.to_string(), resolved.clone());
-                    return Ok(resolved);
-                }
-                Err(e) => {
-                    debug!(
-                        user_input,
-                        cached_name = %cached.resolved_name,
-                        error = %e,
-                        "decision_cache app hit but PID lookup failed, falling through to LLM"
-                    );
-                }
+            Err(_) => {
+                debug!(
+                    user_input,
+                    "app_cache hit but app no longer running, evicting"
+                );
+                self.app_cache.remove(user_input);
+                None
             }
         }
+    }
 
+    async fn resolve_from_decision_cache(
+        &mut self,
+        user_input: &str,
+        cache_key: &str,
+        mcp: &(impl Mcp + ?Sized),
+        cache_mode: CacheMode,
+    ) -> Option<ResolvedApp> {
+        if cache_mode.is_bypass() {
+            return None;
+        }
+        let cached = self.decision_cache.app_resolution.get(cache_key).cloned()?;
+        debug!(user_input, resolved_name = %cached.resolved_name, "decision_cache app hit");
+        match self.lookup_app_pid(&cached.resolved_name, mcp).await {
+            Ok(pid) => {
+                let resolved = ResolvedApp {
+                    name: cached.resolved_name.clone(),
+                    pid,
+                };
+                self.log(format!(
+                    "App resolved (decision cache): \"{}\" -> {} (pid {})",
+                    user_input, resolved.name, resolved.pid
+                ));
+                self.app_cache
+                    .insert(user_input.to_string(), resolved.clone());
+                Some(resolved)
+            }
+            Err(e) => {
+                debug!(
+                    user_input,
+                    cached_name = %cached.resolved_name,
+                    error = %e,
+                    "decision_cache app hit but PID lookup failed, falling through to LLM"
+                );
+                None
+            }
+        }
+    }
+
+    async fn load_app_resolution_context(
+        &self,
+        user_input: &str,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> ExecutorResult<(String, String)> {
         let apps_result = mcp
             .call_tool(
                 "list_apps",
@@ -129,38 +165,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let apps_text = crate::cdp_lifecycle::extract_text(&apps_result);
         let windows_text = crate::cdp_lifecycle::extract_text(&windows_result);
+        ensure_running_apps(user_input, &apps_text)?;
+        Ok((apps_text, windows_text))
+    }
 
-        // Short-circuit: if no apps are running, don't ask the LLM — it will hallucinate.
-        let apps_trimmed = apps_text.trim();
-        if apps_trimmed.is_empty() || apps_trimmed == "[]" || apps_trimmed == "No apps found" {
-            return Err(ExecutorError::AppResolution(format!(
-                "App \"{}\" is not running (no matching apps found). \
-                 Use launch_app to start it first.",
-                user_input
-            )));
-        }
-
-        let json_only = super::prompts::JSON_ONLY_INSTRUCTION;
-        let prompt = format!(
-            "You are resolving an application name. The user wrote: \"{user_input}\"\n\
-             \n\
-             Running apps:\n\
-             {apps_text}\n\
-             \n\
-             Visible windows:\n\
-             {windows_text}\n\
-             \n\
-             Which running application does the user mean? {json_only}\n\
-             Schema:\n\
-             {{\"name\": \"<exact app name from the list above>\", \"pid\": <pid>}}\n\
-             \n\
-             IMPORTANT: The name MUST be an exact match from the Running apps list above.\n\
-             Do NOT guess or invent app names. Do NOT return an unrelated app.\n\
-             If no running app is a plausible match, return:\n\
-             {{\"name\": null, \"pid\": null}}"
-        );
-
-        let messages = vec![Message::user(prompt)];
+    async fn ask_llm_to_resolve_app(
+        &self,
+        user_input: &str,
+        apps_text: &str,
+        windows_text: &str,
+    ) -> ExecutorResult<Value> {
+        let messages = vec![Message::user(app_resolution_prompt(
+            user_input,
+            apps_text,
+            windows_text,
+        ))];
         let response = self
             .reasoning_backend()
             .chat(&messages, None)
@@ -190,52 +209,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 e, raw_text
             ))
         })?;
+        Ok(parsed)
+    }
 
-        let name = parsed["name"].as_str().ok_or_else(|| {
-            ExecutorError::AppResolution(format!(
-                "App \"{}\" is not running (LLM found no match). \
-                 Use launch_app to start it first.",
-                user_input
-            ))
-        })?;
-
-        // Post-validate: ensure the LLM returned a name that actually appears in the app list.
-        // Parse the JSON array so we match against individual app name entries rather than
-        // doing a raw substring match on the full JSON text (which would accept "Code" as a
-        // match for "Visual Studio Code").
-        let app_names: Vec<String> = serde_json::from_str::<Vec<Value>>(&apps_text)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
-            .collect();
-        let name_lower = name.to_lowercase();
-        let validated = app_names.iter().any(|n| n.to_lowercase() == name_lower);
-        if !validated {
-            return Err(ExecutorError::AppResolution(format!(
-                "App \"{}\" is not running (resolved name \"{}\" not found in app list). \
-                 Use launch_app to start it first.",
-                user_input, name
-            )));
-        }
-
-        let pid = parsed["pid"].as_i64().ok_or_else(|| {
-            ExecutorError::AppResolution(format!(
-                "LLM resolved name \"{}\" for \"{}\" but returned no PID",
-                name, user_input
-            ))
-        })? as i32;
-
-        let resolved = ResolvedApp {
-            name: name.to_string(),
-            pid,
-        };
-
+    fn record_resolved_app(
+        &mut self,
+        user_input: &str,
+        node_run: Option<&NodeRun>,
+        cache_key: &str,
+        resolved: &ResolvedApp,
+    ) {
         self.record_event(
             node_run,
             "app_resolved",
             serde_json::json!({
                 "user_input": user_input,
-                "resolved_name": resolved.name,
+                "resolved_name": resolved.name.clone(),
                 "resolved_pid": resolved.pid,
             }),
         );
@@ -251,15 +240,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Record in decision cache for replay in Run mode (name only, not PID)
         if self.execution_mode == ExecutionMode::Test {
             self.decision_cache.app_resolution.insert(
-                ck,
+                cache_key.to_string(),
                 AppResolution {
                     user_input: user_input.to_string(),
                     resolved_name: resolved.name.clone(),
                 },
             );
         }
-
-        Ok(resolved)
     }
 
     /// Look up a PID for an app by its exact name via `list_apps`.
@@ -382,6 +369,92 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.focused_app = None;
         }
     }
+}
+
+fn ensure_running_apps(user_input: &str, apps_text: &str) -> ExecutorResult<()> {
+    let apps_trimmed = apps_text.trim();
+    if apps_trimmed.is_empty() || apps_trimmed == "[]" || apps_trimmed == "No apps found" {
+        return Err(ExecutorError::AppResolution(format!(
+            "App \"{}\" is not running (no matching apps found). \
+             Use launch_app to start it first.",
+            user_input
+        )));
+    }
+    Ok(())
+}
+
+fn app_resolution_prompt(user_input: &str, apps_text: &str, windows_text: &str) -> String {
+    let json_only = super::prompts::JSON_ONLY_INSTRUCTION;
+    format!(
+        "You are resolving an application name. The user wrote: \"{user_input}\"\n\
+         \n\
+         Running apps:\n\
+         {apps_text}\n\
+         \n\
+         Visible windows:\n\
+         {windows_text}\n\
+         \n\
+         Which running application does the user mean? {json_only}\n\
+         Schema:\n\
+         {{\"name\": \"<exact app name from the list above>\", \"pid\": <pid>}}\n\
+         \n\
+         IMPORTANT: The name MUST be an exact match from the Running apps list above.\n\
+         Do NOT guess or invent app names. Do NOT return an unrelated app.\n\
+         If no running app is a plausible match, return:\n\
+         {{\"name\": null, \"pid\": null}}"
+    )
+}
+
+fn resolved_app_from_llm_value(
+    user_input: &str,
+    apps_text: &str,
+    parsed: &Value,
+) -> ExecutorResult<ResolvedApp> {
+    let name = parsed["name"].as_str().ok_or_else(|| {
+        ExecutorError::AppResolution(format!(
+            "App \"{}\" is not running (LLM found no match). \
+             Use launch_app to start it first.",
+            user_input
+        ))
+    })?;
+
+    validate_resolved_app_name(user_input, apps_text, name)?;
+
+    let pid = parsed["pid"].as_i64().ok_or_else(|| {
+        ExecutorError::AppResolution(format!(
+            "LLM resolved name \"{}\" for \"{}\" but returned no PID",
+            name, user_input
+        ))
+    })? as i32;
+
+    Ok(ResolvedApp {
+        name: name.to_string(),
+        pid,
+    })
+}
+
+fn validate_resolved_app_name(
+    user_input: &str,
+    apps_text: &str,
+    resolved_name: &str,
+) -> ExecutorResult<()> {
+    // Parse the JSON array so we match individual app-name entries rather than
+    // accepting a raw substring of the full JSON text.
+    let app_names: Vec<String> = serde_json::from_str::<Vec<Value>>(apps_text)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
+        .collect();
+    let name_lower = resolved_name.to_lowercase();
+    let validated = app_names.iter().any(|n| n.to_lowercase() == name_lower);
+    if !validated {
+        return Err(ExecutorError::AppResolution(format!(
+            "App \"{}\" is not running (resolved name \"{}\" not found in app list). \
+             Use launch_app to start it first.",
+            user_input, resolved_name
+        )));
+    }
+    Ok(())
 }
 
 /// Extract the first top-level `{…}` JSON object from `text`, ignoring any

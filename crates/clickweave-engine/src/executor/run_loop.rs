@@ -818,33 +818,41 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        // Emit accumulated runtime verdicts
-        if !ctx.runtime_verdicts.is_empty() {
-            for v in &ctx.runtime_verdicts {
-                if let Err(e) = self.storage.save_node_verdict(v) {
-                    tracing::warn!("Failed to persist verdict for '{}': {}", v.node_name, e);
-                }
-            }
-            let verdicts: Vec<_> = ctx.runtime_verdicts.drain(..).collect();
-            self.emit(ExecutorEvent::ChecksCompleted(verdicts));
-        }
+        self.finish_run_with_mcp(&mut ctx, user_cancelled);
+    }
 
-        // Save decision cache after Test mode runs.
-        // Skipped when the privacy kill switch is off so no cache
-        // file is written to the workflow-level dir.
-        if self.execution_mode == ExecutionMode::Test && self.storage.is_persistent() {
-            let save_result = self.decision_cache.save(&self.storage.cache_path());
-            match save_result {
-                Ok(()) => self.log("Decision cache saved"),
-                Err(e) => self.log(format!("Warning: failed to save decision cache: {}", e)),
-            }
-        }
+    fn finish_run_with_mcp(&mut self, ctx: &mut RetryContext, user_cancelled: bool) {
+        self.emit_runtime_verdicts(ctx);
+        self.save_decision_cache_after_test_run();
 
         if !user_cancelled {
             self.log("Workflow execution completed");
             self.emit(ExecutorEvent::WorkflowCompleted);
         }
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
+    }
+
+    fn emit_runtime_verdicts(&mut self, ctx: &mut RetryContext) {
+        if ctx.runtime_verdicts.is_empty() {
+            return;
+        }
+        for v in &ctx.runtime_verdicts {
+            if let Err(e) = self.storage.save_node_verdict(v) {
+                tracing::warn!("Failed to persist verdict for '{}': {}", v.node_name, e);
+            }
+        }
+        let verdicts: Vec<_> = ctx.runtime_verdicts.drain(..).collect();
+        self.emit(ExecutorEvent::ChecksCompleted(verdicts));
+    }
+
+    fn save_decision_cache_after_test_run(&mut self) {
+        if self.execution_mode != ExecutionMode::Test || !self.storage.is_persistent() {
+            return;
+        }
+        match self.decision_cache.save(&self.storage.cache_path()) {
+            Ok(()) => self.log("Decision cache saved"),
+            Err(e) => self.log(format!("Warning: failed to save decision cache: {}", e)),
+        }
     }
 
     /// Evaluate a Verification-role node and return its verdict.
