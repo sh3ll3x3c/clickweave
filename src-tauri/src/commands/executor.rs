@@ -12,6 +12,7 @@ pub struct ExecutorHandle {
     cancel_token: Option<CancellationToken>,
     cmd_tx: Option<tokio::sync::mpsc::Sender<ExecutorCommand>>,
     task_handle: Option<tauri::async_runtime::JoinHandle<()>>,
+    run_generation: u64,
 }
 
 impl ExecutorHandle {
@@ -103,15 +104,17 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         executor.run(cmd_rx).await;
     });
 
-    {
+    let run_generation = {
         let handle = app.state::<Mutex<ExecutorHandle>>();
         let mut guard = handle.lock().unwrap();
+        guard.run_generation = guard.run_generation.wrapping_add(1);
         guard.cancel_token = Some(cancel_token);
         guard.cmd_tx = Some(cmd_tx);
         guard.task_handle = Some(task_handle);
-    }
+        guard.run_generation
+    };
 
-    spawn_executor_event_forwarder(app.clone(), event_rx);
+    spawn_executor_event_forwarder(app.clone(), event_rx, run_generation);
 
     Ok(())
 }
@@ -119,6 +122,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 fn spawn_executor_event_forwarder(
     emit_handle: tauri::AppHandle,
     mut event_rx: tokio::sync::mpsc::Receiver<ExecutorEvent>,
+    run_generation: u64,
 ) {
     let cleanup_handle = emit_handle.clone();
     tauri::async_runtime::spawn(async move {
@@ -146,10 +150,18 @@ fn spawn_executor_event_forwarder(
 
         let state = cleanup_handle.state::<Mutex<ExecutorHandle>>();
         let mut guard = state.lock().unwrap();
-        guard.cancel_token = None;
-        guard.cmd_tx = None;
-        guard.task_handle = None;
+        clear_executor_handle_if_current(&mut guard, run_generation);
     });
+}
+
+fn clear_executor_handle_if_current(guard: &mut ExecutorHandle, run_generation: u64) {
+    if guard.run_generation != run_generation {
+        return;
+    }
+
+    guard.cancel_token = None;
+    guard.cmd_tx = None;
+    guard.task_handle = None;
 }
 
 fn emit_executor_event(emit_handle: &tauri::AppHandle, event: ExecutorEvent) -> tauri::Result<()> {
@@ -311,4 +323,43 @@ pub async fn supervision_respond(
     };
     tx.try_send(command)
         .map_err(|e| CommandError::internal(format!("Failed to send command: {}", e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executor_cleanup_clears_current_generation_handles() {
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel(1);
+        let mut handle = ExecutorHandle {
+            cancel_token: Some(CancellationToken::new()),
+            cmd_tx: Some(cmd_tx),
+            task_handle: None,
+            run_generation: 7,
+        };
+
+        clear_executor_handle_if_current(&mut handle, 7);
+
+        assert!(handle.cancel_token.is_none());
+        assert!(handle.cmd_tx.is_none());
+        assert!(handle.task_handle.is_none());
+    }
+
+    #[test]
+    fn executor_cleanup_preserves_newer_generation_handles() {
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel(1);
+        let mut handle = ExecutorHandle {
+            cancel_token: Some(CancellationToken::new()),
+            cmd_tx: Some(cmd_tx),
+            task_handle: None,
+            run_generation: 8,
+        };
+
+        clear_executor_handle_if_current(&mut handle, 7);
+
+        assert!(handle.cancel_token.is_some());
+        assert!(handle.cmd_tx.is_some());
+        assert!(handle.task_handle.is_none());
+    }
 }
