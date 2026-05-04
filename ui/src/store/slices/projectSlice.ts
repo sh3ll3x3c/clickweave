@@ -64,6 +64,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       agentRunId: null,
       agentRunStartedAt: null,
       agentRunFinishedAt: null,
+      lastRunStatus: null,
       // Also clear the terminal run notice — the destructive-cap card
       // in AssistantThread reads this directly and would otherwise keep
       // showing the previous project's run-halted message.
@@ -129,6 +130,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       agentRunId: null,
       agentRunStartedAt: null,
       agentRunFinishedAt: null,
+      lastRunStatus: null,
       // Also clear the terminal run notice — the destructive-cap card
       // in AssistantThread reads this directly and would otherwise keep
       // showing the previous project's run-halted message.
