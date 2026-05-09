@@ -145,13 +145,13 @@ fn emit_state(app: &tauri::AppHandle, status: WalkthroughStatus) {
 #[specta::specta]
 pub async fn start_walkthrough(
     app: tauri::AppHandle,
-    workflow_id: String,
+    project_id: String,
     project_path: Option<String>,
     supervisor: Option<super::types::EndpointConfig>,
     cdp_apps: Vec<CdpAppConfig>,
     hover_dwell_threshold: Option<u64>,
 ) -> Result<(), CommandError> {
-    let wf_id = parse_uuid(&workflow_id, "workflow")?;
+    let proj_id = parse_uuid(&project_id, "project")?;
 
     // Resolve MCP binary before acquiring the session lock so a failure
     // doesn't leave walkthrough state wedged as "already running".
@@ -168,7 +168,7 @@ pub async fn start_walkthrough(
             return Err(CommandError::already_running());
         }
 
-        let session = WalkthroughSessionRuntime::new(wf_id);
+        let session = WalkthroughSessionRuntime::new(proj_id);
 
         let storage = match &project_path {
             Some(p) => {
@@ -297,7 +297,7 @@ pub async fn start_walkthrough(
     }
 
     emit_state(&app, WalkthroughStatus::Recording);
-    tracing::info!("Walkthrough session started for workflow {workflow_id}");
+    tracing::info!("Walkthrough session started for project {project_id}");
     Ok(())
 }
 
@@ -378,7 +378,7 @@ pub async fn stop_walkthrough(
     supervisor: Option<super::types::EndpointConfig>,
     hover_dwell_threshold: Option<u64>,
 ) -> Result<(), CommandError> {
-    let (task, storage, session_dir, workflow_id, session_id) = {
+    let (task, storage, session_dir, project_id, session_id) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
@@ -404,7 +404,7 @@ pub async fn stop_walkthrough(
             task,
             guard.storage.clone(),
             guard.session_dir.clone(),
-            sess.meta.workflow_id,
+            sess.meta.project_id,
             sess.meta.id,
         )
     };
@@ -491,7 +491,7 @@ pub async fn stop_walkthrough(
             // Synthesize draft.
             let draft = clickweave_core::walkthrough::synthesize_draft(
                 &actions,
-                workflow_id,
+                project_id,
                 "Walkthrough Draft",
             );
 
@@ -576,8 +576,8 @@ pub struct WalkthroughDraftResponse {
 pub struct SaveWalkthroughAsSkillRequest {
     pub session_id: String,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub reviewed_draft: Option<clickweave_core::Workflow>,
     pub reviewed_actions: Option<Vec<WalkthroughAction>>,
     pub store_traces: bool,
@@ -638,7 +638,7 @@ pub async fn save_walkthrough_as_skill(
     }
 
     let session_id = parse_uuid(&request.session_id, "walkthrough session")?;
-    let workflow_id = parse_uuid(&request.workflow_id, "workflow")?;
+    let project_id = parse_uuid(&request.project_id, "project")?;
 
     let (session_actions, draft_path) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
@@ -648,8 +648,8 @@ pub async fn save_walkthrough_as_skill(
         if session.meta.id != session_id {
             return Err(CommandError::validation("Walkthrough session ID mismatch"));
         }
-        if session.meta.workflow_id != workflow_id {
-            return Err(CommandError::validation("Workflow ID mismatch"));
+        if session.meta.project_id != project_id {
+            return Err(CommandError::validation("Project ID mismatch"));
         }
         let draft_path = guard.session_dir.as_ref().map(|dir| dir.join("draft.json"));
         (session.actions.clone(), draft_path)
@@ -674,14 +674,14 @@ pub async fn save_walkthrough_as_skill(
         &actions,
         draft.as_ref(),
         &request.session_id,
-        &request.workflow_id,
+        &request.project_id,
     )
     .map_err(skill_error_to_command)?;
     let storage = resolve_storage(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        workflow_id,
+        &request.project_name,
+        project_id,
     );
     let skills_dir = storage
         .project_skills_dir()
@@ -783,25 +783,25 @@ pub async fn apply_walkthrough_annotations(
 #[specta::specta]
 pub async fn seed_walkthrough_cache(
     app: tauri::AppHandle,
-    workflow_id: String,
-    workflow_name: String,
+    project_id: String,
+    project_name: String,
     project_path: Option<String>,
     app_entries: Vec<super::types::AppResolutionSeedEntry>,
 ) -> Result<(), CommandError> {
     use clickweave_core::decision_cache::{AppResolution, DecisionCache, cache_key};
 
-    let wf_id = parse_uuid(&workflow_id, "workflow")?;
+    let proj_id = parse_uuid(&project_id, "project")?;
 
     if app_entries.is_empty() {
         return Ok(());
     }
 
-    let storage = super::types::resolve_storage(&app, &project_path, &workflow_name, wf_id);
+    let storage = super::types::resolve_storage(&app, &project_path, &project_name, proj_id);
     let cache_path = storage.cache_path();
 
     // Load existing cache or create new one.
     let mut cache =
-        DecisionCache::load(&cache_path, wf_id).unwrap_or_else(|| DecisionCache::new(wf_id));
+        DecisionCache::load(&cache_path, proj_id).unwrap_or_else(|| DecisionCache::new(proj_id));
 
     for entry in &app_entries {
         let node_id = parse_uuid(&entry.node_id, "node")?;

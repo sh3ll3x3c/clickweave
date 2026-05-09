@@ -15,7 +15,7 @@ fn test_session_meta_on_disk_shape_has_no_buffers() {
     let runtime = WalkthroughSessionRuntime {
         meta: WalkthroughSessionMeta {
             id: Uuid::new_v4(),
-            workflow_id: Uuid::new_v4(),
+            project_id: Uuid::new_v4(),
             started_at: 1_700_000_000_000,
             ended_at: None,
             status: WalkthroughStatus::Recording,
@@ -230,7 +230,7 @@ fn test_storage_create_and_save_session() {
 
     let session = WalkthroughSessionMeta {
         id: Uuid::new_v4(),
-        workflow_id: Uuid::new_v4(),
+        project_id: Uuid::new_v4(),
         started_at: 1_700_000_000_000,
         ended_at: None,
         status: WalkthroughStatus::Recording,
@@ -262,7 +262,7 @@ fn test_storage_append_event() {
 
     let session = WalkthroughSessionMeta {
         id: Uuid::new_v4(),
-        workflow_id: Uuid::new_v4(),
+        project_id: Uuid::new_v4(),
         started_at: 1_700_000_000_000,
         ended_at: None,
         status: WalkthroughStatus::Recording,

@@ -16,7 +16,7 @@ use crate::storage::now_millis;
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WalkthroughSessionMeta {
     pub id: Uuid,
-    pub workflow_id: Uuid,
+    pub project_id: Uuid,
     pub started_at: u64,
     pub ended_at: Option<u64>,
     pub status: WalkthroughStatus,
@@ -24,10 +24,10 @@ pub struct WalkthroughSessionMeta {
 }
 
 impl WalkthroughSessionMeta {
-    pub fn new(workflow_id: Uuid) -> Self {
+    pub fn new(project_id: Uuid) -> Self {
         Self {
             id: Uuid::new_v4(),
-            workflow_id,
+            project_id,
             started_at: now_millis(),
             ended_at: None,
             status: WalkthroughStatus::Recording,
@@ -50,9 +50,9 @@ pub struct WalkthroughSessionRuntime {
 }
 
 impl WalkthroughSessionRuntime {
-    pub fn new(workflow_id: Uuid) -> Self {
+    pub fn new(project_id: Uuid) -> Self {
         Self {
-            meta: WalkthroughSessionMeta::new(workflow_id),
+            meta: WalkthroughSessionMeta::new(project_id),
             events: Vec::new(),
             actions: Vec::new(),
         }
