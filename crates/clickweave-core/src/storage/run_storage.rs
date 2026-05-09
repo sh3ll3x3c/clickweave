@@ -1,16 +1,24 @@
 use super::*;
+use crate::SkillRun;
 
-/// Manages on-disk storage for node run artifacts and trace data.
+/// Manages on-disk storage for skill run records and trace events.
 ///
-/// Directory layout:
+/// Skill runs (D27, D28) are persisted under a per-skill, per-run
+/// directory inside the project's `.clickweave/skills/` tree:
+///
 /// ```text
-/// runs/<workflow_dir>/
-///   <YYYY-MM-DD_HH-MM-SS_shortid>/   ← one per workflow execution
-///     <sanitized_node_name>/           ← one per node
-///       run.json
-///       events.jsonl
-///       artifacts/
+/// <base>/.clickweave/skills/<skill_id>/
+///   SKILL.md
+///   replay.json
+///   runs/
+///     <run_id>.json                 ← one record per run (last 20 kept)
+///     <run_id>/
+///       events.jsonl                ← per-run trace events
 /// ```
+///
+/// Retention is enforced on `create_skill_run` — older `<run_id>.json`
+/// files (and their sibling event directories) past the most recent 20
+/// are pruned in place.
 pub struct RunStorage {
     /// Points to `runs/<project_dir>/`
     pub(super) base_path: PathBuf,
@@ -441,4 +449,190 @@ impl RunStorage {
         let data = std::fs::read_to_string(path).context("Failed to read run.json")?;
         serde_json::from_str(&data).context("Failed to parse run.json")
     }
+
+    // ── Skill-keyed run storage (D27, D28) ────────────────────────────
+
+    /// Directory holding per-run records for a specific skill:
+    /// `<base>/.clickweave/skills/<skill_id>/runs/`.
+    ///
+    /// `base` for this method is the project-skills root (saved
+    /// projects: `<project>/.clickweave/skills/`; unsaved projects:
+    /// `<app_data>/skills/<project_id>/`) — the same root returned by
+    /// [`Self::project_skills_dir`]. Anchoring runs there keeps the
+    /// per-skill directory self-contained and matches the design's D27
+    /// storage layout.
+    pub fn skill_runs_dir(&self, skill_id: &str) -> PathBuf {
+        self.project_skills_path.join(skill_id).join("runs")
+    }
+
+    /// Per-run trace-events directory:
+    /// `<skill_runs_dir>/<run_id>/`. Events stream to `events.jsonl`
+    /// inside this directory.
+    pub fn skill_run_events_dir(&self, skill_id: &str, run_id: Uuid) -> PathBuf {
+        self.skill_runs_dir(skill_id).join(run_id.to_string())
+    }
+
+    /// Maximum number of historical run records kept per skill (D27).
+    pub const SKILL_RUN_HISTORY_LIMIT: usize = 20;
+
+    /// Create a new run record for `skill_id`, write it to disk, and
+    /// prune older records past [`Self::SKILL_RUN_HISTORY_LIMIT`].
+    ///
+    /// When persistence is disabled, returns a synthesised `SkillRun`
+    /// without touching disk — callers downstream of the runner treat
+    /// it identically to a persisted run.
+    pub fn create_skill_run(&self, skill_id: &str) -> Result<SkillRun> {
+        let run = SkillRun::new(skill_id.to_string());
+        if !self.persistent {
+            return Ok(run);
+        }
+
+        let runs_dir = self.skill_runs_dir(skill_id);
+        std::fs::create_dir_all(&runs_dir).with_context(|| {
+            format!(
+                "Failed to create skill runs directory at {}",
+                runs_dir.display()
+            )
+        })?;
+
+        // Write the new record before pruning so a crash mid-prune
+        // never deletes the freshest record we just created.
+        self.save_skill_run(&run)?;
+        prune_skill_runs(&runs_dir, Self::SKILL_RUN_HISTORY_LIMIT)?;
+        Ok(run)
+    }
+
+    /// Persist a `SkillRun` atomically. Caller is responsible for
+    /// updating `finished_at`, `status`, `duration_ms`, and per-section
+    /// outcomes before saving terminal state.
+    pub fn save_skill_run(&self, run: &SkillRun) -> Result<()> {
+        if !self.persistent {
+            return Ok(());
+        }
+        let runs_dir = self.skill_runs_dir(&run.skill_id);
+        std::fs::create_dir_all(&runs_dir)
+            .with_context(|| format!("Failed to create runs dir {}", runs_dir.display()))?;
+        let path = runs_dir.join(format!("{}.json", run.run_id));
+        write_json_atomic(&path, run).context("Failed to write skill-run JSON")
+    }
+
+    /// Look up a single run by `(skill_id, run_id)`. Returns `None`
+    /// when the record file is absent or when persistence is disabled.
+    pub fn find_skill_run(&self, skill_id: &str, run_id: Uuid) -> Result<Option<SkillRun>> {
+        if !self.persistent {
+            return Ok(None);
+        }
+        let path = self.skill_runs_dir(skill_id).join(format!("{run_id}.json"));
+        if !path.exists() {
+            return Ok(None);
+        }
+        let data = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let run: SkillRun = serde_json::from_str(&data)
+            .with_context(|| format!("Failed to parse {}", path.display()))?;
+        Ok(Some(run))
+    }
+
+    /// Load every persisted run for `skill_id` sorted oldest-first by
+    /// `started_at`. Records that fail to parse are logged and skipped
+    /// so a corrupted file never breaks the timeline view.
+    pub fn load_runs_for_skill(&self, skill_id: &str) -> Result<Vec<SkillRun>> {
+        let runs_dir = self.skill_runs_dir(skill_id);
+        if !runs_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut runs = Vec::new();
+        for entry in std::fs::read_dir(&runs_dir)
+            .with_context(|| format!("Failed to read {}", runs_dir.display()))?
+        {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(data) => match serde_json::from_str::<SkillRun>(&data) {
+                    Ok(run) => runs.push(run),
+                    Err(e) => {
+                        warn!(path = %path.display(), error = %e, "Skipping unparseable skill-run record")
+                    }
+                },
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "Failed to read skill-run record")
+                }
+            }
+        }
+        runs.sort_by_key(|r| r.started_at);
+        Ok(runs)
+    }
+
+    /// Append a trace event to the per-run `events.jsonl` for
+    /// `(skill_id, run_id)`.
+    ///
+    /// Creates the per-run events directory on first call. No-op when
+    /// persistence is disabled.
+    pub fn append_skill_event(&self, run: &SkillRun, event: &TraceEvent) -> Result<()> {
+        if !self.persistent {
+            return Ok(());
+        }
+        let events_dir = self.skill_run_events_dir(&run.skill_id, run.run_id);
+        std::fs::create_dir_all(&events_dir)
+            .with_context(|| format!("Failed to create events dir {}", events_dir.display()))?;
+        let path = events_dir.join("events.jsonl");
+        Self::write_event_line(&path, event)
+    }
+}
+
+/// Trim the per-skill runs directory to the most recent `keep` records,
+/// removing both the `<run_id>.json` file and any sibling
+/// `<run_id>/` events directory. Records are sorted by file mtime
+/// (newest first); ties keep the last `keep` entries deterministically.
+fn prune_skill_runs(runs_dir: &Path, keep: usize) -> Result<()> {
+    if !runs_dir.exists() {
+        return Ok(());
+    }
+    let mut entries: Vec<(std::time::SystemTime, PathBuf, Uuid)> = Vec::new();
+    for entry in std::fs::read_dir(runs_dir)
+        .with_context(|| format!("Failed to read {}", runs_dir.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        // Filename without extension is the run id.
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let Ok(run_id) = stem.parse::<Uuid>() else {
+            continue;
+        };
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        entries.push((mtime, path, run_id));
+    }
+
+    if entries.len() <= keep {
+        return Ok(());
+    }
+
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, json_path, run_id) in entries.into_iter().skip(keep) {
+        if let Err(e) = std::fs::remove_file(&json_path) {
+            warn!(path = %json_path.display(), error = %e, "Failed to remove old skill-run record");
+        }
+        let events_dir = runs_dir.join(run_id.to_string());
+        if events_dir.exists()
+            && let Err(e) = std::fs::remove_dir_all(&events_dir)
+        {
+            warn!(path = %events_dir.display(), error = %e, "Failed to remove old skill-run events dir");
+        }
+    }
+    Ok(())
 }
