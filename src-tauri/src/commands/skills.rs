@@ -21,8 +21,8 @@ pub struct ConfirmSkillProposalRequest {
     pub version: u32,
     pub accepted_proposal: SkillRefinementProposal,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub run_id: Option<String>,
     pub store_traces: bool,
 }
@@ -32,8 +32,8 @@ pub struct RejectSkillProposalRequest {
     pub skill_id: String,
     pub version: u32,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -42,8 +42,8 @@ pub struct PromoteSkillToGlobalRequest {
     pub skill_id: String,
     pub version: u32,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -53,8 +53,8 @@ pub struct ForkSkillRequest {
     pub version: u32,
     pub new_name: String,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -64,8 +64,8 @@ pub struct DeleteSkillRequest {
     pub version: u32,
     pub scope: SkillScope,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -73,8 +73,8 @@ pub struct DeleteSkillRequest {
 pub struct ListSkillsRequest {
     pub scope: SkillScope,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -123,13 +123,13 @@ impl SkillSummary {
 fn project_skills_dir_for(
     app: &tauri::AppHandle,
     project_path: &Option<String>,
-    workflow_name: &str,
-    workflow_id_str: &str,
+    project_name: &str,
+    project_id_str: &str,
 ) -> Result<PathBuf, CommandError> {
-    let workflow_uuid: uuid::Uuid = workflow_id_str
+    let project_uuid: uuid::Uuid = project_id_str
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
-    let storage = resolve_storage(app, project_path, workflow_name, workflow_uuid);
+        .map_err(|_| CommandError::validation("Invalid project ID"))?;
+    let storage = resolve_storage(app, project_path, project_name, project_uuid);
     storage
         .project_skills_dir()
         .map_err(|e| CommandError::io(format!("resolve project_skills_dir: {e}")))
@@ -199,8 +199,8 @@ pub async fn confirm_skill_proposal(
     let dir = project_skills_dir_for(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     let store = SkillStore::new(dir.clone());
     let (mut skill, old_path) = read_skill_at(&store, &request.skill_id, request.version)?;
@@ -257,8 +257,8 @@ pub async fn reject_skill_proposal(
     let dir = project_skills_dir_for(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     let proposal_path = dir.join(format!(
         "{}-v{}.proposal.json",
@@ -282,8 +282,8 @@ pub async fn promote_skill_to_global(
     let project_dir = project_skills_dir_for(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     let project_store = SkillStore::new(project_dir);
     let (mut skill, _) = read_skill_at(&project_store, &request.skill_id, request.version)?;
@@ -315,8 +315,8 @@ pub async fn fork_skill(
     let dir = project_skills_dir_for(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     let store = SkillStore::new(dir.clone());
     let (source, _) = read_skill_at(&store, &request.skill_id, request.version)?;
@@ -367,8 +367,8 @@ pub async fn delete_skill(
         SkillScope::ProjectLocal => project_skills_dir_for(
             &app,
             &request.project_path,
-            &request.workflow_name,
-            &request.workflow_id,
+            &request.project_name,
+            &request.project_id,
         )?,
     };
     let store = SkillStore::new(dir.clone());
@@ -395,8 +395,8 @@ pub async fn list_skills_for_panel(
         SkillScope::ProjectLocal => project_skills_dir_for(
             &app,
             &request.project_path,
-            &request.workflow_name,
-            &request.workflow_id,
+            &request.project_name,
+            &request.project_id,
         )?,
     };
     let store = SkillStore::new(dir.clone());
