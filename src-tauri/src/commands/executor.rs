@@ -1,11 +1,15 @@
 use super::error::CommandError;
 use super::types::*;
-use clickweave_core::validate_workflow;
-use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
+use clickweave_engine::agent::skills::SkillStore;
+use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState};
+use serde::{Deserialize, Serialize};
+use specta::Type;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
+use uuid::Uuid;
 
 #[derive(Default)]
 pub struct ExecutorHandle {
@@ -36,9 +40,53 @@ impl ExecutorHandle {
     }
 }
 
+/// IPC payload for `run_skill` (D33). Replaces the legacy `RunRequest`
+/// which carried a full `Workflow` graph. Every field on the legacy
+/// request that fed downstream privacy / supervision gates is preserved
+/// here so Phase 1.L acceptance still passes.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct RunSkillRequest {
+    /// Saved-project workspace path. `None` for unsaved projects — in that
+    /// case `RunStorage::new_app_data(app_data, &project_name, project_id)`
+    /// resolves the storage from the manifest identity below.
+    pub project_path: Option<String>,
+    /// Project identity carried forward from `ProjectManifest` (D33).
+    /// Required for unsaved-project skill resolution and for run-trace
+    /// storage paths.
+    pub project_id: Uuid,
+    pub project_name: String,
+    pub skill_id: String,
+    #[serde(default)]
+    pub variables: HashMap<String, serde_json::Value>,
+    pub agent: EndpointConfig,
+    pub fast: Option<EndpointConfig>,
+    /// Optional supervisor model for Test mode.
+    pub supervisor: Option<EndpointConfig>,
+    pub execution_mode: clickweave_core::ExecutionMode,
+    #[serde(default = "default_supervision_delay_ms")]
+    pub supervision_delay_ms: u64,
+    /// Privacy kill switch — `Some(false)` disables run/skill artifact
+    /// persistence (D31). `None` falls back to settings.
+    pub store_traces: Option<bool>,
+}
+
+fn default_supervision_delay_ms() -> u64 {
+    500
+}
+
+/// Phase 1.C stub: resolves the requested skill from the project's
+/// skill store and returns Ok without dispatching the executor. Full
+/// executor wiring lands in Phase 1.D, when the native `Skill`-driven
+/// runner replaces the deleted `WorkflowExecutor`.
+//
+// 1.D WIRE-UP: replace the load-and-return body below with the real
+// dispatch into the new `skill_runner` once it lands in Phase 1.D.
 #[tauri::command]
 #[specta::specta]
-pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<(), CommandError> {
+pub async fn run_skill(
+    app: tauri::AppHandle,
+    request: RunSkillRequest,
+) -> Result<(), CommandError> {
     {
         let handle = app.state::<Mutex<ExecutorHandle>>();
         if handle.lock().unwrap().cmd_tx.is_some() {
@@ -46,75 +94,46 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         }
     }
 
-    validate_workflow(&request.workflow)
-        .map_err(|e| CommandError::validation(format!("Validation failed: {}", e)))?;
-
-    let agent_config = request.agent.into_llm_config(None);
-    let fast_config = request
-        .fast
-        .filter(|v| !v.is_empty())
-        .map(|v| v.into_llm_config(Some(0.0)));
-    let supervision_config = request
-        .supervisor
-        .filter(|s| !s.is_empty())
-        .map(|s| s.into_llm_config(None));
-
-    let mut storage = resolve_storage(
+    let storage = resolve_storage(
         &app,
         &request.project_path,
-        &request.workflow.name,
-        request.workflow.id,
+        &request.project_name,
+        request.project_id,
     );
-    // Privacy kill switch: an explicit `false` from the UI makes the
-    // workflow run in-memory — no files are created under
-    // `.clickweave/runs/`. Default is persist-on for existing UIs that
-    // do not yet send the field.
-    let persist_traces = request.store_traces.unwrap_or(true);
-    storage.set_persistent(persist_traces);
-    let project_path = request.project_path.map(|p| project_dir(&p));
 
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(256);
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<ExecutorCommand>(8);
+    let skills_dir = storage
+        .project_skills_dir()
+        .map_err(|e| CommandError::io(format!("resolve project_skills_dir: {e}")))?;
+    let store = SkillStore::new(skills_dir);
 
-    let mcp_binary_path =
-        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
-    let cancel_token = CancellationToken::new();
-    let executor_token = cancel_token.clone();
+    // Load all skills in the directory and confirm the requested
+    // `skill_id` exists. The full executor wiring lands in 1.D — for
+    // now we just verify that the IPC plumbing surfaces the right
+    // error when the caller references a missing skill.
+    let mut found = false;
+    for path in store
+        .list_files()
+        .map_err(|e| CommandError::io(format!("list skills: {e}")))?
+    {
+        if let Ok(skill) = store.read_skill(&path)
+            && skill.id == request.skill_id
+        {
+            found = true;
+            break;
+        }
+    }
 
-    let chrome_profiles_dir = {
-        let app_data = app.state::<super::types::AppDataDir>();
-        app_data.0.join("chrome-profiles")
-    };
+    if !found {
+        return Err(CommandError::validation(format!(
+            "Skill not found: {}",
+            request.skill_id
+        )));
+    }
 
-    let task_handle = tauri::async_runtime::spawn(async move {
-        let mut executor = WorkflowExecutor::new(
-            request.workflow,
-            agent_config,
-            fast_config,
-            supervision_config,
-            mcp_binary_path,
-            request.execution_mode,
-            project_path,
-            event_tx,
-            storage,
-            executor_token,
-            chrome_profiles_dir,
-            request.supervision_delay_ms,
-        );
-        executor.run(cmd_rx).await;
-    });
-
-    let run_generation = {
-        let handle = app.state::<Mutex<ExecutorHandle>>();
-        let mut guard = handle.lock().unwrap();
-        guard.run_generation = guard.run_generation.wrapping_add(1);
-        guard.cancel_token = Some(cancel_token);
-        guard.cmd_tx = Some(cmd_tx);
-        guard.task_handle = Some(task_handle);
-        guard.run_generation
-    };
-
-    spawn_executor_event_forwarder(app.clone(), event_rx, run_generation);
+    // Privacy kill switch carried forward from the legacy RunRequest —
+    // surfaced here so the field is not silently dropped while the
+    // executor wiring is staged in 1.D.
+    let _persist_traces = request.store_traces.unwrap_or(true);
 
     Ok(())
 }
@@ -323,6 +342,14 @@ pub async fn supervision_respond(
     };
     tx.try_send(command)
         .map_err(|e| CommandError::internal(format!("Failed to send command: {}", e)))
+}
+
+// Suppresses "function never used" while the executor wiring is staged
+// in 1.D. The forwarder is kept here so the wire-up commit only adds
+// the `tauri::async_runtime::spawn` call site, not the helper itself.
+#[allow(dead_code)]
+fn _phase1c_keep_forwarder_alive() {
+    let _ = spawn_executor_event_forwarder;
 }
 
 #[cfg(test)]

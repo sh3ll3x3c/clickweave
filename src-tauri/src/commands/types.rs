@@ -1,5 +1,5 @@
+use clickweave_core::ProjectManifest;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{ExecutionMode, ProjectManifest, Workflow};
 use clickweave_llm::LlmConfig;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -75,28 +75,6 @@ impl EndpointConfig {
     pub fn is_empty(&self) -> bool {
         self.base_url.is_empty() || self.model.is_empty()
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct RunRequest {
-    pub workflow: Workflow,
-    pub project_path: Option<String>,
-    pub agent: EndpointConfig,
-    pub fast: Option<EndpointConfig>,
-    /// Supervisor LLM used for step verdict in Test mode.
-    pub supervisor: Option<EndpointConfig>,
-    pub execution_mode: ExecutionMode,
-    #[serde(default = "default_supervision_delay_ms")]
-    pub supervision_delay_ms: u64,
-    /// Privacy kill switch: when false, the run is entirely in-memory
-    /// and no files are written under `.clickweave/runs/`. When missing,
-    /// persistence is on — matches the UI default (`storeTraces: true`).
-    #[serde(default)]
-    pub store_traces: Option<bool>,
-}
-
-fn default_supervision_delay_ms() -> u64 {
-    500
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]

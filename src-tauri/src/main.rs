@@ -100,7 +100,7 @@ fn main() {
             pick_save_file,
             open_project,
             save_project,
-            run_workflow,
+            run_skill,
             stop_workflow,
             supervision_respond,
             list_runs,
