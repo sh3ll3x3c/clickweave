@@ -178,11 +178,7 @@ impl TraceBuilder {
     /// Set the terminal frame, respecting precedence:
     /// `Hard` cannot be overwritten; `BoundaryFallback` can be
     /// upgraded by any later setter.
-    fn set_terminal(
-        &mut self,
-        frame: HydratedTerminalFrame,
-        confidence: TerminalConfidence,
-    ) {
+    fn set_terminal(&mut self, frame: HydratedTerminalFrame, confidence: TerminalConfidence) {
         if matches!(self.terminal_confidence, Some(TerminalConfidence::Hard)) {
             return;
         }
@@ -670,7 +666,10 @@ mod tests {
         );
         let builder = hydrate_from_events_file(&path).unwrap();
         let f = builder.terminal.unwrap();
-        assert!(matches!(f.kind, HydratedTerminalKind::DisagreementCancelled));
+        assert!(matches!(
+            f.kind,
+            HydratedTerminalKind::DisagreementCancelled
+        ));
     }
 
     #[test]

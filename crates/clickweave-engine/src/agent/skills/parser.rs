@@ -16,14 +16,8 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use chrono::Utc;
-
 use super::SKILL_SCHEMA_VERSION;
-use super::types::{
-    ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, OutcomePredicate, Skill,
-    SkillError, SkillFrontmatter, SkillScope, SkillSection, SkillState, SkillStats,
-    SubgoalSignature,
-};
+use super::types::{ActionSketchStep, Skill, SkillError, SkillFrontmatter, SkillSection};
 
 const FRONTMATTER_DELIMITER: &str = "---";
 
@@ -130,34 +124,37 @@ pub fn parse_skill_md(contents: &str) -> Result<Skill, SkillError> {
         }
     }
 
-    let now = Utc::now();
+    // Hydrate Clickweave-internal metadata from the optional nested
+    // `clickweave:` frontmatter block. When the block is absent (e.g.
+    // a hand-imported Claude Code skill), the defaults give a usable
+    // `Confirmed` / `ProjectLocal` skill that still functions through
+    // the runtime's lifecycle gates.
+    let meta = frontmatter.clickweave.unwrap_or_default();
     Ok(Skill {
         id: frontmatter.id.clone(),
         version: frontmatter.version,
-        state: SkillState::Confirmed,
-        scope: SkillScope::ProjectLocal,
+        state: meta.state,
+        scope: meta.scope,
         name: frontmatter.name.clone(),
         description: frontmatter.description.clone(),
-        tags: vec![],
-        subgoal_text: frontmatter.name.clone(),
-        subgoal_signature: SubgoalSignature(String::new()),
-        applicability: ApplicabilityHints {
-            apps: vec![],
-            hosts: vec![],
-            signature: ApplicabilitySignature(String::new()),
+        tags: meta.tags,
+        subgoal_text: if meta.subgoal_text.is_empty() {
+            frontmatter.name.clone()
+        } else {
+            meta.subgoal_text
         },
-        parameter_schema: vec![],
+        subgoal_signature: meta.subgoal_signature,
+        applicability: meta.applicability,
+        parameter_schema: meta.parameter_schema,
         action_sketch,
-        outputs: vec![],
-        outcome_predicate: OutcomePredicate::SubgoalCompleted {
-            post_state_world_model_signature: None,
-        },
-        provenance: vec![],
-        stats: SkillStats::default(),
-        edited_by_user: false,
-        created_at: now,
-        updated_at: now,
-        produced_node_ids: vec![],
+        outputs: meta.outputs,
+        outcome_predicate: meta.outcome_predicate,
+        provenance: meta.provenance,
+        stats: meta.stats,
+        edited_by_user: meta.edited_by_user,
+        created_at: meta.created_at,
+        updated_at: meta.updated_at,
+        produced_node_ids: meta.produced_node_ids,
         body: body_prose,
         schema_version: frontmatter.schema_version.max(SKILL_SCHEMA_VERSION.min(1)),
         variables: frontmatter.variables,
@@ -438,8 +435,12 @@ fn find_variable_refs(body: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::agent::skills::emitter::emit_skill_md;
+    use chrono::Utc;
+
     use crate::agent::skills::types::{
-        ActionSketchStep, ExpectedWorldModelDelta, LoopPredicate, SkillFrontmatterVariable,
+        ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, ExpectedWorldModelDelta,
+        LoopPredicate, OutcomePredicate, SkillFrontmatterVariable, SkillScope, SkillState,
+        SkillStats, SubgoalSignature,
     };
 
     fn baseline_frontmatter(id: &str) -> SkillFrontmatter {
@@ -450,6 +451,7 @@ mod tests {
             version: 1,
             schema_version: SKILL_SCHEMA_VERSION,
             variables: vec![],
+            clickweave: None,
         }
     }
 

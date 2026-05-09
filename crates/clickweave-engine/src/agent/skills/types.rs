@@ -172,6 +172,81 @@ pub struct SkillStats {
     pub last_invoked_at: Option<DateTime<Utc>>,
 }
 
+/// Clickweave-internal skill metadata serialized under the
+/// `clickweave:` nested key in the YAML frontmatter. Distinct from
+/// [`SkillFrontmatter`] (which carries the cross-tool-portable subset
+/// Claude Code / Codex CLI / Gemini Extensions consume) so external
+/// agent tools see a recognizable skill shape and ignore this block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct ClickweaveSkillMeta {
+    pub state: SkillState,
+    pub scope: SkillScope,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub subgoal_text: String,
+    #[serde(default)]
+    pub subgoal_signature: SubgoalSignature,
+    pub applicability: ApplicabilityHints,
+    #[serde(default)]
+    pub parameter_schema: Vec<ParameterSlot>,
+    #[serde(default)]
+    pub outputs: Vec<OutputDeclaration>,
+    pub outcome_predicate: OutcomePredicate,
+    #[serde(default)]
+    pub provenance: Vec<ProvenanceEntry>,
+    #[serde(default)]
+    pub stats: SkillStats,
+    #[serde(default)]
+    pub edited_by_user: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub produced_node_ids: Vec<Uuid>,
+}
+
+impl Default for ClickweaveSkillMeta {
+    fn default() -> Self {
+        let now = Utc::now();
+        Self {
+            state: SkillState::Confirmed,
+            scope: SkillScope::ProjectLocal,
+            tags: Vec::new(),
+            subgoal_text: String::new(),
+            subgoal_signature: SubgoalSignature(String::new()),
+            applicability: ApplicabilityHints {
+                apps: Vec::new(),
+                hosts: Vec::new(),
+                signature: ApplicabilitySignature(String::new()),
+            },
+            parameter_schema: Vec::new(),
+            outputs: Vec::new(),
+            outcome_predicate: OutcomePredicate::SubgoalCompleted {
+                post_state_world_model_signature: None,
+            },
+            provenance: Vec::new(),
+            stats: SkillStats::default(),
+            edited_by_user: false,
+            created_at: now,
+            updated_at: now,
+            produced_node_ids: Vec::new(),
+        }
+    }
+}
+
+impl SubgoalSignature {
+    pub fn empty() -> Self {
+        Self(String::new())
+    }
+}
+
+impl Default for SubgoalSignature {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 /// Per-section view of a parsed skill body. Populated by
 /// `parser::parse_skill_md`; `body_range` is a UTF-8 byte range into
 /// the raw markdown body (start..end of the section's prose, including
@@ -214,6 +289,12 @@ pub struct SkillFrontmatter {
     pub schema_version: u32,
     #[serde(default)]
     pub variables: Vec<SkillFrontmatterVariable>,
+    /// Clickweave-internal metadata. External LLM-agent tools (Claude
+    /// Code, Codex CLI, Gemini Extensions) ignore unknown YAML keys, so
+    /// this nested block preserves Clickweave's runtime metadata
+    /// without breaking the cross-tool portability promise from D3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clickweave: Option<ClickweaveSkillMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

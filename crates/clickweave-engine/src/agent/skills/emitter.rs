@@ -9,7 +9,7 @@
 #![allow(dead_code)]
 
 use super::SKILL_SCHEMA_VERSION;
-use super::types::{Skill, SkillFrontmatter};
+use super::types::{ClickweaveSkillMeta, Skill, SkillFrontmatter};
 
 const FRONTMATTER_DELIMITER: &str = "---";
 
@@ -28,6 +28,23 @@ pub fn emit_skill_md(skill: &Skill) -> String {
         version: skill.version,
         schema_version: SKILL_SCHEMA_VERSION,
         variables: skill.variables.clone(),
+        clickweave: Some(ClickweaveSkillMeta {
+            state: skill.state,
+            scope: skill.scope,
+            tags: skill.tags.clone(),
+            subgoal_text: skill.subgoal_text.clone(),
+            subgoal_signature: skill.subgoal_signature.clone(),
+            applicability: skill.applicability.clone(),
+            parameter_schema: skill.parameter_schema.clone(),
+            outputs: skill.outputs.clone(),
+            outcome_predicate: skill.outcome_predicate.clone(),
+            provenance: skill.provenance.clone(),
+            stats: skill.stats.clone(),
+            edited_by_user: skill.edited_by_user,
+            created_at: skill.created_at,
+            updated_at: skill.updated_at,
+            produced_node_ids: skill.produced_node_ids.clone(),
+        }),
     };
     let yaml = serde_yaml::to_string(&frontmatter)
         .unwrap_or_else(|err| format!("# emitter: yaml encode failed: {err}\n"));
