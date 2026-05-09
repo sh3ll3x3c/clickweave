@@ -42,15 +42,15 @@ pub enum AgentChatRole {
 #[derive(Debug, Clone, Deserialize, specta::Type)]
 pub struct LoadAgentChatRequest {
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, specta::Type)]
 pub struct SaveAgentChatRequest {
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub chat: AgentChat,
     pub store_traces: bool,
 }
@@ -58,8 +58,8 @@ pub struct SaveAgentChatRequest {
 #[derive(Debug, Clone, Deserialize, specta::Type)]
 pub struct PruneSkillLineageRequest {
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub node_ids: Vec<Uuid>,
     pub store_traces: bool,
 }
@@ -67,8 +67,8 @@ pub struct PruneSkillLineageRequest {
 #[derive(Debug, Clone, Deserialize, specta::Type)]
 pub struct ClearAgentConversationRequest {
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -144,17 +144,17 @@ fn clear_draft_skills_in_dir(skills_dir: &Path) -> Result<(), CommandError> {
     Ok(())
 }
 
-/// Resolve the `agent_chat.json` path for the current project + workflow.
+/// Resolve the `agent_chat.json` path for the current project.
 fn resolve_chat_path(
     app: &tauri::AppHandle,
     project_path: Option<&str>,
-    workflow_name: &str,
-    workflow_id: &str,
+    project_name: &str,
+    project_id: &str,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let uuid: Uuid = workflow_id
+    let uuid: Uuid = project_id
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
-    let storage = resolve_storage(app, &project_path.map(String::from), workflow_name, uuid);
+        .map_err(|_| CommandError::validation("Invalid project ID"))?;
+    let storage = resolve_storage(app, &project_path.map(String::from), project_name, uuid);
     Ok(storage.agent_chat_path())
 }
 
@@ -167,8 +167,8 @@ pub async fn load_agent_chat(
     let path = resolve_chat_path(
         &app,
         request.project_path.as_deref(),
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     match std::fs::read_to_string(&path) {
         Ok(json) => serde_json::from_str::<AgentChat>(&json)
@@ -192,8 +192,8 @@ pub async fn save_agent_chat(
     let path = resolve_chat_path(
         &app,
         request.project_path.as_deref(),
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -217,15 +217,15 @@ pub async fn prune_skill_lineage_for_nodes(
     if !request.store_traces {
         return Ok(());
     }
-    let workflow_uuid: Uuid = request
-        .workflow_id
+    let project_uuid: Uuid = request
+        .project_id
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
+        .map_err(|_| CommandError::validation("Invalid project ID"))?;
     let storage = resolve_storage(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        workflow_uuid,
+        &request.project_name,
+        project_uuid,
     );
     let skills_dir = storage
         .project_skills_dir()
@@ -244,15 +244,15 @@ pub async fn clear_agent_conversation(
     if !request.store_traces {
         return Ok(());
     }
-    let workflow_uuid: Uuid = request
-        .workflow_id
+    let project_uuid: Uuid = request
+        .project_id
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
+        .map_err(|_| CommandError::validation("Invalid project ID"))?;
     let storage = resolve_storage(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        workflow_uuid,
+        &request.project_name,
+        project_uuid,
     );
     // Remove draft skills derived from the current agent conversation.
     let skills_dir = storage
