@@ -1,5 +1,9 @@
 import { useState } from "react";
-import type { NodeTypeInfo, NodeType } from "../bindings";
+import type { NodeType } from "../bindings";
+// 1.G TOMBSTONE: deleted with canvas — `NodeTypeInfo` was dropped from
+// `bindings.ts` in 1.C alongside the canvas tree; this whole palette
+// is deleted in 1.G. Local placeholder keeps typechecking until then.
+import type { NodeTypeInfo } from "../store/slices/uiSlice";
 import { nodeMetadata, defaultNodeMetadata } from "../constants/nodeMetadata";
 
 interface NodePaletteProps {

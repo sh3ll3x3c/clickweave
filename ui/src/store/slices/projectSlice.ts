@@ -1,7 +1,7 @@
 import type { StateCreator } from "zustand";
-import type { Workflow } from "../../bindings";
+import type { ProjectManifest, Workflow } from "../../bindings";
 import { commands } from "../../bindings";
-import { makeDefaultWorkflow } from "../state";
+import { makeDefaultWorkflow, PROJECT_SCHEMA_VERSION } from "../state";
 import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 import { loadAgentChat } from "../agentChatPersistence";
@@ -55,7 +55,17 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     }
     set({
       projectPath: projectResult.data.path,
-      workflow: projectResult.data.workflow,
+      // 1.G TOMBSTONE: deleted with canvas — `workflow.nodes/edges/groups`
+      // are no longer carried by `ProjectData`. The slim `ProjectManifest`
+      // (id/name/intent) is mirrored back into the legacy `Workflow`-shaped
+      // slice field so canvas-tree consumers keep typechecking until 1.G
+      // deletes them.
+      workflow: {
+        ...makeDefaultWorkflow(),
+        id: projectResult.data.manifest.id,
+        name: projectResult.data.manifest.name,
+        intent: projectResult.data.manifest.intent ?? null,
+      },
       selectedNode: null,
       isNewWorkflow: false,
       assistantError: null,
@@ -75,12 +85,12 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     // Ambiguity resolutions are specific to the prior workflow's nodes.
     get().clearAmbiguityResolutions();
 
-    // Hydrate the per-workflow chat transcript from disk. Best-effort
+    // Hydrate the per-project chat transcript from disk. Best-effort
     // — missing or malformed files return an empty array.
     const rehydrated = await loadAgentChat({
       projectPath: projectResult.data.path,
-      projectName: projectResult.data.workflow.name,
-      projectId: projectResult.data.workflow.id,
+      projectName: projectResult.data.manifest.name,
+      projectId: projectResult.data.manifest.id,
     });
     if (rehydrated.length > 0) {
       get().setMessages(rehydrated);
@@ -88,8 +98,8 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
 
     const hydratedTrace = await loadLatestRunTrace({
       projectPath: projectResult.data.path,
-      projectName: projectResult.data.workflow.name,
-      projectId: projectResult.data.workflow.id,
+      projectName: projectResult.data.manifest.name,
+      projectId: projectResult.data.manifest.id,
       storeTraces: get().storeTraces,
     });
     if (hydratedTrace) {
@@ -108,7 +118,16 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       savePath = result.data;
       set({ projectPath: savePath });
     }
-    const saveResult = await commands.saveProject(savePath, workflow);
+    // 1.G TOMBSTONE: legacy `workflow` slice still holds id/name/intent;
+    // graph fields (nodes/edges/groups) are dropped on save now that
+    // `ProjectManifest` is the on-disk shape.
+    const manifest: ProjectManifest = {
+      id: workflow.id,
+      name: workflow.name,
+      intent: workflow.intent ?? null,
+      schema_version: PROJECT_SCHEMA_VERSION,
+    };
+    const saveResult = await commands.saveProject(savePath, manifest);
     if (saveResult.status !== "ok") {
       pushLog(`Failed to save: ${errorMessage(saveResult.error)}`);
       return;

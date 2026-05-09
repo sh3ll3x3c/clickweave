@@ -62,3 +62,10 @@ export function makeDefaultWorkflow(): Workflow {
     groups: [],
   };
 }
+
+/**
+ * Mirrors `clickweave_core::project::PROJECT_SCHEMA_VERSION` (D33).
+ * Bump in lock-step with the Rust constant whenever the manifest
+ * shape changes.
+ */
+export const PROJECT_SCHEMA_VERSION = 1;

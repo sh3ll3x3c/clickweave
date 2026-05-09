@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { ExecutionMode, RunRequest } from "../../bindings";
+import type { ExecutionMode, RunSkillRequest } from "../../bindings";
 import { commands } from "../../bindings";
 import { validateSingleGraph } from "../../utils/graphValidation";
 import { errorMessage } from "../../utils/commandError";
@@ -72,6 +72,10 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       pushLog,
     } = get();
 
+    // 1.G TOMBSTONE: graph validation runs against `workflow.nodes/edges`
+    // which are deleted with the canvas in 1.G. Kept here so the existing
+    // run button keeps validating until 1.F lands the SkillView-driven
+    // run path.
     const graphErrors = validateSingleGraph(workflow.nodes, workflow.edges);
     if (graphErrors.length > 0) {
       for (const err of graphErrors) {
@@ -80,9 +84,16 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       return;
     }
 
-    const request: RunRequest = {
-      workflow,
+    // 1.F WIRE-UP: today's "run" button is a temporary stub against the
+    // new `run_skill` IPC. Real invocation flows through `SkillView` once
+    // it lands in 1.F; until then no caller can succeed at runtime — the
+    // backend stub returns `Skill not found` for the placeholder id.
+    const request: RunSkillRequest = {
       project_path: projectPath,
+      project_id: workflow.id,
+      project_name: workflow.name,
+      skill_id: "<unimplemented>",
+      variables: {},
       agent: toEndpoint(agentConfig),
       fast: fastEnabled ? toEndpoint(fastConfig) : null,
       supervisor: toEndpoint(supervisorConfig),
@@ -90,7 +101,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       supervision_delay_ms: supervisionDelayMs,
       store_traces: storeTraces,
     };
-    const result = await commands.runWorkflow(request);
+    const result = await commands.runSkill(request);
     if (result.status === "error") {
       pushLog(`Run failed: ${errorMessage(result.error)}`);
     }

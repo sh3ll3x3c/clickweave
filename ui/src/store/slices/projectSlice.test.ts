@@ -59,7 +59,15 @@ describe("projectSlice", () => {
     });
     commandMocks.openProject.mockResolvedValue({
       status: "ok",
-      data: { path: "/tmp/new.clickweave", workflow },
+      data: {
+        path: "/tmp/new.clickweave",
+        manifest: {
+          id: workflow.id,
+          name: workflow.name,
+          intent: null,
+          schema_version: 1,
+        },
+      },
     });
 
     await useStore.getState().openProject();

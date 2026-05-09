@@ -1,8 +1,18 @@
 import type { StateCreator } from "zustand";
 import type { DetailTab } from "../state";
-import type { NodeTypeInfo } from "../../bindings";
-import { commands } from "../../bindings";
 import type { StoreState } from "./types";
+
+// 1.G TOMBSTONE: placeholder shape mirroring the deleted
+// `bindings.ts::NodeTypeInfo`. The `nodeTypeDefaults` Tauri command is
+// gone; this whole canvas-tree branch is deleted with the canvas in 1.G.
+export type NodeTypeInfo = {
+  name: string;
+  output_role: string;
+  node_context: string;
+  icon: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  node_type: any;
+};
 
 export interface UiSlice {
   selectedNode: string | null;
@@ -105,12 +115,13 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   setAllowAgentSteps: (allow) => set({ allowAgentSteps: allow }),
 
   loadNodeTypes: () => {
+    // 1.G TOMBSTONE: deleted with canvas — the `nodeTypeDefaults` IPC
+    // command was removed in 1.C alongside the legacy graph envelope.
+    // The canvas (NodePalette) is the only consumer; both are deleted
+    // in 1.G. Mark loaded so existing call sites see a stable "no node
+    // types available" rather than a perpetual pending state.
     if (get()._nodeTypesLoaded) return;
-    set({ _nodeTypesLoaded: true });
-    commands
-      .nodeTypeDefaults()
-      .then((types) => set({ nodeTypes: types }))
-      .catch((e) => console.error("Failed to load node type defaults:", e));
+    set({ _nodeTypesLoaded: true, nodeTypes: [] });
   },
 
   setHasCanvasSelection: (has) => {
