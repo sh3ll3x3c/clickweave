@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use chrono::Utc;
 use clickweave_engine::agent::skills::{
-    ApplicabilityHints, ApplicabilitySignature, OutcomePredicate, Skill, SkillError, SkillScope,
-    SkillState, SkillStats, SkillStore, SubgoalSignature, SKILL_SCHEMA_VERSION,
+    ApplicabilityHints, ApplicabilitySignature, OutcomePredicate, SKILL_SCHEMA_VERSION, Skill,
+    SkillError, SkillScope, SkillState, SkillStats, SkillStore, SubgoalSignature,
 };
 
 fn sample_skill(id: &str) -> Skill {
@@ -74,10 +74,7 @@ fn external_editor_save_while_patch_in_flight_returns_external_conflict() {
     let final_path = store.skill_md_path(&skill.id);
 
     // 2. Record the mtime that a chat patch would capture at read time.
-    let pre_edit_mtime = fs::metadata(&final_path)
-        .unwrap()
-        .modified()
-        .unwrap();
+    let pre_edit_mtime = fs::metadata(&final_path).unwrap().modified().unwrap();
 
     // Sleep to advance filesystem time past the 2 ms tolerance window
     // inside `mtime_matches`, then write externally-edited content.
@@ -171,7 +168,11 @@ fn crash_between_skill_md_rename_and_replay_json_rename_replays_missing_rename()
 
     // The .tx/pending directory still has replay.json.new (not renamed).
     fs::create_dir_all(&pending).unwrap();
-    fs::write(pending.join("replay.json.new"), b"{\"skill_id\":\"skl_crash_c\",\"schema_version\":1,\"steps\":{},\"section_history\":[]}").unwrap();
+    fs::write(
+        pending.join("replay.json.new"),
+        b"{\"skill_id\":\"skl_crash_c\",\"schema_version\":1,\"steps\":{},\"section_history\":[]}",
+    )
+    .unwrap();
     // SKILL.md.new is absent — it was already renamed (that rename succeeded).
 
     // The manifest lists both files.
@@ -218,7 +219,10 @@ fn crash_between_skill_md_rename_and_replay_json_rename_replays_missing_rename()
     );
 
     // The journal must be cleaned up.
-    assert!(!tx_dir.exists(), ".tx/ journal must be removed after recovery");
+    assert!(
+        !tx_dir.exists(),
+        ".tx/ journal must be removed after recovery"
+    );
 
     // ── Act: second recovery pass (idempotency) ───────────────────────────────
 
@@ -226,7 +230,10 @@ fn crash_between_skill_md_rename_and_replay_json_rename_replays_missing_rename()
     store.recover_atomic_writes(&skill_id).unwrap();
 
     // The live files must be unchanged.
-    assert!(skill_md.exists(), "SKILL.md still present after second recovery");
+    assert!(
+        skill_md.exists(),
+        "SKILL.md still present after second recovery"
+    );
     assert!(
         replay_json.exists(),
         "replay.json still present after second recovery"

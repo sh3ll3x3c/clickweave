@@ -1,6 +1,8 @@
 use super::*;
 use crate::agent::trace_graph::TraceNodeKind;
-use clickweave_core::{AxClickParams, AxSelectParams, AxSetValueParams, AxTarget, McpToolCallParams};
+use clickweave_core::{
+    AxClickParams, AxSelectParams, AxSetValueParams, AxTarget, McpToolCallParams,
+};
 
 fn runner_with_snapshot(body: &str) -> StateRunner {
     use crate::agent::world_model::{AxSnapshotData, Fresh, FreshnessSource};

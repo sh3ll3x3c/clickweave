@@ -1,8 +1,8 @@
 use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
 use crate::agent::runner::StateRunner;
+use crate::agent::trace_graph::AgentTraceGraph;
 use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput, TerminalReason};
 use crate::executor::Mcp;
-use crate::agent::trace_graph::AgentTraceGraph;
 use tokio::sync::mpsc;
 
 fn cfg_with_steps(steps: usize) -> AgentConfig {

@@ -1,5 +1,5 @@
-use super::*;
 use super::TraceNodeKind as NodeType;
+use super::*;
 
 /// Convert a `TraceNodeKind` to a `ToolInvocation` (tool name + JSON arguments).
 ///

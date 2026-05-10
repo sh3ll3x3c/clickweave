@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use clickweave_engine::agent::skills::types::{ActionSketchStep, ExpectedWorldModelDelta, LoopPredicate};
+use clickweave_engine::agent::skills::types::{
+    ActionSketchStep, ExpectedWorldModelDelta, LoopPredicate,
+};
 use clickweave_engine::executor::{Mcp, SkillRunContext, run_skill_steps};
 use clickweave_mcp::ToolCallResult;
 use serde_json::{Value, json};
@@ -80,10 +82,7 @@ fn tool_call(step_id: &str, tool: &str) -> ActionSketchStep {
 async fn loop_body_fires_n_times_for_step_count_n() {
     let mcp = CountingMcp::new();
 
-    let body = vec![
-        tool_call("b_001", "click"),
-        tool_call("b_002", "wait"),
-    ];
+    let body = vec![tool_call("b_001", "click"), tool_call("b_002", "wait")];
 
     let steps = vec![ActionSketchStep::Loop {
         step_id: "poll_loop".to_string(),
@@ -94,10 +93,16 @@ async fn loop_body_fires_n_times_for_step_count_n() {
     }];
 
     let mut ctx = SkillRunContext::new(&mcp, HashMap::new());
-    run_skill_steps(&mut ctx, &steps).await.expect("loop should terminate");
+    run_skill_steps(&mut ctx, &steps)
+        .await
+        .expect("loop should terminate");
 
     // Body has 2 steps; loop runs 3 times → 6 total tool calls.
-    assert_eq!(mcp.call_count(), 6, "body fires 3 times × 2 steps = 6 calls");
+    assert_eq!(
+        mcp.call_count(),
+        6,
+        "body fires 3 times × 2 steps = 6 calls"
+    );
 
     let calls = mcp.all_calls();
     // click and wait should alternate in pairs.
@@ -132,6 +137,9 @@ async fn loop_caps_at_max_iterations_with_world_model_predicate() {
         .await
         .expect_err("WorldModelDelta always false → max_iterations exceeded");
 
-    assert!(err.to_string().contains("poll_screenshots"), "error identifies loop step id");
+    assert!(
+        err.to_string().contains("poll_screenshots"),
+        "error identifies loop step id"
+    );
     assert_eq!(mcp.call_count(), 5, "body fires max_iterations=5 times");
 }

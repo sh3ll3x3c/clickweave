@@ -1,6 +1,6 @@
-use super::*;
 use super::TraceNodeKind as NodeType;
-use clickweave_core::{AppDebugKitParams, AiStepParams};
+use super::*;
+use clickweave_core::{AiStepParams, AppDebugKitParams};
 
 fn sample_tools() -> Vec<Value> {
     vec![

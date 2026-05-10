@@ -8,14 +8,14 @@
 //! groups in the skill model are sections. No separate test is added.
 
 use chrono::Utc;
+use clickweave_engine::agent::skills::ReplayJson;
+use clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION;
 use clickweave_engine::agent::skills::{
     ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, ExpectedWorldModelDelta,
     OutcomePredicate, SkillPatch, SkillPatchPrimitive, SkillScope, SkillState, SkillStats,
     SkillStore, SubgoalSignature,
 };
 use clickweave_engine::agent::skills::{Skill, apply_patch_to_skill, parse_skill_md};
-use clickweave_engine::agent::skills::ReplayJson;
-use clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION;
 
 // ── Test fixture helpers ─────────────────────────────────────────────────────
 
@@ -94,7 +94,9 @@ fn write_apply_reload(
 
     // Persist.
     store.write_skill(&patched_skill).unwrap();
-    store.write_replay(&patched_skill.id, &patched_replay).unwrap();
+    store
+        .write_replay(&patched_skill.id, &patched_replay)
+        .unwrap();
 
     // Reload from disk.
     let path = store.skill_md_path(&patched_skill.id);
@@ -166,10 +168,7 @@ fn dismiss_hover_step() {
 
     let mut skill = minimal_skill("skl_hover");
     // Two steps: a click and a hover. The hover should be dismissed.
-    skill.action_sketch = vec![
-        tool_call("s_001", "click"),
-        tool_call("s_002", "hover"),
-    ];
+    skill.action_sketch = vec![tool_call("s_001", "click"), tool_call("s_002", "hover")];
 
     let replay = empty_replay("skl_hover");
 
@@ -179,9 +178,9 @@ fn dismiss_hover_step() {
 
     // Simulate the "dismiss hover" operation: rebuild action_sketch without s_002.
     let mut patched = skill.clone();
-    patched.action_sketch.retain(|step| {
-        matches!(step, ActionSketchStep::ToolCall { step_id, .. } if step_id != "s_002")
-    });
+    patched.action_sketch.retain(
+        |step| matches!(step, ActionSketchStep::ToolCall { step_id, .. } if step_id != "s_002"),
+    );
 
     // Persist the patched skill.
     store.write_skill(&patched).unwrap();
@@ -193,11 +192,7 @@ fn dismiss_hover_step() {
     let path = store.skill_md_path(&patched.id);
     let reloaded = store.read_skill(&path).unwrap();
 
-    assert_eq!(
-        reloaded.action_sketch.len(),
-        1,
-        "hover step should be gone"
-    );
+    assert_eq!(reloaded.action_sketch.len(), 1, "hover step should be gone");
     match &reloaded.action_sketch[0] {
         ActionSketchStep::ToolCall { step_id, tool, .. } => {
             assert_eq!(step_id, "s_001");

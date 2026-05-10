@@ -165,22 +165,13 @@ pub fn apply_markdown_replacements(
 ) -> Result<String, SkillError> {
     let mut current = body.to_string();
     for r in replacements {
-        match current.find(&r.old_text) {
-            Some(pos) => {
-                current = format!(
-                    "{}{}{}",
-                    &current[..pos],
-                    r.new_text,
-                    &current[pos + r.old_text.len()..]
-                );
-            }
-            None => {
-                return Err(SkillError::InvalidParameters(format!(
-                    "markdown_replacement: old_text {:?} not found in body",
-                    r.old_text
-                )));
-            }
+        if !current.contains(r.old_text.as_str()) {
+            return Err(SkillError::InvalidParameters(format!(
+                "markdown_replacement: old_text {:?} not found in body",
+                r.old_text
+            )));
         }
+        current = current.replacen(&r.old_text, &r.new_text, 1);
     }
     Ok(current)
 }
@@ -490,19 +481,20 @@ impl SkillPatch {
         let skill_id = args
             .get("skill_id")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "skill_patch_rebind_target: missing required field `skill_id`".to_string())?
+            .ok_or_else(|| {
+                "skill_patch_rebind_target: missing required field `skill_id`".to_string()
+            })?
             .to_string();
         let step_id = args
             .get("step_id")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "skill_patch_rebind_target: missing required field `step_id`".to_string())?
-            .to_string();
-        let new_target_args = args
-            .get("new_target_args")
-            .cloned()
             .ok_or_else(|| {
-                "skill_patch_rebind_target: missing required field `new_target_args`".to_string()
-            })?;
+                "skill_patch_rebind_target: missing required field `step_id`".to_string()
+            })?
+            .to_string();
+        let new_target_args = args.get("new_target_args").cloned().ok_or_else(|| {
+            "skill_patch_rebind_target: missing required field `new_target_args`".to_string()
+        })?;
 
         Ok(SkillPatch {
             skill_id,
@@ -597,9 +589,7 @@ impl SkillPatch {
     /// Prose replacement and image-crop signal clearing are deferred to the
     /// apply phase which has the full body text; this constructor only
     /// captures the parameter fields.
-    pub fn from_promote_to_variable_args(
-        args: &serde_json::Value,
-    ) -> Result<Self, String> {
+    pub fn from_promote_to_variable_args(args: &serde_json::Value) -> Result<Self, String> {
         let skill_id = args
             .get("skill_id")
             .and_then(serde_json::Value::as_str)
@@ -645,7 +635,7 @@ impl SkillPatch {
             action_sketch_replacements: vec![ActionSketchReplacement {
                 step_id,
                 field: arg_path,
-                new_value: serde_json::Value::String(format!("{{{{{variable_name}}}}}"))
+                new_value: serde_json::Value::String(format!("{{{{{variable_name}}}}}")),
             }],
             variables_additions: vec![SkillFrontmatterVariable {
                 name: variable_name,

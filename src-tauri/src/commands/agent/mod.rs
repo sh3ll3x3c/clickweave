@@ -282,7 +282,7 @@ mod task;
 mod tests;
 
 pub use commands::{
-    approve_agent_action, add_run_to_skill, resolve_completion_disagreement, run_agent,
+    add_run_to_skill, approve_agent_action, resolve_completion_disagreement, run_agent,
     save_run_as_skill, stop_agent,
 };
 

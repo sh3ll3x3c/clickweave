@@ -137,5 +137,4 @@ mod tests {
             WindowControl::from_accessibility("", Some("AXButton"), Some("AXSortButton")).is_none()
         );
     }
-
 }

@@ -6,9 +6,7 @@
 
 use std::collections::HashMap;
 
-use clickweave_engine::agent::skills::types::{
-    ActionSketchStep, ExpectedWorldModelDelta,
-};
+use clickweave_engine::agent::skills::types::{ActionSketchStep, ExpectedWorldModelDelta};
 use clickweave_engine::executor::{Mcp, SkillRunContext, run_skill_steps};
 use clickweave_mcp::ToolCallResult;
 use serde_json::{Value, json};
@@ -121,5 +119,8 @@ async fn round_trip_preserves_step_section_and_variable_bindings() {
 
     // All 4 tools dispatched in order.
     let dispatched = mcp.dispatched_tools();
-    assert_eq!(dispatched, vec!["launch_app", "focus_window", "click", "type_text"]);
+    assert_eq!(
+        dispatched,
+        vec!["launch_app", "focus_window", "click", "type_text"]
+    );
 }

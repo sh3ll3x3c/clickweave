@@ -195,10 +195,10 @@ fn first_action_app(actions: &[WalkthroughAction]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use clickweave_core::MouseButton;
     use clickweave_core::walkthrough::{
         ActionConfidence, WalkthroughAction, WalkthroughActionKind,
     };
-    use clickweave_core::MouseButton;
     use uuid::Uuid;
 
     use super::*;
@@ -288,5 +288,4 @@ mod tests {
             matches!(&sketch[0], ActionSketchStep::ToolCall { tool, .. } if tool == "type_text")
         );
     }
-
 }

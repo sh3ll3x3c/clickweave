@@ -441,4 +441,3 @@ pub struct VariablePromotion {
     pub node_id: Uuid,
     pub variable_name: String,
 }
-

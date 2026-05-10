@@ -1,8 +1,8 @@
 use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
 use crate::agent::runner::{FocusSkipReason, StateRunner};
+use crate::agent::trace_graph::AgentTraceGraph;
 use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput, TerminalReason};
 use crate::executor::Mcp;
-use crate::agent::trace_graph::AgentTraceGraph;
 use serde_json::Value;
 use tokio::sync::mpsc;
 

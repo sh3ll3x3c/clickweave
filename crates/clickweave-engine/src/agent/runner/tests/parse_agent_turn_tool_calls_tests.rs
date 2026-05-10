@@ -400,7 +400,10 @@ fn skill_patch_rebind_missing_required_field_yields_skill_patch_with_parse_error
                 "error should name the missing field: {err}"
             );
         }
-        other => panic!("expected SkillPatch action even on failure, got {:?}", other),
+        other => panic!(
+            "expected SkillPatch action even on failure, got {:?}",
+            other
+        ),
     }
 }
 

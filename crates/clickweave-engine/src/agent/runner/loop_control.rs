@@ -336,6 +336,7 @@ impl StateRunner {
         self.clear_last_failure_tracking();
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn finish_synthetic_success(
         &mut self,
         loop_ctx: &mut RunLoopContext,
@@ -509,6 +510,7 @@ impl StateRunner {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn record_blocked_tool_error(
         &mut self,
         loop_ctx: &mut RunLoopContext,
@@ -765,6 +767,7 @@ impl StateRunner {
         reset_no_progress_tracking(&mut trackers.last_action, &mut trackers.recent_actions);
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_run_turn_result<M>(
         &mut self,
         goal: &str,
@@ -1150,17 +1153,13 @@ impl StateRunner {
                 // the LLM sees the patch outcome on the next turn. Use a
                 // deterministic synthetic id; no MCP round-trip occurs.
                 let result_text = match patch {
-                    Some(p) => {
-                        trackers
-                            .previous_result
-                            .as_deref()
-                            .unwrap_or(&format!(r#"{{"ok":true,"skill_id":"{}"}}"#, p.skill_id))
-                            .to_string()
-                    }
+                    Some(p) => trackers
+                        .previous_result
+                        .as_deref()
+                        .unwrap_or(&format!(r#"{{"ok":true,"skill_id":"{}"}}"#, p.skill_id))
+                        .to_string(),
                     None => {
-                        let err = parse_error
-                            .as_deref()
-                            .unwrap_or("patch synthesis failed");
+                        let err = parse_error.as_deref().unwrap_or("patch synthesis failed");
                         format!(r#"{{"ok":false,"error":{err:?}}}"#)
                     }
                 };

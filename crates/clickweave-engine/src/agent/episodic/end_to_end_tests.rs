@@ -25,9 +25,9 @@ use crate::agent::runner::StateRunner;
 use crate::agent::test_stubs::{
     CapturingLlm, ScriptedLlm, StaticMcp, llm_reply_tool, llm_reply_tool_with_id,
 };
+use crate::agent::trace_graph::AgentTraceGraph;
 use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput};
 use crate::executor::Mcp;
-use crate::agent::trace_graph::AgentTraceGraph;
 
 /// Build an MCP that advertises one CDP element so the world-model
 /// signature is non-trivial across both runs in the test, plus the

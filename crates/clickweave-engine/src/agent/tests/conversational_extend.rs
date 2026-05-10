@@ -8,9 +8,9 @@
 
 use super::{MockAgent, MockMcp};
 use crate::agent::StateRunner;
+use crate::agent::trace_graph::AgentTraceGraph;
 use crate::agent::types::AgentConfig;
 use crate::executor::Mcp;
-use crate::agent::trace_graph::AgentTraceGraph;
 use uuid::Uuid;
 
 #[tokio::test]

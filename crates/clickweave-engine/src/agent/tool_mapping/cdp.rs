@@ -1,5 +1,5 @@
-use super::*;
 use super::TraceNodeKind as NodeType;
+use super::*;
 
 pub(super) fn cdp_tool_invocation_to_node_type(name: &str, args: &Value) -> Option<NodeType> {
     match name {

@@ -41,9 +41,10 @@ fn privacy_off_creates_no_run_artifacts_on_disk() {
 
     // More broadly, the entire skills directory should be absent.
     let skills_dir = tmp.path().join(".clickweave").join("skills");
-    let no_artifacts = !skills_dir.exists() || fs::read_dir(&skills_dir)
-        .map(|mut d| d.next().is_none())
-        .unwrap_or(true);
+    let no_artifacts = !skills_dir.exists()
+        || fs::read_dir(&skills_dir)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true);
 
     assert!(
         no_artifacts,
@@ -60,7 +61,10 @@ fn persistence_on_creates_run_artifacts_on_disk() {
     let skill_id = "skl_privacy_on";
 
     let storage = RunStorage::new(tmp.path(), "privacy-on-project");
-    assert!(storage.is_persistent(), "persistence should be on by default");
+    assert!(
+        storage.is_persistent(),
+        "persistence should be on by default"
+    );
 
     let run = storage.create_skill_run(skill_id).unwrap();
     storage.save_skill_run(&run).unwrap();

@@ -134,8 +134,6 @@ pub enum NodeContext {
 
 // --- Output schema registry ---
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

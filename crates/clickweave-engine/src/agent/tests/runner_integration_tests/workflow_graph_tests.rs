@@ -62,14 +62,21 @@ async fn successful_tool_call_adds_node_to_trace_graph_with_source_run_id() {
         .expect("run ok");
 
     let _events = drain_events(&mut event_rx);
-    assert_eq!(state.trace_graph.nodes.len(), 1, "one live tool call → one trace node");
+    assert_eq!(
+        state.trace_graph.nodes.len(),
+        1,
+        "one live tool call → one trace node"
+    );
     assert_eq!(
         state.trace_graph.nodes[0].source_run_id,
         Some(run_id),
         "every trace node must carry the runner's run_id as source_run_id"
     );
     // No edge — anchor_node_id is None and this is the first node.
-    assert!(state.trace_graph.edges.is_empty(), "first node without an anchor must not produce an edge");
+    assert!(
+        state.trace_graph.edges.is_empty(),
+        "first node without an anchor must not produce an edge"
+    );
 }
 
 /// Two successful tool calls produce two trace nodes and one edge connecting
@@ -100,9 +107,20 @@ async fn second_tool_call_adds_edge_in_trace_graph_connecting_to_first_node() {
         .expect("run ok");
 
     let _events = drain_events(&mut event_rx);
-    assert_eq!(state.trace_graph.nodes.len(), 2, "two live tool calls → two trace nodes");
-    assert_eq!(state.trace_graph.edges.len(), 1, "two nodes, no anchor → one edge");
-    assert_eq!(state.trace_graph.edges[0].from, state.trace_graph.nodes[0].id);
+    assert_eq!(
+        state.trace_graph.nodes.len(),
+        2,
+        "two live tool calls → two trace nodes"
+    );
+    assert_eq!(
+        state.trace_graph.edges.len(),
+        1,
+        "two nodes, no anchor → one edge"
+    );
+    assert_eq!(
+        state.trace_graph.edges[0].from,
+        state.trace_graph.nodes[0].id
+    );
     assert_eq!(state.trace_graph.edges[0].to, state.trace_graph.nodes[1].id);
 }
 
@@ -136,7 +154,10 @@ async fn observation_tool_does_not_add_node_to_trace_graph() {
         .expect("run ok");
 
     let _events = drain_events(&mut event_rx);
-    assert!(state.trace_graph.nodes.is_empty(), "observation tools must not produce trace nodes");
+    assert!(
+        state.trace_graph.nodes.is_empty(),
+        "observation tools must not produce trace nodes"
+    );
     assert!(state.trace_graph.edges.is_empty());
 }
 
@@ -170,7 +191,10 @@ async fn anchor_node_id_chains_first_new_node_in_trace_graph() {
     let _events = drain_events(&mut event_rx);
     assert_eq!(state.trace_graph.nodes.len(), 1);
     assert_eq!(state.trace_graph.edges.len(), 1);
-    assert_eq!(state.trace_graph.edges[0].from, anchor, "first edge must chain from the anchor");
+    assert_eq!(
+        state.trace_graph.edges[0].from, anchor,
+        "first edge must chain from the anchor"
+    );
     assert_eq!(state.trace_graph.edges[0].to, state.trace_graph.nodes[0].id);
 }
 
@@ -203,7 +227,10 @@ async fn build_workflow_false_suppresses_trace_graph_accumulation() {
         .expect("run ok");
 
     let _events = drain_events(&mut event_rx);
-    assert!(state.trace_graph.nodes.is_empty(), "build_workflow=false must suppress trace node accumulation");
+    assert!(
+        state.trace_graph.nodes.is_empty(),
+        "build_workflow=false must suppress trace node accumulation"
+    );
     assert!(
         matches!(
             state.terminal_reason,

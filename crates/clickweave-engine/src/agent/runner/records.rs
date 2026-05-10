@@ -233,12 +233,9 @@ impl StateRunner {
     /// No-op when no native AX snapshot has been captured yet, when the
     /// node kind is not an AX dispatch variant, when the target is already
     /// a `Descriptor`, or when the uid is not present in the snapshot.
-    pub fn enrich_ax_descriptor(
-        &self,
-        node_kind: &mut crate::agent::trace_graph::TraceNodeKind,
-    ) {
-        use clickweave_core::AxTarget;
+    pub fn enrich_ax_descriptor(&self, node_kind: &mut crate::agent::trace_graph::TraceNodeKind) {
         use crate::agent::trace_graph::TraceNodeKind;
+        use clickweave_core::AxTarget;
 
         let Some(ax) = &self.world_model.last_native_ax_snapshot else {
             return;

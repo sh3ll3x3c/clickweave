@@ -175,9 +175,7 @@ impl StateRunner {
                             .as_deref()
                             .unwrap_or("unknown patch synthesis error");
                         TurnOutcome::Replan {
-                            reason: format!(
-                                "{tool_name}: patch synthesis failed — {err}"
-                            ),
+                            reason: format!("{tool_name}: patch synthesis failed — {err}"),
                         }
                     }
                     Some(p) => {
@@ -379,9 +377,7 @@ impl StateRunner {
             return None;
         }
 
-        let Some(progress) = pending.as_mut() else {
-            return None;
-        };
+        let progress = pending.as_mut()?;
         let context_signature = stable_no_progress_context_signature(&self.world_model);
         if progress.context_signature != context_signature {
             *pending = None;

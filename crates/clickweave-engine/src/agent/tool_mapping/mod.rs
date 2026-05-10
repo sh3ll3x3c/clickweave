@@ -15,8 +15,8 @@ use clickweave_core::{
     CdpNewPageParams, CdpPressKeyParams, CdpSelectPageParams, CdpTarget, CdpTypeParams,
     CdpWaitParams, ClickParams, ClickTarget, DragParams, FindAppParams, FindImageParams,
     FindTextParams, FocusTarget, FocusWindowParams, HoverParams, LaunchAppParams,
-    McpToolCallParams, MouseButton, PressKeyParams, QuitAppParams, ScreenshotMode,
-    ScrollParams, TakeScreenshotParams, TypeTextParams,
+    McpToolCallParams, MouseButton, PressKeyParams, QuitAppParams, ScreenshotMode, ScrollParams,
+    TakeScreenshotParams, TypeTextParams,
 };
 use serde_json::Value;
 use std::fmt;

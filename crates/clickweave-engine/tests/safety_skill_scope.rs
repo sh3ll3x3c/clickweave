@@ -35,11 +35,12 @@ fn supervision_paused_carries_skill_scope_fields() {
 
     match event {
         ExecutorEvent::SupervisionPaused {
-            scope: SafetyScope::Skill {
-                skill_id,
-                section_id,
-                step_id,
-            },
+            scope:
+                SafetyScope::Skill {
+                    skill_id,
+                    section_id,
+                    step_id,
+                },
             finding,
             ..
         } => {
@@ -77,7 +78,9 @@ fn safety_scope_variants_are_mutually_exclusive() {
         section_id: "sec".to_string(),
         step_id: "step".to_string(),
     };
-    let adhoc_scope = SafetyScope::AdHoc { run_id: Uuid::new_v4() };
+    let adhoc_scope = SafetyScope::AdHoc {
+        run_id: Uuid::new_v4(),
+    };
 
     let is_skill = matches!(skill_scope, SafetyScope::Skill { .. });
     let is_adhoc_for_skill = matches!(skill_scope, SafetyScope::AdHoc { .. });

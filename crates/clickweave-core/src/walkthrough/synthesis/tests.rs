@@ -689,4 +689,3 @@ mod normalize_tests {
         ));
     }
 }
-

@@ -1,13 +1,13 @@
 use super::*;
-use clickweave_engine::agent::skills::{
-    ActionSketchStep, ApplicabilityHints, ExpectedWorldModelDelta, OutcomePredicate,
-    ProvenanceEntry, Skill, SkillError, SkillScope, SkillState, SkillStats, SkillStore,
-    parse_skill_md, prose_generator,
-};
 use clickweave_engine::agent::skills::extractor::synthesize_skill_id_for_signature;
 use clickweave_engine::agent::skills::replay::ReplayJson;
 use clickweave_engine::agent::skills::signature::{
     compute_applicability_signature_from_parts, compute_subgoal_signature_from_parts,
+};
+use clickweave_engine::agent::skills::{
+    ActionSketchStep, ApplicabilityHints, ExpectedWorldModelDelta, OutcomePredicate,
+    ProvenanceEntry, Skill, SkillError, SkillScope, SkillState, SkillStats, SkillStore,
+    parse_skill_md, prose_generator,
 };
 use std::collections::HashMap;
 
@@ -113,11 +113,10 @@ fn agent_skill_error_to_command(error: SkillError) -> CommandError {
     }
 }
 
-fn write_skill_files(
-    store: &SkillStore,
-    skill: &Skill,
-) -> Result<(), CommandError> {
-    store.write_skill(skill).map_err(agent_skill_error_to_command)?;
+fn write_skill_files(store: &SkillStore, skill: &Skill) -> Result<(), CommandError> {
+    store
+        .write_skill(skill)
+        .map_err(agent_skill_error_to_command)?;
     let _ = store.write_replay(
         &skill.id,
         &ReplayJson {
@@ -171,8 +170,16 @@ pub async fn save_run_as_skill(
     let project_id = parse_uuid(&request.project_id, "project")?;
 
     let name = request.name.trim();
-    let name = if name.is_empty() { request.goal.trim() } else { name };
-    let name = if name.is_empty() { "Agent Run Skill" } else { name };
+    let name = if name.is_empty() {
+        request.goal.trim()
+    } else {
+        name
+    };
+    let name = if name.is_empty() {
+        "Agent Run Skill"
+    } else {
+        name
+    };
 
     let sketch = steps_wire_to_sketch(&request.steps);
     let body = prose_generator::generate(&sketch, name);
@@ -241,8 +248,8 @@ pub async fn add_run_to_skill(
     let skill_path = store.skill_md_path(&request.skill_id);
     let current_md = std::fs::read_to_string(&skill_path)
         .map_err(|e| CommandError::io(format!("read SKILL.md: {e}")))?;
-    let mut skill = parse_skill_md(&current_md)
-        .map_err(|e| CommandError::validation(e.to_string()))?;
+    let mut skill =
+        parse_skill_md(&current_md).map_err(|e| CommandError::validation(e.to_string()))?;
 
     // Append the new steps to the existing action_sketch.
     let new_steps = steps_wire_to_sketch(&request.steps);

@@ -27,8 +27,7 @@ const FRONTMATTER_DELIMITER: &str = "---";
 /// 1. Split `---`-delimited frontmatter; `serde_yaml::from_str::<SkillFrontmatter>`.
 /// 2. Reject `schema_version > SKILL_SCHEMA_VERSION`.
 /// 3. Walk markdown body for `##`/`###` headings + `<!-- section: -->`
-///    + `<!-- step: -->` markers (slug fallback only when no marker
-///    appears).
+///    + `<!-- step: -->` markers (slug fallback only when no marker appears).
 ///
 /// 4. Locate the single fenced ` ```json action_sketch ` block and
 ///    deserialize its body as `Vec<ActionSketchStep>`.

@@ -18,11 +18,10 @@ use clickweave_core::output_schema::{NodeContext, OutputRole};
 use clickweave_core::{
     AiStepParams, AppDebugKitParams, AxClickParams, AxSelectParams, AxSetValueParams,
     CdpClickParams, CdpClosePageParams, CdpFillParams, CdpHandleDialogParams, CdpHoverParams,
-    CdpNavigateParams, CdpNewPageParams, CdpPressKeyParams, CdpSelectPageParams,
-    CdpTypeParams, CdpWaitParams, ClickParams, DragParams, FindAppParams,
-    FindImageParams, FindTextParams, FocusWindowParams, HoverParams, LaunchAppParams,
-    McpToolCallParams, PressKeyParams, QuitAppParams, ScrollParams,
-    TakeScreenshotParams, TypeTextParams,
+    CdpNavigateParams, CdpNewPageParams, CdpPressKeyParams, CdpSelectPageParams, CdpTypeParams,
+    CdpWaitParams, ClickParams, DragParams, FindAppParams, FindImageParams, FindTextParams,
+    FocusWindowParams, HoverParams, LaunchAppParams, McpToolCallParams, PressKeyParams,
+    QuitAppParams, ScrollParams, TakeScreenshotParams, TypeTextParams,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
