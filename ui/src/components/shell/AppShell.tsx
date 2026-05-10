@@ -6,7 +6,6 @@ import { CdpAppSelectModal } from "../CdpAppSelectModal";
 import { ConfirmClearConversationModal } from "../ConfirmClearConversationModal";
 import { LogsBar } from "./LogsBar";
 import { SettingsModal } from "../SettingsModal";
-import { SupervisionModal } from "../SupervisionModal";
 import { VerdictBar } from "../VerdictBar";
 import { VerdictModal } from "../VerdictModal";
 import { OverviewView } from "./OverviewView";
@@ -21,9 +20,6 @@ export function AppShell() {
   const currentSurface = useStore((s) => s.currentSurface);
   const showSettings = useStore((s) => s.showSettings);
   const setShowSettings = useStore((s) => s.setShowSettings);
-  const supervisionPause = useStore((s) => s.supervisionPause);
-  const supervisionRespond = useStore((s) => s.supervisionRespond);
-
   const {
     cdpModalOpen,
     cdpProgress,
@@ -42,12 +38,7 @@ export function AppShell() {
   const closeAmbiguityModal = useStore((s) => s.closeAmbiguityModal);
   const setConfirmClearOpen = useStore((s) => s.setConfirmClearOpen);
   const clearConversationFlow = useStore((s) => s.clearConversationFlow);
-  const agentNodeCount = useStore(
-    (s) => s.workflow.nodes.filter((n) => n.source_run_id != null).length,
-  );
-  const onIntentEmptyState = useStore(
-    (s) => s.isNewWorkflow && s.workflow.nodes.length === 0,
-  );
+  const onIntentEmptyState = useStore((s) => s.isNewWorkflow);
 
   const activeAmbiguity =
     ambiguityResolutions.find((r) => r.id === activeAmbiguityId) ?? null;
@@ -129,12 +120,6 @@ export function AppShell() {
         onClose={() => setShowSettings(false)}
       />
       <VerdictModal />
-      {supervisionPause && (
-        <SupervisionModal
-          pause={supervisionPause}
-          onRespond={supervisionRespond}
-        />
-      )}
       <CdpAppSelectModal
         open={cdpModalOpen}
         cdpProgress={cdpProgress}
@@ -154,7 +139,7 @@ export function AppShell() {
       )}
       <ConfirmClearConversationModal
         open={confirmClearOpen}
-        agentNodeCount={agentNodeCount}
+        agentNodeCount={0}
         onConfirm={async () => {
           setConfirmClearOpen(false);
           await clearConversationFlow();

@@ -48,7 +48,7 @@ export function OverviewView() {
   const startAgent = useStore((s) => s.startAgent);
   const loadSkillsForPanel = useStore((s) => s.loadSkillsForPanel);
 
-  if (isNewWorkflow && workflow.nodes.length === 0) {
+  if (isNewWorkflow) {
     return (
       <IntentEmptyState
         onGenerate={(intent) => {
