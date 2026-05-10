@@ -13,7 +13,7 @@ describe("WorkflowRow", () => {
     });
   });
 
-  it("wraps rename in pushHistory so undo restores the previous name", () => {
+  it("renames the workflow on blur commit", () => {
     render(<WorkflowRow />);
     fireEvent.click(screen.getByRole("button", { name: /rename/i }));
     const input = screen.getByDisplayValue("MyFlow");
@@ -21,8 +21,6 @@ describe("WorkflowRow", () => {
     fireEvent.blur(input);
 
     expect(useStore.getState().workflow.name).toBe("Renamed");
-    useStore.getState().undo();
-    expect(useStore.getState().workflow.name).toBe("MyFlow");
   });
 
   it("keeps long workflow names from pushing the rename control offscreen", () => {

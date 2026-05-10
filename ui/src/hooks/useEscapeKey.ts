@@ -4,7 +4,7 @@ import { isWalkthroughActive } from "../store/slices/walkthroughSlice";
 
 /**
  * Global Escape key handler that closes panels in priority order:
- * Verdict modal → Settings modal → Node detail → Assistant panel → Logs drawer
+ * Verdict modal → Settings modal → Walkthrough → Logs drawer
  *
  * Reads state at event time via getState() so the listener is registered
  * once and always sees fresh values.
@@ -18,42 +18,22 @@ export function useEscapeKey() {
         verdictModalOpen,
         closeVerdictModal,
         showSettings,
-        selectedNode,
-        hasCanvasSelection,
         walkthroughStatus,
         walkthroughPanelOpen,
         cancelWalkthrough,
         discardDraft,
         setWalkthroughPanelOpen,
-        assistantSurface,
-        currentView,
         logsDrawerOpen,
         setShowSettings,
-        selectNode,
-        clearCanvasSelection,
-        setAssistantSurface,
         toggleLogsDrawer,
       } = useStore.getState();
 
       const walkthroughActive = isWalkthroughActive(walkthroughStatus);
-      const canvasVisible = currentView === "canvas";
 
       if (verdictModalOpen) {
         closeVerdictModal();
       } else if (showSettings) {
         setShowSettings(false);
-      } else if (canvasVisible && hasCanvasSelection) {
-        // Canvas-only selections (groups, or 2+ nodes) are not represented
-        // by `selectedNode`, so prefer this branch before the single-node
-        // one. `clearCanvasSelection` also resets `selectedNode` to null.
-        clearCanvasSelection();
-      } else if (canvasVisible && selectedNode !== null) {
-        selectNode(null);
-      } else if (canvasVisible && assistantSurface === "drawer") {
-        // Only the Canvas drawer is closable via Esc; the Overview embedded
-        // card has no Esc-close affordance (it's always live on Overview).
-        // Closing here also reveals any walkthrough review hidden behind it.
-        setAssistantSurface(null);
       } else if (walkthroughActive && walkthroughPanelOpen) {
         // Close the panel first; a second Escape will discard.
         setWalkthroughPanelOpen(false);

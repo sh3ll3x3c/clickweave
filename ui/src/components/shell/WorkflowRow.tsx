@@ -5,7 +5,6 @@ import { useStore } from "../../store/useAppStore";
 export function WorkflowRow() {
   const workflow = useStore((s) => s.workflow);
   const setWorkflow = useStore((s) => s.setWorkflow);
-  const pushHistory = useStore((s) => s.pushHistory);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(workflow.name);
@@ -24,7 +23,6 @@ export function WorkflowRow() {
     const next = draft.trim();
     setEditing(false);
     if (!next || next === workflow.name) return;
-    pushHistory("Rename Workflow");
     setWorkflow({ ...workflow, name: next });
   };
 

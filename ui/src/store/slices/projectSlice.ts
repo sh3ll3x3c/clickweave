@@ -81,7 +81,6 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       // showing the previous project's run-halted message.
       consecutiveDestructiveCapHit: null,
     });
-    get().clearHistory();
     // Ambiguity resolutions are specific to the prior workflow's nodes.
     get().clearAmbiguityResolutions();
 
@@ -166,7 +165,6 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       // showing the previous project's run-halted message.
       consecutiveDestructiveCapHit: null,
     });
-    get().clearHistory();
     get().clearAmbiguityResolutions();
     pushLog("New project created");
   },

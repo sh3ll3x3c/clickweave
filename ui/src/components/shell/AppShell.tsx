@@ -14,7 +14,6 @@ import { Sidebar } from "./Sidebar";
 import { TitleBar } from "./TitleBar";
 import { SkillView } from "../skill/SkillView";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
-import { useUndoRedoKeyboard } from "../../hooks/useUndoRedoKeyboard";
 import { useExecutorEvents } from "../../hooks/useExecutorEvents";
 import { useSafetyEventRouter } from "../../hooks/useSafetyEventRouter";
 
@@ -65,9 +64,6 @@ export function AppShell() {
   const loadSkillsForPanel = useStore((s) => s.loadSkillsForPanel);
   const setSkillsList = useStore((s) => s.setSkillsList);
   const clearSelectedSkill = useStore((s) => s.clearSelectedSkill);
-  const undo = useStore((s) => s.undo);
-  const redo = useStore((s) => s.redo);
-
   const skillsAvailable = skillsEnabled && storeTraces;
 
   // One-time loaders
@@ -102,7 +98,6 @@ export function AppShell() {
   ]);
 
   useEscapeKey();
-  useUndoRedoKeyboard(undo, redo);
   useExecutorEvents();
   // 1.F.5: Mount the safety event router at AppShell root so it's always
   // active regardless of which surface is shown.

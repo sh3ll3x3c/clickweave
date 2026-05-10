@@ -22,60 +22,46 @@ function pressEscape() {
   );
 }
 
-describe("useEscapeKey overview visibility", () => {
+describe("useEscapeKey", () => {
   beforeEach(() => {
     useStore.setState({
-      currentView: "overview",
       verdictModalOpen: false,
       showSettings: false,
-      selectedNode: null,
-      hasCanvasSelection: false,
-      assistantSurface: null,
       walkthroughStatus: "Idle",
       walkthroughPanelOpen: false,
       logsDrawerOpen: false,
     });
   });
 
-  it("does not let hidden canvas selection consume Escape on Overview", () => {
-    useStore.setState({
-      currentView: "overview",
-      selectedNode: "node-1",
-      logsDrawerOpen: true,
-    });
+  it("closes the logs drawer when no higher-priority panel is open", () => {
+    useStore.setState({ logsDrawerOpen: true });
     render(<Harness />);
 
     pressEscape();
 
-    expect(useStore.getState().selectedNode).toBe("node-1");
     expect(useStore.getState().logsDrawerOpen).toBe(false);
   });
 
-  it("does not let a hidden drawer surface consume Escape on Overview", () => {
-    useStore.setState({
-      currentView: "overview",
-      assistantSurface: "drawer",
-      logsDrawerOpen: true,
-    });
+  it("closes settings before logs drawer", () => {
+    useStore.setState({ showSettings: true, logsDrawerOpen: true });
     render(<Harness />);
 
     pressEscape();
 
-    expect(useStore.getState().assistantSurface).toBe("drawer");
-    expect(useStore.getState().logsDrawerOpen).toBe(false);
-  });
-
-  it("still clears visible canvas selection before Logs on Canvas", () => {
-    useStore.setState({
-      currentView: "canvas",
-      selectedNode: "node-1",
-      logsDrawerOpen: true,
-    });
-    render(<Harness />);
-
-    pressEscape();
-
-    expect(useStore.getState().selectedNode).toBeNull();
+    expect(useStore.getState().showSettings).toBe(false);
     expect(useStore.getState().logsDrawerOpen).toBe(true);
+  });
+
+  it("closes verdict modal before settings", () => {
+    useStore.setState({
+      verdictModalOpen: true,
+      showSettings: true,
+    });
+    render(<Harness />);
+
+    pressEscape();
+
+    expect(useStore.getState().verdictModalOpen).toBe(false);
+    expect(useStore.getState().showSettings).toBe(true);
   });
 });
