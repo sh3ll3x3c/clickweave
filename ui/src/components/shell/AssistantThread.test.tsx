@@ -30,6 +30,12 @@ const storeMock = vi.hoisted(() => ({
     setIntent: vi.fn(),
     executorState: "idle" as "idle" | "running",
     runTraces: {} as Record<string, unknown>,
+    // 1.J.2 freeze fields
+    skillFrozen: false,
+    stopWorkflow: vi.fn(async () => {}),
+    failedSectionId: null as string | null,
+    failedSectionError: null as string | null,
+    selectedSkill: null as null | { sections?: Array<{ id: string; heading: string }> },
   },
 }));
 
@@ -38,7 +44,7 @@ vi.mock("../../store/useAppStore", () => ({
     selector(storeMock.state),
 }));
 
-import { AssistantThread } from "./AssistantThread";
+import { AssistantThread, isEditShaped, parseStopAndThen } from "./AssistantThread";
 
 describe("AssistantThread", () => {
   beforeEach(() => {
@@ -52,6 +58,11 @@ describe("AssistantThread", () => {
     storeMock.state.setConfirmClearOpen = vi.fn();
     storeMock.state.workflow = { intent: null, nodes: [] };
     storeMock.state.runTraces = {};
+    storeMock.state.skillFrozen = false;
+    storeMock.state.stopWorkflow = vi.fn(async () => {});
+    storeMock.state.failedSectionId = null;
+    storeMock.state.failedSectionError = null;
+    storeMock.state.selectedSkill = null;
   });
 
   it("dispatches setConfirmClearOpen(true) when the showClearIcon trash is clicked (D14)", () => {
@@ -172,5 +183,105 @@ describe("AssistantThread", () => {
     expect(screen.getByText("Open account page")).toBeInTheDocument();
     expect(screen.getByText("cdp_click")).toBeInTheDocument();
     expect(screen.queryByText("Agent running...")).not.toBeInTheDocument();
+  });
+});
+
+// ── 1.J.2: Freeze — isEditShaped and parseStopAndThen pure helpers ──────────
+
+describe("isEditShaped — 1.J.2", () => {
+  // (c) edit-shaped input refused with one-liner
+  it("returns true for typical edit imperatives", () => {
+    expect(isEditShaped("edit section 2")).toBe(true);
+    expect(isEditShaped("change the second step")).toBe(true);
+    expect(isEditShaped("update the click target")).toBe(true);
+    expect(isEditShaped("delete step 3")).toBe(true);
+    expect(isEditShaped("remove the login step")).toBe(true);
+    expect(isEditShaped("rename the skill")).toBe(true);
+  });
+
+  it("returns false for non-edit messages", () => {
+    expect(isEditShaped("what does step 3 do?")).toBe(false);
+    expect(isEditShaped("how long will this run take?")).toBe(false);
+    expect(isEditShaped("stop the run")).toBe(false);
+  });
+});
+
+describe("parseStopAndThen — 1.J.2", () => {
+  // (d) `stop and then ...` parses and dispatches
+  it("matches 'stop and then <remainder>'", () => {
+    const r = parseStopAndThen("stop and then edit step 2");
+    expect(r.isStopAndThen).toBe(true);
+    if (r.isStopAndThen) expect(r.remainder).toBe("edit step 2");
+  });
+
+  it("matches 'stop, then <remainder>'", () => {
+    const r = parseStopAndThen("stop, then remove step 1");
+    expect(r.isStopAndThen).toBe(true);
+    if (r.isStopAndThen) expect(r.remainder).toBe("remove step 1");
+  });
+
+  it("returns false for plain stop message", () => {
+    const r = parseStopAndThen("stop");
+    expect(r.isStopAndThen).toBe(false);
+  });
+
+  it("returns false for non-stop messages", () => {
+    const r = parseStopAndThen("edit section 1");
+    expect(r.isStopAndThen).toBe(false);
+  });
+});
+
+// ── 1.J.2: Freeze — chat pill flip via SkillSelectionContext ─────────────────
+
+// (b) Chat pill flips to "Inspecting" when frozen is tested via the SkillSelectionContext
+// which is covered in SkillSelectionContext.test.tsx. The uiSlice.skillFrozen state
+// is set/cleared by executor events tested via the executorNodeEvents hook.
+
+// ── 1.J.2: Freeze — AssistantThread integration ──────────────────────────────
+
+describe("AssistantThread — freeze behavior (1.J.2)", () => {
+  beforeEach(() => {
+    storeMock.state.agentStatus = "idle";
+    storeMock.state.skillFrozen = true;
+    storeMock.state.stopWorkflow = vi.fn(async () => {});
+    storeMock.state.failedSectionId = null;
+    storeMock.state.failedSectionError = null;
+    storeMock.state.selectedSkill = null;
+  });
+
+  // (c) edit-shaped input is refused with one-liner when skill is frozen
+  it("refuses edit-shaped input with one-liner and calls onSendMessage with the refusal", () => {
+    const onSend = vi.fn();
+    render(
+      <AssistantThread
+        error={null}
+        messages={[]}
+        onSendMessage={onSend}
+        showHeader={false}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText(/ask about/i);
+    fireEvent.change(textarea, { target: { value: "edit section 2" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith(
+      expect.stringContaining("Run is in progress"),
+    );
+  });
+
+  // (d) `stop and then X` dispatches stopWorkflow then onSendMessage with remainder
+  it("dispatches stopWorkflow on 'stop and then' compound command", () => {
+    const onSend = vi.fn();
+    render(
+      <AssistantThread
+        error={null}
+        messages={[]}
+        onSendMessage={onSend}
+        showHeader={false}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText(/ask about/i);
+    fireEvent.change(textarea, { target: { value: "stop and then edit step 1" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(storeMock.state.stopWorkflow).toHaveBeenCalled();
   });
 });

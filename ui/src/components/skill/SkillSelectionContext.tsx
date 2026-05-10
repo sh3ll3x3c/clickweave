@@ -20,10 +20,13 @@ import {
   useRef,
   useState,
 } from "react";
+import { useStore } from "../../store/useAppStore";
 
 export interface SkillSelectionState {
   selectedSectionIds: string[];
   selectedSkillId: string | null;
+  /** "Editing" during normal operation; "Inspecting" when the skill is frozen (run in progress). */
+  mode: "Editing" | "Inspecting";
   selectSingle: (sectionId: string) => void;
   extendRange: (sectionId: string, allIds: string[]) => void;
   toggleMulti: (sectionId: string) => void;
@@ -33,6 +36,7 @@ export interface SkillSelectionState {
 const SkillSelectionContext = createContext<SkillSelectionState>({
   selectedSectionIds: [],
   selectedSkillId: null,
+  mode: "Editing",
   selectSingle: () => {},
   extendRange: () => {},
   toggleMulti: () => {},
@@ -51,8 +55,12 @@ export function SkillSelectionProvider({
   const [selectedSectionIds, setSelectedSectionIds] = useState<string[]>([]);
   // Anchor is the last "primary" click target — used for shift-click range.
   const anchorRef = useRef<string | null>(null);
+  const skillFrozen = useStore((s) => s.skillFrozen);
+  const mode: "Editing" | "Inspecting" = skillFrozen ? "Inspecting" : "Editing";
 
   const selectSingle = useCallback((sectionId: string) => {
+    // Selection mutations are disabled while the skill is frozen (run in progress).
+    if (useStore.getState().skillFrozen) return;
     setSelectedSectionIds((prev) => {
       if (prev.length === 1 && prev[0] === sectionId) {
         // Toggle: clicking the only selected item deselects it.
@@ -65,6 +73,7 @@ export function SkillSelectionProvider({
   }, []);
 
   const extendRange = useCallback((sectionId: string, allIds: string[]) => {
+    if (useStore.getState().skillFrozen) return;
     const anchor = anchorRef.current;
     if (!anchor) {
       // No anchor — treat as single select.
@@ -86,6 +95,7 @@ export function SkillSelectionProvider({
   }, []);
 
   const toggleMulti = useCallback((sectionId: string) => {
+    if (useStore.getState().skillFrozen) return;
     setSelectedSectionIds((prev) => {
       if (prev.includes(sectionId)) {
         const next = prev.filter((id) => id !== sectionId);
@@ -108,6 +118,7 @@ export function SkillSelectionProvider({
       value={{
         selectedSectionIds,
         selectedSkillId: skillId,
+        mode,
         selectSingle,
         extendRange,
         toggleMulti,

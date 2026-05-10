@@ -70,6 +70,13 @@ export interface UiSlice {
    * without threading an imperative handle up to `useEscapeKey`.
    */
   canvasSelectionResetTick: number;
+  /**
+   * True while a skill run is in progress. Freezes the SkillView shell:
+   * disables selection mode mutations, patch application, and other
+   * surfaces that would mutate the running skill. Cleared when the run
+   * terminates (executor://state → idle).
+   */
+  skillFrozen: boolean;
 
   selectNode: (id: string | null) => void;
   setActiveNode: (id: string | null) => void;
@@ -88,6 +95,7 @@ export interface UiSlice {
   clearCanvasSelection: () => void;
   setConfirmClearOpen: (open: boolean) => void;
   setAssistantSurface: (surface: "overview-card" | "drawer" | null) => void;
+  setSkillFrozen: (frozen: boolean) => void;
 }
 
 export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, get) => ({
@@ -109,6 +117,7 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   canvasSelectionResetTick: 0,
   confirmClearOpen: false,
   assistantSurface: null,
+  skillFrozen: false,
 
   selectNode: (id) => set({ selectedNode: id }),
   setActiveNode: (id) => set({ activeNode: id }),
@@ -146,4 +155,5 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
     })),
   setConfirmClearOpen: (open) => set({ confirmClearOpen: open }),
   setAssistantSurface: (surface) => set({ assistantSurface: surface }),
+  setSkillFrozen: (frozen) => set({ skillFrozen: frozen }),
 });

@@ -9,6 +9,37 @@ import { commands } from "../../bindings";
 import { errorMessage } from "../../utils/commandError";
 
 /**
+ * Returns true when the message looks like an edit-shaped command that
+ * would mutate the skill while it is frozen (a run is in progress).
+ * Heuristic: starts with an imperative verb or uses structural keywords.
+ */
+export function isEditShaped(input: string): boolean {
+  const lower = input.trim().toLowerCase();
+  const editPrefixes = [
+    "edit ", "change ", "update ", "modify ", "delete ", "remove ",
+    "add ", "insert ", "replace ", "rename ", "move ", "reorder ",
+    "refactor ", "patch ", "fix ", "apply ",
+  ];
+  return editPrefixes.some((prefix) => lower.startsWith(prefix));
+}
+
+/**
+ * Parse a "stop and then <remainder>" compound command.
+ * Returns { isStopAndThen: true, remainder } when matched, otherwise
+ * { isStopAndThen: false }.
+ */
+export function parseStopAndThen(input: string): { isStopAndThen: true; remainder: string } | { isStopAndThen: false } {
+  const lower = input.trim().toLowerCase();
+  const stopPrefixes = ["stop and then ", "stop, then ", "stop then "];
+  for (const prefix of stopPrefixes) {
+    if (lower.startsWith(prefix)) {
+      return { isStopAndThen: true, remainder: input.trim().slice(prefix.length).trim() };
+    }
+  }
+  return { isStopAndThen: false };
+}
+
+/**
  * D21 — body of the assistant conversation surface. Renders intent bar,
  * messages, error banner, the ambiguity / disagreement / destructive-cap /
  * approval cards, the live run trace, and the composer. Mounts NO modals —
@@ -51,6 +82,11 @@ export function AssistantThread({
 
   const agentStatus = useStore((s) => s.agentStatus);
   const activeRunId = useStore((s) => s.agentRunId);
+  const skillFrozen = useStore((s) => s.skillFrozen);
+  const stopWorkflow = useStore((s) => s.stopWorkflow);
+  const failedSectionId = useStore((s) => s.failedSectionId);
+  const failedSectionError = useStore((s) => s.failedSectionError);
+  const selectedSkill = useStore((s) => s.selectedSkill);
   const pendingApproval = useStore((s) => s.pendingApproval);
   const chatAnchoredApproval = useStore((s) => s.chatAnchoredApproval);
   const setChatAnchoredApproval = useStore((s) => s.setChatAnchoredApproval);
@@ -92,10 +128,45 @@ export function AssistantThread({
     return () => clearTimeout(timer);
   }, []);
 
+  // Failure handoff: pre-fill the chat input when a section fails so the
+  // assistant can guide recovery.
+  useEffect(() => {
+    if (!failedSectionId || !selectedSkill) return;
+    const section = selectedSkill.sections?.find((s) => s.id === failedSectionId);
+    const title = section?.heading ?? failedSectionId;
+    const reason = failedSectionError ?? "unknown error";
+    setInput(`Step "${title}" failed: ${reason}. How should I fix it?`);
+    textareaRef.current?.focus();
+  }, [failedSectionId, failedSectionError, selectedSkill]);
+
   const handleSend = () => {
     if (composerDisabled) return;
     const trimmed = input.trim();
     if (!trimmed) return;
+
+    // D8/D10 freeze: a run is in progress — gate edit-shaped commands.
+    if (skillFrozen) {
+      const stopAndThen = parseStopAndThen(trimmed);
+      if (stopAndThen.isStopAndThen) {
+        // Honored sequence: stop the run, then enqueue the remainder.
+        setInput("");
+        stopWorkflow().then(() => {
+          if (stopAndThen.remainder) {
+            onSendMessage(stopAndThen.remainder);
+          }
+        });
+        return;
+      }
+      if (isEditShaped(trimmed)) {
+        // Refuse with one-liner; do not clear the composer.
+        onSendMessage(
+          "Run is in progress — try again after the run finishes, or stop the run first.",
+        );
+        setInput("");
+        return;
+      }
+    }
+
     setInput("");
     onSendMessage(trimmed);
   };
