@@ -765,7 +765,7 @@ export type PromoteSkillToGlobalRequest = { skill_id: string; version: number; p
 export type ProvenanceEntry = { run_id: string; step_index: number; completed_at: string; workflow_hash: string }
 export type PruneSkillLineageRequest = { project_path: string | null; project_name: string; project_id: string; node_ids: string[]; store_traces: boolean }
 export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
-export type ReadArtifactQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string; execution_dir: string | null; run_id: string; artifact_path: string }
+export type ReadArtifactQuery = { project_path: string | null; project_id: string; project_name: string; skill_id: string; run_id: string; artifact_path: string }
 export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type RunEventsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string; execution_dir: string | null; run_id: string }
 /**

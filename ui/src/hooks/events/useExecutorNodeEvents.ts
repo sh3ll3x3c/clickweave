@@ -102,6 +102,13 @@ export function useExecutorNodeEvents() {
     sub(listen<NodeVerdict[]>("executor://checks_completed", (e) => {
       useStore.getState().setVerdicts(e.payload);
     }));
+    // The native skill runner emits executor://error on tool failure instead
+    // of executor://node_failed. Mark the run as failed so workflow_completed
+    // finalizes section state correctly.
+    sub(listen<{ message: string }>("executor://error", (e) => {
+      useStore.getState().pushLog(`Run error: ${e.payload.message}`);
+      useStore.getState().setLastRunStatus("failed");
+    }));
     sub(listen("executor://workflow_completed", () => {
       useStore.getState().pushLog("Workflow completed");
       useStore.getState().setExecutorState("idle");

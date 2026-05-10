@@ -312,8 +312,9 @@ fn clear_executor_handle_if_current(guard: &mut ExecutorHandle, run_generation: 
 
 fn emit_executor_event(emit_handle: &tauri::AppHandle, event: ExecutorEvent) -> tauri::Result<()> {
     match event {
-        ExecutorEvent::Log(msg) | ExecutorEvent::Error(msg) => {
-            emit_handle.emit("executor://log", LogPayload { message: msg })
+        ExecutorEvent::Log(msg) => emit_handle.emit("executor://log", LogPayload { message: msg }),
+        ExecutorEvent::Error(msg) => {
+            emit_handle.emit("executor://error", LogPayload { message: msg })
         }
         ExecutorEvent::StateChanged(state) => {
             emit_handle.emit("executor://state", StatePayload::from_state(state))

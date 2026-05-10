@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use super::SKILL_SCHEMA_VERSION;
 use super::types::{ClickweaveSkillMeta, Skill, SkillFrontmatter};
 
@@ -59,6 +61,11 @@ pub fn emit_skill_md(skill: &Skill) -> String {
         out.push_str(skill.body.trim_end());
         out.push('\n');
     } else {
+        // Build a section-id → prose-lines map by scanning the raw body.
+        // This avoids relying on `body_range` byte offsets (which are now
+        // UTF-16 positions for frontend use) for Rust-side string slicing.
+        let section_prose = collect_section_prose(&skill.body);
+
         for section in &skill.sections {
             let prefix = "#".repeat(section.level as usize);
             out.push_str(&prefix);
@@ -69,7 +76,20 @@ pub fn emit_skill_md(skill: &Skill) -> String {
             for step_id in &section.step_ids {
                 out.push_str(&format!("<!-- step: {step_id} -->\n"));
             }
-            out.push('\n');
+            // Re-emit prose lines that belong to this section, skipping
+            // HTML comment markers already written above. This preserves
+            // human-authored instructions under each section heading.
+            match section_prose.get(section.id.as_str()) {
+                Some(prose) if !prose.is_empty() => {
+                    for line in prose {
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                }
+                _ => {
+                    out.push('\n');
+                }
+            }
         }
     }
 
@@ -82,4 +102,78 @@ pub fn emit_skill_md(skill: &Skill) -> String {
     }
     out.push_str("```\n");
     out
+}
+
+/// Scan the raw body text and collect prose lines for each section,
+/// keyed by section ID. Lines that are heading markers (`##`/`###`),
+/// HTML comment markers (`<!-- ... -->`), or the fenced action-sketch
+/// block are excluded. Trailing blank lines are stripped from each
+/// section's prose so the emitter can append a single blank separator
+/// line itself.
+///
+/// Returns a map from section ID → non-empty prose lines.
+fn collect_section_prose(body: &str) -> HashMap<&str, Vec<&str>> {
+    let mut result: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut current_id: Option<&str> = None;
+    let mut in_fence = false;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+
+        // Skip the action_sketch fenced block.
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+
+        // Section heading — look for the following `<!-- section: id -->`
+        // marker to set `current_id`. Reset on each heading.
+        if trimmed.starts_with("##") {
+            current_id = None;
+            continue;
+        }
+
+        // Section-ID marker: `<!-- section: <id> -->`
+        if let Some(rest) = trimmed.strip_prefix("<!-- section:") {
+            if let Some(id_part) = rest.strip_suffix("-->") {
+                let id = id_part.trim();
+                if !id.is_empty() {
+                    current_id = Some(id);
+                    result.entry(id).or_default();
+                }
+            }
+            continue;
+        }
+
+        // Step marker — skip.
+        if trimmed.starts_with("<!-- step:") {
+            continue;
+        }
+
+        // All other HTML comments — skip.
+        if trimmed.starts_with("<!--") {
+            continue;
+        }
+
+        // Prose line belonging to the current section.
+        if let Some(id) = current_id {
+            result.entry(id).or_default().push(line);
+        }
+    }
+
+    // Strip trailing blank lines from every section's prose.
+    for prose in result.values_mut() {
+        while prose
+            .last()
+            .map(|l: &&str| l.trim().is_empty())
+            .unwrap_or(false)
+        {
+            prose.pop();
+        }
+    }
+
+    result
 }

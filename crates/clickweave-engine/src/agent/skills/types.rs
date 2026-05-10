@@ -253,9 +253,10 @@ impl Default for SubgoalSignature {
 }
 
 /// Per-section view of a parsed skill body. Populated by
-/// `parser::parse_skill_md`; `body_range` is a UTF-8 byte range into
-/// the raw markdown body (start..end of the section's prose, including
-/// step markers but excluding the `##`/`###` heading line itself).
+/// `parser::parse_skill_md`; `body_range` is a UTF-16 code-unit range
+/// into the raw markdown body string (start..end of the section's
+/// prose after the heading, measured in JS-compatible UTF-16 units so
+/// the frontend can use `body.slice(start, end)` directly).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct SkillSection {

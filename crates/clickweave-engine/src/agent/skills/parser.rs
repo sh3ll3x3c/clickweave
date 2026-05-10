@@ -172,17 +172,25 @@ fn parse_sections_and_markers(body: &str) -> Result<(Vec<SkillSection>, Vec<Stri
     let mut used_slugs: HashSet<String> = HashSet::new();
     let mut current: Option<SkillSection> = None;
 
+    // Track both byte and UTF-16 code-unit positions simultaneously.
+    // `byte_cursor` is used for `pick_section_id` (which scans the raw
+    // &str slice); `utf16_cursor` is stored in `body_range` so that the
+    // frontend can use the values directly with `String.prototype.slice`
+    // (JS strings are UTF-16 encoded).
     let mut byte_cursor: usize = 0;
+    let mut utf16_cursor: usize = 0;
+    let body_utf16_len: usize = body.encode_utf16().count();
     let lines: Vec<&str> = body.split_inclusive('\n').collect();
     for line in &lines {
-        let line_start = byte_cursor;
+        let line_start_utf16 = utf16_cursor;
         byte_cursor += line.len();
+        utf16_cursor += line.encode_utf16().count();
 
         let trimmed = line.trim_end_matches(['\n', '\r']);
         if let Some((level, heading)) = parse_heading(trimmed) {
             // Close out the previous section's body range.
             if let Some(mut prev) = current.take() {
-                prev.body_range.1 = line_start;
+                prev.body_range.1 = line_start_utf16;
                 sections.push(prev);
             }
 
@@ -195,7 +203,7 @@ fn parse_sections_and_markers(body: &str) -> Result<(Vec<SkillSection>, Vec<Stri
                 heading,
                 level,
                 step_ids: Vec::new(),
-                body_range: (byte_cursor, body.len()),
+                body_range: (utf16_cursor, body_utf16_len),
             });
             continue;
         }
