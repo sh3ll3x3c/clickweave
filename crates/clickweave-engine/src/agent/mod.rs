@@ -14,6 +14,8 @@ mod recovery;
 mod render;
 mod runner;
 mod time_oracle;
+pub mod tool_mapping;
+pub mod trace_graph;
 // Phase 2 (episodic memory) integration tests construct
 // `WorldModelSnapshot`, `StepRecord`, and `TaskState` values from
 // outside the crate, so these modules surface as `pub mod`. The
