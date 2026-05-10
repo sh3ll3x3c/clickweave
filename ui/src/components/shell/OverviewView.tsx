@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store/useAppStore";
-import { CanvasPreviewCard } from "./CanvasPreviewCard";
 import { IntentEmptyState } from "../IntentEmptyState";
 import { LiveRuntimeCard } from "./LiveRuntimeCard";
 import { OverviewAssistantCard } from "./OverviewAssistantCard";
@@ -124,12 +123,9 @@ export function OverviewView() {
         <div className="cw-card-stagger cw-card-stagger-1 h-[340px] min-h-0 min-w-0 min-[900px]:col-span-7 min-[900px]:h-auto">
           <OverviewAssistantCard />
         </div>
-        <div className="grid h-[460px] min-h-0 min-w-0 grid-rows-2 gap-3 min-[900px]:col-span-5 min-[900px]:h-auto">
+        <div className="grid h-[460px] min-h-0 min-w-0 grid-rows-1 gap-3 min-[900px]:col-span-5 min-[900px]:h-auto">
           <div className="cw-card-stagger cw-card-stagger-2 min-h-0 min-w-0">
             <LiveRuntimeCard />
-          </div>
-          <div className="cw-card-stagger cw-card-stagger-3 min-h-0 min-w-0">
-            <CanvasPreviewCard />
           </div>
         </div>
       </div>

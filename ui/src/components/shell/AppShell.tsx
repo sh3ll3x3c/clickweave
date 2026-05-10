@@ -9,7 +9,6 @@ import { SettingsModal } from "../SettingsModal";
 import { SupervisionModal } from "../SupervisionModal";
 import { VerdictBar } from "../VerdictBar";
 import { VerdictModal } from "../VerdictModal";
-import { CanvasView } from "./CanvasView";
 import { OverviewView } from "./OverviewView";
 import { Sidebar } from "./Sidebar";
 import { TitleBar } from "./TitleBar";
@@ -20,7 +19,6 @@ import { useExecutorEvents } from "../../hooks/useExecutorEvents";
 import { useSafetyEventRouter } from "../../hooks/useSafetyEventRouter";
 
 export function AppShell() {
-  const currentView = useStore((s) => s.currentView);
   const currentSurface = useStore((s) => s.currentSurface);
   const showSettings = useStore((s) => s.showSettings);
   const setShowSettings = useStore((s) => s.setShowSettings);
@@ -121,14 +119,10 @@ export function AppShell() {
       <div className="flex flex-1 overflow-hidden">
         {!onIntentEmptyState && <Sidebar />}
         <main className="flex flex-1 flex-col overflow-hidden">
-          {/* 1.F.4: currentSurface toggles between the new SkillView and the
-              legacy canvas tree. Canvas is retained until 1.G deletes it. */}
           {currentSurface === "skill" ? (
             <SkillView />
-          ) : currentView === "overview" ? (
-            <OverviewView />
           ) : (
-            <CanvasView />
+            <OverviewView />
           )}
         </main>
       </div>

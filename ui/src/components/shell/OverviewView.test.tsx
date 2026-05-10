@@ -5,9 +5,6 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-vi.mock("./CanvasPreviewCard", () => ({
-  CanvasPreviewCard: () => <div data-testid="canvas-preview-card" />,
-}));
 vi.mock("./LiveRuntimeCard", () => ({
   LiveRuntimeCard: () => <div data-testid="live-runtime-card" />,
 }));
@@ -103,9 +100,6 @@ describe("OverviewView walkthrough entry", () => {
       "min-w-0",
     );
     expect(screen.getByTestId("live-runtime-card").parentElement).toHaveClass(
-      "min-w-0",
-    );
-    expect(screen.getByTestId("canvas-preview-card").parentElement).toHaveClass(
       "min-w-0",
     );
     expect(
