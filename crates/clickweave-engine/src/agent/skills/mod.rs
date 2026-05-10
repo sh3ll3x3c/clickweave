@@ -21,10 +21,12 @@ pub mod index;
 pub mod loop_folding;
 pub mod outcome;
 pub mod parser;
+pub mod patch;
 pub mod provenance;
 pub mod render;
 pub mod replay;
 pub mod retrieval;
+pub mod section_history;
 pub mod signature;
 pub mod store;
 pub mod substitution;
@@ -42,7 +44,12 @@ pub const SKILL_SCHEMA_VERSION: u32 = 1;
 pub use emitter::emit_skill_md;
 pub use index::SkillIndex;
 pub use parser::parse_skill_md;
-pub use replay::{ReplayJson, ReplayParseError, ReplayStepBundle, SkillFrame};
+pub use patch::{
+    ActionSketchReplacement, MarkdownReplacement, ReplaySidecarMutation, SkillLintError,
+    SkillPatch, SkillPatchPrimitive, apply_patch_to_skill, apply_replay_mutations,
+    lint_skill_patch,
+};
+pub use replay::{ReplayJson, ReplayParseError, ReplayStepBundle, SkillFrame, parse_replay_json};
 pub use store::{MoveReport, SkillStore, legacy_basename, move_skills_to_project, slugify};
 pub use types::{
     ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, BindingCorrection, BindingRef,
