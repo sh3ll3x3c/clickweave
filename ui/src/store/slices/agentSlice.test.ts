@@ -8,6 +8,16 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
+// Mock bindings so saveRunAsSkill / addRunToSkill don't hit real Tauri IPC.
+const saveRunAsSkillMock = vi.fn();
+const addRunToSkillMock = vi.fn();
+vi.mock("../../bindings", () => ({
+  commands: {
+    saveRunAsSkill: (...args: unknown[]) => saveRunAsSkillMock(...args),
+    addRunToSkill: (...args: unknown[]) => addRunToSkillMock(...args),
+  },
+}));
+
 import { useStore } from "../useAppStore";
 
 function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
@@ -229,35 +239,23 @@ describe("agentSlice run buffers", () => {
     });
   });
 
-  it("buffers nodes and edges until commit appends them to the workflow", () => {
-    const groups = [
-      {
-        id: "group-1",
-        name: "User group",
-        color: "#888888",
-        node_ids: ["user-node-1", "user-node-2"],
-        parent_group_id: null,
-      },
-    ];
-    useStore.setState({
-      workflow: makeWorkflow({ groups }),
-    });
-    const groupsBefore = useStore.getState().workflow.groups;
+  it("commitRunBuffer clears the pending buffer without mutating the workflow (skill-only shell)", () => {
+    // In the skill-only shell commitRunBuffer no longer appends buffered
+    // items to the workflow graph — the graph is skills-only. It simply
+    // drains the buffers so stale events don't accumulate.
     const node = makeNode("agent-node-1", "run-1");
     const edge: Edge = { from: "anchor", to: "agent-node-1" };
+    const workflowBefore = useStore.getState().workflow;
 
     useStore.getState().bufferAgentNode("run-1", node);
     useStore.getState().bufferAgentEdge("run-1", edge);
 
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().workflow.edges).toEqual([]);
-
     useStore.getState().commitRunBuffer("run-1", "Created a node");
 
     const state = useStore.getState();
-    expect(state.workflow.nodes).toEqual([node]);
-    expect(state.workflow.edges).toEqual([edge]);
-    expect(state.workflow.groups).toBe(groupsBefore);
+    // Workflow is never mutated by commitRunBuffer in the skill-only shell.
+    expect(state.workflow).toBe(workflowBefore);
+    // Buffers are drained.
     expect(state.pendingRunNodes["run-1"]).toBeUndefined();
     expect(state.pendingRunEdges["run-1"]).toBeUndefined();
   });
@@ -783,5 +781,112 @@ describe("isAgentActive", () => {
     expect(isAgentActive("complete", null)).toBe(false);
     expect(isAgentActive("stopped", null)).toBe(false);
     expect(isAgentActive("error", null)).toBe(false);
+  });
+});
+
+// ── D21 three-state command grammar acceptance scenarios ────────────────
+
+describe("D21 skillCreationIntent — first-skill-from-empty", () => {
+  beforeEach(() => {
+    saveRunAsSkillMock.mockReset();
+    addRunToSkillMock.mockReset();
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+    useStore.setState({
+      storeTraces: true,
+      skillsEnabled: true,
+      workflow: makeWorkflow(),
+    });
+  });
+
+  it("(D21-a) commitRunBuffer with skillCreationIntent=true calls saveRunAsSkill", async () => {
+    saveRunAsSkillMock.mockResolvedValueOnce({ status: "ok", data: {} });
+    useStore.getState().setSkillCreationIntent(true);
+    useStore.getState().addAgentStep({
+      summary: "Clicked the button",
+      toolName: "click",
+      toolArgs: { x: 10, y: 20 },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    useStore.getState().commitRunBuffer("run-1", "Goal complete");
+
+    // skillCreationIntent is cleared immediately on commit
+    expect(useStore.getState().skillCreationIntent).toBe(false);
+
+    // Give the async saveRunAsSkill call a tick to fire
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(saveRunAsSkillMock).toHaveBeenCalledTimes(1);
+    const arg = saveRunAsSkillMock.mock.calls[0][0];
+    expect(arg.store_traces).toBe(true);
+    expect(arg.steps).toHaveLength(1);
+    expect(arg.steps[0].tool_name).toBe("click");
+  });
+
+  it("(D21-b) commitRunBuffer with skillCreationIntent=false does not call saveRunAsSkill (ad-hoc run)", () => {
+    useStore.getState().setSkillCreationIntent(false);
+    useStore.getState().addAgentStep({
+      summary: "Opened settings",
+      toolName: "launch_app",
+      toolArgs: { app_name: "System Preferences" },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    useStore.getState().commitRunBuffer("run-1", "Done");
+
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
+    // Buffers are still cleared
+    expect(useStore.getState().pendingRunNodes["run-1"]).toBeUndefined();
+  });
+
+  it("(D21-c) explicit saveRunAsSkill store action invokes the Tauri command", async () => {
+    saveRunAsSkillMock.mockResolvedValueOnce({ status: "ok", data: {} });
+    useStore.getState().addAgentStep({
+      summary: "Typed text",
+      toolName: "type_text",
+      toolArgs: { text: "hello" },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    await useStore.getState().saveRunAsSkill("My new skill");
+
+    expect(saveRunAsSkillMock).toHaveBeenCalledTimes(1);
+    const arg = saveRunAsSkillMock.mock.calls[0][0];
+    expect(arg.name).toBe("My new skill");
+    expect(arg.store_traces).toBe(true);
+    expect(arg.steps[0].tool_name).toBe("type_text");
+  });
+
+  it("(D21-d) explicit addRunToSkill store action invokes the Tauri command with skill_id and version", async () => {
+    addRunToSkillMock.mockResolvedValueOnce({ status: "ok", data: {} });
+    useStore.getState().addAgentStep({
+      summary: "Scrolled down",
+      toolName: "scroll",
+      toolArgs: { delta_y: -300 },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    await useStore.getState().addRunToSkill("my-skill-id", 3);
+
+    expect(addRunToSkillMock).toHaveBeenCalledTimes(1);
+    const arg = addRunToSkillMock.mock.calls[0][0];
+    expect(arg.skill_id).toBe("my-skill-id");
+    expect(arg.version).toBe(3);
+    expect(arg.steps[0].tool_name).toBe("scroll");
+  });
+
+  it("(D21-e) saveRunAsSkill and addRunToSkill refuse when storeTraces=false", async () => {
+    useStore.setState({ storeTraces: false });
+
+    await useStore.getState().saveRunAsSkill("My skill");
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
+
+    await useStore.getState().addRunToSkill("skill-x", 1);
+    expect(addRunToSkillMock).not.toHaveBeenCalled();
   });
 });

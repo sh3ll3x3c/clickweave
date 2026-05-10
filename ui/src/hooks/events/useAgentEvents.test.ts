@@ -183,11 +183,15 @@ describe("useAgentEvents trace subscriptions", () => {
     });
   });
 
-  it("buffers node and edge events, then commits them on complete", async () => {
+  it("buffers node and edge events, then drains them on complete (skill-only shell — no workflow mutation)", async () => {
+    // In the skill-only shell commitRunBuffer no longer appends buffered
+    // items to workflow.nodes/edges. It only drains the buffers so stale
+    // events don't accumulate.
     await mountSubscriptions();
 
     const node = makeAgentNode("agent-node-1", "run-1");
     const edge = { from: "anchor", to: "agent-node-1" };
+    const workflowBefore = useStore.getState().workflow;
 
     emit("agent://node_added", {
       run_id: "run-1",
@@ -198,8 +202,6 @@ describe("useAgentEvents trace subscriptions", () => {
       edge,
     });
 
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().workflow.edges).toEqual([]);
     expect(useStore.getState().pendingRunNodes["run-1"]).toEqual([node]);
     expect(useStore.getState().pendingRunEdges["run-1"]).toEqual([edge]);
 
@@ -209,8 +211,9 @@ describe("useAgentEvents trace subscriptions", () => {
     });
 
     const state = useStore.getState();
-    expect(state.workflow.nodes).toEqual([node]);
-    expect(state.workflow.edges).toEqual([edge]);
+    // Workflow is not mutated — skill-only shell has no graph nodes.
+    expect(state.workflow).toBe(workflowBefore);
+    // Buffers are drained.
     expect(state.pendingRunNodes["run-1"]).toBeUndefined();
     expect(state.pendingRunEdges["run-1"]).toBeUndefined();
     expect(state.runTraces["run-1"].terminalFrame).toEqual({

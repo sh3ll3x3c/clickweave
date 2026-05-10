@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { Node, Edge } from "../../bindings";
+import { commands } from "../../bindings";
 import { toEndpoint } from "../settings";
 import type { PermissionRule, ToolPermissions } from "../state";
 import type { StoreState } from "./types";
@@ -186,13 +187,38 @@ export interface AgentSlice {
   pendingRunEdges: Record<string, Edge[]>;
   /** Session-only collapse state for synthetic agent-run containers. */
   agentRunCollapsed: Record<string, boolean>;
+  /**
+   * True when the user typed their first goal from `IntentEmptyState` on a
+   * project with zero skills. When set, `commitRunBuffer` materialises a skill
+   * from the completed run instead of committing graph nodes (which no longer
+   * exist in the skill-only shell). Cleared after the skill is created or the
+   * run is discarded.
+   */
+  skillCreationIntent: boolean;
   startAgent: (goal: string) => Promise<void>;
   stopAgent: () => Promise<void>;
   addAgentStep: (step: AgentStep) => void;
   bufferAgentNode: (runId: string, node: Node) => void;
   bufferAgentEdge: (runId: string, edge: Edge) => void;
+  /**
+   * Commit the buffered run. In the skill-only shell this is a no-op for
+   * ad-hoc runs. When `skillCreationIntent` is true, it triggers
+   * `saveRunAsSkill` to materialise the run as a skill and then clears the
+   * intent flag.
+   */
   commitRunBuffer: (runId: string, summary: string) => void;
   dropRunBuffer: (runId: string) => void;
+  setSkillCreationIntent: (intent: boolean) => void;
+  /**
+   * Explicitly save the most recently completed agent run as a new skill.
+   * Privacy-gated: returns early when `storeTraces` or `skillsEnabled` is off.
+   */
+  saveRunAsSkill: (name?: string) => Promise<void>;
+  /**
+   * Explicitly append the most recently completed agent run to an existing
+   * skill identified by `skillId`. Privacy-gated like `saveRunAsSkill`.
+   */
+  addRunToSkill: (skillId: string, version: number) => Promise<void>;
   toggleAgentRunCollapsed: (runId: string) => void;
   setPendingApproval: (approval: PendingApproval | null) => void;
   approveAction: () => Promise<void>;
@@ -249,6 +275,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentRunCollapsed: {},
   agentRunStartedAt: null,
   agentRunFinishedAt: null,
+  skillCreationIntent: false,
 
   startAgent: async (goal) => {
     const priorState = get();
@@ -451,29 +478,25 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }));
   },
 
-  commitRunBuffer: (runId, _summary) => {
-    set((state) => {
-      const nodes = state.pendingRunNodes[runId] ?? [];
-      const edges = state.pendingRunEdges[runId] ?? [];
-      const { [runId]: _removedNodes, ...pendingRunNodes } =
-        state.pendingRunNodes;
-      const { [runId]: _removedEdges, ...pendingRunEdges } =
-        state.pendingRunEdges;
+  commitRunBuffer: (runId, summary) => {
+    // In the skill-only shell the run buffer no longer carries graph
+    // nodes — `pendingRunNodes`/`pendingRunEdges` are vestigial.
+    // When `skillCreationIntent` is set we materialise the completed
+    // run as a skill instead of committing workflow nodes.
+    const state = get();
+    const { [runId]: _removedNodes, ...pendingRunNodes } =
+      state.pendingRunNodes;
+    const { [runId]: _removedEdges, ...pendingRunEdges } =
+      state.pendingRunEdges;
+    set({ pendingRunNodes, pendingRunEdges });
 
-      if (nodes.length === 0) {
-        return { pendingRunNodes, pendingRunEdges };
-      }
-
-      return {
-        pendingRunNodes,
-        pendingRunEdges,
-        workflow: {
-          ...state.workflow,
-          nodes: [...state.workflow.nodes, ...nodes],
-          edges: [...state.workflow.edges, ...edges],
-        },
-      };
-    });
+    if (state.skillCreationIntent) {
+      // Fire-and-forget: create the skill from the completed run.
+      set({ skillCreationIntent: false });
+      get()
+        .saveRunAsSkill(summary || state.agentGoal || "")
+        .catch((e) => console.error("commitRunBuffer: saveRunAsSkill failed", e));
+    }
   },
 
   dropRunBuffer: (runId) => {
@@ -484,6 +507,53 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         state.pendingRunEdges;
       return { pendingRunNodes, pendingRunEdges };
     });
+  },
+
+  setSkillCreationIntent: (intent) => set({ skillCreationIntent: intent }),
+
+  saveRunAsSkill: async (name) => {
+    const state = get();
+    if (!state.storeTraces || !state.skillsEnabled) return;
+    const steps = state.agentSteps.map((s) => ({
+      summary: s.summary,
+      tool_name: s.toolName,
+      args_json: s.toolArgs ? JSON.stringify(s.toolArgs) : "",
+    }));
+    const result = await commands.saveRunAsSkill({
+      project_path: state.projectPath ?? null,
+      project_name: state.workflow.name,
+      project_id: state.workflow.id,
+      name: (typeof name === "string" ? name : state.agentGoal) ?? "",
+      goal: state.agentGoal,
+      steps,
+      store_traces: state.storeTraces,
+    });
+    if (result.status === "error") {
+      console.error("saveRunAsSkill failed:", result.error);
+    }
+  },
+
+  addRunToSkill: async (skillId, version) => {
+    const state = get();
+    if (!state.storeTraces || !state.skillsEnabled) return;
+    const steps = state.agentSteps.map((s) => ({
+      summary: s.summary,
+      tool_name: s.toolName,
+      args_json: s.toolArgs ? JSON.stringify(s.toolArgs) : "",
+    }));
+    const result = await commands.addRunToSkill({
+      project_path: state.projectPath ?? null,
+      project_name: state.workflow.name,
+      project_id: state.workflow.id,
+      skill_id: skillId,
+      version,
+      goal: state.agentGoal,
+      steps,
+      store_traces: state.storeTraces,
+    });
+    if (result.status === "error") {
+      console.error("addRunToSkill failed:", result.error);
+    }
   },
 
   toggleAgentRunCollapsed: (runId) => {
@@ -616,6 +686,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentRunCollapsed: {},
       agentRunStartedAt: null,
       agentRunFinishedAt: null,
+      skillCreationIntent: false,
       // Ambiguity records are intentionally NOT cleared — they persist across
       // runs so the user can still inspect past resolutions until they
       // explicitly clear them or start a new project.

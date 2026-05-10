@@ -130,6 +130,8 @@ fn main() {
             stop_agent,
             approve_agent_action,
             resolve_completion_disagreement,
+            save_run_as_skill,
+            add_run_to_skill,
             commands::agent_chat::load_agent_chat,
             commands::agent_chat::save_agent_chat,
             commands::agent_chat::prune_skill_lineage_for_nodes,

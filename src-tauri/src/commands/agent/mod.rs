@@ -281,7 +281,10 @@ mod task;
 #[cfg(test)]
 mod tests;
 
-pub use commands::{approve_agent_action, resolve_completion_disagreement, run_agent, stop_agent};
+pub use commands::{
+    approve_agent_action, add_run_to_skill, resolve_completion_disagreement, run_agent,
+    save_run_as_skill, stop_agent,
+};
 
 use disagreement::await_disagreement_resolution;
 use events::forward_agent_event;

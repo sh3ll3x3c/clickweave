@@ -1,4 +1,289 @@
 use super::*;
+use clickweave_engine::agent::skills::{
+    ActionSketchStep, ApplicabilityHints, ExpectedWorldModelDelta, OutcomePredicate,
+    ProvenanceEntry, Skill, SkillError, SkillScope, SkillState, SkillStats, SkillStore,
+    emit_skill_md, parse_skill_md, prose_generator,
+};
+use clickweave_engine::agent::skills::extractor::synthesize_skill_id_for_signature;
+use clickweave_engine::agent::skills::replay::ReplayJson;
+use clickweave_engine::agent::skills::signature::{
+    compute_applicability_signature_from_parts, compute_subgoal_signature_from_parts,
+};
+use std::collections::HashMap;
+
+/// One agent step sent from the frontend for skill materialisation.
+/// `args_json` is the JSON-serialised tool arguments; empty string is
+/// treated the same as `{}`.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct AgentStepWire {
+    pub summary: String,
+    pub tool_name: String,
+    pub args_json: String,
+}
+
+/// Convert a slice of `AgentStepWire` items into `ActionSketchStep`s.
+/// Each non-empty step becomes a `ToolCall` variant. Steps with an empty
+/// `tool_name` are skipped (they represent no-tool assistant messages).
+fn steps_wire_to_sketch(steps: &[AgentStepWire]) -> Vec<ActionSketchStep> {
+    steps
+        .iter()
+        .filter(|s| !s.tool_name.is_empty())
+        .map(|s| {
+            let args = if s.args_json.is_empty() {
+                serde_json::Value::Object(Default::default())
+            } else {
+                serde_json::from_str(&s.args_json)
+                    .unwrap_or(serde_json::Value::Object(Default::default()))
+            };
+            ActionSketchStep::ToolCall {
+                step_id: uuid::Uuid::new_v4().to_string(),
+                tool: s.tool_name.clone(),
+                args,
+                captures_pre: vec![],
+                captures: vec![],
+                expected_world_model_delta: ExpectedWorldModelDelta::default(),
+                requires_approval: None,
+            }
+        })
+        .collect()
+}
+
+/// Build a new `Skill` from an agent run's tool calls.
+fn build_skill_from_agent_steps(
+    sketch: Vec<ActionSketchStep>,
+    body: String,
+    name: &str,
+    description: &str,
+    project_id: &str,
+) -> Skill {
+    let now = chrono::Utc::now();
+    let subgoal_signature = compute_subgoal_signature_from_parts(name, "", "");
+    let id = synthesize_skill_id_for_signature(name, &subgoal_signature);
+    let applicability = ApplicabilityHints {
+        apps: vec![],
+        hosts: vec![],
+        signature: compute_applicability_signature_from_parts("", ""),
+    };
+    Skill {
+        id,
+        version: 1,
+        state: SkillState::Draft,
+        scope: SkillScope::ProjectLocal,
+        name: name.to_string(),
+        description: description.to_string(),
+        tags: vec!["agent-run".to_string()],
+        subgoal_text: name.to_string(),
+        subgoal_signature,
+        applicability,
+        parameter_schema: vec![],
+        action_sketch: sketch,
+        outputs: vec![],
+        outcome_predicate: OutcomePredicate::SubgoalCompleted {
+            post_state_world_model_signature: None,
+        },
+        provenance: vec![ProvenanceEntry {
+            run_id: format!("agent:{project_id}"),
+            step_index: 0,
+            completed_at: now,
+            workflow_hash: project_id.to_string(),
+        }],
+        stats: SkillStats {
+            occurrence_count: 1,
+            success_rate: 1.0,
+            last_seen_at: Some(now),
+            last_invoked_at: None,
+        },
+        edited_by_user: false,
+        created_at: now,
+        updated_at: now,
+        produced_node_ids: vec![],
+        body,
+        schema_version: clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION,
+        variables: vec![],
+        sections: vec![],
+        replay: None,
+    }
+}
+
+fn agent_skill_error_to_command(error: SkillError) -> CommandError {
+    match error {
+        SkillError::Io(e) => CommandError::io(format!("{e}")),
+        SkillError::InvalidParameters(message) => CommandError::validation(message),
+        other => CommandError::validation(format!("{other}")),
+    }
+}
+
+fn write_skill_files(
+    store: &SkillStore,
+    skill: &Skill,
+) -> Result<(), CommandError> {
+    store.write_skill(skill).map_err(agent_skill_error_to_command)?;
+    let _ = store.write_replay(
+        &skill.id,
+        &ReplayJson {
+            skill_id: skill.id.clone(),
+            schema_version: clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION,
+            steps: HashMap::new(),
+            section_history: vec![],
+        },
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct SaveRunAsSkillRequest {
+    pub project_path: Option<String>,
+    pub project_name: String,
+    pub project_id: String,
+    pub name: String,
+    pub goal: String,
+    pub steps: Vec<AgentStepWire>,
+    pub store_traces: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct AddRunToSkillRequest {
+    pub project_path: Option<String>,
+    pub project_name: String,
+    pub project_id: String,
+    pub skill_id: String,
+    pub version: u32,
+    pub goal: String,
+    pub steps: Vec<AgentStepWire>,
+    pub store_traces: bool,
+}
+
+/// Save the current agent run as a new skill. The run's tool calls are
+/// converted to `ActionSketchStep[]`, prose is generated, and the skill
+/// is written to the project's skill store.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_run_as_skill(
+    app: tauri::AppHandle,
+    request: SaveRunAsSkillRequest,
+) -> Result<Skill, CommandError> {
+    if !request.store_traces {
+        return Err(CommandError::validation(
+            "Skill file access is disabled while trace persistence is off",
+        ));
+    }
+
+    let project_id = parse_uuid(&request.project_id, "project")?;
+
+    let name = request.name.trim();
+    let name = if name.is_empty() { request.goal.trim() } else { name };
+    let name = if name.is_empty() { "Agent Run Skill" } else { name };
+
+    let sketch = steps_wire_to_sketch(&request.steps);
+    let body = prose_generator::generate(&sketch, name);
+
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+    let description = format!("Agent run captured {today}: {}", request.goal.trim());
+
+    let skill = build_skill_from_agent_steps(sketch, body, name, &description, &request.project_id);
+
+    let storage = resolve_storage(
+        &app,
+        &request.project_path,
+        &request.project_name,
+        project_id,
+    );
+    let skills_dir = storage
+        .project_skills_dir()
+        .map_err(|e| CommandError::io(format!("resolve project skills dir: {e}")))?;
+
+    let store = SkillStore::new(skills_dir);
+    write_skill_files(&store, &skill)?;
+
+    let _ = app.emit(
+        "agent://skill_extracted",
+        serde_json::json!({
+            "skill_id": skill.id.clone(),
+            "version": skill.version,
+            "state": skill.state,
+            "scope": skill.scope,
+        }),
+    );
+
+    Ok(skill)
+}
+
+/// Append the current agent run's steps to an existing skill as a new
+/// section. Reads the existing SKILL.md, appends the new steps, and
+/// writes the updated file at an incremented version.
+#[tauri::command]
+#[specta::specta]
+pub async fn add_run_to_skill(
+    app: tauri::AppHandle,
+    request: AddRunToSkillRequest,
+) -> Result<Skill, CommandError> {
+    if !request.store_traces {
+        return Err(CommandError::validation(
+            "Skill file access is disabled while trace persistence is off",
+        ));
+    }
+
+    let project_id = parse_uuid(&request.project_id, "project")?;
+
+    let storage = resolve_storage(
+        &app,
+        &request.project_path,
+        &request.project_name,
+        project_id,
+    );
+    let skills_dir = storage
+        .project_skills_dir()
+        .map_err(|e| CommandError::io(format!("resolve project skills dir: {e}")))?;
+
+    let store = SkillStore::new(skills_dir.clone());
+
+    // Load the existing skill.
+    let skill_filename = format!("{}-v{}.md", request.skill_id, request.version);
+    let skill_path = skills_dir.join(&skill_filename);
+    let current_md = std::fs::read_to_string(&skill_path)
+        .map_err(|e| CommandError::io(format!("read SKILL.md: {e}")))?;
+    let mut skill = parse_skill_md(&current_md)
+        .map_err(|e| CommandError::validation(e.to_string()))?;
+
+    // Append the new steps to the existing action_sketch.
+    let new_steps = steps_wire_to_sketch(&request.steps);
+    skill.action_sketch.extend(new_steps);
+
+    // Regenerate prose for the full updated sketch.
+    skill.body = prose_generator::generate(&skill.action_sketch, &skill.name);
+
+    // Increment version.
+    skill.version += 1;
+
+    // Write the new versioned SKILL.md.
+    let new_md = emit_skill_md(&skill);
+    let new_path = skills_dir.join(format!("{}-v{}.md", skill.id, skill.version));
+    std::fs::write(&new_path, new_md.as_bytes())
+        .map_err(|e| CommandError::io(format!("write SKILL.md: {e}")))?;
+
+    // Update replay.json skeleton.
+    let _ = store.write_replay(
+        &skill.id,
+        &ReplayJson {
+            skill_id: skill.id.clone(),
+            schema_version: clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION,
+            steps: HashMap::new(),
+            section_history: vec![],
+        },
+    );
+
+    let _ = app.emit(
+        "agent://skill_extracted",
+        serde_json::json!({
+            "skill_id": skill.id.clone(),
+            "version": skill.version,
+            "state": skill.state,
+            "scope": skill.scope,
+        }),
+    );
+
+    Ok(skill)
+}
 
 #[tauri::command]
 #[specta::specta]

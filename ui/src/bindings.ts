@@ -320,6 +320,22 @@ async resolveCompletionDisagreement(action: CompletionDisagreementActionWire) : 
     else return { status: "error", error: e  as any };
 }
 },
+async saveRunAsSkill(request: SaveRunAsSkillRequest) : Promise<Result<Skill, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_run_as_skill", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async addRunToSkill(request: AddRunToSkillRequest) : Promise<Result<Skill, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_run_to_skill", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async loadAgentChat(request: LoadAgentChatRequest) : Promise<Result<AgentChat, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("load_agent_chat", { request }) };
@@ -798,6 +814,9 @@ export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string }
 export type SaveAgentChatRequest = { project_path: string | null; project_name: string; project_id: string; chat: AgentChat; store_traces: boolean }
 export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; project_name: string; project_id: string; name: string; store_traces: boolean }
+export type AgentStepWire = { summary: string; tool_name: string; args_json: string }
+export type SaveRunAsSkillRequest = { project_path: string | null; project_name: string; project_id: string; name: string; goal: string; steps: AgentStepWire[]; store_traces: boolean }
+export type AddRunToSkillRequest = { project_path: string | null; project_name: string; project_id: string; skill_id: string; version: number; goal: string; steps: AgentStepWire[]; store_traces: boolean }
 /**
  * Screenshot coordinate metadata for mapping screen coordinates to image pixels.
  * 

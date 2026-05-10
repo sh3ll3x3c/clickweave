@@ -13,7 +13,8 @@ mod walkthrough_enrichment;
 mod walkthrough_session;
 
 pub use agent::{
-    AgentHandle, approve_agent_action, resolve_completion_disagreement, run_agent, stop_agent,
+    AgentHandle, add_run_to_skill, approve_agent_action, resolve_completion_disagreement,
+    run_agent, save_run_as_skill, stop_agent,
 };
 pub use chrome_profiles::{
     create_chrome_profile, get_chrome_profile_path, is_chrome_profile_configured,

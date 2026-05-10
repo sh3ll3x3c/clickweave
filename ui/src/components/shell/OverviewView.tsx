@@ -46,6 +46,7 @@ export function OverviewView() {
   const setCurrentView = useStore((s) => s.setCurrentView);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
   const startAgent = useStore((s) => s.startAgent);
+  const setSkillCreationIntent = useStore((s) => s.setSkillCreationIntent);
   const loadSkillsForPanel = useStore((s) => s.loadSkillsForPanel);
 
   if (isNewWorkflow) {
@@ -54,6 +55,7 @@ export function OverviewView() {
         onGenerate={(intent) => {
           setAssistantSurface("overview-card");
           skipIntentEntry();
+          setSkillCreationIntent(true);
           startAgent(intent);
         }}
         onSkip={skipIntentEntry}
