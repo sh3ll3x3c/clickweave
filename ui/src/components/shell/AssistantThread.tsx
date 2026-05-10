@@ -5,6 +5,8 @@ import { useStore } from "../../store/useAppStore";
 import { AmbiguityResolutionCard } from "../AmbiguityResolutionCard";
 import { isAgentActive } from "../../store/slices/agentSlice";
 import { RunTraceView } from "../RunTraceView";
+import { commands } from "../../bindings";
+import { errorMessage } from "../../utils/commandError";
 
 /**
  * D21 — body of the assistant conversation surface. Renders intent bar,
@@ -50,6 +52,8 @@ export function AssistantThread({
   const agentStatus = useStore((s) => s.agentStatus);
   const activeRunId = useStore((s) => s.agentRunId);
   const pendingApproval = useStore((s) => s.pendingApproval);
+  const chatAnchoredApproval = useStore((s) => s.chatAnchoredApproval);
+  const setChatAnchoredApproval = useStore((s) => s.setChatAnchoredApproval);
   const completionDisagreement = useStore((s) => s.completionDisagreement);
   const consecutiveDestructiveCapHit = useStore(
     (s) => s.consecutiveDestructiveCapHit,
@@ -315,6 +319,59 @@ export function AssistantThread({
           </div>
         </div>
       )}
+
+        {/* Chat-anchored approval card (ad-hoc scope, rendered in the thread). */}
+        {chatAnchoredApproval && (
+          <div className="mx-3 mb-2 rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2.5">
+            <p className="mb-1 text-[11px] font-medium text-amber-300">
+              Approval required
+            </p>
+            <p className="mb-2 break-words text-[11px] text-[var(--text-secondary)]">
+              {chatAnchoredApproval.finding}
+            </p>
+            {chatAnchoredApproval.screenshot && (
+              <img
+                src={`data:image/png;base64,${chatAnchoredApproval.screenshot}`}
+                alt="Screenshot at approval gate"
+                className="mb-2 max-h-32 w-auto rounded border border-amber-500/20"
+              />
+            )}
+            <div className="flex gap-2">
+              <button
+                data-testid="chat-approval-allow"
+                onClick={async () => {
+                  setChatAnchoredApproval(null);
+                  const result = await commands.supervisionRespond("retry");
+                  if (result.status === "error") {
+                    const r2 = await commands.approveAgentAction(true);
+                    if (r2.status === "error") {
+                      useStore.getState().pushLog(`Approval failed: ${errorMessage(r2.error)}`);
+                    }
+                  }
+                }}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
+              >
+                Allow
+              </button>
+              <button
+                data-testid="chat-approval-deny"
+                onClick={async () => {
+                  setChatAnchoredApproval(null);
+                  const result = await commands.supervisionRespond("abort");
+                  if (result.status === "error") {
+                    const r2 = await commands.approveAgentAction(false);
+                    if (r2.status === "error") {
+                      useStore.getState().pushLog(`Deny failed: ${errorMessage(r2.error)}`);
+                    }
+                  }
+                }}
+                className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600"
+              >
+                Deny
+              </button>
+            </div>
+          </div>
+        )}
 
         {agentActive && activeRunId && <RunTraceView runId={activeRunId} />}
       </div>

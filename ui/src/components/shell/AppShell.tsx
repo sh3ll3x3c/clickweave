@@ -13,12 +13,15 @@ import { CanvasView } from "./CanvasView";
 import { OverviewView } from "./OverviewView";
 import { Sidebar } from "./Sidebar";
 import { TitleBar } from "./TitleBar";
+import { SkillView } from "../skill/SkillView";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "../../hooks/useUndoRedoKeyboard";
 import { useExecutorEvents } from "../../hooks/useExecutorEvents";
+import { useSafetyEventRouter } from "../../hooks/useSafetyEventRouter";
 
 export function AppShell() {
   const currentView = useStore((s) => s.currentView);
+  const currentSurface = useStore((s) => s.currentSurface);
   const showSettings = useStore((s) => s.showSettings);
   const setShowSettings = useStore((s) => s.setShowSettings);
   const supervisionPause = useStore((s) => s.supervisionPause);
@@ -103,6 +106,9 @@ export function AppShell() {
   useEscapeKey();
   useUndoRedoKeyboard(undo, redo);
   useExecutorEvents();
+  // 1.F.5: Mount the safety event router at AppShell root so it's always
+  // active regardless of which surface is shown.
+  useSafetyEventRouter();
 
   // SettingsModal needs the same wiring App.tsx uses; lift the
   // selectors here.
@@ -115,7 +121,15 @@ export function AppShell() {
       <div className="flex flex-1 overflow-hidden">
         {!onIntentEmptyState && <Sidebar />}
         <main className="flex flex-1 flex-col overflow-hidden">
-          {currentView === "overview" ? <OverviewView /> : <CanvasView />}
+          {/* 1.F.4: currentSurface toggles between the new SkillView and the
+              legacy canvas tree. Canvas is retained until 1.G deletes it. */}
+          {currentSurface === "skill" ? (
+            <SkillView />
+          ) : currentView === "overview" ? (
+            <OverviewView />
+          ) : (
+            <CanvasView />
+          )}
         </main>
       </div>
       {!onIntentEmptyState && <LogsBar />}

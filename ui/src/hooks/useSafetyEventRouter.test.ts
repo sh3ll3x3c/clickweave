@@ -129,4 +129,39 @@ describe("useSafetyEventRouter", () => {
     expect(pause).not.toBeNull();
     expect(pause?.scope.kind === "skill" && pause.scope.skill_id).toBe(frozenSkillId);
   });
+
+  // (c) ack (setSectionApproval(null)) clears the sectionApproval field
+  it("ack via setSectionApproval(null) clears sectionApproval without touching chatAnchoredApproval", async () => {
+    render(createElement(TestHook));
+    await act(async () => {});
+
+    // Set both fields
+    act(() => {
+      emit("executor://supervision_paused", {
+        scope: { kind: "skill", skill_id: "skl_x", section_id: "s1", step_id: "step1" },
+        finding: "A",
+        screenshot: null,
+      });
+    });
+    act(() => {
+      useStore.setState({
+        chatAnchoredApproval: {
+          scope: { kind: "ad_hoc", run_id: "r1" },
+          finding: "B",
+          screenshot: null,
+        },
+      });
+    });
+
+    // Ack only the section approval
+    act(() => {
+      useStore.getState().setSectionApproval(null);
+    });
+
+    const state = useStore.getState();
+    expect(state.sectionApproval).toBeNull();
+    // chatAnchoredApproval must remain untouched
+    expect(state.chatAnchoredApproval).not.toBeNull();
+    expect(state.chatAnchoredApproval?.finding).toBe("B");
+  });
 });

@@ -18,6 +18,13 @@ export interface UiSlice {
   selectedNode: string | null;
   activeNode: string | null;
   currentView: "overview" | "canvas";
+  /**
+   * Which main-pane surface is active.
+   * - `"skill"`: `SkillView` (Phase 1.F+) — the new primary surface.
+   * - `"canvas"`: Legacy canvas tree retained until 1.G deletes it.
+   * Defaults to `"skill"` so the new view is the default starting from 1.F.
+   */
+  currentSurface: "skill" | "canvas";
   detailTab: DetailTab;
   sidebarCollapsed: boolean;
   /**
@@ -67,6 +74,7 @@ export interface UiSlice {
   selectNode: (id: string | null) => void;
   setActiveNode: (id: string | null) => void;
   setCurrentView: (view: "overview" | "canvas") => void;
+  setCurrentSurface: (surface: "skill" | "canvas") => void;
   setDetailTab: (tab: DetailTab) => void;
   toggleSidebar: () => void;
   toggleUtilitySidebar: () => void;
@@ -86,6 +94,7 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   selectedNode: null,
   activeNode: null,
   currentView: "overview",
+  currentSurface: "skill",
   detailTab: "setup" as DetailTab,
   sidebarCollapsed: false,
   utilitySidebarCollapsed: false,
@@ -104,6 +113,7 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   selectNode: (id) => set({ selectedNode: id }),
   setActiveNode: (id) => set({ activeNode: id }),
   setCurrentView: (view) => set({ currentView: view }),
+  setCurrentSurface: (surface) => set({ currentSurface: surface }),
   setDetailTab: (tab) => set({ detailTab: tab }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   toggleUtilitySidebar: () =>
