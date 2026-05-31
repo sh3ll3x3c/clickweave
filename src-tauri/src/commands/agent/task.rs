@@ -124,21 +124,22 @@ async fn run_agent_task(input: AgentRunTaskInput) {
     };
 
     let result = tokio::select! {
-        res = clickweave_engine::agent::run_agent_workflow(
-            &llm,
+        res = clickweave_host::run::run_agent(clickweave_host::run::AgentRunParams {
+            llm: &llm,
+            mcp: &mcp,
             config,
-            goal_block,
-            &mcp,
-            Some(channels),
-            Some(vision.clone()),
-            permission_policy,
-            run_uuid,
-            anchor_uuid,
+            goal: goal_block,
+            channels: Some(channels),
+            vision: Some(vision.clone()),
+            permissions: permission_policy,
+            run_id: run_uuid,
+            anchor_node_id: anchor_uuid,
             verification_artifacts_dir,
-            Some(storage.clone()),
-            Some(episodic_ctx.clone()),
-            Some(skill_ctx.clone()),
-        ) => res,
+            storage: Some(storage.clone()),
+            episodic_ctx: Some(episodic_ctx.clone()),
+            skill_ctx: Some(skill_ctx.clone()),
+            system_prompt_override: None,
+        }) => res,
         _ = agent_token.cancelled() => {
             emit_after_agent_event_drain(
                 &terminal_event_tx,

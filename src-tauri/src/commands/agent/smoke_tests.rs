@@ -7,9 +7,9 @@
 //! constructs a real `LlmClient` and spawns an MCP subprocess, the
 //! scripted smoke test drives the backend-of-Tauri surface directly:
 //!
-//! - calls `clickweave_engine::agent::run_agent_workflow` with the
+//! - calls `clickweave_host::run::run_agent` with the
 //!   shared `ScriptedLlm` + `StaticMcp` stubs (mirrors what
-//!   `run_agent` would do after MCP bring-up),
+//!   the `run_agent` command would do after MCP bring-up),
 //! - drains the engine event channel through a channel-pump loop
 //!   that invokes the exact same `forward_agent_event` helper and
 //!   `RunStorage::append_agent_event` call the production spawn
@@ -29,7 +29,7 @@
 
 use super::*;
 use clickweave_engine::agent::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
-use clickweave_engine::agent::{AgentConfig, run_agent_workflow};
+use clickweave_engine::agent::AgentConfig;
 use std::sync::{Arc, Mutex};
 use tauri::Listener;
 
@@ -351,32 +351,33 @@ async fn run_smoke_test_body() {
     });
 
     // ── Act: drive the engine ──────────────────────────────────
-    let (state, _writer_tx) = run_agent_workflow(
-        &llm,
-        AgentConfig::default(),
-        "rubric-10 gate: forwarder + persistence contract".to_string(),
-        &mcp,
-        Some(channels),
-        None,
+    let (state, _writer_tx) = clickweave_host::run::run_agent(clickweave_host::run::AgentRunParams {
+        llm: &llm,
+        mcp: &mcp,
+        config: AgentConfig::default(),
+        goal: "rubric-10 gate: forwarder + persistence contract".to_string(),
+        channels: Some(channels),
+        vision: None,
         // Permission policy: `allow_all` so scripted destructive-ish
         // tool calls (cdp_click) don't block waiting on an approval
         // oneshot that nothing in this test answers. The production
         // agent.rs threads the operator's policy from the UI; this
         // smoke test only cares about event forwarding, so the
         // simplest shape that bypasses the approval gate is enough.
-        Some(PermissionPolicy {
+        permissions: Some(PermissionPolicy {
             allow_all: true,
             ..PermissionPolicy::default()
         }),
-        run_uuid,
-        None,
-        None,
-        Some(Arc::clone(&storage)),
-        None,
-        None,
-    )
+        run_id: run_uuid,
+        anchor_node_id: None,
+        verification_artifacts_dir: None,
+        storage: Some(Arc::clone(&storage)),
+        episodic_ctx: None,
+        skill_ctx: None,
+        system_prompt_override: None,
+    })
     .await
-    .expect("run_agent_workflow ok");
+    .expect("run_agent ok");
 
     // Wait for the forwarder pump to drain (`event_tx` was dropped
     // when the workflow returned, so the recv loop exits cleanly).
