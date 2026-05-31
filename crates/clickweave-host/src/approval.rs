@@ -36,12 +36,11 @@ impl ApprovalResponder for AutoApprove {
 /// - `Approve` → `send(true)` (continue)
 /// - `Reject`  → `send(false)` (replan; run continues)
 /// - `Unavailable` → drop the sender (engine recv error → `ApprovalUnavailable`)
-pub async fn bridge_approval(
-    req: ApprovalRequest,
-    tx: oneshot::Sender<bool>,
-    responder: &dyn ApprovalResponder,
-) {
-    let decision = responder.respond(req).await;
+///
+/// This is the single source of truth for the decision→oneshot mapping. The
+/// lifecycle bridge calls it directly when the responder wins its race against
+/// cancellation; dropping is reserved exclusively for `Unavailable`.
+pub fn apply_decision(decision: ApprovalDecision, tx: oneshot::Sender<bool>) {
     match decision {
         ApprovalDecision::Approve => {
             let _ = tx.send(true);
@@ -55,6 +54,17 @@ pub async fn bridge_approval(
             drop(tx);
         }
     }
+}
+
+/// Await the responder's decision for `req` and apply it to `tx` via
+/// [`apply_decision`].
+pub async fn bridge_approval(
+    req: ApprovalRequest,
+    tx: oneshot::Sender<bool>,
+    responder: &dyn ApprovalResponder,
+) {
+    let decision = responder.respond(req).await;
+    apply_decision(decision, tx);
 }
 
 #[cfg(test)]

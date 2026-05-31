@@ -24,28 +24,18 @@ pub struct AgentRunHandle {
     /// Receive end of the runner's live event stream.
     pub events: mpsc::Receiver<RunnerOutput>,
     cancel: CancellationToken,
-    /// Pending approval oneshot sender; held so `cancel()` can send `false`
-    /// instead of dropping (dropping surfaces as `ApprovalUnavailable`).
-    pending_approval_tx: Arc<Mutex<Option<oneshot::Sender<bool>>>>,
     join: JoinHandle<anyhow::Result<(AgentState, Option<mpsc::Sender<WriteRequest>>)>>,
 }
 
 impl AgentRunHandle {
     /// Cancel the in-flight run.
     ///
-    /// Cancels the `CancellationToken` **and** sends `false` to any pending
-    /// approval oneshot so the engine treats the stop as a rejection/replan
+    /// Cancels the `CancellationToken`. The approval bridge task observes the
+    /// same token and, if an approval is in flight, sends `false` to its
+    /// pending oneshot so the engine treats the stop as a rejection/replan
     /// rather than `ApprovalUnavailable`. Dropping the sender is reserved
     /// exclusively for the `Unavailable` decision in the approval bridge.
     pub fn cancel(&self) {
-        // Send explicit rejection to pending approval before cancelling the
-        // token so the engine's recv sees Ok(false) (replan), not Err
-        // (approval_unavailable).
-        if let Ok(mut guard) = self.pending_approval_tx.lock()
-            && let Some(tx) = guard.take()
-        {
-            let _ = tx.send(false);
-        }
         self.cancel.cancel();
     }
 
@@ -54,6 +44,36 @@ impl AgentRunHandle {
         self,
     ) -> anyhow::Result<(AgentState, Option<mpsc::Sender<WriteRequest>>)> {
         self.join.await?
+    }
+}
+
+/// Resolve a single in-flight approval, racing the responder's decision
+/// against the run's cancellation signal.
+///
+/// The oneshot `sender` stays owned by this future across the `respond`
+/// await, so whichever arm of the `select!` wins still holds it:
+///
+/// - **responder wins** → apply the `Approve→true / Reject→false /
+///   Unavailable→drop` mapping via [`crate::approval::apply_decision`].
+/// - **cancel wins** (a `cancel()` arrived while the approval was in flight)
+///   → `send(false)`, so the engine's `recv` sees `Ok(false)` (rejection /
+///   replan) rather than `Err` (which would surface as
+///   `TerminalReason::ApprovalUnavailable`). The sender is **never** dropped
+///   on cancel — dropping is reserved exclusively for the responder's own
+///   `Unavailable` decision.
+async fn serve_one_approval(
+    req: ApprovalRequest,
+    sender: oneshot::Sender<bool>,
+    responder: &dyn ApprovalResponder,
+    cancel: &CancellationToken,
+) {
+    tokio::select! {
+        decision = responder.respond(req) => {
+            crate::approval::apply_decision(decision, sender);
+        }
+        _ = cancel.cancelled() => {
+            let _ = sender.send(false);
+        }
     }
 }
 
@@ -87,31 +107,32 @@ where
     M: Mcp + Send + Sync + 'static,
 {
     let cancel = CancellationToken::new();
-    let pending_approval_tx: Arc<Mutex<Option<oneshot::Sender<bool>>>> = Arc::new(Mutex::new(None));
 
     let (event_tx, event_rx) = mpsc::channel::<RunnerOutput>(64);
     let (approval_tx, mut approval_rx) =
         mpsc::channel::<(ApprovalRequest, oneshot::Sender<bool>)>(1);
 
-    // Approval bridge task: reads requests from the runner channel, parks the
-    // pending oneshot in shared state (so `cancel()` can reject it), then
-    // delegates to the responder.
-    let pending_tx_for_bridge = Arc::clone(&pending_approval_tx);
+    // Approval bridge task: reads requests from the runner channel and, for
+    // each one, races the responder's decision against the run's
+    // cancellation signal. The oneshot sender stays owned by this task across
+    // the `respond` await, so whichever arm wins still holds the sender:
+    //
+    // - responder wins → apply the `Approve→true / Reject→false /
+    //   Unavailable→drop` mapping (`apply_decision`).
+    // - cancel wins (a `cancel()` arrived while the approval was in flight) →
+    //   `send(false)`, so the engine sees `Ok(false)` (rejection/replan)
+    //   rather than `Err` (`ApprovalUnavailable`). The sender is never
+    //   dropped on cancel.
+    //
+    // The bridge terminates when `approval_rx` closes (the runner dropped its
+    // `approval_tx`) — a cancellation does not stop the bridge itself, it only
+    // resolves the in-flight approval; the runner task observes the same token
+    // and unwinds the run.
+    let cancel_for_bridge = cancel.clone();
     let responder_bridge = Arc::clone(&responder);
     tokio::spawn(async move {
         while let Some((req, tx)) = approval_rx.recv().await {
-            // Park the sender so `cancel()` can reject it if called before
-            // the responder returns.
-            {
-                let mut g = pending_tx_for_bridge.lock().unwrap();
-                *g = Some(tx);
-            }
-            // Take it back out — if cancel() already sent false, `take()`
-            // returns None and we skip the bridge call.
-            let tx = pending_tx_for_bridge.lock().unwrap().take();
-            if let Some(tx) = tx {
-                crate::approval::bridge_approval(req, tx, responder_bridge.as_ref()).await;
-            }
+            serve_one_approval(req, tx, responder_bridge.as_ref(), &cancel_for_bridge).await;
         }
     });
 
@@ -159,7 +180,6 @@ where
     AgentRunHandle {
         events: event_rx,
         cancel,
-        pending_approval_tx,
         join,
     }
 }
@@ -169,7 +189,7 @@ mod tests {
     use super::*;
     use clickweave_engine::agent::test_stubs::{NullMcp, ScriptedLlm, build_agent_done_response};
 
-    use crate::approval::AutoApprove;
+    use crate::approval::{ApprovalDecision, AutoApprove};
 
     fn default_responder() -> Arc<dyn ApprovalResponder> {
         Arc::new(AutoApprove)
@@ -245,30 +265,189 @@ mod tests {
         assert!(result.is_ok(), "cancelled run must return Ok");
     }
 
-    #[tokio::test]
-    async fn cancel_sends_rejection_not_drop_to_pending_approval() {
-        // We test the invariant directly on the pending_approval_tx field:
-        // after `cancel()`, a parked oneshot receiver must see Ok(false).
-        let (tx, rx) = oneshot::channel::<bool>();
-        let pending: Arc<Mutex<Option<oneshot::Sender<bool>>>> = Arc::new(Mutex::new(Some(tx)));
-        let cancel = CancellationToken::new();
+    /// Responder that signals once it is asked (so a test can observe that
+    /// an approval is genuinely in flight) and then parks forever, never
+    /// returning a decision. Models a TTY prompt blocked on operator input.
+    struct ParkingResponder {
+        entered_tx: Mutex<Option<oneshot::Sender<()>>>,
+    }
 
-        let handle = AgentRunHandle {
-            events: mpsc::channel(1).1,
-            cancel: cancel.clone(),
-            pending_approval_tx: Arc::clone(&pending),
-            join: tokio::spawn(async {
-                use clickweave_engine::agent::trace_graph::AgentTraceGraph;
-                Ok((AgentState::new(AgentTraceGraph::new()), None))
-            }),
-        };
+    impl ParkingResponder {
+        /// Returns the responder plus a receiver that fires when `respond`
+        /// is first entered.
+        fn new() -> (Arc<Self>, oneshot::Receiver<()>) {
+            let (entered_tx, entered_rx) = oneshot::channel();
+            let responder = Arc::new(Self {
+                entered_tx: Mutex::new(Some(entered_tx)),
+            });
+            (responder, entered_rx)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ApprovalResponder for ParkingResponder {
+        async fn respond(&self, _req: ApprovalRequest) -> ApprovalDecision {
+            if let Some(tx) = self.entered_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            // Park forever: only cancellation can resolve the in-flight
+            // approval. `pending()` never completes, so if the bridge ever
+            // dropped the sender instead of racing the token, the engine's
+            // recv would error → ApprovalUnavailable — the bug this guards.
+            std::future::pending::<()>().await;
+            unreachable!("ParkingResponder::respond never returns");
+        }
+    }
+
+    fn approval_request() -> ApprovalRequest {
+        ApprovalRequest {
+            step_index: 0,
+            tool_name: "destructive_tool".to_string(),
+            arguments: serde_json::json!({}),
+            description: "do something".to_string(),
+        }
+    }
+
+    /// Regression: when `cancel()` fires while an approval is parked inside
+    /// the responder, the bridge must `send(false)` to the engine's oneshot
+    /// — not drop it. A dropped sender makes the engine's `recv` error,
+    /// surfacing as `TerminalReason::ApprovalUnavailable`; an explicit
+    /// `Ok(false)` lets the engine treat the stop as a rejection/replan.
+    ///
+    /// This drives the real bridge primitive (`serve_one_approval`) — the
+    /// exact future the bridge task awaits per request — so it covers the
+    /// live cancel-during-approval path, not a field-level stand-in.
+    #[tokio::test]
+    async fn cancel_during_in_flight_approval_sends_rejection_through_bridge() {
+        let (responder, entered_rx) = ParkingResponder::new();
+        let cancel = CancellationToken::new();
+        let (engine_tx, engine_rx) = oneshot::channel::<bool>();
+
+        let cancel_for_bridge = cancel.clone();
+        let responder_for_bridge = Arc::clone(&responder);
+        let bridge = tokio::spawn(async move {
+            serve_one_approval(
+                approval_request(),
+                engine_tx,
+                responder_for_bridge.as_ref(),
+                &cancel_for_bridge,
+            )
+            .await;
+        });
+
+        // Wait until the responder is genuinely parked so the cancel races a
+        // real in-flight approval (the buggy window).
+        entered_rx
+            .await
+            .expect("responder must report it was entered");
+
+        cancel.cancel();
+
+        // The engine-side receiver must observe an explicit rejection, never
+        // an error from a dropped sender. The bounded timeout turns the buggy
+        // behavior (sender dropped / never sent → recv hangs or errors) into a
+        // deterministic failure instead of a hang.
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), engine_rx)
+            .await
+            .expect("engine receiver must resolve on cancel, not hang");
+        assert_eq!(
+            received,
+            Ok(false),
+            "cancel during an in-flight approval must send false, not drop the sender",
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), bridge)
+            .await
+            .expect("bridge future must resolve, not hang")
+            .expect("bridge task must not panic");
+    }
+
+    #[tokio::test]
+    async fn serve_one_approval_maps_approve_to_true() {
+        let cancel = CancellationToken::new();
+        let (tx, rx) = oneshot::channel::<bool>();
+        serve_one_approval(approval_request(), tx, &AutoApprove, &cancel).await;
+        assert_eq!(rx.await, Ok(true), "Approve must send true");
+    }
+
+    #[tokio::test]
+    async fn serve_one_approval_maps_reject_to_false() {
+        struct AlwaysReject;
+        #[async_trait::async_trait]
+        impl ApprovalResponder for AlwaysReject {
+            async fn respond(&self, _: ApprovalRequest) -> ApprovalDecision {
+                ApprovalDecision::Reject
+            }
+        }
+        let cancel = CancellationToken::new();
+        let (tx, rx) = oneshot::channel::<bool>();
+        serve_one_approval(approval_request(), tx, &AlwaysReject, &cancel).await;
+        assert_eq!(rx.await, Ok(false), "Reject must send false");
+    }
+
+    #[tokio::test]
+    async fn serve_one_approval_drops_sender_on_unavailable() {
+        struct AlwaysUnavailable;
+        #[async_trait::async_trait]
+        impl ApprovalResponder for AlwaysUnavailable {
+            async fn respond(&self, _: ApprovalRequest) -> ApprovalDecision {
+                ApprovalDecision::Unavailable
+            }
+        }
+        let cancel = CancellationToken::new();
+        let (tx, rx) = oneshot::channel::<bool>();
+        serve_one_approval(approval_request(), tx, &AlwaysUnavailable, &cancel).await;
+        assert!(
+            rx.await.is_err(),
+            "Unavailable must drop the sender (engine recv → ApprovalUnavailable)"
+        );
+    }
+
+    /// End-to-end: spawning a run whose only tool is approval-gated, then
+    /// cancelling while the responder is parked on the approval, must resolve
+    /// and join the run without hanging. Exercises the full bridge wiring in
+    /// `spawn_agent_run` (not just the extracted primitive).
+    #[tokio::test]
+    async fn cancel_during_in_flight_approval_through_spawn_resolves() {
+        use clickweave_engine::agent::test_stubs::{StaticMcp, llm_reply_tool};
+
+        let (responder, entered_rx) = ParkingResponder::new();
+
+        // The scripted LLM keeps asking for an approval-gated tool. With the
+        // default permission policy and no read-only hint, the engine
+        // resolves the call to `Ask` and routes it through the bridge.
+        let llm = ScriptedLlm::repeat(|| llm_reply_tool("destructive_tool", serde_json::json!({})));
+        let mcp = StaticMcp::with_tools(&["destructive_tool"]);
+
+        let handle = spawn_agent_run(
+            llm,
+            mcp,
+            AgentConfig {
+                max_steps: 1000,
+                ..Default::default()
+            },
+            "needs approval".to_string(),
+            None,
+            Some(PermissionPolicy::default()),
+            Uuid::new_v4(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            responder as Arc<dyn ApprovalResponder>,
+        );
+
+        // Once the responder is parked, an approval is genuinely in flight.
+        entered_rx
+            .await
+            .expect("responder must report the approval is in flight");
 
         handle.cancel();
 
-        assert!(
-            !rx.await.unwrap(),
-            "cancel must send false, not drop the oneshot"
-        );
-        assert!(cancel.is_cancelled());
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle.await_result())
+            .await
+            .expect("cancelled run must resolve, not deadlock");
+        assert!(result.is_ok(), "cancelled run must return Ok");
     }
 }
