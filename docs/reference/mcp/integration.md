@@ -25,7 +25,7 @@ File: `crates/clickweave-mcp/src/client.rs`
 |--------|----------|
 | `McpClient::spawn(cmd, args)` | runs provided command and args directly |
 
-`spawn_native()` was removed. Callers now use `host::spawn_mcp(path, &[])` (which wraps `McpClient::spawn`) with a binary path resolved by `host::mcp::resolve_mcp_binary(EnvOverride)` in `clickweave-host`.
+`spawn_native()` was removed. Callers now use `host::mcp::spawn_mcp(path, &[])` (which wraps `McpClient::spawn`) with a binary path resolved by `host::mcp::resolve_mcp_binary(EnvOverride)` in `clickweave-host`.
 
 ### Initialization Sequence
 

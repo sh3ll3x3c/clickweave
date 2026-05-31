@@ -81,11 +81,21 @@ pub fn resolve_storage(app_data: &Path, loc: ProjectLocation) -> RunStorage {
 
 /// Load a `ProjectManifest` from the given path.
 ///
-/// The path may point to either the project directory or the `project.json`
-/// file inside it — both are handled via [`project_dir`].
+/// The path may point to either:
+/// - a manifest file (e.g. `/proj/workflow.json`) — read directly, matching
+///   the GUI's `open_project`, which opens the exact file the user picked and
+///   does not assume a fixed `project.json` filename; or
+/// - a project directory (e.g. `/proj`) — the manifest is read from
+///   `project.json` inside it.
+///
+/// A path is treated as a manifest file when it carries a file extension; an
+/// extension-less path is treated as a directory.
 pub fn load_project(path: &Path) -> anyhow::Result<ProjectManifest> {
-    let dir = project_dir(path);
-    let manifest_path = dir.join("project.json");
+    let manifest_path = if path.extension().is_some() {
+        path.to_path_buf()
+    } else {
+        path.join("project.json")
+    };
     let data = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
     serde_json::from_str(&data)
@@ -195,5 +205,28 @@ mod tests {
         let loaded = load_project(&file_path).unwrap();
         assert_eq!(loaded.id, manifest.id);
         assert_eq!(loaded.name, "file-test");
+    }
+
+    // Regression: the GUI save picker defaults to `workflow.json` and
+    // `open_project` reads the exact file picked, so the manifest filename is
+    // arbitrary. `load_project` must read the manifest the user named, not
+    // assume a fixed `project.json` filename inside the same directory.
+    #[test]
+    fn load_project_honors_arbitrary_manifest_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = ProjectManifest {
+            id: Uuid::new_v4(),
+            name: "named-manifest".to_string(),
+            intent: None,
+            schema_version: PROJECT_SCHEMA_VERSION,
+        };
+        // Write the manifest under a non-`project.json` filename (the GUI
+        // default), and deliberately do NOT create a sibling `project.json`.
+        let file_path = tmp.path().join("workflow.json");
+        std::fs::write(&file_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+
+        let loaded = load_project(&file_path).unwrap();
+        assert_eq!(loaded.id, manifest.id);
+        assert_eq!(loaded.name, "named-manifest");
     }
 }

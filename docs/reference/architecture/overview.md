@@ -107,7 +107,7 @@ UI-agnostic wiring library. Sits above `{clickweave-engine, clickweave-core, cli
 | `context.rs` | `build_episodic_context(...)`, `build_skill_context(...)` — agent-context construction |
 | `run.rs` | `AgentRunParams`, `run_agent(params)` — engine-call seam, dispatches to the appropriate `run_agent_workflow*` variant |
 | `approval.rs` | `ApprovalDecision`, `ApprovalResponder` trait, `AutoApprove` |
-| `lifecycle.rs` | `spawn_agent_run(...)`, `AgentRunHandle` — live-run lifecycle wrapper for CLI and Tauri |
+| `lifecycle.rs` | `spawn_agent_run(...)`, `AgentRunHandle` — CLI-only live-run lifecycle wrapper (the Tauri command runs its own lifecycle/forwarder over `host::run::run_agent`) |
 | `skills.rs` | `run_skill(...)`, `list_skills(dir)`, `load_skill(dir, id)` |
 | `runs.rs` | `list_runs(storage, skill_id)`, `load_run_events(...)` |
 

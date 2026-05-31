@@ -106,8 +106,8 @@ The runner is **state-centric**: the harness owns a `WorldModel` (environment fa
 
 `host::run_agent(AgentRunParams)` (`crates/clickweave-host/src/run.rs`) is the engine-call seam used by all consumers. It dispatches to `run_agent_workflow` or `run_agent_workflow_with_prompt_override` (`crates/clickweave-engine/src/agent/mod.rs`) based on `system_prompt_override`. Both build a `StateRunner` and an `AgentTraceGraph` and drive the loop.
 
-- **Tauri path:** `run_agent` IPC command (`src-tauri/src/commands/agent/commands.rs`) uses `host::spawn_agent_run` for the lifecycle wrapper, then forwards all `RunnerOutput` events (draining `DrainBarrier` acks, `SkillProposalNeeded`, and per-event `AgentEvent` emission) as `agent://*` Tauri events.
-- **CLI path:** `clickweave run` calls `host::spawn_agent_run`, renders `RunnerOutput` to stderr, and emits NDJSON to stdout in `--json` mode.
+- **Tauri path:** `run_agent` IPC command (`src-tauri/src/commands/agent/commands.rs`) calls `host::run::run_agent` directly inside its own Tauri-only lifecycle (`tokio::select!` + `CancellationToken`) and forwarder, which forwards all `RunnerOutput` events (draining `DrainBarrier` acks, `SkillProposalNeeded`, and per-event `AgentEvent` emission) as `agent://*` Tauri events. It does **not** use `host::spawn_agent_run`.
+- **CLI path:** `clickweave run` calls `host::spawn_agent_run` (the CLI-only lifecycle wrapper), renders `RunnerOutput` to stderr, and emits NDJSON to stdout in `--json` mode.
 
 ### Trace Graph
 
