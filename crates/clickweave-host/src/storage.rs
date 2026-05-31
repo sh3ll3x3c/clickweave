@@ -57,6 +57,16 @@ pub enum ProjectLocation {
     Unsaved { name: String, id: Uuid },
 }
 
+impl ProjectLocation {
+    /// Return the project UUID, present on both variants.
+    pub fn id(&self) -> Uuid {
+        match self {
+            ProjectLocation::Saved { id, .. } => *id,
+            ProjectLocation::Unsaved { id, .. } => *id,
+        }
+    }
+}
+
 /// Build a `RunStorage` for the given project location.
 ///
 /// For `Saved` projects the storage root is placed inside the project

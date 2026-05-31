@@ -32,11 +32,7 @@ pub async fn execute(args: RunArgs) -> Result<i32> {
     let app_data = app_data_dir();
     let loc = resolve_project_location(args.project, args.project_name, args.project_id)?;
 
-    let project_id_str = match &loc {
-        clickweave_host::storage::ProjectLocation::Saved { id, .. } => Some(id.to_string()),
-        clickweave_host::storage::ProjectLocation::Unsaved { id, .. } => Some(id.to_string()),
-    };
-
+    let project_id_str = Some(loc.id().to_string());
     let mut storage = resolve_storage(&app_data, loc);
     storage.set_persistent(!args.no_store_traces);
     let exec_dir = storage

@@ -5,7 +5,7 @@ use clickweave_engine::agent::episodic::EpisodicContext;
 use clickweave_engine::agent::episodic::types::WriteRequest;
 use clickweave_engine::agent::skills::SkillContext;
 use clickweave_engine::agent::{
-    AgentChannels, AgentConfig, AgentState, PermissionPolicy, run_agent_workflow,
+    AgentChannels, AgentConfig, AgentState, PermissionPolicy,
     run_agent_workflow_with_prompt_override,
 };
 use clickweave_engine::executor::Mcp;
@@ -39,8 +39,10 @@ pub struct AgentRunParams<'a, B: ChatBackend, M: Mcp + ?Sized> {
     pub system_prompt_override: Option<String>,
 }
 
-/// Run the agent loop, dispatching to the appropriate engine entry point
-/// based on whether `system_prompt_override` is set.
+/// Run the agent loop.
+///
+/// When `system_prompt_override` is `Some`, the override is injected (intended
+/// for evals). When `None`, the stable production system prompt is used.
 ///
 /// Returns the final `AgentState` and the episodic writer channel sender
 /// (when episodic is active).
@@ -51,45 +53,23 @@ where
     B: ChatBackend,
     M: Mcp + ?Sized,
 {
-    match p.system_prompt_override {
-        None => {
-            run_agent_workflow(
-                p.llm,
-                p.config,
-                p.goal,
-                p.mcp,
-                p.channels,
-                p.vision,
-                p.permissions,
-                p.run_id,
-                p.anchor_node_id,
-                p.verification_artifacts_dir,
-                p.storage,
-                p.episodic_ctx,
-                p.skill_ctx,
-            )
-            .await
-        }
-        Some(prompt) => {
-            run_agent_workflow_with_prompt_override(
-                p.llm,
-                p.config,
-                p.goal,
-                p.mcp,
-                p.channels,
-                p.vision,
-                p.permissions,
-                p.run_id,
-                p.anchor_node_id,
-                p.verification_artifacts_dir,
-                p.storage,
-                p.episodic_ctx,
-                p.skill_ctx,
-                Some(prompt),
-            )
-            .await
-        }
-    }
+    run_agent_workflow_with_prompt_override(
+        p.llm,
+        p.config,
+        p.goal,
+        p.mcp,
+        p.channels,
+        p.vision,
+        p.permissions,
+        p.run_id,
+        p.anchor_node_id,
+        p.verification_artifacts_dir,
+        p.storage,
+        p.episodic_ctx,
+        p.skill_ctx,
+        p.system_prompt_override,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -154,9 +134,8 @@ mod tests {
         );
     }
 
-    /// Distinguish the two paths by observing `call_count`: when the LLM
-    /// script emits one tool call then agent_done, the override path must
-    /// also process both without hanging.
+    /// When the LLM script emits one tool call then agent_done, the run
+    /// must process both steps without hanging.
     #[tokio::test]
     async fn override_path_consumes_full_script() {
         let llm = ScriptedLlm::new(vec![

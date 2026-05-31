@@ -85,13 +85,10 @@ where
     let mut ctx = SkillRunContext::new(mcp, variables);
     let outcome = run_skill_steps(&mut ctx, &skill.action_sketch).await;
 
+    let finished_at = chrono::Utc::now();
     let mut updated = run.clone();
-    updated.finished_at = Some(chrono::Utc::now());
-    updated.duration_ms = Some(
-        (updated.finished_at.unwrap() - updated.started_at)
-            .num_milliseconds()
-            .max(0) as u64,
-    );
+    updated.finished_at = Some(finished_at);
+    updated.duration_ms = Some((finished_at - updated.started_at).num_milliseconds().max(0) as u64);
     updated.status = match &outcome {
         Ok(()) => clickweave_core::RunStatus::Ok,
         Err(_) => clickweave_core::RunStatus::Failed,

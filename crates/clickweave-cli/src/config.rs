@@ -75,7 +75,6 @@ pub fn build_contexts(
     no_store_traces: bool,
 ) -> Result<(EpisodicContext, SkillContext)> {
     let persist = !no_store_traces;
-    let enabled = persist; // matches GUI: unwrap_or(true), gated by store_traces
 
     let skills_dir = storage
         .project_skills_dir()
@@ -95,7 +94,7 @@ pub fn build_contexts(
         episodic_global,
         project_id_str.clone(),
         persist,
-        enabled,
+        persist,
     );
 
     // Skill context
@@ -109,7 +108,7 @@ pub fn build_contexts(
         global_skills,
         project_id_str,
         persist,
-        enabled,
+        persist,
     );
 
     Ok((episodic_ctx, skill_ctx))
