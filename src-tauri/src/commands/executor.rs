@@ -3,7 +3,6 @@ use super::types::*;
 use clickweave_engine::agent::skills::{ActionSketchStep, Skill, SkillStore};
 use clickweave_engine::executor::skill_runner::{SkillRunContext, run_skill_steps};
 use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState};
-use clickweave_mcp::McpClient;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
@@ -237,7 +236,7 @@ async fn run_skill_dispatch(
         _ = cancel_token.cancelled() => {
             anyhow::bail!("Cancelled before MCP spawn");
         }
-        res = McpClient::spawn(mcp_binary_path, &[]) => res?,
+        res = clickweave_host::mcp::spawn_mcp(mcp_binary_path, &[]) => res?,
     };
 
     let mut ctx = SkillRunContext::new(&mcp, variables.clone());
@@ -605,7 +604,7 @@ async fn run_skill_steps_from_filtered(
         _ = cancel_token.cancelled() => {
             anyhow::bail!("Cancelled before MCP spawn");
         }
-        res = McpClient::spawn(mcp_binary_path, &[]) => res?,
+        res = clickweave_host::mcp::spawn_mcp(mcp_binary_path, &[]) => res?,
     };
 
     let mut ctx = SkillRunContext::new(&mcp, variables.clone());

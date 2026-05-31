@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) async fn spawn_mcp(mcp_binary_path: &str) -> Option<McpClient> {
-    match McpClient::spawn(mcp_binary_path, &[]).await {
+    match clickweave_host::mcp::spawn_mcp(mcp_binary_path, &[]).await {
         Ok(client) => {
             tracing::info!(
                 "MCP client spawned for walkthrough enrichment: {} tools",

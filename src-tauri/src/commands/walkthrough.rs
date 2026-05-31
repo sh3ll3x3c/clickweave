@@ -87,7 +87,8 @@ pub enum CdpSetupStatus {
 #[specta::specta]
 pub async fn detect_cdp_apps() -> Result<Vec<DetectedCdpApp>, CommandError> {
     let mcp_binary =
-        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
+        clickweave_host::mcp::resolve_mcp_binary(clickweave_host::mcp::EnvOverride::DebugOnly)
+            .map_err(|e| CommandError::mcp(format!("{e}")))?;
     let mcp = spawn_mcp(&mcp_binary)
         .await
         .ok_or(CommandError::mcp("Failed to spawn MCP server"))?;
@@ -155,7 +156,8 @@ pub async fn start_walkthrough(
     // Resolve MCP binary before acquiring the session lock so a failure
     // doesn't leave walkthrough state wedged as "already running".
     let mcp_binary_path =
-        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
+        clickweave_host::mcp::resolve_mcp_binary(clickweave_host::mcp::EnvOverride::DebugOnly)
+            .map_err(|e| CommandError::mcp(format!("{e}")))?;
 
     // Set up session and storage under the lock, then release it before
     // spawning async work (which needs the app handle, not the lock).

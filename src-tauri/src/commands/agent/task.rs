@@ -191,7 +191,7 @@ async fn spawn_mcp_for_agent(
     task_run_id: &str,
 ) -> Option<clickweave_mcp::McpClient> {
     tokio::select! {
-        res = clickweave_mcp::McpClient::spawn(mcp_binary_path, &[]) => {
+        res = clickweave_host::mcp::spawn_mcp(mcp_binary_path, &[]) => {
             match res {
                 Ok(m) => Some(m),
                 Err(e) => {

@@ -300,7 +300,8 @@ pub async fn run_agent(
     ensure_agent_idle(&app)?;
 
     let mcp_binary_path =
-        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
+        clickweave_host::mcp::resolve_mcp_binary(clickweave_host::mcp::EnvOverride::DebugOnly)
+            .map_err(|e| CommandError::mcp(format!("{e}")))?;
 
     let project_id = parse_project_id(&request)?;
 

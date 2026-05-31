@@ -3,7 +3,6 @@
 
 mod commands;
 mod llm;
-mod mcp_resolve;
 mod menu;
 mod platform;
 mod privacy;
@@ -25,27 +24,6 @@ use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::Subs
 /// - macOS: `~/Library/Application Support/com.clickweave.app/` (reverse-DNS is the convention)
 /// - Windows: `%APPDATA%\Clickweave\` (product name is the convention)
 /// - Linux: `$XDG_DATA_HOME/clickweave/` or `~/.local/share/clickweave/`
-fn app_data_dir() -> std::path::PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        std::path::PathBuf::from(std::env::var("HOME").expect("HOME should be set"))
-            .join("Library/Application Support/com.clickweave.app")
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::path::PathBuf::from(std::env::var("APPDATA").expect("APPDATA should be set"))
-            .join("Clickweave")
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        std::path::PathBuf::from(std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
-            let home = std::env::var("HOME").expect("HOME should be set");
-            format!("{home}/.local/share")
-        }))
-        .join("clickweave")
-    }
-}
-
 fn log_dir() -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -60,7 +38,7 @@ fn log_dir() -> std::path::PathBuf {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        app_data_dir().join("logs")
+        clickweave_host::storage::app_data_dir().join("logs")
     }
 }
 
@@ -182,7 +160,7 @@ fn main() {
         .invoke_handler(builder.invoke_handler())
         .menu(menu::build_menu)
         .setup(move |app| {
-            let app_data_dir = app_data_dir();
+            let app_data_dir = clickweave_host::storage::app_data_dir();
             std::fs::create_dir_all(&app_data_dir).ok();
 
             // Best-effort run-trace housekeeping. Runs on a detached
@@ -200,7 +178,9 @@ fn main() {
             });
 
             // Check MCP sidecar availability at startup.
-            match mcp_resolve::resolve_mcp_binary() {
+            match clickweave_host::mcp::resolve_mcp_binary(
+                clickweave_host::mcp::EnvOverride::DebugOnly,
+            ) {
                 Ok(path) => {
                     tracing::info!("MCP sidecar available: {path}");
                     app.manage(McpStatus(Ok(path)));
