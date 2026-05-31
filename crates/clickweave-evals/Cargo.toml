@@ -8,6 +8,7 @@ anyhow.workspace = true
 blake3 = "1.5"
 clickweave-core.workspace = true
 clickweave-engine = { workspace = true, features = ["test-stubs"] }
+clickweave-host.workspace = true
 clickweave-llm.workspace = true
 clickweave-mcp.workspace = true
 serde.workspace = true

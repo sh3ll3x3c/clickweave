@@ -440,6 +440,7 @@ dependencies = [
  "blake3",
  "clickweave-core",
  "clickweave-engine",
+ "clickweave-host",
  "clickweave-llm",
  "clickweave-mcp",
  "serde",

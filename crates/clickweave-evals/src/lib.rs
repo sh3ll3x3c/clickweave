@@ -6,10 +6,7 @@ use std::{error::Error, fmt};
 
 use anyhow::{Context, Result, bail};
 use clickweave_engine::Mcp;
-use clickweave_engine::agent::{
-    AgentChannels, AgentConfig, PermissionPolicy, RunnerOutput,
-    run_agent_workflow_with_prompt_override,
-};
+use clickweave_engine::agent::{AgentChannels, AgentConfig, PermissionPolicy, RunnerOutput};
 use clickweave_llm::{ChatBackend, ChatOptions, ChatResponse, LlmConfig, Message, ToolCall};
 use clickweave_mcp::{ToolCallResult, ToolContent};
 use serde::{Deserialize, Serialize};

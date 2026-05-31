@@ -1,3 +1,5 @@
+use clickweave_host::run::{AgentRunParams, run_agent};
+
 use super::*;
 
 pub async fn run_eval<B, J>(
@@ -36,28 +38,28 @@ where
     };
     config.allow_focus_window = false;
 
-    let run = run_agent_workflow_with_prompt_override(
-        &recording_agent,
+    let run = run_agent(AgentRunParams {
+        llm: &recording_agent,
+        mcp: &mcp,
         config,
-        scenario.goal.clone(),
-        &mcp,
-        Some(AgentChannels {
+        goal: scenario.goal.clone(),
+        channels: Some(AgentChannels {
             event_tx,
             approval_tx,
         }),
-        None,
-        Some(PermissionPolicy {
+        vision: None,
+        permissions: Some(PermissionPolicy {
             allow_all: true,
             ..PermissionPolicy::default()
         }),
-        uuid::Uuid::new_v4(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        agent_system_prompt,
-    )
+        run_id: uuid::Uuid::new_v4(),
+        anchor_node_id: None,
+        verification_artifacts_dir: None,
+        storage: None,
+        episodic_ctx: None,
+        skill_ctx: None,
+        system_prompt_override: agent_system_prompt,
+    })
     .await;
     let eval_halt = recording_agent.eval_halt();
     let (completed, state_steps, run_error) = match run {
