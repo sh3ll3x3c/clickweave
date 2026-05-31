@@ -8,7 +8,10 @@ The engine provides two execution paths: the **native skill runner** (determinis
 
 ### Entry Points
 
-Execution starts at Tauri command `run_skill` (`src-tauri/src/commands/executor.rs`). The command loads the skill, resolves variable bindings, and calls `run_skill_steps`. Failed runs can be resumed section-by-section via `resume_skill_from_failure`.
+Execution starts at either:
+
+- **Tauri command** `run_skill` (`src-tauri/src/commands/executor.rs`) — GUI path; loads the skill, resolves variable bindings, calls `run_skill_steps`, emits `executor://*` events. Failed runs can be resumed section-by-section via `resume_skill_from_failure`.
+- **`host::run_skill`** (`crates/clickweave-host/src/skills.rs`) — headless path used by the CLI; same runner, no event emission, persists a `SkillRun` record to storage.
 
 ### Execution Flow
 
@@ -29,8 +32,6 @@ Execution starts at Tauri command `run_skill` (`src-tauri/src/commands/executor.
 
 ### Safety Events
 
-The safety gate in `skill_runner::should_gate_step` checks `requires_approval` on each `ActionSketchStep::ToolCall`. When approval is required, the runner emits an `ApprovalRequired` event carrying `SafetyScope::Skill { skill_id, section_id, step_id }` and waits for operator response before proceeding.
-
 `SafetyScope` (`clickweave-core::safety`) is the discriminant shared by all supervision and approval events:
 
 ```rust
@@ -40,21 +41,23 @@ pub enum SafetyScope {
 }
 ```
 
-The frontend `useSafetyEventRouter` hook reads the `kind` field and routes accordingly:
+`should_gate_step` in `skill_runner` evaluates `requires_approval` on each `ActionSketchStep::ToolCall` and is used by the Tauri executor path. **The deterministic runner invoked by `host::run_skill` (CLI and headless paths) does not gate per step** — `requires_approval` is passed as an ignored `_requires_approval` parameter in `run_tool_call`. Skill-step `SafetyScope::Skill` approval enforcement is future work.
 
-- `kind: "skill"` → inline `SkillSectionApprovalOverlay` on the matching `SkillSectionCard`
+Agent-loop runs use `SafetyScope::AdHoc` for approval events. The frontend `useSafetyEventRouter` hook routes these:
+
 - `kind: "ad_hoc"` → `AssistantThread`-anchored approval card
+- `kind: "skill"` → inline `SkillSectionApprovalOverlay` on the matching `SkillSectionCard` (frontend surface retained; not triggered by the deterministic runner today)
 
 Both `SupervisionPaused` / `SupervisionPassed` and `ApprovalRequired` carry this scope. `supervision_respond` and `approve_agent_action` are the corresponding Tauri commands.
 
 ### Phase 1 Approval Fallback
 
-The `phase1_static_approvals` Cargo feature gates how `should_gate_step(tool_name, explicit, annotations)` decides whether a step needs operator approval:
+The `phase1_static_approvals` Cargo feature gates how `should_gate_step(tool_name, explicit, annotations)` decides whether a step needs operator approval. This helper is used by the Tauri executor path; it is not invoked by the deterministic `host::run_skill` runner.
 
 - **Feature on:** if `explicit: Option<bool>` is set on the step, that value wins; otherwise fall through to `ToolAnnotations.destructive_hint`, then to the supplemental static `CONFIRMABLE_TOOLS` list.
 - **Feature off:** only `explicit.unwrap_or(false)` is checked — the static list and annotation fallback are inactive.
 
-When the feature is disabled, steps without an explicit `requires_approval: true` annotation never trigger the approval gate.
+When the feature is disabled, steps without an explicit `requires_approval: true` annotation never trigger the approval gate (Tauri path).
 
 ## Four-Layer SkillPatch and Journal Protocol
 
@@ -101,7 +104,10 @@ The runner is **state-centric**: the harness owns a `WorldModel` (environment fa
 
 ### Entry Point
 
-Tauri command `run_agent` (`src-tauri/src/commands/agent/commands.rs`) dispatches through `run_agent_workflow` (`crates/clickweave-engine/src/agent/mod.rs`) which builds a `StateRunner` and an `AgentTraceGraph` and drives the loop. `AgentRunRequest { goal, agent, project_path }` carries the goal and the LLM endpoint.
+`host::run_agent(AgentRunParams)` (`crates/clickweave-host/src/run.rs`) is the engine-call seam used by all consumers. It dispatches to `run_agent_workflow` or `run_agent_workflow_with_prompt_override` (`crates/clickweave-engine/src/agent/mod.rs`) based on `system_prompt_override`. Both build a `StateRunner` and an `AgentTraceGraph` and drive the loop.
+
+- **Tauri path:** `run_agent` IPC command (`src-tauri/src/commands/agent/commands.rs`) uses `host::spawn_agent_run` for the lifecycle wrapper, then forwards all `RunnerOutput` events (draining `DrainBarrier` acks, `SkillProposalNeeded`, and per-event `AgentEvent` emission) as `agent://*` Tauri events.
+- **CLI path:** `clickweave run` calls `host::spawn_agent_run`, renders `RunnerOutput` to stderr, and emits NDJSON to stdout in `--json` mode.
 
 ### Trace Graph
 

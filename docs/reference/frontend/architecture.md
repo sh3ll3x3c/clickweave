@@ -248,6 +248,8 @@ The frontend models a `SkillPatch` as a staged four-layer change to a skill:
 
 Skill identity is frozen at execution start: the router trusts the `skill_id` in the event payload and does not re-derive it from UI selection state.
 
+Note: the deterministic skill runner (`host::run_skill`, used by the CLI and called internally by the Tauri executor) does not gate per step and does not emit `executor://approval_required` with `SafetyScope::Skill`. The overlay surface is retained for when skill-step approval enforcement is added in a future phase.
+
 ## App Event Wiring
 
 `ui/src/hooks/useExecutorEvents.ts` is a thin composer mounted by `App.tsx` that delegates to domain-specific hooks in `ui/src/hooks/events/`:
