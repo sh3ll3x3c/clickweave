@@ -144,7 +144,7 @@ Unknown tool names map to `McpToolCall` only if present in known tool schema lis
 
 ## Configuration
 
-The MCP binary path is resolved by `host::mcp::resolve_mcp_binary(EnvOverride)` in `clickweave-host` — no user-facing `mcpCommand` setting is required. The resolved path is passed to `host::spawn_mcp(path, &[])`.
+The MCP binary path is resolved by `host::mcp::resolve_mcp_binary(EnvOverride)` in `clickweave-host` — no user-facing `mcpCommand` setting is required. The resolved path is passed to `host::mcp::spawn_mcp(path, &[])`.
 
 `EnvOverride` controls when `CLICKWEAVE_MCP_BINARY` is honoured:
 
@@ -156,7 +156,7 @@ The MCP binary path is resolved by `host::mcp::resolve_mcp_binary(EnvOverride)` 
 Relevant files:
 
 - `crates/clickweave-host/src/mcp.rs` — `EnvOverride`, `resolve_mcp_binary`, `spawn_mcp`, `should_honor_env`
-- `src-tauri/src/commands/agent/commands.rs` — spawns the MCP client for the agent loop (calls `host::resolve_mcp_binary(EnvOverride::DebugOnly)`)
+- `src-tauri/src/commands/agent/commands.rs` — spawns the MCP client for the agent loop (calls `host::mcp::resolve_mcp_binary(EnvOverride::DebugOnly)`)
 - `src-tauri/src/commands/executor.rs` — spawns the MCP client for deterministic workflow execution
 - `crates/clickweave-engine/src/agent/runner/mod.rs` — state-spine runner that dispatches MCP tools step by step from agent decisions
 - `crates/clickweave-engine/src/executor/run_loop.rs` — dispatches MCP tools node by node for saved workflows
