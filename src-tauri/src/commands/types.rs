@@ -62,14 +62,13 @@ pub struct EndpointConfig {
 
 impl EndpointConfig {
     pub fn into_llm_config(self, temperature: Option<f32>) -> LlmConfig {
-        LlmConfig {
-            base_url: self.base_url,
-            api_key: self.api_key.filter(|k| !k.is_empty()),
-            model: self.model,
+        clickweave_host::config::llm_config(
+            self.base_url,
+            self.model,
+            self.api_key,
             temperature,
-            max_tokens: None,
-            ..LlmConfig::default()
-        }
+            None,
+        )
     }
 
     pub fn is_empty(&self) -> bool {

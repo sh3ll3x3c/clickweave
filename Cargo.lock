@@ -615,6 +615,7 @@ dependencies = [
  "chrono",
  "clickweave-core",
  "clickweave-engine",
+ "clickweave-host",
  "clickweave-llm",
  "clickweave-mcp",
  "core-foundation 0.10.1",

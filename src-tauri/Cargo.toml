@@ -36,6 +36,7 @@ regex = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 clickweave-core = { workspace = true, features = ["specta"] }
 clickweave-engine = { workspace = true, features = ["specta"] }
+clickweave-host.workspace = true
 clickweave-llm = { workspace = true, features = ["specta"] }
 clickweave-mcp.workspace = true
 
