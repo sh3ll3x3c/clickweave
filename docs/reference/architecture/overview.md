@@ -1,6 +1,6 @@
 # Architecture Overview (Reference)
 
-Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
+Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend, plus a headless CLI.
 
 ## Workspace Crates
 
@@ -9,7 +9,9 @@ crates/
 ├── clickweave-core/     # Project manifest, runtime state, storage, safety types
 ├── clickweave-engine/   # Skill runner, agent loop, trace graph, skill store
 ├── clickweave-llm/      # LLM client, image prep, chat types
-└── clickweave-mcp/      # MCP JSON-RPC client
+├── clickweave-mcp/      # MCP JSON-RPC client
+├── clickweave-host/     # UI-agnostic wiring library (above engine/core/llm/mcp)
+└── clickweave-cli/      # Headless CLI binary (`clickweave`) built on clickweave-host
 src-tauri/               # Tauri app shell + IPC commands
 ui/                      # React frontend
 ```
@@ -23,11 +25,20 @@ clickweave-engine
 │   └── clickweave-core
 └── clickweave-mcp
 
-src-tauri
+clickweave-host
 ├── clickweave-core
 ├── clickweave-engine
 ├── clickweave-llm
 └── clickweave-mcp
+
+src-tauri
+└── clickweave-host  (+ clickweave-core, clickweave-engine, clickweave-llm, clickweave-mcp)
+
+clickweave-cli
+└── clickweave-host
+
+clickweave-evals
+└── clickweave-host  (+ clickweave-engine, clickweave-llm, clickweave-mcp)
 ```
 
 ## Crate Responsibilities
@@ -84,6 +95,26 @@ See [Skill Execution](../engine/execution.md).
 
 See [MCP Integration](../mcp/integration.md).
 
+### `clickweave-host`
+
+UI-agnostic wiring library. Sits above `{clickweave-engine, clickweave-core, clickweave-llm, clickweave-mcp}` and below `{src-tauri, clickweave-cli, clickweave-evals}`. No `tauri` dependency; performs no event emission or terminal I/O.
+
+| Module | Purpose |
+|--------|---------|
+| `config.rs` | `llm_config(...)` — builds `LlmConfig`, normalises `Some("") → None` for the API key |
+| `mcp.rs` | `EnvOverride { Always, DebugOnly }`, `resolve_mcp_binary(EnvOverride)`, `spawn_mcp(...)` — MCP binary resolution and subprocess spawn |
+| `storage.rs` | `app_data_dir()`, `project_dir(path)`, `ProjectLocation`, `resolve_storage(...)`, `load_project(path)` — path normalisation and storage construction |
+| `context.rs` | `build_episodic_context(...)`, `build_skill_context(...)` — agent-context construction |
+| `run.rs` | `AgentRunParams`, `run_agent(params)` — engine-call seam, dispatches to the appropriate `run_agent_workflow*` variant |
+| `approval.rs` | `ApprovalDecision`, `ApprovalResponder` trait, `AutoApprove` |
+| `lifecycle.rs` | `spawn_agent_run(...)`, `AgentRunHandle` — live-run lifecycle wrapper for CLI and Tauri |
+| `skills.rs` | `run_skill(...)`, `list_skills(dir)`, `load_skill(dir, id)` |
+| `runs.rs` | `list_runs(storage, skill_id)`, `load_run_events(...)` |
+
+### `clickweave-cli`
+
+Headless CLI (`clickweave` binary) built on `clickweave-host`. Provides `run`, `run-skill`, `skills`, and `runs` subcommands. Uses `clap` derive for argument parsing. Handles rendering (`RunnerOutput` → stderr; final summary → stdout; `--json` NDJSON mode), exit codes, and the `StdinResponder` / `AutoApprove` approval strategies. `run-skill` has no approval flags — the deterministic runner does not gate per step.
+
 ## Data Flow
 
 ### Agent Execution
@@ -112,17 +143,19 @@ UI
 ### Skill Execution
 
 ```
-UI
-  -> Tauri command: run_skill (skill_id, variables)
+UI / CLI
+  -> run_skill (skill_id, variables)  [Tauri command or host::run_skill]
   -> skill_runner::run_skill_steps walks &[ActionSketchStep]
      - ToolCall steps: resolve target, call MCP tool, record trace events
+       (requires_approval field is read by the Tauri executor's safety gate
+        but is ignored by the deterministic host::run_skill runner — no
+        per-step approval gating in the CLI or headless path)
      - Loop steps: evaluate LoopPredicate, iterate body steps
-     - requires_approval gate: check SafetyScope::Skill { skill_id, section_id, step_id }
-       - approval needed => emit executor://approval_required, wait for user
-       - approved => continue
   -> persist SkillRun per section outcome
-  -> emit executor://* events to UI
+  -> emit executor://* events to UI  [Tauri path only]
 ```
+
+The frontend approval overlay (`SkillSectionApprovalOverlay` / `useSafetyEventRouter`) is retained for **agent-loop** approvals routed via `SafetyScope::AdHoc`; skill-step `SafetyScope::Skill` approval enforcement is future work.
 
 ## IPC Commands
 
@@ -183,7 +216,7 @@ pub enum SafetyScope {
 }
 ```
 
-- `SafetyScope::Skill` — emitted by the skill runner. Carries the exact skill, section, and step position of the pause. The frontend routes these to an inline `SkillSectionApprovalOverlay` on the matching section card.
-- `SafetyScope::AdHoc` — emitted by ad-hoc agent runs (no active skill). The frontend routes these to an `AssistantThread`-anchored approval card.
+- `SafetyScope::Skill` — defined for skill-step approval events. Carries the exact skill, section, and step position. The Tauri executor's `should_gate_step` logic uses this scope, but the deterministic skill runner invoked by `host::run_skill` and the CLI does not gate per step — `requires_approval` is passed through as an ignored parameter (`_requires_approval`). Skill-step approval enforcement is future work.
+- `SafetyScope::AdHoc` — emitted by agent-loop runs (no active skill). The frontend routes these to an `AssistantThread`-anchored approval card. The `SkillSectionApprovalOverlay` and `useSafetyEventRouter` surface remain active for this path.
 
 Both `SupervisionPaused` / `SupervisionPassed` and `ApprovalRequired` carry the `SafetyScope` field.

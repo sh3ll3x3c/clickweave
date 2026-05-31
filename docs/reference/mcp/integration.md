@@ -25,7 +25,7 @@ File: `crates/clickweave-mcp/src/client.rs`
 |--------|----------|
 | `McpClient::spawn(cmd, args)` | runs provided command and args directly |
 
-`spawn_native()` was removed. Callers now use `McpClient::spawn(path, &[])` with a binary path resolved by `mcp_resolve::resolve_mcp_binary()` in the Tauri command layer.
+`spawn_native()` was removed. Callers now use `host::spawn_mcp(path, &[])` (which wraps `McpClient::spawn`) with a binary path resolved by `host::mcp::resolve_mcp_binary(EnvOverride)` in `clickweave-host`.
 
 ### Initialization Sequence
 
@@ -144,12 +144,19 @@ Unknown tool names map to `McpToolCall` only if present in known tool schema lis
 
 ## Configuration
 
-The MCP binary path is resolved automatically by `mcp_resolve::resolve_mcp_binary()` in the Tauri command layer — no user-facing `mcpCommand` setting is required. The resolved path is passed directly to `McpClient::spawn(path, &[])`.
+The MCP binary path is resolved by `host::mcp::resolve_mcp_binary(EnvOverride)` in `clickweave-host` — no user-facing `mcpCommand` setting is required. The resolved path is passed to `host::spawn_mcp(path, &[])`.
+
+`EnvOverride` controls when `CLICKWEAVE_MCP_BINARY` is honoured:
+
+| Variant | Used by | Behaviour |
+|---------|---------|-----------|
+| `Always` | CLI (`clickweave`) | Always honours `CLICKWEAVE_MCP_BINARY`; useful for local dev builds |
+| `DebugOnly` | Tauri app (`src-tauri`) | Honours `CLICKWEAVE_MCP_BINARY` in debug builds only; release builds ignore it to preserve packaging integrity |
 
 Relevant files:
 
-- `src-tauri/src/mcp_resolve.rs`
-- `src-tauri/src/commands/agent/commands.rs` — spawns the MCP client for the agent loop
+- `crates/clickweave-host/src/mcp.rs` — `EnvOverride`, `resolve_mcp_binary`, `spawn_mcp`, `should_honor_env`
+- `src-tauri/src/commands/agent/commands.rs` — spawns the MCP client for the agent loop (calls `host::resolve_mcp_binary(EnvOverride::DebugOnly)`)
 - `src-tauri/src/commands/executor.rs` — spawns the MCP client for deterministic workflow execution
 - `crates/clickweave-engine/src/agent/runner/mod.rs` — state-spine runner that dispatches MCP tools step by step from agent decisions
 - `crates/clickweave-engine/src/executor/run_loop.rs` — dispatches MCP tools node by node for saved workflows
