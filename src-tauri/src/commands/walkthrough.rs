@@ -173,7 +173,7 @@ pub async fn start_walkthrough(
 
         let storage = match &project_path {
             Some(p) => {
-                let dir = super::types::project_dir(p);
+                let dir = clickweave_host::storage::project_dir(std::path::Path::new(p));
                 WalkthroughStorage::new(&dir)
             }
             None => {

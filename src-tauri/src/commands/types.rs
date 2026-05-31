@@ -18,22 +18,22 @@ pub fn resolve_storage(
     project_name: &str,
     project_id: uuid::Uuid,
 ) -> RunStorage {
-    match project_path {
-        Some(p) => RunStorage::new(&project_dir(p), project_name),
-        None => {
-            let app_data_dir = app.state::<AppDataDir>();
-            RunStorage::new_app_data(&app_data_dir.0, project_name, project_id)
-        }
-    }
-}
-
-pub fn project_dir(path: &str) -> PathBuf {
-    let p = PathBuf::from(path);
-    if p.extension().is_some() {
-        p.parent().unwrap_or(&p).to_path_buf()
-    } else {
-        p
-    }
+    // File→dir normalization for saved projects now lives in
+    // `host::resolve_storage` (via `host::storage::project_dir`), so the raw
+    // `project_path` is forwarded unchanged.
+    let location = match project_path {
+        Some(p) => clickweave_host::storage::ProjectLocation::Saved {
+            path: PathBuf::from(p),
+            name: project_name.to_string(),
+            id: project_id,
+        },
+        None => clickweave_host::storage::ProjectLocation::Unsaved {
+            name: project_name.to_string(),
+            id: project_id,
+        },
+    };
+    let app_data_dir = app.state::<AppDataDir>();
+    clickweave_host::storage::resolve_storage(&app_data_dir.0, location)
 }
 
 pub fn parse_uuid(s: &str, label: &str) -> Result<uuid::Uuid, super::error::CommandError> {

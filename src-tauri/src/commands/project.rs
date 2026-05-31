@@ -125,7 +125,7 @@ fn save_project_with_app_data(
         .map_err(|e| CommandError::io(format!("Failed to commit file: {}", e)))?;
 
     let unsaved_skills_root = app_data_dir.join("skills");
-    let saved_project_dir = project_dir(&path);
+    let saved_project_dir = clickweave_host::storage::project_dir(Path::new(&path));
     move_skills_to_project(
         &unsaved_skills_root,
         &manifest.id.to_string(),
@@ -165,7 +165,7 @@ pub async fn import_asset(
     let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("png");
     let filename = format!("{}.{}", Uuid::new_v4(), ext);
 
-    let assets_dir = project_dir(&project_path).join("assets");
+    let assets_dir = clickweave_host::storage::project_dir(Path::new(&project_path)).join("assets");
     std::fs::create_dir_all(&assets_dir)
         .map_err(|e| CommandError::io(format!("Failed to create assets directory: {}", e)))?;
 
