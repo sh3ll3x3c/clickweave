@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/clickweave-cli",
     "crates/clickweave-core",
     "crates/clickweave-evals",
     "crates/clickweave-engine",
