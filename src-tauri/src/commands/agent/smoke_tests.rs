@@ -28,8 +28,8 @@
 //! divergent emit topic — fails this test.
 
 use super::*;
-use clickweave_engine::agent::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
 use clickweave_engine::agent::AgentConfig;
+use clickweave_engine::agent::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
 use std::sync::{Arc, Mutex};
 use tauri::Listener;
 
@@ -351,33 +351,34 @@ async fn run_smoke_test_body() {
     });
 
     // ── Act: drive the engine ──────────────────────────────────
-    let (state, _writer_tx) = clickweave_host::run::run_agent(clickweave_host::run::AgentRunParams {
-        llm: &llm,
-        mcp: &mcp,
-        config: AgentConfig::default(),
-        goal: "rubric-10 gate: forwarder + persistence contract".to_string(),
-        channels: Some(channels),
-        vision: None,
-        // Permission policy: `allow_all` so scripted destructive-ish
-        // tool calls (cdp_click) don't block waiting on an approval
-        // oneshot that nothing in this test answers. The production
-        // agent.rs threads the operator's policy from the UI; this
-        // smoke test only cares about event forwarding, so the
-        // simplest shape that bypasses the approval gate is enough.
-        permissions: Some(PermissionPolicy {
-            allow_all: true,
-            ..PermissionPolicy::default()
-        }),
-        run_id: run_uuid,
-        anchor_node_id: None,
-        verification_artifacts_dir: None,
-        storage: Some(Arc::clone(&storage)),
-        episodic_ctx: None,
-        skill_ctx: None,
-        system_prompt_override: None,
-    })
-    .await
-    .expect("run_agent ok");
+    let (state, _writer_tx) =
+        clickweave_host::run::run_agent(clickweave_host::run::AgentRunParams {
+            llm: &llm,
+            mcp: &mcp,
+            config: AgentConfig::default(),
+            goal: "rubric-10 gate: forwarder + persistence contract".to_string(),
+            channels: Some(channels),
+            vision: None,
+            // Permission policy: `allow_all` so scripted destructive-ish
+            // tool calls (cdp_click) don't block waiting on an approval
+            // oneshot that nothing in this test answers. The production
+            // agent.rs threads the operator's policy from the UI; this
+            // smoke test only cares about event forwarding, so the
+            // simplest shape that bypasses the approval gate is enough.
+            permissions: Some(PermissionPolicy {
+                allow_all: true,
+                ..PermissionPolicy::default()
+            }),
+            run_id: run_uuid,
+            anchor_node_id: None,
+            verification_artifacts_dir: None,
+            storage: Some(Arc::clone(&storage)),
+            episodic_ctx: None,
+            skill_ctx: None,
+            system_prompt_override: None,
+        })
+        .await
+        .expect("run_agent ok");
 
     // Wait for the forwarder pump to drain (`event_tx` was dropped
     // when the workflow returned, so the recv loop exits cleanly).

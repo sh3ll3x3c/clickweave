@@ -21,6 +21,6 @@ pub use clickweave_engine::agent::{
 };
 pub use clickweave_engine::executor::Mcp;
 pub use clickweave_engine::executor::error::ExecutorResult;
-pub use clickweave_engine::executor::skill_runner::run_skill_steps;
+pub use clickweave_engine::executor::skill_runner::{SkillRunContext, run_skill_steps};
 pub use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 pub use uuid::Uuid;

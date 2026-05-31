@@ -1,8 +1,8 @@
 use super::error::CommandError;
 use super::types::*;
 use clickweave_engine::agent::skills::{ActionSketchStep, Skill, SkillStore};
-use clickweave_engine::executor::skill_runner::{SkillRunContext, run_skill_steps};
 use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState};
+use clickweave_host::{SkillRunContext, run_skill_steps};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
