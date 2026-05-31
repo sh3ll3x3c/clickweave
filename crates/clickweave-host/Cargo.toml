@@ -1,0 +1,24 @@
+[package]
+name = "clickweave-host"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clickweave-core.workspace = true
+clickweave-engine.workspace = true
+clickweave-llm.workspace = true
+clickweave-mcp.workspace = true
+
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+clickweave-engine = { workspace = true, features = ["test-stubs"] }
+tempfile = "3"

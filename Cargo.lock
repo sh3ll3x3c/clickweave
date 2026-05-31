@@ -449,6 +449,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "clickweave-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clickweave-core",
+ "clickweave-engine",
+ "clickweave-llm",
+ "clickweave-mcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "clickweave-llm"
 version = "0.1.0"
 dependencies = [
