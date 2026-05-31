@@ -292,6 +292,119 @@ async fn completion_disagreement_exits_7() {
     assert_eq!(exit_code_for(&reason), 7);
 }
 
+// ── Graceful stop: a stop signal mid-run resolves to the stopped path ────────
+
+/// `ApprovalResponder` that reports once it is asked, then parks forever. Lets
+/// a test confirm an approval (and therefore the run) is genuinely in flight
+/// before firing the stop trigger — mirroring the host's `ParkingResponder`.
+struct ParkingResponder {
+    entered_tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl ParkingResponder {
+    fn new() -> (Arc<Self>, tokio::sync::oneshot::Receiver<()>) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let responder = Arc::new(Self {
+            entered_tx: std::sync::Mutex::new(Some(entered_tx)),
+        });
+        (responder, entered_rx)
+    }
+}
+
+#[async_trait::async_trait]
+impl clickweave_host::approval::ApprovalResponder for ParkingResponder {
+    async fn respond(
+        &self,
+        _req: clickweave_host::ApprovalRequest,
+    ) -> clickweave_host::approval::ApprovalDecision {
+        if let Some(tx) = self.entered_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        std::future::pending::<()>().await;
+        unreachable!("ParkingResponder::respond never returns");
+    }
+}
+
+/// A Ctrl-C mid-run must drive `drain_until_stop` to the stopped path: the run
+/// resolves without hanging, carries no terminal reason, and maps to exit 0 —
+/// never surfacing as an error. The stop future is injected (a `oneshot` fired
+/// once the run is confirmed in flight) so the test is deterministic with no
+/// real SIGINT. Mirrors the host's
+/// `cancel_during_in_flight_approval_through_spawn_resolves`.
+#[tokio::test]
+async fn stop_signal_mid_run_resolves_to_stopped_exit_zero() {
+    use clickweave_cli::commands::run::drain_until_stop;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = RunStorage::new(tmp.path(), "stop-test");
+    storage.set_persistent(false);
+    let storage_arc = Arc::new(std::sync::Mutex::new(storage));
+
+    // A scripted LLM that keeps requesting an approval-gated tool, parked on
+    // the approval responder — the run would never finish on its own.
+    let (responder, entered_rx) = ParkingResponder::new();
+    let llm = ScriptedLlm::repeat(|| llm_reply_tool("destructive_tool", serde_json::json!({})));
+    let mcp = StaticMcp::with_tools(&["destructive_tool"]);
+
+    let handle = spawn_agent_run(
+        llm,
+        mcp,
+        AgentConfig {
+            max_steps: 1000,
+            ..AgentConfig::default()
+        },
+        "needs approval".to_string(),
+        None,
+        Some(clickweave_host::PermissionPolicy::default()),
+        Uuid::new_v4(),
+        None,
+        None,
+        Some(Arc::clone(&storage_arc)),
+        None,
+        None,
+        None,
+        responder as Arc<dyn clickweave_host::approval::ApprovalResponder>,
+    );
+
+    // Controllable stop trigger fired once the run is confirmed in flight.
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let stop = async move {
+        let _ = stop_rx.await;
+    };
+
+    // Drive the drain in a task so we can fire the stop after the approval is
+    // genuinely parked.
+    let drain = tokio::spawn(async move {
+        drain_until_stop(
+            handle,
+            stop,
+            /* json_mode */ false,
+            false,
+            &storage_arc,
+        )
+        .await
+    });
+
+    entered_rx
+        .await
+        .expect("approval must be in flight before we stop");
+    stop_tx.send(()).expect("drain task must still be alive");
+
+    // (a) Resolves without hanging.
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), drain)
+        .await
+        .expect("stopped run must resolve, not deadlock")
+        .expect("drain task must not panic");
+
+    // (b) The stopped path: cancelled, no terminal reason, exit 0.
+    assert!(outcome.cancelled, "a stop request must set the cancel flag");
+    let state = outcome.result.expect("a clean stop must yield Ok, not Err");
+    assert!(
+        state.terminal_reason.is_none(),
+        "a cancel is an external stop, not a loop outcome — no terminal reason"
+    );
+}
+
 // ── T3.7.6: Persistence gate — saved project with persistence on/off ─────────
 
 #[test]
