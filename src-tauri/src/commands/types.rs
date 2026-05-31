@@ -19,8 +19,8 @@ pub fn resolve_storage(
     project_id: uuid::Uuid,
 ) -> RunStorage {
     // File→dir normalization for saved projects now lives in
-    // `host::resolve_storage` (via `host::storage::project_dir`), so the raw
-    // `project_path` is forwarded unchanged.
+    // `host::storage::resolve_storage` (via `host::storage::project_dir`), so
+    // the raw `project_path` is forwarded unchanged.
     let location = match project_path {
         Some(p) => clickweave_host::storage::ProjectLocation::Saved {
             path: PathBuf::from(p),
