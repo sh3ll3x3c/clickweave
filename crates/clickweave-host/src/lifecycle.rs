@@ -30,11 +30,17 @@ pub struct AgentRunHandle {
 impl AgentRunHandle {
     /// Cancel the in-flight run.
     ///
-    /// Cancels the `CancellationToken`. The approval bridge task observes the
-    /// same token and, if an approval is in flight, sends `false` to its
-    /// pending oneshot so the engine treats the stop as a rejection/replan
-    /// rather than `ApprovalUnavailable`. Dropping the sender is reserved
-    /// exclusively for the `Unavailable` decision in the approval bridge.
+    /// Cancels the `CancellationToken`. The runner task's outer `select!`
+    /// observes the token, abandons `run_agent`, and resolves
+    /// [`AgentRunHandle::await_result`] with a synthetic [`AgentState`] whose
+    /// `terminal_reason` is `None` — an external stop, mirroring the Tauri
+    /// agent task's `agent://stopped` path, never `ApprovalUnavailable`.
+    ///
+    /// The approval bridge task observes the same token and, if an approval is
+    /// in flight, sends `false` to its pending oneshot (defence-in-depth so the
+    /// engine never sees a dropped sender → `ApprovalUnavailable`). Dropping the
+    /// sender is reserved exclusively for the `Unavailable` decision in the
+    /// approval bridge.
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
@@ -167,11 +173,18 @@ where
         tokio::select! {
             res = run_agent(params) => res,
             _ = cancel_for_task.cancelled() => {
-                // Cancellation won the race — return a synthetic state.
+                // Cancellation won the race — abandon `run_agent` and return a
+                // synthetic state carrying *no* terminal reason. A cancel is an
+                // external stop, not a loop outcome, so it must not be labelled
+                // with any `TerminalReason` (least of all `ApprovalUnavailable`,
+                // whose meaning is "the approval channel is permanently gone").
+                // This mirrors the Tauri agent task, which represents a cancel
+                // out-of-band via the `agent://stopped` event and never produces
+                // a `terminal_reason`. `AgentState::new` already defaults
+                // `terminal_reason` to `None`.
                 use clickweave_engine::agent::trace_graph::AgentTraceGraph;
-                use clickweave_engine::agent::{AgentState, TerminalReason};
-                let mut state = AgentState::new(AgentTraceGraph::new());
-                state.terminal_reason = Some(TerminalReason::ApprovalUnavailable);
+                use clickweave_engine::agent::AgentState;
+                let state = AgentState::new(AgentTraceGraph::new());
                 Ok((state, None))
             }
         }
@@ -448,6 +461,11 @@ mod tests {
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle.await_result())
             .await
             .expect("cancelled run must resolve, not deadlock");
-        assert!(result.is_ok(), "cancelled run must return Ok");
+        let (state, _) = result.expect("cancelled run must return Ok");
+        assert!(
+            state.terminal_reason.is_none(),
+            "a cancel is an external stop, not a loop outcome — it must carry \
+             no terminal reason (never Some(ApprovalUnavailable))",
+        );
     }
 }

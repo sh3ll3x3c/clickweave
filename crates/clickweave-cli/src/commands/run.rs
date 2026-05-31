@@ -122,7 +122,13 @@ pub async fn execute(args: RunArgs) -> Result<i32> {
         }
         exit_code_for(reason)
     } else {
-        // No terminal reason — treat as success (shouldn't normally happen).
+        // No terminal reason means the run was stopped externally (a cancel),
+        // not a loop outcome — mirroring the Tauri `agent://stopped` path. A
+        // user-requested stop is a clean stop, so exit 0 (never route it to the
+        // approval-unavailable code 6).
+        if !json_mode {
+            eprintln!("Run stopped.");
+        }
         0
     };
 
