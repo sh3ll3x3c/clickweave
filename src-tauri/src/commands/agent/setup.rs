@@ -73,18 +73,19 @@ pub(super) fn build_episodic_context(
         return Ok(EpisodicContext::disabled());
     }
 
-    let wl_path = storage.lock().unwrap().base_path().join("episodic.sqlite");
+    let workflow_local_path = storage.lock().unwrap().base_path().join("episodic.sqlite");
     let global_path = if global_participation {
         Some(app_data_episodic_path(app)?)
     } else {
         None
     };
-    Ok(EpisodicContext {
-        enabled: true,
-        workflow_local_path: wl_path,
+    Ok(clickweave_host::context::build_episodic_context(
+        workflow_local_path,
         global_path,
-        project_id: request.project_id.clone(),
-    })
+        request.project_id.clone(),
+        persist_traces,
+        enabled,
+    ))
 }
 
 pub(super) fn build_skill_context(
@@ -110,12 +111,13 @@ pub(super) fn build_skill_context(
     } else {
         None
     };
-    Ok(SkillContext {
-        enabled: persist_traces && enabled,
+    Ok(clickweave_host::context::build_skill_context(
         project_skills_dir,
         global_skills_dir,
-        project_id: request.project_id.clone(),
-    })
+        request.project_id.clone(),
+        persist_traces,
+        enabled,
+    ))
 }
 
 pub(super) fn agent_config_from_request(
